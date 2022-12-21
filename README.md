@@ -2,7 +2,7 @@
 # OpenSpec
 This is an open-source re-implementation of Gran Turismo Scripts based on the proprietary Adhoc scripting language to allow logic-based modding as seen on the [GT6 Spec II Mod](https://www.gtplanet.net/forum/threads/beta6-gt6-spec-ii-mod.399796/). 
 
-This repository contains compilable game scripts re-created from originally compiled scripts. The goal is to allow source-code level editing for GT4, GT5, GT6 (and potentially others).
+This repository contains compilable game scripts re-created from originally compiled scripts. The goal is to allow source-code level editing for GT4, GT5, GT6 (and potentially others). Scripts operate nearly as the whole of game logic, while the executable mostly serves as the engine and exposes libraries to the script interface.
 
 * Unaltered code is located on the `master` branch
 * Code for the GT6 Spec II Mod is located on the `spec` branch.
