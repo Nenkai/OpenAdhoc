@@ -18,53 +18,53 @@ This repository contains compilable game scripts re-created from originally comp
   
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|
-| main                   |    Yes    | Initial Bootstrap & Utils before `boot`                                          |
-| arcade                 |    Yes    | Arcade Mode                                                                      |
-| boot                   |    Yes    | Boot Process handling (Game Start to main project i.e `gtmode` or `dev_runviewer`|
-| config                 |    Yes    | Game Save Nodes Creation                                                         |
-| community              |    Yes    | Community/Online Features Menu (Clubs, TimeLine, Bbs, etc)                       |
-| cursor                 |    Yes    | Cursor handling & Top Menu                                                       |
-| datalogger             |    No     | Car Data Logger Menu                                                             |
-| dev_design_work        |    Yes    | UI Showcasing (1.00)                                                             |
-| dev_runviewer          |    Yes    | Developer Tools                                                                  |
-| dev_sound              |    Yes    | Sound Engineering Develop Tools                                                  |
-| dev_test_sequence      |    No     | Unknown Dev Tools                                                                |
-| develop                |    Yes    | Cheat/QA Menu for `gtmode`                                                       |
-| dialog                 |    No     | UI Components for Dialogs                                                        |
-| event_setting          |    No     | Settings Menu for Editing Lobby Options                                          |
-| garage                 |    Yes    | Garage Manager                                                                   |
-| gps_replay             |    No     | GPS Replay                                                                       |
-| gtmode                 |    Yes    | GT Mode. Everything before loading into an event/race.                           |
-| gtauto                 |    Yes    | GT Auto                                                                          |
-| gttv                   |    No     | Stub Leftover from GT5                                                           |
-| leavedemo              |    Yes    | Idle demonstration project                                                       |
-| manual                 |    Yes    | Manual Menu & Credits                                                            |
-| multimonitor           |    Yes    | Multimonitor Handler Project                                                     |
-| option                 |    Yes    | Game Settings Menu                                                               |
-| photo                  |    Yes    | Photo Mode Handler                                                               |
-| play_movie             |    Yes    | Intro Movie Player Project                                                       |
-| race                   |    Yes    | Main Race Project & Base                                                         |
-| race_arcade_style      |    No     | Sierra Time Rally game mode plugin                                               |
-| race_course_edit       |    No     | Custom Track Test & Uploader game mode plugin                                    |
-| race_drag              |    No     | Left-over Drag game mode plugin                                                  |
-| race_drift             |    No     | Drift game mode plugin                                                           |
-| race_freerun           |    Yes    | Free-Run game mode plugin                                                        |
-| race_license           |    Yes    | License game mode plugin                                                         |
-| race_mission           |    Yes    | Mission game mode plugin                                                         |
-| race_online_drift      |    No     | Seasonal Drift Event game mode plugin                                            |
-| race_online_event      |    No     | Online Quickmatch Event game mode plugin                                         |
-| race_online_room       |    Yes    | Online Lobby game mode plugin                                                    |
-| race_online_single     |    No     | Seasonal Event game mode plugin                                                  |
-| race_online_timeattack |    No     | Seasonal Time Trial game mode plugin                                             |
-| race_single            |    No     | Event game mode plugin                                                           |
-| race_split             |    No     | Split-Screen game mode plugin                                                    |
-| race_tutorial          |    No     | Tutorial game mode plugin                                                        |
-| race_timeattack        |    Yes    | Time Trial game mode plugin                                                      |
-| ranking                |    No     | Rankings/Leaderboard Handler Project                                             |
-| setting                |    No     | Car Parameters/Tuning Menu                                                       |
-| ui_kit                 |    Yes    | Generic UI Components Project                                                    |
-| ui_kit_sub             |    No     | Unknown                                                                          |
-| vision_gt              |    No     | Vision GT Menu                                                                   |
+| main                   |    ✔️    | Initial Bootstrap & Utils before `boot`                                          |
+| arcade                 |    ✔️    | Arcade Mode                                                                      |
+| boot                   |    ✔️    | Boot Process handling (Game Start to main project i.e `gtmode` or `dev_runviewer`|
+| config                 |    ✔️    | Game Save Nodes Creation                                                         |
+| community              |    ✔️    | Community/Online Features Menu (Clubs, TimeLine, Bbs, etc)                       |
+| cursor                 |    ✔️    | Cursor handling & Top Menu                                                       |
+| datalogger             |    ❌     | Car Data Logger Menu                                                             |
+| dev_design_work        |    ✔️    | UI Showcasing (1.00)                                                             |
+| dev_runviewer          |    ✔️    | Developer Tools                                                                  |
+| dev_sound              |    ✔️    | Sound Engineering Develop Tools                                                  |
+| dev_test_sequence      |    ❌     | Unknown Dev Tools                                                                |
+| develop                |    ✔️    | Cheat/QA Menu for `gtmode`                                                       |
+| dialog                 |    ❌     | UI Components for Dialogs                                                        |
+| event_setting          |    ❌     | Settings Menu for Editing Lobby Options                                          |
+| garage                 |    ✔️    | Garage Manager                                                                   |
+| gps_replay             |    ❌     | GPS Replay                                                                       |
+| gtmode                 |    ✔️    | GT Mode. Everything before loading into an event/race.                           |
+| gtauto                 |    ✔️    | GT Auto                                                                          |
+| gttv                   |    ❌     | Stub Leftover from GT5                                                           |
+| leavedemo              |    ✔️    | Idle demonstration project                                                       |
+| manual                 |    ✔️    | Manual Menu & Credits                                                            |
+| multimonitor           |    ✔️    | Multimonitor Handler Project                                                     |
+| option                 |    ✔️    | Game Settings Menu                                                               |
+| photo                  |    ✔️    | Photo Mode Handler                                                               |
+| play_movie             |    ✔️    | Intro Movie Player Project                                                       |
+| race                   |    ✔️    | Main Race Project & Base                                                         |
+| race_arcade_style      |    ❌     | Sierra Time Rally game mode plugin                                               |
+| race_course_edit       |    ❌     | Custom Track Test & Uploader game mode plugin                                    |
+| race_drag              |    ❌     | Left-over Drag game mode plugin                                                  |
+| race_drift             |    ❌     | Drift game mode plugin                                                           |
+| race_freerun           |    ✔️    | Free-Run game mode plugin                                                        |
+| race_license           |    ✔️    | License game mode plugin                                                         |
+| race_mission           |    ✔️    | Mission game mode plugin                                                         |
+| race_online_drift      |    ❌     | Seasonal Drift Event game mode plugin                                            |
+| race_online_event      |    ❌     | Online Quickmatch Event game mode plugin                                         |
+| race_online_room       |    ✔️    | Online Lobby game mode plugin                                                    |
+| race_online_single     |    ❌     | Seasonal Event game mode plugin                                                  |
+| race_online_timeattack |    ❌     | Seasonal Time Trial game mode plugin                                             |
+| race_single            |    ❌     | Event game mode plugin                                                           |
+| race_split             |    ❌     | Split-Screen game mode plugin                                                    |
+| race_tutorial          |    ❌     | Tutorial game mode plugin                                                        |
+| race_timeattack        |    ✔️    | Time Trial game mode plugin                                                      |
+| ranking                |    ❌     | Rankings/Leaderboard Handler Project                                             |
+| setting                |    ❌     | Car Parameters/Tuning Menu                                                       |
+| ui_kit                 |    ✔️    | Generic UI Components Project                                                    |
+| ui_kit_sub             |    ❌     | Unknown                                                                          |
+| vision_gt              |    ❌     | Vision GT Menu                                                                   |
 </details>
 
 ### GT5 Completion Progress
@@ -77,7 +77,7 @@ Nothing at the moment.
 
 The [Adhoc toolchain](https://github.com/Nenkai/GTAdhocToolchain) is required to compile game scripts. It is also recommended to install the VS Code Extension. Binaries/Artifacts can be acquired from the Actions tab.
 
-It is also recommended to add the path to the toolchain (i.e `adhoc.exe`) to your **PATH**.
+⚠️ It is also recommended to add the path to the toolchain (i.e `adhoc.exe`) to your **PATH**.
 
 Compilation process
 * `adhoc build -i <.ad source file or .xaml project file>`
