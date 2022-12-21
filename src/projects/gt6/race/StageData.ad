@@ -1,0 +1,308 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module StageData
+{
+    class LoadedStageData
+    {
+        attribute loaded;
+        attribute code_id_list;
+        attribute data_list;
+        attribute layout;
+        attribute gadget_list;
+
+        method init()
+        {
+            loaded = false;
+            code_id_list = nil;
+            data_list = nil;
+            layout = nil;
+            gadget_list = Array();
+        }
+    }
+
+    static sData = Array(2);
+    static sCurrentIndex = 0;
+
+    function onLoad(context)
+    {
+        for (var stage_index = 0; stage_index < 2; stage_index++)
+        {
+            sData[stage_index] = LoadedStageData();
+            sData[stage_index].init();
+        }
+    }
+
+    function loadStageData(data_array, layout, stage_index)
+    {
+        var idx = 0;
+        if (stage_index != nil)
+            idx = stage_index;
+
+        sData[idx].init();
+
+        var LoadStage = sData[idx];
+        if (data_array != nil && data_array.size > 0)
+        {
+            LoadStage.code_id_list = Array(data_array.size);
+            LoadStage.data_list = Array(data_array.size);
+
+            for (idx = 0; idx < data_array.size; idx++)
+            {
+                var data = data_array[idx];
+                LoadStage.data_list[idx] = data;
+
+                var code = CommandAlias::getCode(data.code);
+                if (code != nil)
+                    LoadStage.code_id_list[idx] = ORG.requestRaceStage(code);
+                else
+                {
+                    LoadStage.data_list[idx] = nil;
+                    LoadStage.code_id_list[idx] = nil;
+                }
+            }
+        }
+
+        layout == nil; // Normal
+
+        LoadStage.layout = layout;
+    }
+
+    function clearRaceStageData()
+    {
+        for (var stage_index = 0; stage_index < 2; stage_index++)
+            clearRaceStageDataImpl(stage_index);
+    }
+
+    function clearRaceStageDataImpl(stage_index)
+    {
+        var LoadStage = sData[stage_index];
+        var idx = 0;
+
+        if (LoadStage.code_id_list != nil)
+        {
+            foreach (var code in LoadStage.code_id_list)
+            {
+                if (code != nil)
+                    ORG.clearRaceStage(code);
+            }
+        }
+
+        clearGadget(stage_index);
+
+        LoadStage.data_list = nil;
+        LoadStage.code_id_list = nil;
+        LoadStage.layout = nil;
+    }
+
+    function checkStageData(data_array)
+    {
+        if (data_array != nil && data_array.size > 0)
+            return true;
+        else
+            return false;
+    }
+
+    function chechStageDataIsValid(idx, stage_index)
+    {
+        if (stage_index == nil)
+            stage_index = 0;
+
+        var LoadStage = sData[stage_index];
+        if (idx != nil && LoadStage.code_id_list != nil && LoadStage.code_id_list[idx] != nil)
+            return true;
+        else
+            return false;
+    }
+
+    function isReadyRaceStage(stage_index)
+    {
+        if (stage_index == nil)
+            stage_index = 0;
+
+        var LoadStage = sData[stage_index];
+        if (LoadStage.code_id_list == nil)
+            return;
+
+        foreach (var stage_data_code in LoadStage.code_id_list)
+        {
+            while (!ORG.isReadyRaceStage(stage_data_code))
+                yield;
+        }
+    }
+
+    function getSlotID(slot_idx, stage_index)
+    {
+        if (stage_index == nil)
+            stage_index = 0;
+
+        var LoadStage = sData[stage_index];
+
+        switch (LoadStage.layout)
+        {
+            case gtengine::StageLayoutType::DEFAULT:
+                if (slot_idx == 0)
+                    return RaceOperator.getPlayerSlot(0);
+                else if (slot_idx == 1)
+                    return RaceOperator.getPlayerSlot(0) - 1;
+                else if (slot_idx == 2)
+                    return RaceOperator.getPlayerSlot(0) + 1;
+                else
+                    return 0;
+                break;
+
+            case gtengine::StageLayoutType::FRONT_2GRID:
+                if (slot_idx == 0)
+                    return RaceOperator.getPlayerSlot(0);
+                else if (slot_idx == 1)
+                    return RaceOperator.getPlayerSlot(0) - 1;
+                else if (slot_idx == 2)
+                    return RaceOperator.getPlayerSlot(0) - 2;
+                else
+                    return 0;
+                break;
+
+            case gtengine::StageLayoutType::RANK:
+                return gSequenceCondition.result_rank_list[slot_idx];
+                break;
+
+            case gtengine::StageLayoutType::SLOT:
+                return slot_idx;
+                break;
+                
+            default:
+                return 0;
+        }
+    }
+
+    function startRaceStage(context, move_vehicle, use_stage_camera, stage_index, set_ostracize)
+    {
+        if (stage_index == nil)
+            stage_index = 0;
+
+        var LoadStage = sData[stage_index];
+        if (LoadStage.code_id_list == nil)
+            return;
+
+        isReadyRaceStage();
+
+        if (stage_index == 0)
+        {
+            while (!ORG.inSession())
+                yield;
+
+            var game_mode = gSequenceCondition.game_mode;
+            var time_rally = game_mode == gtengine::GameMode::ARCADE_STYLE_RACE;
+        
+            if (!time_rally)
+            {
+                while (!ORG.inCourseAllEntries())
+                    yield;
+            }
+        
+            while (!ORG.canEnterCourse(false))
+                yield;
+        
+            while (!ORG.isFinishedFirstLoad())
+                yield;
+        }
+
+        if (LoadStage.code_id_list == nil)
+            return;
+
+        var data_slot_idx = 0;
+        foreach (var stage_data_code in LoadStage.code_id_list)
+        {
+            var slot_id = getSlotID(data_slot_idx);
+            var oclock = nil;
+            var ostracize = true;
+            var reset_data = LoadStage.data_list[data_slot_idx];
+
+            if (reset_data.coord == gtengine::StageCoordType::GRID_ALL ||
+                reset_data.coord == gtengine::StageCoordType::PITSTOP_ALL)
+            {
+                ostracize = false;
+            }
+
+            if (set_ostracize != nil)
+                ostracize = set_ostracize;
+
+            var gadget_list = ORG.resetRaceStage(stage_data_code, slot_id, reset_data.coord,
+                reset_data.x, reset_data.y, reset_data.z,
+                reset_data.rotYdeg,
+                reset_data.vcoord,
+                ostracize,
+                oclock,
+                move_vehicle);
+
+            clearGadget(stage_index);
+            addGadget(gadget_list);
+            data_slot_idx++;
+        }
+
+        if (use_stage_camera)
+            ORG.setCamera(gtengine::CameraType::RACESTAGE);
+    }
+
+    function endRaceStage(stage_index)
+    {
+        if (stage_index == nil)
+            stage_index = 0;
+
+        var LoadStage = sData[stage_index];
+        if (LoadStage.code_id_list == nil)
+            return;
+
+        foreach (var stage_data_code in LoadStage.code_id_list)
+        {
+            ORG.endRaceStage(stage_data_code);
+        }
+
+        clearGadget(stage_index);
+    }
+
+    function addGadget(gadget_list, stage_index)
+    {
+        if (stage_index == nil)
+            stage_index = 0;
+
+        var LoadStage = sData[stage_index];
+        foreach (var gmap in gadget_list)
+        {
+            var pos = gmap["position"];
+            var posture = gmap["orientation"];
+            var gadget_name = gmap["gadget_name"];
+            var ret = ORG.addCourseGadget(gadget_name, pos, posture);
+
+            var idx = ret[0];
+            var db_id = ret[1];
+
+            LoadStage.gadget_list.push(idx);
+        }
+    }
+
+    function clearGadget(stage_index)
+    {
+        if (stage_index == nil)
+            stage_index = 0;
+
+        var LoadStage = sData[stage_index];
+        foreach (var idx in LoadStage.gadget_list)
+        {
+            ORG.removeCourseGadget(idx);
+        }
+
+        LoadStage.gadget_list.clear();
+    }
+}

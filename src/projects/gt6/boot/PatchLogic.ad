@@ -1,0 +1,300 @@
+
+
+
+//---------------------------------------------------------------------------------------
+// PatchLogic.ad
+//
+// (例)
+// PatchLogic.ad
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// function
+//---------------------------------------------------------------------------------------
+
+
+
+module PatchLogic
+{
+    static ERROR_SUCCESS = 0;
+    static ERROR_PREPARE = 1;
+    static ERROR_CAPACITY = 2;
+    static ERROR_DOWNLOAD = 3;
+    static ERROR_INSTALL = 4;
+
+    static IDENT_TAG_ALL = 255;
+    static IDENT_TAG_NETWORK_PFS = 1;
+    static IDENT_TAG_TPPS_POSTINSTALL = 2;
+
+    static PATCH_ROOT_DIR_DEFAULT = "/APP_DATA_RAW";
+
+    function initialize(putlog)
+    {
+        if (putlog)
+        {
+            main::pdiext::MSystemPatch::clear();
+        }
+    }
+
+    function terminate(result)
+    {
+        main::pdiext::MSystemPatch::clear();
+        if (result != nil)
+        {
+            // Stripped or nothing
+        }
+    }
+
+    class PatchBase
+    {
+        attribute PatchRoot = nil;
+        attribute progress = main::pdistd::MProgress();
+        attribute aborted = nil;
+        attribute canceling = nil;
+        attribute complete = nil;
+        attribute success = nil;
+        attribute ignore_progress = nil;
+        attribute auto_next = false;
+        attribute patch_tags = 0;
+        attribute patch_root_dir = nil;
+
+        method __init__(PatchRoot, patch_tags, patch_root_dir)
+        {
+            self.PatchRoot = PatchRoot;
+            self.patch_tags = patch_tags;
+            self.patch_root_dir = patch_root_dir;
+        }
+
+        method start() { }
+        method check() { }
+        method begin_message() { }
+        method success_message() { }
+        method failed_message() { }
+        method error_message() { }
+
+        method OnProgress(context)
+        {
+            if (self.ignore_progress)
+                return;
+
+            var end = false;
+
+            var val = check();
+            if (val >= 0)
+            {
+
+                self.progress.value = val.toFloat() * 0.01f;
+                DialogUtil::setRemainSecond(context, self.progress.getRemainSecond());
+
+                if (val == 100)
+                {
+                    self.complete = true;
+                    end = true;
+                }
+
+                if (self.aborted)
+                {
+                    self.complete = false;
+                    end = true;
+                }
+            }
+            else if (!self.canceling)
+            {
+                self.ignore_progress = true;
+                var text = main::manager.translate("GameDataGT6", error_message());
+                text = text.build(val);
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+                self.aborted = true;
+                end = true;
+            }
+
+            if (end)
+            {
+                if (!self.canceling)
+                {
+                    self.ignore_progress = true;
+                    DialogUtil::setProgressCancelCB(context, nil);
+                }
+            }
+        }
+
+        method OnCancel(context)
+        {
+
+            self.canceling = true;
+            var text = main::manager.translate("Network", "DO_YOU_ABORT");
+
+            var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, text);
+            if (res)
+                self.aborted = true;
+
+            self.canceling = false;
+        }
+
+        method executeImpl(context, args)
+        {
+            var start_time = pdistd::GetSystemTimeMicroSecond();
+
+
+            self.complete = false;
+            self.aborted = false;
+
+            start();
+
+            while (!self.aborted && !self.complete) {
+                OnProgress(context);
+                Thread::Sleep(1);
+            }
+
+            if (self.aborted)
+            {
+
+                check();
+                self.complete = false;
+            }
+
+            var cur_ver = pdiext::MProductInformation::GetDisplayVersion();
+            var elapsed = (pdistd::GetSystemTimeMicroSecond() - start_time) / 1000000;
+            var result = self.aborted ? 2 : (self.complete ? 1 : 0);
+            var user = main::PDINetwork.getClientName();
+            var log = "PV=%{cur_ver}:PE=%{elapsed}:PR=%{result}:PU=%{user}";
+            if (Grim2 != nil)
+                Grim2.requestPutLog(log);
+            
+            if (self.aborted)
+                return nil;
+            
+            return [self.complete, self.complete && self.auto_next];
+        }
+
+        method execute(context, cancelable)
+        {
+            self.ignore_progress = false;
+
+            self.progress.value = 0f;
+
+            DialogUtil::setProgress(context, self.progress);
+
+            self.aborted = false;
+
+            self.canceling = false;
+
+            if (cancelable)
+                DialogUtil::setProgressCancelCB(context, OnCancel);
+            else
+                DialogUtil::setProgressCancelCB(context, nil);
+            
+            var res = DialogUtil::openProgressDialog(context, 
+                main::manager.translate("GameDataGT6", begin_message()),
+                main::manager.translate("GameDataGT6", success_message()),
+                main::manager.translate("GameDataGT6", failed_message()),
+                executeImpl, nil, nil, nil,
+                main::manager.translate("OptionProject::GameInstallRoot", "INSTALL_ABORTED"));
+            
+            self.success = res;
+            return self.success;
+        }
+    }
+
+    class Install extends PatchBase
+    {
+        method start() 
+        { 
+            main::pdiext::MSystemPatch::startInstall(self.patch_tags, self.patch_root_dir) 
+        }
+
+        method check() 
+        { 
+            return main::pdiext::MSystemPatch::checkProgress(self.aborted, self.patch_tags, self.patch_root_dir);
+        }
+
+        method begin_message() 
+        {
+            return "DATAUPDATE_INSTALL_PROGRESS";
+        }
+
+        method success_message()
+        {
+            return "DATAUPDATE_INSTALL_COMPLETED";
+        }
+
+        method failed_message()
+        {
+            return "DATAUPDATE_INSTALL_FAILED";
+        }
+
+        method error_message()
+        {
+            return "DATAUPDATE_INSTALL_ERROR";
+        }
+    }
+
+    class Download extends PatchBase
+    {
+        method start()
+        {
+            self.auto_next = true;
+            main::pdiext::MSystemPatch::startDownload(self.patch_tags, self.patch_root_dir);
+        }
+
+        method check()
+        {
+            return main::pdiext::MSystemPatch::checkProgress(self.aborted, self.patch_tags, self.patch_root_dir);
+        }
+
+        method begin_message() 
+        {
+            return "DATAUPDATE_DOWNLOAD_PROGRESS";
+        }
+
+        method success_message()
+        {
+            return "DATAUPDATE_DOWNLOAD_COMPLETED";
+        }
+
+        method failed_message()
+        {
+            return "DATAUPDATE_DOWNLOAD_FAILED";
+        }
+
+        method error_message()
+        {
+            return "DATAUPDATE_DOWNLOAD_ERROR";
+        }
+    }
+
+    class Prepare extends PatchBase
+    {
+        method start()
+        {
+            self.auto_next = true;
+            main::pdiext::MSystemPatch::startPrepare(self.patch_tags, self.patch_root_dir);
+        }
+
+        method check()
+        {
+            return main::pdiext::MSystemPatch::checkProgress(self.aborted, self.patch_tags, self.patch_root_dir);
+        }
+
+        method begin_message() 
+        {
+            return "DATAUPDATE_PREPARE_PROGRESS";
+        }
+
+        method success_message()
+        {
+            return "DATAUPDATE_PREPARE_COMPLETED";
+        }
+
+        method failed_message()
+        {
+            return "DATAUPDATE_PREPARE_FAILED";
+        }
+
+        method error_message()
+        {
+            return "DATAUPDATE_PREPARE_ERROR";
+        }
+    }
+}

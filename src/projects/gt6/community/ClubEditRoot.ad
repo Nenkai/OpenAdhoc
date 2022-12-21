@@ -1,0 +1,548 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ClubEditRoot
+{
+    hidden.visible = false;
+
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute club;
+    attribute photo;
+    attribute original_title;
+    attribute original_description;
+
+    class Data
+    {
+        attribute title;
+        attribute description;
+        attribute tag_id_list;
+        attribute open;
+        attribute recent;
+        attribute image_id;
+    }
+
+    function verify(context)
+    {
+        var data = Data();
+        var title = trim(ScrolledWindow::clip::space::VBox::Title::VBox::InputTextBox::Text::input.value);
+
+        if (title == "")
+        {
+            ERROR(context, "Community", "NO_CLUB_TITLE");
+            return nil;
+        }
+
+        var [filter_title_res, sanitized_title] = filterText(context, title, true);
+        if (!filter_title_res)
+            return nil;
+
+        data.title = sanitized_title;
+        var description = trim(ScrolledWindow::clip::space::VBox::Description::VBox::InputTextBox::Text::input.value);
+
+        if (description == "")
+        {
+            ERROR(context, "Community", "NO_CLUB_DESCRIPTION");
+            return nil;
+        }
+
+        var [filter_description_res, sanitized_description] = filterText(context, description, true);
+        if (!filter_description_res)
+            return nil;
+
+        data.description = sanitized_description;
+
+        var tag_id_list = [];
+        for (var i = 0; i < 6; ++i)
+        {
+            var w = ScrolledWindow::clip::space::VBox::Tag::VBox::MBox["Tag%{i + 1}"];
+            if (w.tag_id != 0)
+                tag_id_list.push(w.tag_id);
+        }
+
+        tag_id_list.sort();
+        data.tag_id_list = tag_id_list;
+
+        data.open = ScrolledWindow::clip::space::VBox::Public::VBox::What::OptionMenu.index;
+
+        data.recent = ClubEditRoot.club != nil ? ClubEditRoot.club["recent"] : "";
+        data.image_id = 0;
+        return data;
+    }
+
+    function updatePhoto(context, club_id, photo)
+    {
+        if (photo == nil)
+            return true;
+
+        if (!pdistd::Exist(photo.filename_t))
+            return true;
+
+        var jpg = pdistd::ReadFile(photo.filename_t);
+        var request = Community.requestUpdateClubImage(club_id, jpg["buffer"], (args) => {});
+        var res = Grim2Util::joinAwait(context, request);
+        return res;
+    }
+
+    method open(context, club)
+    {
+        self.photo = nil;
+        self.club = club;
+        self.result = nil;
+        self.closed = false;
+        self.popup = SequenceUtil::ModalPage(context, ClubEditRoot);
+        self.popup.open();
+
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        Community.clearCallback();
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        FadeActor.out = true;
+
+        if (self.popup != nil)
+        {
+            self.popup.close(FadeActor.period);
+            self.popup = nil;
+        }
+
+        self.club = nil;
+        self.photo = nil;
+        self.original_title = nil;
+        self.original_description = nil;
+    }
+
+    method onCancel(context, event, item)
+    {
+        sound.play("cancel");
+        if (self.club != nil)
+            self.setFocus(ScrolledWindow::clip::space::VBox::About_Edit::Cancel);
+        else
+            self.setFocus(ScrolledWindow::clip::space::VBox::About_Add::Cancel);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        var edit_mode = self.club != nil;
+        ScrolledWindow::clip::space::VBox::About_Edit.visible = edit_mode;
+        ScrolledWindow::clip::space::VBox::About_Add.visible = !edit_mode;
+        ScrolledWindow::clip::space::VBox::Notice_Edit.visible = edit_mode;
+        ScrolledWindow::clip::space::VBox::Notice_Add.visible = !edit_mode;
+        ScrolledWindow::clip::space::VBox::Delete.visible = edit_mode;
+
+        var title = "";
+        var description = "";
+        var photo_id = "";
+        var open_flag = 0;
+        var tag_id_list = [];
+
+        if (self.club != nil)
+        {
+            title = self.club["title"];
+            description = list2text(self.club["description_list"]);
+            photo_id = self.club["photo_id"];
+            open_flag = self.club["open"];
+            tag_id_list = self.club["tag_id_list"];
+        }
+        else
+            ;
+
+        self.original_title = title;
+        self.original_description = description;
+
+        ScrolledWindow::clip::space::VBox::Title::VBox::InputTextBox::Text::input.value = title;
+        ScrolledWindow::clip::space::VBox::Title::VBox::InputTextBox::Text::input.setCount(context, title.length);
+
+        ScrolledWindow::clip::space::VBox::Description::VBox::InputTextBox::Text::input.value = description;
+        ScrolledWindow::clip::space::VBox::Description::VBox::InputTextBox::Text::input.setCount(context, description.length);
+
+        setImage(ScrolledWindow::clip::space::VBox::Photo::SBox::ImageFace, photo_id);
+
+        OptionMenuUtil::initialize(context, self,
+            ScrolledWindow::clip::space::VBox::Public::VBox::What::OptionMenu,
+            hidden::PulldownItem, ["PRIVATE_CLUB", "PUBLIC_CLUB"],
+            "Community");
+
+        ScrolledWindow::clip::space::VBox::Public::VBox::What::OptionMenu.setIndex(context, open_flag);
+
+        for (var i = 0; i < 6; ++i)
+        {
+            var w = ScrolledWindow::clip::space::VBox::Tag::VBox::MBox["Tag%{i + 1}"];
+            if (i < tag_id_list.size)
+            {
+                w.tag_id = tag_id_list[i];
+                w.label.text = manager.translate("CommunityTag", "CATEGORY_%d".format(tag_id_list[i]));
+            }
+            else
+            {
+                w.tag_id = 0;
+                w.label.text = manager.translate("CommunityTag", "CATEGORY_0");
+            }
+        }
+
+        if (self.club != nil)
+            self.setFocus(ScrolledWindow::clip::space::VBox::About_Edit::Cancel);
+        else
+            self.setFocus(ScrolledWindow::clip::space::VBox::About_Add::Cancel);
+
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        OptionMenuUtil::finalize(context, ScrolledWindow::clip::space::VBox::Public::VBox::What::OptionMenu);
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::About_Add
+    {
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            ClubEditRoot.close(context);
+            return STATE_YIELD;
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            ClubEditRoot.close(context);
+            return STATE_YIELD;
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::About_Edit
+    {
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            ClubEditRoot.close(context);
+            return STATE_YIELD;
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            ClubEditRoot.close(context);
+            return STATE_YIELD;
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::Title::VBox::InputTextBox::Text::input
+    {
+        method setCount(context, count)
+        {
+            InputTextBox::Count.text = "%d / %d".format(count, 30);
+        }
+
+        method onTextClose(context, event)
+        {
+            setCount(context, self.value.length);
+            return 0;
+        }
+
+        method onKeyRelease(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_SQUARE || event.keysym == KEY_BACKSPACE || event.keysym == KEY_DELETE)
+            {
+                setCount(context, self.value.length);
+            }
+
+            return 0;
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::Description::VBox::InputTextBox::Text::input
+    {
+        method setCount(context, count)
+        {
+            InputTextBox::Count.text = "%d / %d".format(count, 140);
+        }
+
+        method onTextClose(context, event)
+        {
+            setCount(context, self.value.length);
+            return 0;
+        }
+
+        method onKeyRelease(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_SQUARE || event.keysym == KEY_BACKSPACE  || event.keysym == KEY_DELETE)
+            {
+                setCount(context, self.value.length);
+            }
+
+            return 0;
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::Photo
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+
+            var photo = GTModeProject::ReplayListRoot.open(context, GTModeProject::ReplayListRoot::MODE::PHOTO);
+            if (photo == nil)
+                return STATE_YIELD;
+
+            ScrolledWindow::clip::space::VBox::Photo::SBox::ImageFace.image_path = photo.filename_t;
+            ClubEditRoot.photo = photo;
+            return STATE_YIELD;
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::Tag::VBox::MBox
+    {
+        method tagSelect(context, target)
+        {
+            sound.play("ok");
+
+            var tag_id_list = [];
+
+            for (var i = 0; i < 6; ++i)
+            {
+                var w = target.parent["Tag%{i + 1}"];
+                if (w == target)
+                    continue;
+
+                if (w.tag_id > 0)
+                    tag_id_list.push(w.tag_id);
+            }
+
+            var tag_id = target.tag_id;
+            var new_tag_id = TagSelectRoot.open(context, tag_id, tag_id_list);
+
+            if (new_tag_id != nil)
+            {
+                target.tag_id = new_tag_id;
+                target.label.text = manager.translate("CommunityTag", "CATEGORY_%d".format(new_tag_id));
+            }
+
+            return STATE_YIELD;
+        }
+
+        module Tag1
+        {
+            attribute tag_id;
+
+            method onActivate(context)
+            {
+                return tagSelect(context, self);
+            }
+        }
+
+        module Tag2
+        {
+            attribute tag_id;
+            
+            method onActivate(context)
+            {
+                return tagSelect(context, self);
+            }
+        }
+
+        module Tag3
+        {
+            attribute tag_id;
+            
+            method onActivate(context)
+            {
+                return tagSelect(context, self);
+            }
+        }
+
+        module Tag4
+        {
+            attribute tag_id;
+            
+            method onActivate(context)
+            {
+                return tagSelect(context, self);
+            }
+        }
+
+        module Tag5
+        {
+            attribute tag_id;
+            
+            method onActivate(context)
+            {
+                return tagSelect(context, self);
+            }
+        }
+
+        module Tag6
+        {
+            attribute tag_id;
+            
+            method onActivate(context)
+            {
+                return tagSelect(context, self);
+            }
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::Notice_Add
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+
+            var data = verify(context);
+            if (data == nil)
+                return STATE_YIELD;
+
+            var request = Community.requestCreateClub(data.title, 
+                data.description, 
+                data.tag_id_list, 
+                data.open, 
+                data.recent, 
+                data.image_id,
+                (args) => {});
+
+            if (!Grim2Util::joinAwait(context, request))
+            {
+                GENERIC_RESULT(context, false);
+                checkGrimSession(context);
+                return STATE_YIELD;
+            }
+
+            var club_id = Community.decodeResultLong(request);
+            if (club_id == -1)
+            {
+                ERROR(context, "Community", "ERROR_CLUB_CREATE_MAX", 1);
+                return STATE_YIELD;
+            }
+
+            if (!updatePhoto(context, club_id, ClubEditRoot.photo))
+            {
+                GENERIC_RESULT(context, false);
+                return STATE_YIELD;
+            }
+
+            var request1 = Community.requestJoinClub(club_id, (args) => {});
+            var res = Grim2Util::joinAwait(context, request1);
+            GENERIC_RESULT(context, res);
+
+            if (res)
+            {
+                var tag_id_list_csv = data.tag_id_list.join(",");
+                PUTLOG_LOCAL::club("create", club_id, data.open, tag_id_list_csv);
+                ClubEditRoot.result = club_id;
+                ClubEditRoot.close(context);
+            }
+
+            return STATE_YIELD;
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::Notice_Edit
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+
+            var data = verify(context);
+            if (data == nil)
+                return STATE_YIELD;
+
+            var club = ClubEditRoot.club;
+            var club_id = club["club_id"];
+            var res = false;
+            var title_changed = data.title != ClubEditRoot.original_title;
+            var description_changed = data.description != ClubEditRoot.original_description;
+
+            var request = Community.requestUpdateClub(club_id,
+                data.title, 
+                data.description, 
+                data.tag_id_list, 
+                data.open, 
+                title_changed, 
+                description_changed,
+                (args) => {});
+
+            if (Grim2Util::joinAwait(context, request))
+            {
+                res = updatePhoto(context, club_id, ClubEditRoot.photo);
+            }
+
+            GENERIC_RESULT(context, res);
+            if (res)
+            {
+                var tag_id_list_csv = data.tag_id_list.join(",");
+                PUTLOG_LOCAL::club("update", club_id, data.open, tag_id_list_csv);
+                ClubEditRoot.result = "update";
+                ClubEditRoot.close(context);
+            }
+            else
+            {
+                checkGrimSession(context);
+            }
+
+            return STATE_YIELD;
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::Delete
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+
+            if (!QUERY(context, "Community", "QUERY_DELETE_CLUB"))
+                return STATE_YIELD;
+
+            var club = ClubEditRoot.club;
+            var club_id = club["club_id"];
+
+            var request = Community.requestDeleteClub(club_id, (args) => {});
+            var res = Grim2Util::joinAwait(context, request);
+            GENERIC_RESULT(context, res);
+
+            if (res)
+            {
+                PUTLOG_LOCAL::club("delete", club_id, club["open"]);
+                ClubEditRoot.result = "delete";
+                ClubEditRoot.close(context);
+            }
+            else
+            {
+                checkGrimSession(context);
+            }
+
+            return STATE_YIELD;
+        }
+    }
+}

@@ -1,0 +1,321 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module AcademyEulaRoot
+{
+    attribute modal_page;
+    attribute closed;
+    attribute result;
+    attribute read_detail;
+    attribute entry_form_result;
+
+    function isScee()
+    {
+        var region = pdiext::MProductInformation::GetGameRegionCode();
+        return region == "scee" || region == "sceb";
+    }
+
+    function isScea()
+    {
+        var region = pdiext::MProductInformation::GetGameRegionCode();
+        return region == "scea" || region == "scel";
+    }
+
+    function isSceh()
+    {
+        var region = pdiext::MProductInformation::GetGameRegionCode();
+        return region == "sceh";
+    }
+
+    function isScej()
+    {
+        var region = pdiext::MProductInformation::GetGameRegionCode();
+        return region == "scej";
+    }
+
+    function verify(context)
+    {
+        var ok = false;
+        if (isScea())
+        {
+            ok = AcademyEulaRoot.read_detail != nil;
+        }
+        else if (isScee() || isSceh())
+        {
+            ok = AcademyEulaRoot.read_detail != nil && DialogFrame::Pane::Body::Event::vbox::CheckButton.active;
+        }
+        else if (isScej())
+        {
+            ok = AcademyEulaRoot.read_detail != nil &&
+                DialogFrame::Pane::Body::Event::vbox::CheckButton.active &&
+                AcademyEulaRoot.entry_form_result != nil;
+        }
+
+        DialogFrame::Pane::Body::Buttons::OK.insensitive = !ok;
+    }
+
+    method open(context)
+    {
+        self.entry_form_result = nil;
+        self.read_detail = false;
+        self.result = false;
+        self.closed = false;
+
+        DialogFrame.appear();
+        self.modal_page = SequenceUtil::ModalPage(context, AcademyEulaRoot);
+        self.modal_page.open();
+
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        if (self.modal_page != nil)
+        {
+            var delay_time = DialogFrame.hide();
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        var region = pdiext::MProductInformation::GetGameRegionCode();
+        DialogFrame::Pane::Body::Event.visible = isScee() || isSceh() || isScej();
+        DialogFrame::Pane::Body::Opt_in.visible = isScea();
+        DialogFrame::Pane::Body::EntryForm.visible = isScej();
+        DialogFrame::Pane::Body::Event::vbox::CheckButton::Check.active = false;
+        DialogFrame::Pane::Body::Opt_in::vbox::CheckButtonNissan::Check.active = false;
+        DialogFrame::Pane::Body::Buttons::OK.insensitive = true;
+
+        if (isSceh())
+        {
+            DialogFrame::Pane::Body::Column::label.text = manager.translate("Eula", "ACCEPT_ACADEMY_TERMS_CONDITIONS_SCEH");
+        }
+        else if (isScej())
+        {
+            DialogFrame::Pane::Body::Event::label.text = manager.translate("Eula", "SEND_WITH_SEN_ID");
+        }
+    }
+
+    method onFinalize(context)
+    {
+        Grim2.clearCallback(context);
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        AcademyEulaRoot.setFocus(DialogFrame::Pane::Body::Buttons::Cancel);
+        return STATE_YIELD;
+    }
+
+    module DialogFrame::Pane::Body::TandC
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+
+            var region = pdiext::MProductInformation::GetGameRegionCode();
+            var text_list = [];
+            var country = NP.getRegionName();
+            var languages = NP.getRegionLanguage();
+            var language = "";
+
+            if (languages != nil)
+                language = languages[0];
+
+            var request = Grim2.requestAcademy(country, language, (args) => { });
+            if (!Grim2Util::joinAwait(context, request))
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("Network", "DOWNLOAD_ERROR"));
+                return STATE_YIELD;
+            }
+
+            var academy = Grim2.decodeAcademy(request);
+            if (!academy["enable"])
+                return STATE_YIELD;
+
+            for (var i = 1; i <= 10; ++i)
+            {
+                var value = academy["eula%02d".format(i)];
+                if (value != nil && value != "")
+                    text_list.push(value);
+            }
+
+            DialogUtil::openTextReaderDialog(context, 
+                manager.translate("Eula", "TERMS_CONDITIONS")
+                text_list);
+
+            AcademyEulaRoot.read_detail = true;
+            verify(context);
+            return STATE_YIELD;
+        }
+    }
+
+    module DialogFrame::Pane::Body::Event::vbox::CheckButton
+    {
+        method onActivate(context)
+        {
+            main::sound.play("checkbox");
+            self.active = !self.active;
+
+            if (self[$"onValueChanged"] != nil)
+                self.onValueChanged(context);
+
+            verify(context);
+            return STATE_EXIT;
+        }
+    }
+
+    module DialogFrame::Pane::Body::EntryForm
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+            var res = AcademyEntryRoot.open(context, AcademyEulaRoot.entry_form_result);
+            if (res != nil)
+            {
+                AcademyEulaRoot.entry_form_result = res;
+                verify(context);
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module DialogFrame::Pane::Body::Buttons::OK
+    {
+        method requestEula(context, eula_id, value)
+        {
+            var request = Grim2.requestEulaAgreement(eula_id, value, (context) => { });
+            return Grim2Util::joinAwait(context, request);
+        }
+
+        method requestPersonalInformation(context)
+        {
+            var data = AcademyEulaRoot.entry_form_result;
+            if (data == nil)
+                return false;
+
+            var birthday = "%04d-%02d-%02d".format(data.year, data.month, data.day);
+            var request = Grim2.requestUploadPersonalInformation(data.full_name, 
+                birthday, 
+                data.phone_number, 
+                data.mail_address,
+                data.driver_license, 
+                (context) => { });
+
+            return Grim2Util::joinAwait(context, request);
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+
+            var is_scee = isScee();
+            var is_scea = isScea();
+            var is_sceh = isSceh();
+            var is_scej = isScej();
+
+            var res;
+            if (is_scej)
+            {
+                res = requestPersonalInformation(context);
+                if (!res)
+                {
+                    DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                        manager.translate("Network", "CANNOT_CONNECT_SERVER"));
+                    return STATE_YIELD;
+                }
+            }
+            
+            res = false;
+            if (is_scee)
+            {
+                var value = DialogFrame::Pane::Body::Event::vbox::CheckButton.active;
+                var eula_id = 101;
+                res = requestEula(context, eula_id, value);
+            }
+            else if (is_scea)
+            {
+                var value = DialogFrame::Pane::Body::Opt_in::vbox::CheckButtonNissan.active;
+                var eula_id = 102;
+                res = requestEula(context, eula_id, value);
+            }
+            else if (is_sceh)
+            {
+                var value = DialogFrame::Pane::Body::Event::vbox::CheckButton.active;
+                var eula_id = 103;
+                res = requestEula(context, eula_id, value);
+            }
+            else if (is_scej)
+            {
+                var value = DialogFrame::Pane::Body::Event::vbox::CheckButton.active;
+                var eula_id = 104;
+                res = requestEula(context, eula_id, value);
+            }
+
+            if (!res)
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                    manager.translate("Network", "CANNOT_CONNECT_SERVER"));
+                return STATE_YIELD;
+            }
+
+            if (is_scee)
+            {
+                GAME_STATUS.user_profile.context.academy2015.eula_scee = 0;
+            }
+            else if (is_scea)
+            {
+                GAME_STATUS.user_profile.context.academy2015.eula_scea = 0;
+            }
+            else if (is_sceh)
+            {
+                GAME_STATUS.user_profile.context.academy2015.eula_sceh = 0;
+            }
+            else if (is_scej)
+            {
+                GAME_STATUS.user_profile.context.academy2015.eula_scej = 0;
+            }
+
+            SaveDataUtilGT6::saveEveryWhere(context);
+            AcademyEulaRoot.result = true;
+            AcademyEulaRoot.close(context);
+            return STATE_YIELD;
+        }
+    }
+
+    module DialogFrame::Pane::Body::Buttons::Cancel
+    {
+        method onActivate(context)
+        {
+            sound.play("cancel");
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                manager.translate("Eula", "NOT_NEXT_EVENT"));
+            AcademyEulaRoot.close(context);
+            return STATE_YIELD;
+    
+        }
+    }
+}

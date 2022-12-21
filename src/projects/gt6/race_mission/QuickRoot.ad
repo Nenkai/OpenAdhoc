@@ -1,0 +1,1277 @@
+
+
+
+
+
+
+
+
+
+
+
+
+RaceMissionProject.load("/scripts/gt6/util/CareerModeUtil");
+RaceMissionProject.load("/scripts/gt6/util/EventRewardUtil");
+
+module QuickRoot
+{
+    hidden.visible = false;
+    static sAfterRace = false;
+    static sBeforeResult = -1;
+    static sNeedCheckPrize = true;
+
+    method preStartRace(context)
+    {
+        var abort = false;
+        var confirmed = false;
+
+        checkRegulation(context, &abort);
+
+        if (!abort)
+        {
+            checkServerStatus(context, &abort, &confirmed);
+        }
+
+        if (!abort)
+        {
+            checkOnlineRankingUpload(context, &abort, &confirmed)
+        }
+
+        if (!abort)
+            ;
+        
+        if (!abort)
+        {
+            checkDiskSpaceForReplay();
+            ORG.checkGhostFileBeforeRace();
+        }
+
+        return [abort, confirmed];
+    }
+
+    method postStartRace(context)
+    {
+        if (sAfterRace)
+            incDate();
+
+        sAfterRace = true;
+        sNeedCheckPrize = true;
+    }
+
+    method onStartRace(context)
+    {
+        if (sAfterRace)
+        {
+            main::sound.play("ok");
+            var res = DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, manager.translate("QuickMenu", "DO_YOU_RETRY"));
+            if (!res)
+                return STATE_YIELD;
+
+            RaceMenuUtil::setEnableButton(false);
+            res = waitForLoadingDone(context);
+
+            if (!res)
+            {
+                RaceMenuUtil::setEnableButton(true);
+                return STATE_YIELD;
+            }
+        }
+
+        QuickRoot.input_enable = false;
+
+        var [abort, confirmed] = preStartRace(context);
+        if (abort)
+        {
+            RaceMenuUtil::setEnableButton(true);
+            QuickRoot.input_enable = true;
+            return STATE_YIELD;
+        }
+
+        if (gSequenceCondition.game_mode == gtengine::GameMode::COFFEE_BREAK)
+        {
+            CareerModeUtil::applySideBreak(context);
+        }
+
+        if (!confirmed)
+        {
+            main::sound.play("ok");
+        }
+
+        Info2.hide();
+        doStartRace(context);
+        postStartRace(context);
+
+        return STATE_YIELD;
+    }
+
+    method onStartReplay(context)
+    {
+        RaceMenuUtil::setEnableButton(false);
+        if (!PluginModule::doStartReplay(context))
+        {
+            RaceMenuUtil::setEnableButton(true);
+        }
+
+        return STATE_YIELD;
+    }
+
+    method onSaveReplay(context)
+    {
+        if (gSequenceCondition.gp.event.race_parameter.ghost_type != gtengine::GhostType::FULL)
+        {
+            if (!ReplayFileUtil::canSave())
+            {
+                main::sound.play("disable");
+                LeaveDetectUtil::suspend(context);
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate("QuickMenu", "YOUVE_ALREADY_SAVED"));
+                LeaveDetectUtil::resume(context);
+                return STATE_YIELD;
+            }
+
+            LeaveDetectUtil::suspend(context);
+            PluginModule::doSaveReplay(context);
+            LeaveDetectUtil::resume(context);
+        }
+        else if (!ReplayFileUtil::canSave(ReplayFileUtil::MODE_ATTACH))
+        {
+            main::sound.play("disable");
+            LeaveDetectUtil::suspend(context);
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate("QuickMenu", "YOUVE_ALREADY_SAVED"));
+            LeaveDetectUtil::resume(context);
+            return STATE_YIELD;
+        }
+
+        LeaveDetectUtil::suspend(context);
+        PluginModule::doSaveAttachReplay(context);
+        LeaveDetectUtil::resume(context);
+        return STATE_YIELD;
+    }
+
+    method onSaveGhostReplay(context)
+    {
+        if (!ReplayFileUtil::canSave(ReplayFileUtil::MODE_ONELAP))
+        {
+            main::sound.play("disable");
+            LeaveDetectUtil::suspend(context);
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate("QuickMenu", "YOUVE_ALREADY_SAVED"));
+            LeaveDetectUtil::resume(context);
+            return STATE_YIELD;
+        }
+
+        main::sound.play("ok");
+
+        LeaveDetectUtil::suspend(context);
+        UIKitProject::SaveReplayRoot.open(context, ReplayFileUtil::MODE_ONELAP);
+        LeaveDetectUtil::resume(context);
+        return STATE_YIELD;
+    }
+
+    method onLoadGhostReplay(context)
+    {
+        var res = waitForLoadingDone(context);
+        if (!res)
+            return STATE_YIELD;
+
+        main::sound.play("ok");
+
+        LeaveDetectUtil::suspend(context);
+        var gp = gSequenceCondition.gp;
+        var event = gp.event;
+        var course_code = event.race_parameter.course_code;
+        var event_id = event.event_id;
+
+        if (event.race_parameter.ghost_type == gtengine::GhostType::ONELAP)
+        {
+            UIKitSubProject::LoadReplayRoot.open(context, UIKitSubProject::LoadReplayRoot::MODE_ONELAP, course_code, nil, event_id);
+        }
+        else
+        {
+            UIKitSubProject::LoadReplayRoot.open(context, UIKitSubProject::LoadReplayRoot::MODE_GHOST, course_code, nil, event_id);
+        }
+
+        LeaveDetectUtil::resume(context);
+        return STATE_YIELD;
+    }
+
+    method onDrivingOption(context)
+    {
+        main::sound.play("ok");
+
+        QuickRoot.hideAction(context);
+
+        LeaveDetectUtil::suspend(context);
+
+        var data = SettingProject::DrivingOptionRoot2::Data(getPlayerCar(), 
+            getPlayerDriver(), 
+            nil, 
+            gSequenceCondition.gp.event.constraint, 
+            gSequenceCondition.gp.event.regulation);
+
+        SettingProject::DrivingOptionRoot2.open(context, data);
+
+        LeaveDetectUtil::resume(context);
+
+        QuickRoot.appearAction(context);
+
+        return STATE_YIELD;
+    }
+
+    method onOnlineRanking(context)
+    {
+        main::sound.play("ok");
+
+        CursorUtil::setCursor(context, "wait");
+
+        finally () => { CursorUtil::setCursor(context, "cursor_chrome"); }
+        
+        var event = gSequenceCondition.gp.event;
+
+        if (!LoginUtil::makeSureLogin(context, true))
+        {
+            return STATE_YIELD;
+        }
+
+        if (event.ranking.board_id != 0 ? !Grim2Util::OnlineRace::isEnable() : !Grim2Util::Ranking::isEnable())
+        {
+            main::sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                context.translate(QuickRoot, "Network", "RANKING_SERVICE_NOT_AVAILABLE"));
+            return STATE_YIELD;
+        }
+
+        if (!__projects__.defined("RankingProject"))
+        {
+            gSequenceCondition.loadProject("ranking");
+        }
+
+        var course_list = [gtengine::MSpecDB::getCourseLabel(getCurrentCourse())];
+        if (event.ranking.board_id == 0)
+            ;
+        else
+        {
+            var car_list = nil;
+            var first_focus = [
+                $"course" : nil,
+                $"car" : nil,
+                $"simulation" : getPlayerDriver().physics_pro == 1 ? 1 : 0,
+                $"mode" : 0
+            ];
+
+            var option = [
+                $"popup" : true,
+                $"view_replay" : false,
+                $"save_replay" : true,
+                $"is_event_ranking" : true,
+                $"replay_rank_limit" : event != nil ? event.ranking.replay_rank_limit : nil,
+                $"board_list" : [
+                    [event.ranking.board_id, event.information.one_line_title.getText(), gSequenceCondition.gp],
+                ]
+            ];
+
+            RankingProject::RankingPopup.open(context, nil, course_list, car_list, first_focus, option);
+        }
+
+        gSequenceCondition.unloadProject("ranking");
+        return STATE_YIELD;
+    }
+
+    method onExit(context)
+    {
+        main::sound.play("ok");
+
+        RaceMenuUtil::closeAction(context);
+        SequenceUtil::startSequence(context, main::GameSequence::MENU);
+        SoundUtil::BGMFadeout(1.0);
+        SoundUtil::SetupSound(SoundUtil::SCENE_MENU);
+        main::ORG.getRaceSound().start = false;
+        applyToSaveDataForGarageCar();
+        SaveDataUtilGT6::saveEveryWhere(context);
+
+        return STATE_YIELD;
+    }
+
+    method setup_entry(context, item, order, slot_id, delay_ratio)
+    {
+        item.No::label.text = "--";
+        foreach (var name in ["Driver", "Car"])
+        {
+            item[name].label.text = "--";
+            item[name].labela.text = "--";
+        }
+
+        var odd = order & 1;
+        foreach (var name in ["Driver", "Flag", "Car"])
+        {
+            item[name].bg0.visible = !odd;
+            item[name].bg1.visible = odd;
+        }
+
+        item.No.setBg(gSequenceCondition.gp.event.game_mode);
+
+        var cp;
+        if (slot_id != nil)
+        {
+            cp = RaceOperator.getAccountCarParameter(slot_id);
+        }
+
+        if (cp == nil)
+        {
+            foreach (var name in ["No", "Driver", "Car"])
+            {
+                item[name].label.opacity = 0.6;
+            }
+
+            item.Car.Chip.visible = false;
+            return;
+        }
+        
+        item.No.label.text = "%d".format(order + 1);
+
+        var pilot_id = ORG.getRidingDriverIndex(slot_id);
+        var dp = RaceOperator.getAccountDriverParameter(slot_id, pilot_id);
+
+        if (dp != nil)
+        {
+            item.Driver.label.text = dp.display_name;
+            item.Driver.labela.text = item.Driver.label.text;
+            
+            var country = dp.region == "" ? "unknown" : dp.region.downcase();
+            item.Flag::image.image_path = "/piece/flag_ranking/%{country}.img";
+        }
+
+        item.Car.Chip.color.setCarParameter(cp);
+        item.Car.Chip.visible = true;
+        item.Car.label.text = gtengine::MSpecDB::getCarShortName(cp.getCarCode());
+        item.Car.labela.text = item.Car.label.text;
+
+        var active_target = cp.isTargetLocal();
+        item.Driver.active = active_target;
+        item.Car.active = active_target;
+    }
+
+    method open(context)
+    {
+        SequenceUtil::startPage(context, QuickRoot);
+    }
+
+    method initialize_info(context)
+    {
+        var course_info = getCurrentCourseInfo();
+
+        if (course_info != nil)
+        {
+            var gp = gSequenceCondition.gp;
+            Info2::Header.initialize(context, gp);
+            Info2::Footer.initialize(context, gp);
+            Info2::Body::Description_and_BG.initialize(context, gp, course_info);
+            Info2::Body::Target_Info.initialize(context, gp, course_info);
+            Info2::Body::Map_Area.initialize(context, gp, course_info);
+
+            CourseLogo.initialize(course_info);
+
+            Info2::Header.next_animation_widget_list = [
+                Info2::Body::Description_and_BG,
+                Info2::Body::Target_Info
+            ];
+
+            Info2::Body::Target_Info.next_animation_widget = Info2::Body::Map_Area;
+            Info2::Body::Map_Area.next_animation_widget = Info2::Body::Target_Info;
+        }
+
+        var mission = gSequenceCondition.game_mode == gtengine::GameMode::MISSION;
+        Info2::Header::Color::Base::purple.visible = mission;
+        Info2::Header::Color::Base::orange.visible = !mission;
+        Info2::Header::Color::LeftEdge::purple.visible = mission;
+        Info2::Header::Color::LeftEdge::orange.visible = !mission;
+        Info2::Body::Description_and_BG::CrossPattern_bg_Mission.visible = mission;
+        Info2::Body::Description_and_BG::CrossPattern_bg_Coffee.visible = !mission;
+        Info2::Body::Description_and_BG::Description_Line_Mission.visible = mission;
+        Info2::Body::Description_and_BG::Description_Line_Coffee.visible = !mission;
+
+        var target = Info2::Body::Target_Info::Target_Info::Target;
+        target.HBox_Gold::HBox::Check::CheckA_mission.visible = mission;
+        target.HBox_Gold::HBox::Check::CheckA_coffee.visible = !mission;
+        target.HBox_Silver_Bronze::HBox::HBox_Silver::Check::CheckA_mission.visible = mission;
+        target.HBox_Silver_Bronze::HBox::HBox_Silver::Check::CheckA_coffee.visible = !mission;
+        target.HBox_Silver_Bronze::HBox::HBox_Bronze::Check::CheckA_mission.visible = mission;
+        target.HBox_Silver_Bronze::HBox::HBox_Bronze::Check::CheckA_coffee.visible = !mission;
+    }
+
+    method on_initialize_ranking_and_prize(context)
+    {
+        if (!sNeedCheckPrize)
+            return false;
+
+        var res = check_reward(context);
+        sNeedCheckPrize = false;
+        return res;
+    }
+
+    method check_reward(context)
+    {
+        if (gSequenceCondition.is_buffer_replay_mode)
+            return false;
+
+        applyToSaveDataForBSpec();
+
+        var result = gSequenceCondition.best_finish_result;
+        var gp = gSequenceCondition.gp;
+        var prize = 0; // Credits
+
+        if (gp.event.event_id == 1000473 || 
+            gp.event.event_id == 1000474 || 
+            gp.event.event_id == 1000475 ||
+            gp.event.event_id == 1000476)
+        {
+            if (result == nil)
+                return; // No returned object, normal
+
+            EventRewardUtil::checkEventReward(context, gSequenceCondition.gp, result, sBeforeResult, gSequenceCondition.lap_count);
+            var event_id = gSequenceCondition.gp.event.event_id;
+            var record_result = GAME_STATUS.user_profile.record.event_record.getEventResult(event_id);
+            sBeforeResult = record_result;
+        }
+        else
+        {
+            var prize_type = gSequenceCondition.gp.event.reward.prize_type;
+            if (prize_type > 0 && sBeforeResult != -1 && gSequenceCondition.best_finish_result >= sBeforeResult)
+                return false;
+
+            var prize_table = gSequenceCondition.gp.event.reward.prize_table;
+            var gold = result == gtengine::FinishResult::RANK_1;
+            var silver = result == gtengine::FinishResult::RANK_2;
+            var bronze = result == gtengine::FinishResult::RANK_3;
+
+            if (result < 0)
+                return false;
+
+            if (gSequenceCondition.gp.event.reward.is_once)
+            {
+                var begin = sBeforeResult == gtengine::FinishResult::NONE ? prize_table.size : sBeforeResult;
+                for (var i = result; i < begin; ++i)
+                {
+                    if (i < prize_table.size)
+                    {
+                        var p = prize_table[i];
+                        prize += prize_table[i];
+                    }
+
+                    if (i == gtengine::FinishResult::RANK_1)
+                        gold = true;
+
+                    if (i == gtengine::FinishResult::RANK_2)
+                    silver = true;
+
+                    if (i == gtengine::FinishResult::RANK_3)
+                    bronze = true;
+                }
+            }
+            else if (prize_type > 0)
+            {
+                for (var i = result; i < prize_table.size; ++i)
+                {
+                   
+                    var p = prize_table[i];
+                    prize += prize_table[i];
+                    
+                    if (i == gtengine::FinishResult::RANK_1)
+                        gold = true;
+
+                    if (i == gtengine::FinishResult::RANK_2)
+                    silver = true;
+
+                    if (i == gtengine::FinishResult::RANK_3)
+                    bronze = true;
+                }
+            }
+            else if (result < prize_table.size)
+            {
+                var p = prize_table[result];
+                prize = prize_table[result];
+            }
+
+            if (prize > 0)
+            {
+                var bonus_ratio = GAME_STATUS.user_profile.context.getBonusRatio();
+                if (bonus_ratio != nil)
+                {
+                    prize = (prize * bonus_ratio).toInt();
+                    bonus_ratio = (bonus_ratio * 100).toInt();
+                }
+
+                enableInput(context);
+                syncLoadingForStartingQuickMenu();
+
+                var finish_order = gp.event.eval_condition.type == gtengine::EvalType::ORDER ? result : nil;
+                DialogUtil::openPrizeDialog(context, prize, true, bonus_ratio, [gold, silver, bronze], finish_order);
+                
+                disableInput(context);
+            }
+
+            snapBestScore();
+        }
+
+        return prize > 0;
+    }
+
+    method addStartIcon(icons)
+    {
+        icons.push(RaceMenuUtil::Icon(sAfterRace ? "RETRY" : "START", "icon_start.dds", onStartRace));
+    }
+
+    method addDrivingOptionIcon(icons)
+    {
+        if (!PluginModule::isMoon)
+            icons.push(RaceMenuUtil::Icon("DRIVING_OPTION", "icon_driving_option.dds", onDrivingOption));
+    }
+
+    method addOnlineRankingIcon(icons)
+    {
+        var event = gSequenceCondition.gp.event;
+
+        if (!event.ranking.is_local)
+            icons.push(RaceMenuUtil::Icon("ONLINE_RANKING", "icon_online_ranking.dds", onOnlineRanking));
+    }
+
+    method addExitIcon(icons)
+    {
+        icons.push(RaceMenuUtil::Icon("EXIT", "icon_exit.dds", onExit));
+    }
+
+    method addStartReplayIcon(icons)
+    {
+        var has_replay = PluginModule::canStartReplay();
+
+        if (has_replay)
+            icons.push(RaceMenuUtil::Icon("REPLAY", "icon_replay.dds", onStartReplay));
+    }
+
+    method addSaveReplayIcon(icons)
+    {
+        if (GetVersionBranch() == "demo")
+            return;
+
+        var has_replaysave = PluginModule::canSaveReplay();
+
+        if (has_replaysave)
+            icons.push(RaceMenuUtil::Icon("REPLAYSAVE", "icon_replay_save.dds", onSaveReplay));
+    }
+
+    method createRaceMenuUtil(context, icons)
+    {
+        RaceMenuUtil::create(context, QuickRoot, Template::QuickMenu, icons, "QuickMenu", nil, nil, true);
+        RaceMenuUtil::setFocus(context);
+    }
+
+    method addGhostLoadIcon(icons)
+    {
+        if (GetVersionBranch() == "demo")
+            return;
+
+        if (gSequenceCondition.gp.event.race_parameter.ghost_type == gtengine::GhostType::ONELAP ||
+            gSequenceCondition.gp.event.race_parameter.ghost_type == gtengine::GhostType::FULL)
+            icons.push(RaceMenuUtil::Icon("GHOSTLOAD", "icon_ghost_load.dds", onLoadGhostReplay));
+    }
+
+    method addGhostSaveIcon(icons)
+    {
+        if (GetVersionBranch() == "demo")
+            return;
+
+        var has_ghostsave = PluginModule.defined("canSaveGhost") && PluginModule::canSaveGhost() &&
+            ReplayFileUtil::canSave(ReplayFileUtil::MODE_ONELAP);
+        
+        if (has_ghostsave)
+            icons.push(RaceMenuUtil::Icon("GHOSTSAVE", "icon_ghost_save.dds", onSaveGhostReplay));
+    }
+
+    method initialize_icons_for_before(context)
+    {
+        var icons = [];
+        addStartIcon(icons);
+        addGhostLoadIcon(icons);
+        addDrivingOptionIcon(icons);
+        addOnlineRankingIcon(icons);
+        addExitIcon(icons);
+        createRaceMenuUtil(context, icons);
+    }
+
+    method initialize_icons_for_after(context)
+    {
+        var icons = [];
+        var gp = gSequenceCondition.gp;
+
+        addStartIcon(icons);
+        addStartReplayIcon(icons);
+        addSaveReplayIcon(icons);
+        addGhostLoadIcon(icons);
+        addGhostSaveIcon(icons);
+        addDrivingOptionIcon(icons);
+        addOnlineRankingIcon(icons);
+        addExitIcon(icons);
+        createRaceMenuUtil(context, icons);
+    }
+
+    async method snapBestScore()
+    {
+        var event_id = gSequenceCondition.gp.event.event_id;
+        var [eval_type, best_result, result] = await () => GAME_STATUS.user_profile.record.event_record.getBestRecord(event_id);
+        sBeforeResult = result;
+    }
+
+    method setup(context)
+    {
+        ORG.setSequentialLoadMode(false);
+
+        if (!sAfterRace)
+        {
+            self.initialize_info(context);
+            self.initialize_icons_for_before(context);
+            snapBestScore();
+        }
+        else
+        {
+            self.initialize_info(context);
+            self.initialize_icons_for_after(context);
+        }
+    }
+
+    method on_initialize(context)
+    {
+        gRaceBGM.onQuickRootInitialize(gSequenceCondition.session_number == 0);
+        var delay = sAfterRace ? 0.0 : 2.0;
+
+        if (sAfterRace)
+        {
+            var show_prize = on_initialize_ranking_and_prize(context);
+            if (show_prize)
+                delay = 0.01;
+        }
+
+        context.pushEvent(menu::MFunctionEvent(Info2.startAnimation, context, delay));
+        LeaveDetectUtil::begin(context, 75, self, onLeaveDetect, onActivateDetect);
+    }
+
+    method check_vettel_message(context, key, check_event_id)
+    {
+        var event_id = gSequenceCondition.gp.event.event_id;
+        if (event_id == check_event_id && !KeyValueUtil::getFlag_NotNil("career", key))
+        {
+            KeyValueUtil::set("career", key, true);
+            TutorialUtil::message(context, key, [
+                "open_wait_sec" : 1.0,
+                "speaker" : "SPEAKER_VETTEL",
+            ]);
+        }
+    }
+
+    method on_quick_advice(context)
+    {
+        check_vettel_message(context, "x2014_x1_monza", 1000295);
+        check_vettel_message(context, "x2014_x1_spa", 1000296);
+        check_vettel_message(context, "x2014_x1_suzuka", 1000297);
+    }
+
+    method onInitialize(context)
+    {
+        disableInput(context);
+        RaceMenuUtil::setEnableButton(false);
+
+        ORG.setEffectFader(0.0);
+        setup(context);
+
+        SoundUtil::SetupSound(SoundUtil::SCENE_QUICK);
+        startQuickMenuDemo(context);
+        context.pushEvent(menu::MScriptEvent(context, self, "on_initialize"));
+        context.pushEvent(menu::MScriptEvent(context, self, "on_quick_advice"));
+
+        if (main::GAME_STATUS.config.reset_setting_at_quick)
+            resetPlayerSettings();
+
+        syncLoadingForStartingQuickMenu();
+    }
+
+    method onFinalize(context)
+    {
+        Ranking2.clearCallback();
+
+        LeaveDetectUtil::end(context);
+        Info2::Body::CourseInformation.finalize(context);
+        Info2.finalize(context);
+
+        RaceMenuUtil::remove(context);
+        RaceMenuUtil::setEnableButton(true);
+
+        if (ORG.inSession())
+            endSessionSync();
+
+        ORG.pauseAvailable = true;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        if (cancelWaitingForLoaing(context))
+        {
+            RaceMenuUtil::setFocus(context, 0, false);
+            return STATE_YIELD;
+        }
+
+        RaceMenuUtil::setFocusLast(context);
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (LeaveDetectUtil::activated(context, event))
+            return STATE_YIELD;
+
+        if (event.keysym == CELL_PAD_CTRL_CIRCLE)
+            return STATE_EXIT;
+
+        if (!RaceMenuUtil::getEnableButton())
+            return STATE_YIELD;
+
+        var scrollclip = Info2::Body::Description_and_BG::ScrolledWindow::clip;
+        var line_height = scrollclip.space.Details.line_height;
+
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_START:
+                if (RaceMenuUtil::activated())
+                {
+                    RaceMenuUtil::setFocus(context, 0, true);
+                    onStartRace(context);
+                }
+
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_R1:
+                Info2.fastforward(context);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_L3_UP:
+                if (scrollclip.manualTargetIncY(line_height))
+                    return STATE_RETURN;
+                break;
+
+            case CELL_PAD_CTRL_L3_DOWN:
+                if (scrollclip.manualTargetIncY(-line_height))
+                    return STATE_RETURN;
+                break;
+
+        }
+
+        return STATE_EXIT;
+    }
+
+    method onLeaveDetect(context)
+    {
+        RaceMenuUtil::hideAction();
+        Info2.hide();
+        self.CourseLogo.show();
+    }
+
+    method onActivateDetect(context)
+    {
+        self.CourseLogo.hide();
+        RaceMenuUtil::appearAction();
+        Info2.show();
+    }
+
+    method hideAction(context)
+    {
+        RaceMenuUtil::hideAction();
+    }
+
+    method appearAction(context)
+    {
+        RaceMenuUtil::appearAction();
+    }
+
+    module Info2
+    {
+        module Header
+        {
+            method initialize(context, gp)
+            {
+                var header_text = manager.translate("QuickMenu", "TARGET_TIME");
+                var license_condition = gSequenceCondition.event.license_condition;
+
+                if (!license_condition.isDefault())
+                {
+                    switch (license_condition.display_mode)
+                    {
+                        case gtengine::LicenseDisplayModeType::DRIFT_SCORE:
+                            header_text = manager.translate("QuickMenu", "TARGET_SCORE");
+                            break;
+
+                        case gtengine::LicenseDisplayModeType::FUEL_TIME:
+                        case gtengine::LicenseDisplayModeType::PYLON_TIME:
+                            header_text = manager.translate("QuickMenu", "TARGET_TIME");
+                            break;
+                            break;
+
+                        default:
+                            header_text = manager.translate("QuickMenu", "TARGET");
+                            break;
+                    }
+                }
+
+                self.InformationTitle.text = header_text;
+                self.EventTitle.text = gp.event.information.title.getText();
+            }
+        }
+
+        module Footer
+        {
+            method initialize(context, gp)
+            {
+                var prize_table = gp.event.reward.prize_table;
+                var size = prize_table.size;
+
+                for (var i = 0; i < size; ++i)
+                {
+                    if (prize_table[i] == 0)
+                        continue;
+
+                    var item = hidden::TipsItem.doCopy();
+                    item.ImageFace.visible = i < 3;
+                    if (i < 3)
+                    {
+                        var label = ["gold", "silver", "bronze"][i];
+                        item.ImageFace.image_path = "/image/gt5/icon/trophy_%{label}.dds";
+                        item.Label.text = "";
+                    }
+                    else
+                    {
+                        item.Label.text = manager.translate("Number", "ordinal_th").build(i + 1);
+                    }
+
+                    item.Value.text = pdiext::GetMoneyString(prize_table[i]);
+                    self.HBox::Tips::HBox.appendChild(context, item);
+                }
+
+                var mode_name = "";
+                if (gSequenceCondition.game_mode == gtengine::GameMode::MISSION)
+                {
+                    mode_name = "FOOTER_MISSION_EVENT"
+                }
+                else
+                {
+                    mode_name = "FOOTER_COFFEE_BREAK";   
+                }
+
+                self.HBox::ModeName.text = manager.translate("QuickMenu", mode_name);
+            }
+        }
+
+        module Body
+        {
+            module Description_and_BG
+            {
+                method initialize(context, gp, course_info)
+                {
+                    var clip = self.ScrolledWindow::clip;
+                    clip.space.y = 0.0;
+                    clip.manual_target_y = 0.0;
+
+                    self.Title_main.text = gp.event.information.one_line_title.getText();
+                    clip.space::Details.text = gp.event.information.description.getText();
+                }
+
+                method beginAnimation(context)
+                {
+                    var list = [self.Opacity];
+                    foreach (var a in list)
+                    {
+                        a.restart();
+                    }
+                }
+            }
+
+            module Target_Info
+            {
+                attribute next_animation_widget;
+                attribute actor_list;
+                attribute first_animation;
+
+                async method initialize(context, gp, course_info)
+                {
+                    var eval_condition = gp.event.eval_condition;
+
+                    self.Target_Info::Place::CourseName.text = manager.translate("CourseName", course_info.Name);
+
+                    var flag = course_info.CountryFlag.downcase();
+                    self.Target_Info::Place::Flag.image_path = "/piece/flag_ranking/%{flag}.img";
+
+                    var target_text = manager.translate("RaceEvent", "EVAL_CONDITION_TIME");
+                    var license_condition = gSequenceCondition.event.license_condition;
+                    var use_time = true;
+
+                    var gold, silver, bronze;
+                    if (!license_condition.isDefault())
+                    {
+                        [gold, silver, bronze] = RaceRoot::getTargetScoreByLicenseCondition();
+                        switch (license_condition.display_mode)
+                        {
+                            case gtengine::LicenseDisplayModeType::PYLON_NUM:
+                                target_text = manager.translate("RaceEvent", "EVAL_CONDITION_NUM");
+                                use_time = false;
+                                break;
+
+                            case gtengine::LicenseDisplayModeType::DRIFT_SCORE:
+                                target_text = manager.translate("RaceEvent", "EVAL_CONDITION_SCORE");
+                                use_time = false;
+                                break;         
+                                
+                            case gtengine::LicenseDisplayModeType::FUEL_DIST:
+                                target_text = manager.translate("RaceEvent", "EVAL_CONDITION_DISTANCE");
+                                use_time = false;
+                                break;
+
+                            case gtengine::LicenseDisplayModeType::FUEL_TIME:
+                            case gtengine::LicenseDisplayModeType::PYLON_TIME:
+                                target_text = manager.translate("RaceEvent", "EVAL_CONDITION_TIME");
+                                break;  
+
+                            default:
+                                target_text = manager.translate("RaceEvent", "EVAL_CONDITION_TARGET");
+                                break;
+                        }
+                    }
+                    else
+                    {
+                        [gold, silver, bronze] = RaceRoot::getTargetTime(eval_condition);
+                    }
+
+                    self.Target_Info::Target::HBox_Gold::Target_Title.text = target_text;
+                    self.Target_Info::Target::HBox_Gold::HBox::Time.text = gold[0];
+                    self.Target_Info::Target::HBox_Gold::HBox::Unit.text = gold[1];
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Silver::Time.text = silver[0];
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Silver::Unit.text = silver[1];
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Bronze::Time.text = bronze[0];
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Bronze::Unit.text = bronze[1];
+
+                    self.Target_Info::Target::HBox_Gold::HBox::Unit.visible = true;
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Silver::Unit.visible = true;
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Bronze::Unit.visible = true;
+
+                    var event_id = gSequenceCondition.gp.event.event_id;
+                    var [eval_type, best_record] = await () => GAME_STATUS.user_profile.record.event_record.getBestRecord(event_id);
+
+                    if (best_record == -1 && use_time)
+                        best_record = pdiext::MAX_LAPTIME1000;
+
+                    var is_gold, is_silver, is_bronze;
+                    if (!license_condition.isDefault())
+                    {
+                        [is_gold, is_silver, is_bronze] = RaceRoot::isClearByLicenseCondition(best_record);
+                    }
+                    else
+                    {
+                        [is_gold, is_silver, is_bronze] = RaceRoot::isClear(best_record, eval_condition);
+                    }
+
+                    self.Target_Info::Target::HBox_Gold::HBox::Check.active = is_gold;
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Silver::Check.active = is_silver;
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Bronze::Check.active = is_bronze;
+
+                    var cp = getPlayerCar();
+                    if (cp != nil)
+                    {
+                        self.Target_Info::Car::Car_Name.text = gtengine::MSpecDB::getCarName(cp.getCarCode());
+                        self.Target_Info::Car::Car_Thumb.image_path = getCarThumbnailPath(cp);
+                    }
+
+                    if (use_time)
+                    {
+                        self.Target_Info::MyRecord::Time.text = pdiext::GetRaceTimeString(best_record);
+                    }
+                    else
+                    {
+                        var record = RaceRoot::getScoreText(best_record, "---");
+                        self.Target_Info::MyRecord::Time.text = record[0] + " " + record[1];
+                    }
+
+                    self.Target_Info::MyRecord::Order.text = "--";
+                    self.Target_Info::Online_Record::Time.text = pdiext::GetRaceTimeString(pdiext::MAX_LAPTIME1000);
+                    self.Target_Info::Online_Record::Name_Top.text = "--";
+
+                    if (GetVersionBranch() != "demo")
+                    {
+                        var board_id = OnlineRankingUpload::getEventBoardID(context);
+                        var user_id = NP.getOnlineId();
+                        var me = self;
+
+                        OnlineRankingUpload::setEventRankingCacheAsync(context, (context, map) => 
+                        {
+                            if (map != nil)
+                            {
+                                me.Target_Info::MyRecord::Time.text = pdiext::GetRaceTimeString(map["score"]);
+                                if (map["rank"] > 0)
+                                {
+                                    me.Target_Info::MyRecord::Order.text = OrdinalUtil::getOrdinalNumber(map["rank"], true);
+                                }
+                            }
+                        });
+
+                        Ranking2.requestRankingList(board_id, 1, 1, (args) => 
+                        {
+                            var [context, request] = args;
+                            if (request.isDone())
+                            {
+                                var list = main::Ranking2.decodeRankingList(request);
+                                if (list.size > 0)
+                                {
+                                    var l = list[0];
+                                    me.Target_Info::Online_Record::Time.text = pdiext::GetRaceTimeString(l["score"]);
+                                    me.Target_Info::Online_Record::Name_Top.text = l["user_id"];
+                                }
+                            }
+                        });
+                    }
+
+                    self.first_animation = true;
+                }
+
+                method beginAnimation(context)
+                {
+                    Info2.setPlayModule(nil);
+
+                    Body::Opacity.on_effect_end = nil;
+                    
+                    var title = manager.translate("QuickMenu", "TARGET_TIME");
+                    var license_condition = gSequenceCondition.event.license_condition;
+                    if (!license_condition.isDefault())
+                    {
+                        switch (license_condition.display_mode)
+                        {
+                            case gtengine::LicenseDisplayModeType::DRIFT_SCORE:
+                                title = manager.translate("QuickMenu", "TARGET_SCORE");
+                                break;
+
+                            case gtengine::LicenseDisplayModeType::FUEL_TIME:
+                            case gtengine::LicenseDisplayModeType::PYLON_TIME:
+                                title = manager.translate("QuickMenu", "TARGET_TIME");
+                                break;
+                                break;
+
+                            default:
+                                title = manager.translate("QuickMenu", "TARGET");
+                                break;
+                        }
+                    }
+
+                    var title_changed = Header.InformationTitle.text != title;
+                    Header.InformationTitle.text = title;
+
+                    Header.InformationTitle::Opacity.setStartDuration(0, 0);
+                    var time = Header.InformationTitle::Opacity.getInterpolationPeriod(1);
+                    Header.InformationTitle::Opacity.setInterpolationPeriod(0, time);
+                    Header.InformationTitle::Opacity.setEndDuration(1, 1.5);
+
+                    var total_time = Stretch_bg.Height.total_time;
+                    var title_time = total_time - (Header.InformationTitle::Opacity.total_time - Header.InformationTitle::Opacity.getEndDuration(0))
+                    if (self.first_animation)
+                    {
+                        title_time += Stretch_bg.Opacity.total_time;
+                        self.first_animation = false;
+                    }
+
+                    Header.InformationTitle::Opacity.setEndDuration(0, title_time);
+
+                    self.actor_list = [];
+                    Stretch_bg.Height.restart();
+
+                    var list = [
+                        self.Opacity,
+                        self.Target_Info::Place::X,
+                        self.Target_Info::Target::Height,
+                        self.Target_Info::Target::HBox_Gold::Opacity,
+                        self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Silver::Opacity,
+                        self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Bronze::Opacity,
+                        self.Target_Info::Car::ParallelActor,
+                        self.Target_Info::MyRecord::ParallelActor,
+                        self.Target_Info::Online_Record::ParallelActor,
+                    ];
+
+                    var o = Header.InformationTitle::Opacity;
+                    self.actor_list.push(o);
+
+                    if (title_changed)
+                        o.restart();
+                    else
+                        o.start();
+
+                    foreach (var a in list)
+                    {
+                        self.actor_list.push(a);
+                        a.restart();
+                    }
+
+                    self.Opacity.on_effect_end = self.endAnimation;
+                    Info2.setPlayModule(self);
+
+                    Body::Opacity.reverse = true;
+                    Body::Opacity.start();
+                }
+
+                method endAnimation(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+                    if (self.next_animation_widget != nil)
+                    {
+                        self.next_animation_widget.beginAnimation(context);
+                    }
+                }
+
+                method rewind(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+
+                    Body::Opacity.reverse = false;
+                    Body::Opacity.start();
+
+                    Body::Opacity.on_effect_end = self.beginAnimation;
+                }
+
+                method fastforward(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+
+                    foreach (var a in self.actor_list)
+                        a.warp();
+
+                    Body::Opacity.reverse = false;
+                    Body::Opacity.start();
+                    
+                    Body::Opacity.on_effect_end = self.endAnimation;
+                }
+            }
+
+            module Map_Area
+            {
+                attribute next_animation_widget;
+                attribute actor_list;
+                attribute map_data;
+
+                method initialize(context, gp, course_info)
+                {
+                    var crsmap = course_info.ModelName;
+
+                    if (crsmap == "c224")
+                    {
+                        initializeCourseMapC224(context, gp, course_info);
+                    }
+                    else
+                    {
+                        initializeCourseMap(context, gp, course_info);
+                    }
+                }
+
+                method initializeCourseMap(context, gp, course_info)
+                {
+                    var crsmap = course_info.ModelName;
+                    var mission = gSequenceCondition.game_mode == gtengine::GameMode::MISSION;
+
+                    self.MapClip_mission.visible = mission;
+                    self.MapClip.visible = !mission;
+                    self.MapClip::CourseMapFace.visible = true;
+                    self.MapClip::CourseMapFaceC224.visible = false;
+
+                    var map_clip = mission ? self.MapClip_mission : self.MapClip;
+                    CourseMapFaceUtil::initialize(context, map_clip.CourseMapFace, course_info, gp.event);
+                }
+
+                method initializeCourseMapC224(context, gp, course_info)
+                {
+                    self.MapClip_mission.visible = false;
+                    self.MapClip.visible = true;
+                    self.MapClip::CourseMapFace.visible = false;
+                    self.MapClip::CourseMapFaceC224.visible = true;
+
+                    var map_clip = self.MapClip;
+                    CourseMapFaceUtil::initialize(context, map_clip.CourseMapFaceC224, course_info, gp.event);
+                }
+
+                method finalize(context)
+                {
+                    self.map_data = nil;
+                }
+
+                method beginAnimation(context)
+                {
+                    Info2.setPlayModule(nil);
+
+                    Body::Opacity.on_effect_end = nil;
+
+                    var title = manager.translate("QuickMenu", "DRIVING_SECTION");
+                    var title_changed = Header.InformationTitle.text != title;
+                    Header.InformationTitle.text = title;
+
+                    Header.InformationTitle::Opacity.setStartDuration(0, 0);
+                    Header.InformationTitle::Opacity.setEndDuration(1, 0);
+
+                    var total_time = self.Opacity.total_time;
+                    var title_time = total_time - (Header.InformationTitle::Opacity.total_time - Header.InformationTitle::Opacity.getEndDuration(0))
+
+                    Header.InformationTitle::Opacity.setEndDuration(0, title_time);
+
+                    self.actor_list = [];
+                    
+                    var list = [
+                        self.Opacity,
+                    ];
+                    
+                    var o = Header.InformationTitle::Opacity;
+                    self.actor_list.push(o);
+
+                    if (title_changed)
+                        o.restart();
+                    else
+                        o.start();
+
+                    foreach (var a in list)
+                    {
+                        self.actor_list.push(a);
+                        a.restart();
+                    }
+
+                    self.Opacity.on_effect_end = self.endAnimation;
+                    Info2.setPlayModule(self);
+
+                    Body::Opacity.reverse = true;
+                    Body::Opacity.start();
+                }
+
+                method endAnimation(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+
+                    if (self.next_animation_widget != nil)
+                        self.next_animation_widget.beginAnimation(context);
+                }
+
+                method fastforward(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+                    foreach (var a in self.actor_list)
+                        a.warp();
+
+                    Stretch_bg.Height.warp();
+
+                    Body::Opacity.reverse = false;
+                    Body::Opacity.start();
+
+                    Body::Opacity.on_effect_end = self.endAnimation;
+                }
+
+                method rewind(context)
+                {
+                    
+                }
+            }
+        }
+    }
+}

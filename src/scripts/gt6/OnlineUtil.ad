@@ -1,0 +1,2015 @@
+
+
+//---------------------------------------------------------------------------------------
+// OnlineUtil.ad
+//
+// Utility module for managing, creating and joining online lobbies
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module OnlineUtil
+{
+    static sRoomCommentLengthMin = 5;
+    static sLastFilteredComment;
+    static sLastPassedComment;
+    static sDirtCarTagList;
+
+    module Define
+    {
+        static sRoomGameModeList = [
+            [ gtengine::RoomGameMode::RACE, "RoomGameMode_Race"],
+            [ gtengine::RoomGameMode::RACE_WITH_QUALIFIER, "RoomGameMode_RaceWithQualifier"],
+            [ gtengine::RoomGameMode::TIME_TRIAL, "RoomGameMode_TimeTrial"],
+            [ gtengine::RoomGameMode::DRIFT_TRIAL, "RoomGameMode_DriftTrial"],
+            [ gtengine::RoomGameMode::FREERUN, "RoomGameMode_FreeRun"],
+            [ gtengine::RoomGameMode::ENDURANCE, "RoomGameMode_Endurance"],
+            [ gtengine::RoomGameMode::ENDURANCE_WITH_QUALIFIER, "RoomGameMode_EnduranceWithQualifier"],
+        ];
+
+        static sRoomPolicyList = [
+            [ gtengine::RoomPolicy::ENJOY_RACE, "RoomPolicy_EnjoyRace"],
+            [ gtengine::RoomPolicy::SERIOUS_RACE, "RoomPolicy_SeriousRace"],
+            [ gtengine::RoomPolicy::LEISURELY_DRIVE, "RoomPolicy_LeisurelyDrive"],
+            [ gtengine::RoomPolicy::RECRUIT, "RoomPolicy_Recruit"],
+            [ gtengine::RoomPolicy::SHOWING_OFF, "RoomPolicy_ShowingOff"],
+            [ gtengine::RoomPolicy::SHARING_INFORMATION, "RoomPolicy_SharingInformation"],
+            [ gtengine::RoomPolicy::CAFE, "RoomPolicy_Cafe"],
+        ];
+
+        static sVoiceQualityKeyList = [
+            "VOICE_NONE",
+            "VOICE_QUALITY_EXTREMELY_LOW",
+            "VOICE_QUALITY_VERY_LOW",
+            "VOICE_QUALITY_LOW",
+            "VOICE_QUALITY_NORMAL",
+            "VOICE_QUALITY_HIGH",
+            "VOICE_QUALITY_VERY_HIGH",
+        ];
+
+        static sQualityControlTemplateTypeList8 = [
+            gtengine::QualityControlTemplateType::VeryLowBandwidth8,
+            gtengine::QualityControlTemplateType::LowBandwidth8,
+            gtengine::QualityControlTemplateType::ModerateBandwidth8,
+            gtengine::QualityControlTemplateType::HighBandwidth8,
+            gtengine::QualityControlTemplateType::VeryHighBandwidth8,
+        ];
+
+        static sQualityControlTemplateTypeList12 = [
+            gtengine::QualityControlTemplateType::VeryLowBandwidth12,
+            gtengine::QualityControlTemplateType::LowBandwidth12,
+            gtengine::QualityControlTemplateType::ModerateBandwidth12,
+            gtengine::QualityControlTemplateType::HighBandwidth12,
+            gtengine::QualityControlTemplateType::VeryHighBandwidth12,
+        ];
+
+        static sQualityControlTemplateTypeList16 = [
+            gtengine::QualityControlTemplateType::VeryLowBandwidth16,
+            gtengine::QualityControlTemplateType::LowBandwidth16,
+            gtengine::QualityControlTemplateType::ModerateBandwidth16,
+            gtengine::QualityControlTemplateType::HighBandwidth16,
+            gtengine::QualityControlTemplateType::VeryHighBandwidth16,
+        ];
+
+        static sRaceQualityKeyList = [
+            "RACE_QUALITY_VERY_LOW",
+            "RACE_QUALITY_LOW",
+            "RACE_QUALITY_MODERATE",
+            "RACE_QUALITY_HIGH",
+            "RACE_QUALITY_VERY_HIGH",
+        ];
+    }
+
+    module Log
+    {
+        function createRoomConfigText(rc)
+        {
+            var weatherPercent = ((rc.weather_value0 * -2f + 2f) * 2500).toInt() / 240 * 250 / 1000 * 10;
+            var courseTime = (rc.datetime.hour * 60) + rc.datetime.minute;
+            var oneMakeModel = (rc.car_select_method == gtengine::CarSelectMethod::ONE_MAKE && rc.cars.size > 0) ? rc.cars[0].code : -1;
+            var country = rc.countries.size > 0 ? rc.countries[0] : -1;
+            var tuners = "";
+
+            for (var i = 0; i < rc.tuners.size; ++i)
+                tuners += rc.tuners[i] + ",";
+            
+            var carTag = rc.car_tag_id != gtengine::MSpecDB::NO_CODE ? rc.car_tag_id : -1;
+            var str = "1@GM=%{rc.room_game_mode}@RS=%{rc.scope}@RP=%{rc.room_policy}"
+                       "@QT=%{rc.quality_control_template_type}@TO=%{rc.topology}@VC=%{rc.voice_chat.toInt()}"
+                       "@MS=%{rc.room_max}@CC=%{rc.course_code}@CI=%{rc.generated_course_id}"
+                       "@RL=%{rc.race_limit_laps}@RW=%{weatherPercent}"
+                       "@WA=%{rc.weather_accel10}@CT=%{courseTime}@WT=%{rc.initial_retention10}"
+                       "@TP=%{rc.time_progress_speed.toInt()}@AS=%{rc.attack_separate_type}@QP=%{rc.qualifier_period}"
+                       "@AL=%{rc.alarm_time_value}@PC=%{rc.pit_constraint}@ST=%{rc.start_type}"
+                       "@NT=%{rc.need_tire_change.toInt()}@GS=%{rc.grid_sort_type}@TF=%{rc.time_to_finish / 1000}"
+                       "@BO=%{rc.boost_level}@VD=%{rc.enable_damage.toInt()}"
+                       "@PE=%{rc.penalty_level}@BD=%{rc.behavior_damage_type}@CO=%{rc.consume_tire}"
+                       "@SS=%{rc.behavior_slip_stream_type}@LM=%{rc.low_mu_type}"
+                       "@CS=%{rc.car_select_method}@OM=%{oneMakeModel}@CF=%{rc.car_filter_type}"
+                       "@MC=%{country}@MM=%{tuners}@TA=%{carTag}@PP=%{rc.limit_pp}@PS=%{rc.limit_power}@NW=%{rc.need_weight}"
+                       "@DT=%{rc.need_drivetrain}@LT=%{rc.limit_tire}@NI=%{rc.nitro}@TU=%{rc.tuning}"
+                       "@SR=%{rc.simulation}@AC=%{rc.active_steering}@SM=%{rc.asm}@DL=%{rc.driving_line}"
+                       "@TC=%{rc.tcs}@AB=%{rc.abs}";
+            return str;
+        }   
+    }
+
+    function clearCache()
+    {
+        sDirtCarTagList = nil;
+        sLastFilteredComment = nil;
+        sLastPassedComment = nil;
+    }
+
+    function createDirtCarTagList()
+    {
+        if (sDirtCarTagList != nil)
+            return;
+        
+        var sql = "SELECT ID FROM CAR_TAG WHERE REGULATION = 1 AND DIRT = 1 ORDER BY SortID";
+        sDirtCarTagList = SPECDB.executeQuery1C(sql);
+    }
+
+    function isDirtCarTag(id)
+    {
+        createDirtCarTagList();
+        return sDirtCarTagList.find_all(a => a == id).size > 0;
+    }
+
+    function getRoomPolicyString(policy)
+    {
+        var key;
+        foreach (var [k, v] in Define::sRoomPolicyList)
+        {
+            if (k == policy)
+            {
+                key = v;
+                break;
+            }
+                
+        }
+
+        return key != nil ? manager.translate("OnlineMessage", key) : "";
+    }
+
+    function getVoiceQualityString(type)
+    {
+        return manager.translate("OnlineMessage", Define::sVoiceQualityKeyList[type]);
+    }
+
+    function getQualityControlTemplateType(entryMax, index)
+    {
+        if (entryMax <= 8)
+            return Define::sQualityControlTemplateTypeList8[index];
+        else if (entryMax <= 12)
+            return Define::sQualityControlTemplateTypeList12[index];
+        else
+            return Define::sQualityControlTemplateTypeList16[index];
+    }
+
+    function getRaceQualityString(type)
+    {
+        return manager.translate("OnlineMessage", Define::sRaceQualityKeyList[getRaceQualityType(type)]);
+    }
+
+    function getRaceQualityType(type)
+    {
+        switch (type)
+        {
+            case gtengine::QualityControlTemplateType::VeryLowBandwidth8:
+            case gtengine::QualityControlTemplateType::VeryLowBandwidth12:
+            case gtengine::QualityControlTemplateType::VeryLowBandwidth16:
+                return 0;
+                break;
+
+            case gtengine::QualityControlTemplateType::LowBandwidth8:
+            case gtengine::QualityControlTemplateType::LowBandwidth12:
+            case gtengine::QualityControlTemplateType::LowBandwidth16:
+                return 1;
+                break;
+
+            case gtengine::QualityControlTemplateType::ModerateBandwidth8:
+            case gtengine::QualityControlTemplateType::ModerateBandwidth12:
+            case gtengine::QualityControlTemplateType::ModerateBandwidth16:
+                return 2;
+                break;
+            case gtengine::QualityControlTemplateType::HighBandwidth8:
+            case gtengine::QualityControlTemplateType::HighBandwidth12:
+            case gtengine::QualityControlTemplateType::HighBandwidth16:
+                return 3;
+                break;
+
+            case gtengine::QualityControlTemplateType::VeryHighBandwidth8:
+            case gtengine::QualityControlTemplateType::VeryHighBandwidth12:
+            case gtengine::QualityControlTemplateType::VeryHighBandwidth16:
+            case gtengine::QualityControlTemplateType::LanModerate:
+            case gtengine::QualityControlTemplateType::LanMax:
+                return 4;      
+                break;
+        }
+
+        return 2;
+    }
+
+    function getBandwidthLevel(bandwidth)
+    {
+        if (bandwidth < 0)
+            return 0;
+        else 
+        {
+            var kbps = bandwidth / 1024;
+            if (kbps <= 32)
+                return 1;
+            else if (kbps <= 64)
+                return 2;
+            else if (kbps <= 512)
+                return 3;
+            else if (kbps <= 2048)
+                return 4;
+            else
+                return 5;
+        }
+    }
+
+    function getBandwidthString(level)
+    {
+        var list = [
+            "NETWORK_QUALITY_UNKNOWN",
+            "NETWORK_QUALITY_VERY_LOW",
+            "NETWORK_QUALITY_LOW",
+            "NETWORK_QUALITY_MODERATE",
+            "NETWORK_QUALITY_HIGH",
+            "NETWORK_QUALITY_VERY_HIGH",
+        ];
+
+        return manager.translate("OnlineMessage", list[level]);
+    }
+
+    function getNatType()
+    {
+        var natInfo = pdistd::MNetworkInterface::getNatInfo();
+        return natInfo != nil ? natInfo["nat"] : -1;
+    }
+
+    function getNatTypeString()
+    {
+        var natInfo = pdistd::MNetworkInterface::getNatInfo();
+        var key = "NAT_TYPE_UNKNOWN";
+
+        if (natInfo != nil)
+        {
+            switch (natInfo["nat"])
+            {
+                case 1:
+                case 2:
+                case 3:
+                    key = "NAT_TYPE_%d".format(natInfo["nat"]);
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        return manager.translate("OnlineMessage", key);
+    }
+
+    function getNetworkEnvironmentString(bandwidth)
+    {
+        var up;
+        if (bandwidth == nil)
+        {
+            var ret = OnlineUtility.getProbedBandwidth();
+            if (ret == nil)
+                up = -1;
+            else
+                up = ret[0];
+        }
+        else
+        {
+            up = bandwidth[0];
+        }
+
+        var natType = getNatType();
+
+        var badNat = natType == -1|| natType == 3;
+        var bandwidthLevel = getBandwidthLevel(up);
+        var badBand = bandwidthLevel <= 1;
+        
+        return manager.translate("OnlineMessage", "YOUR_NETWORK_ENVIRONMENT_IS").build(
+            (badNat ? COLOR_RED : "") + getNatTypeString() + (badNat ? COLOR_DEFAULT : ""),
+            (badBand ? COLOR_RED : "") + getBandwidthString(bandwidthLevel) + (badBand ? COLOR_DEFAULT : "")
+        );
+    }
+
+    function showVulgarCommentDialog(context, showError, roomCreateMode)
+    {
+        if (showError)
+        {
+            var msg = manager.translate("OnlineMessage", roomCreateMode ? "ROOM_COMMENT_INCLUDES_VULGAR_WORDS" : "ROOM_COMMENT_INCLUDES_VULGAR_WORDS2");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+        }
+    }
+
+    async function censorRoomComment(context, comment, showError = true, roomCreateMode = false)
+    {
+        if (OnlineUtility.isLanMode())
+            return true;
+
+        var tmpComment = comment.getDeepCopy();
+        if (comment.length < sRoomCommentLengthMin || tmpComment.replaceAll(" ", "").replaceAll("　", "").size == 0)
+        {
+            if (showError)
+            {
+                var msg = manager.translate("OnlineMessage", "ROOM_COMMENT_NEEDS_MORE_CHARACTERS").build(
+                    sRoomCommentLengthMin.toString());
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+            }
+
+            return false;
+        }
+
+        if (sLastFilteredComment != nil && comment == sLastFilteredComment)
+        {
+            showVulgarCommentDialog(context, showError, roomCreateMode);
+            return false;
+        }
+
+        if (sLastPassedComment != nil && comment == sLastPassedComment)
+            return true;
+
+        CursorUtil::setCursor(context, "wait");
+        finally function() { CursorUtil::setCursor(context, "cursor_chrome") };
+
+        var res = await () => NP.passVulgarityFilter(comment, false, true);
+        if (res["error"] != 0)
+        {
+            if (showError)
+            {
+                var msg = manager.translate("OnlineMessage", "ERROR_203") + "[%{__LINE__}]";
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+            }
+
+            return false;
+        }
+
+        if (res["filtered"])
+        {
+            showVulgarCommentDialog(context, showError, roomCreateMode);
+            sLastFilteredComment = comment.getDeepCopy();
+
+            return false;
+        }
+        
+        sLastPassedComment = comment.getDeepCopy();
+        return true;
+    }
+
+    function getCourseListAdditionalCondition()
+    {
+        var sql = " ";
+        var option = GAME_STATUS.user_profile.option;
+
+        if (option.kiosk_limit_course && option.hasLimitedCourse())
+        {
+            var idList = option.getLimitedCourses();
+            sql = " AND ID in (%s) ".format(idList.join(","));
+        }
+
+        return sql;
+    }
+
+    function resetCarSpecRegulations(rc)
+    {
+        var invalid = gtengine::MGameParameter::INVALID_VALUE_INT;
+        rc.need_drivetrain = invalid;
+        rc.need_weight = invalid;
+        rc.limit_weight = invalid;
+        rc.limit_power = invalid;
+        rc.limit_pp = invalid;
+        rc.limit_tire = invalid;
+        rc.tuning = invalid;
+        rc.nitro = invalid;
+        rc.restrictor_limit = invalid;
+    }
+
+    function resetCarCodeRegulations(rc)
+    {
+        var invalid = gtengine::MGameParameter::INVALID_VALUE_INT;
+        rc.cars.resize(0);
+        rc.car_filter_type = gtengine::CarFilterType::NONE;
+        rc.countries.resize(0);
+        rc.tuners.resize(0);
+        rc.car_tag_id = invalid;
+        rc.is_only_rental_car = false;
+    }
+
+    function resetDrivingAssistRegulation(rc)
+    {
+        var invalid = gtengine::MGameParameter::INVALID_VALUE_INT;
+        rc.simulation = invalid;
+        rc.driving_line = invalid;
+        rc.asm = invalid;
+        rc.tcs = invalid;
+        rc.abs = invalid;
+        rc.active_steering = invalid;
+        rc.suggested_gear = invalid;
+        rc.in_car_view = invalid;
+    }
+
+    function isKart(carCode)
+    {
+        return gtengine::MSpecDB::checkFlag(carCode, gtengine::GenericFlag::IS_RACING_KART);
+    }
+
+    function isKartOnlyRegulation(rc, kartTagId)
+    {
+        if (rc.car_filter_type == gtengine::CarFilterType::TAG && rc.car_tag_id == kartTagId)
+            return true;
+
+        if (rc.is_only_rental_car && 
+            rc.car_select_method == gtengine::CarSelectMethod::ONE_MAKE && 
+            rc.cars.size > 0 &&
+            isKart(rc.cars[0].code))
+            return true;
+
+        return false;
+    }
+
+    function disableKartRegulation(rc, kartTagId)
+    {
+        if (isKartOnlyRegulation(rc, kartTagId))
+        {
+            var INVALID = gtengine::MGameParameter::INVALID_VALUE_INT;
+            rc.kart_permitted = INVALID;
+            rc.is_only_rental_car = false;
+            rc.car_tag_id = INVALID;
+            rc.car_filter_type = gtengine::CarFilterType::NONE;
+            rc.car_select_method = gtengine::CarSelectMethod::GARAGE;
+            rc.cars.resize(0);
+        }
+    }
+
+    function resetKartDrivingAssistRegulation(rc)
+    {
+        var drivingLine = rc.driving_line;
+        var tcs = rc.tcs;
+        var simulation = rc.simulation;
+
+        resetDrivingAssistRegulation(rc);
+
+        rc.driving_line = drivingLine;
+        rc.tcs = tcs;
+        rc.simulation = simulation;
+    }
+
+    function setToKartOneMakeRegulation(rc, kartTagId)
+    {
+        if (!isKartOnlyRegulation(rc, kartTagId))
+        {
+            resetCarCodeRegulations(rc);
+            rc.car_tag_id = kartTagId;
+            rc.car_filter_type = gtengine::CarFilterType::TAG;
+            rc.car_select_method = gtengine::CarSelectMethod::GARAGE;
+            rc.is_only_rental_car = false;
+        }
+    }
+
+    function setKartRestriction(rc, kartTagId)
+    {
+        if (isKartOnlyRegulation(rc, kartTagId))
+        {
+            rc.kart_permitted = 1;
+            rc.need_tire_change = false;
+            resetCarSpecRegulations(rc);
+            resetKartDrivingAssistRegulation(rc);
+        }
+        else
+            rc.kart_permitted = gtengine::MGameParameter::INVALID_VALUE_INT;
+    }
+
+    // Fixes up weird room configurations based on context
+    function resolveRoomConfigInconsistency(rc, course, kartTagId)
+    {
+        var invalid = gtengine::MGameParameter::INVALID_VALUE_INT;
+        var isDirtSnow = SpecDatabaseUtil::Course::isDirtSnow(course);
+
+        switch (rc.room_type)
+        {
+            case gtengine::RoomType::CLUB_LOBBY:
+                break;
+
+            case gtengine::RoomType::CLUB_EVENT:
+                rc.scope = gtengine::Scope::CLUB;
+                break;
+
+            default:
+                if (rc.scope == gtengine::Scope::CLUB)
+                    rc.scope = gtengine::Scope::PUBLIC;
+                break;
+        }
+
+        switch (rc.room_game_mode)
+        {
+            case gtengine::RoomGameMode::FREERUN:
+                rc.trackday_mode = gtengine::TrackDayMode::ONLY_FREERUN;
+                rc.qualifier_race_type = gtengine::RaceType::NONE;
+                rc.attack_separate_type = gtengine::AttackSeparateType::DISABLE;
+                rc.alarm_time_value = invalid;
+                rc.pit_constraint = 0;
+                rc.need_tire_change = false;
+                rc.behavior_damage_type = gtengine::BehaviorDamageType::WEAK;
+                rc.behavior_slip_stream_type = gtengine::BehaviorSlipStreamType::GAME;
+                break;
+
+            case gtengine::RoomGameMode::RACE:
+            case gtengine::RoomGameMode::ENDURANCE:
+                rc.trackday_mode = gtengine::TrackDayMode::RACE;
+                rc.qualifier_race_type = gtengine::RaceType::NONE;
+                rc.attack_separate_type = gtengine::AttackSeparateType::DISABLE;
+                break;
+
+            case gtengine::RoomGameMode::RACE_WITH_QUALIFIER:
+            case gtengine::RoomGameMode::ENDURANCE_WITH_QUALIFIER:
+                rc.trackday_mode = gtengine::TrackDayMode::RACE;
+                rc.qualifier_race_type = gtengine::RaceType::TIMEATTACK;
+                break;
+
+            case gtengine::RoomGameMode::TIME_TRIAL:
+                rc.trackday_mode = gtengine::TrackDayMode::RACE;
+                rc.boost_level = 0;
+                rc.pit_constraint = 0;
+                rc.need_tire_change = false;
+                rc.behavior_damage_type = gtengine::BehaviorDamageType::WEAK;
+                rc.behavior_slip_stream_type = gtengine::BehaviorSlipStreamType::GAME;
+                rc.qualifier_race_type = gtengine::RaceType::NONE;
+                break;
+
+            case gtengine::RoomGameMode::DRIFT_TRIAL:
+                rc.trackday_mode = gtengine::TrackDayMode::DRIFT;
+                rc.qualifier_race_type = gtengine::RaceType::NONE;
+                rc.boost_level = 0;
+                rc.penalty_level = 0;
+                rc.setConsumptionParameter(0);
+                rc.pit_constraint = 0;
+                rc.need_tire_change = false;
+                rc.behavior_damage_type = gtengine::BehaviorDamageType::WEAK;
+                rc.behavior_slip_stream_type = gtengine::BehaviorSlipStreamType::GAME;
+                if (course.DriftOk != 1)
+                {
+                    var DefaultCourseCode = gtengine::MSpecDB::getCourseCode("mini");
+                    rc.course_code = DefaultCourseCode;
+                }
+                break;
+        }
+
+        if (rc.room_game_mode != gtengine::RoomGameMode::FREERUN)
+            rc.freerun_penalty = 0;
+
+        if (rc.trackday_mode == gtengine::TrackDayMode::SHUFFLE_RACE)
+        {
+            rc.limit_tire = invalid;
+            resetCarSpecRegulations(rc);
+        }
+
+        if (rc.isEnduranceMode() && rc.race_limit_minute == 0)
+            rc.race_limit_minute = 10;
+
+        switch (rc.car_select_method)
+        {
+            case gtengine::CarSelectMethod::GARAGE:
+                rc.is_only_garage_car = true;
+                rc.is_only_rental_car = false;
+                rc.cars.resize(0);
+                break;
+
+            case gtengine::CarSelectMethod::ONE_MAKE:
+
+                var car;
+                if (rc.cars.size > 0)
+                {
+                    car = gtengine::MCarThin();
+                    car.deepCopy(rc.cars[0]);
+                }
+
+                var limitTire = rc.limit_tire;
+                resetCarSpecRegulations(rc);
+                resetCarCodeRegulations(rc);
+
+                if (car != nil)
+                {
+                    rc.cars.resize(1);
+                    rc.cars[0] = car;
+                    rc.is_only_garage_car = false;
+                    rc.is_only_rental_car = true;
+                    rc.limit_tire = limitTire;
+                }
+                else
+                {
+                    // Reset to non one-make as fallback
+                    rc.car_select_method = gtengine::CarSelectMethod::GARAGE;
+                    rc.is_only_garage_car = true;
+                    rc.is_only_rental_car = false;
+                }
+                
+                break;
+        }
+
+        // Tire fixes for cars without dirt or snow tires
+        if (isDirtSnow)
+        {
+            rc.limit_tire = invalid;
+            rc.need_tire_change = false;
+
+            if (rc.cars.size > 0)
+            {
+                for (var i = 0; i < rc.cars.size; i++)
+                {
+                    if (!gtengine::MSpecDB::checkFlag(rc.cars[i].code, gtengine::GenericFlag::HAVE_DIRT_TIRE))
+                    {
+                        // Car not suitable
+                        resetCarCodeRegulations(rc);
+                        resetCarSpecRegulations(rc);
+                        break;
+                    }
+                }
+            }
+
+            if (rc.car_tag_id == kartTagId)
+                resetCarCodeRegulations(rc);
+            else if (rc.car_tag_id != invalid && !isDirtCarTag(rc.car_tag_id))
+                resetCarCodeRegulations(rc);
+        }
+
+        if (rc.car_filter_type != gtengine::CarFilterType::MANUFACTURER)
+        {
+            rc.countries.resize(0);
+            rc.tuners.resize(0);
+        }
+
+        if (rc.car_filter_type != gtengine::CarFilterType::TAG)
+            rc.car_tag_id = invalid;
+        else
+            rc.need_drivetrain = invalid;
+
+        // Weather fixes
+        if (!course.ChangeWeather)
+        {
+            rc.weather = gtengine::TrackDayWeather::NONE;
+            rc.initial_retention10 = 0;
+            rc.weather_value0b = course.WeatherValue; // 0b intentional?
+            rc.weather_accel10 = 0;
+        }
+        else 
+        {
+            if (rc.initial_retention10 < 0)
+                rc.initial_retention10 = 0;
+
+            rc.weather_accel_water_retention10 = rc.weather_accel10;
+        }
+
+        if (!course.ChangeTime)
+            rc.time_progress_speed = 0;
+
+        // Only one lap if the track isn't a circuit
+        if (course.OneWay)
+            rc.race_limit_laps = 1;
+
+        if (course.PitStopCount == 0)
+        {
+            rc.pit_constraint = 0;
+            rc.need_tire_change = false;
+            rc.trial_start_type = course.OneWay ? gtengine::StartType::GRID : gtengine::StartType::ATTACK;
+        }
+
+        // Fix up unnecessary pit requirement
+        if (rc.pit_constraint > 0 && !rc.isEnduranceMode())
+        {
+            var max = rc.race_limit_laps - 1;
+            if (rc.pit_constraint > max)
+                rc.pit_constraint = max;
+        }
+
+        // Fix up unnecessary tire change requirement
+        if (rc.need_tire_change 
+            && (!rc.isEnduranceMode() && rc.race_limit_laps < 2) 
+            || rc.pit_constraint < 1 
+            || rc.limit_tire == gtengine::PARTS_TIRE::TIRE_DRY_MIN)
+                rc.need_tire_change = false;
+        
+        if (course.KartOnly)
+        {
+            resetKartDrivingAssistRegulation(rc);
+            setToKartOneMakeRegulation(rc, kartTagId);
+        }
+
+        setKartRestriction(rc, kartTagId);
+
+        // Fix up oval start types on a non oval track
+        if (!course.Oval && rc.start_type == gtengine::StartType::ROLLING_DL || rc.start_type == gtengine::StartType::ROLLING3)
+            rc.start_type = gtengine::StartType::GRID_FLYING;
+
+        if (!course.OneWay && rc.trial_start_type == gtengine::StartType::GRID)
+            rc.trial_start_type = gtengine::StartType::ATTACK;
+
+        rc.setup();
+    }
+
+    class OnlineDataProvider extends main::EventSettingUtil::StandardDataProvider
+    {
+        attribute sAvailableCourseList;
+
+        method __init__()
+        {
+            __super__::__init__();
+            var list = [];
+            foreach (var course in self.sCourseList)
+            {
+                if (!KeyValueUtil::isCourseUnlock(course.Label, true))
+                    continue;
+
+                list.push(course);
+            }
+
+            self.sAvailableCourseList = list; 
+        }
+
+        method _loadCourseList()
+        {
+            var additionalWhere = getCourseListAdditionalCondition();
+            var where = " WHERE Online = 1 AND CourseCategory <> 'template'" + additionalWhere;
+            var orderBy = " ORDER BY Length ASC, Reverse, ChangeTime, ChangeWeather";
+            var sql = self.sSelectCourseListSql + where + orderBy;
+
+            return __super__::_loadCourseList(sql);
+        }
+
+        method getCourseInfoFromCourseMakerCourse(course)
+        {
+            var where;
+            if (course["scenery_code"] != nil)
+                where = " WHERE ModelName = '%s'".format("s%03d".format(course["scenery_code"]));
+            else
+            {
+                var scenery_code = gtengine::MSpecDB::getCourseCode(course["theme"]);
+                where = " WHERE ID = %{scenery_code}";
+            }
+
+            var sql = self.sSelectCourseListSql + where;
+            var res = __super__::_loadCourseList(sql);
+
+            if (res.size < 1)
+                return nil;
+
+            var reverse = manager.translate("CourseData", "direction_reverse");
+            var change_weather = manager.translate("CourseData", "track_change_weather");
+            var change_time = manager.translate("CourseData", "track_change_time");
+
+            var info = res[0];
+            info.generated_course_id = course["course_id"];
+            if (course["title"] != nil)
+            {
+                info.CourseNameShort = course["title"];
+                info.CourseName = info.CourseNameShort 
+                    + (info.Reverse ? " / %{reverse}" : "")
+                    + (info.ChangeWeather ? " / %{change_weather}" : "")
+                    + (info.ChangeTime ? " / %{change_time}" : "");
+            }
+
+            info.Length = course["length"];
+            info.Corner = course["corners"];
+            info.Straight = course["straight"];
+            info.Elevation = course["height"];
+            info.OneWay = course["one_way"];
+            info.CourseMap = course["photo_id"];
+            
+            if (info.OneWay)
+                info.PitStopCount = 0;
+            return info;
+        }
+
+        method getCourseInfoFromTed(ted, course_id)
+        {
+            var tedInfo = gtengine::getCourseInfoFromTed(ted);
+            tedInfo["course_id"] = course_id;
+            return getCourseInfoFromCourseMakerCourse(tedInfo);
+        }
+
+        method getAvailableCourseList()
+        {
+            return self.sAvailableCourseList;
+        }
+
+        method resolveRoomConfigInconsistency(rc, courseInfo)
+        {
+            OnlineUtil::resolveRoomConfigInconsistency(rc, courseInfo, self.getKartTagId());
+        }
+
+        method getRoomGameModeList()
+        {
+            return Define::sRoomGameModeList;
+        }
+
+        method getUserCreateCourseList(context)
+        {
+            var list = [];
+            var user_id = Grim2.getLoginUserId();
+            var request = main::Course.requestList(user_id, (args) => {});
+
+            if (Grim2Util::joinAwait(context, request))
+                list = main::Course.decodeCourseList(request);
+
+            var course_list = [];
+            foreach (var map in list)
+            {
+                if (map["photo_hidden"] > 0)
+                    continue;
+
+                var shared = 2;
+                if (map["status"] == shared)
+                {
+                    var info = getCourseInfoFromCourseMakerCourse(map);
+                    if (info != nil)
+                        course_list.push(info);
+                }
+            }
+
+            return course_list;
+        }
+    }
+
+    module MatchingWorld
+    {
+        static OpenLobbyPublic = 1;
+        static ClubLobby = 2;
+        static ClubEvent = 3;
+        static QuickMatchStart = 4;
+        static QuickMatchEnd = 8;
+        static QuickMatchWorldNum = QuickMatchEnd - QuickMatchStart;
+
+        function getQuickMatchWorldNumber(gp)
+        {
+            var offset = gp != nil ? gp.online_room.matching_world_offset : gtengine::MGameParameter::INVALID_VALUE_INT;
+            if (offset == gtengine::MGameParameter::INVALID_VALUE_INT)
+                return QuickMatchStart;
+
+            var world = offset % (QuickMatchWorldNum + 1);
+            return world;
+        }
+
+        function getByRoomType(roomType)
+        {
+            switch (roomType)
+            {
+                case gtengine::RoomType::OPEN_MATCH:
+                    return OpenLobbyPublic;
+                case gtengine::RoomType::QUICK_MATCH:
+                    return QuickMatchStart;
+                case gtengine::RoomType::CLUB_LOBBY:
+                    return ClubLobby;
+                case gtengine::RoomType::CLUB_EVENT:
+                    return ClubEvent;
+                default:
+                    return OpenLobbyPublic;
+            }
+        }
+    }
+
+    static sEventLoop = nil;
+    static sReceiveGameStatsBeginTime = 0;
+    static sJoinProgress = pdistd::MProgress();
+    static sRequireDestroyRace = false;
+    static sRequireOnlineUtilityEndSession = false;
+    static sRequireLeaveRoom = false;
+    static sRequireClearResource = false;
+    static sCallBeforeAllocateResourceFunction = nil;
+    static sLogStr = "";
+    static ReceiveGameStatsTimeout = 45 * 1000;
+    static RequestGameStatsInterval = 10 * 1000;
+    static sDefaultCourseCode = 0;
+    static DefaultProbedBandwidthCacheLifeTime = 60;
+
+    function beginLog()
+    {
+        sLogStr = "OI=%{PDINetwork.getClientName()}";
+    }
+
+    function addLog(str)
+    {
+        sLogStr += ":%{str}";
+    }
+
+    function endLog()
+    {
+        if (sLogStr != "")
+            Grim2.requestPutLog(sLogStr);
+        sLogStr = "";
+    }
+
+    function clearAllRequireFlag()
+    {
+        sRequireDestroyRace = false;
+        sRequireOnlineUtilityEndSession = false;
+        sRequireLeaveRoom = false;
+        sRequireClearResource = false;
+    }
+
+    function setDefaultCourseCode()
+    {
+        var option = GAME_STATUS.user_profile.option;
+        if (option.kiosk_limit_course && option.hasLimitedCourse())
+        {
+            var idList = option.getLimitedCourses();
+            sDefaultCourseCode = idList[0];
+        }
+        else
+            sDefaultCourseCode = gtengine::MSpecDB::getCourseCode("mini");
+    }
+
+    function getDefaultCourseCode()
+    {
+        if (sDefaultCourseCode == 0)
+            setDefaultCourseCode();
+        return sDefaultCourseCode;
+    }
+
+    function finalizeEveryComponent(context)
+    {
+        if (sRequireDestroyRace)
+        {
+            RaceOperator.destroyRace();
+
+            do 
+            {
+                pdiext::ProcessUpdateIteration();
+            } while (ORG.isBuildComplete() || ORG.isDestroySequence());
+
+            sRequireDestroyRace = false;
+        }
+
+        if (sRequireOnlineUtilityEndSession)
+        {
+            OnlineUtility.endSession();
+            sRequireOnlineUtilityEndSession = false;
+        }
+            
+        if (sRequireLeaveRoom)
+        {
+            OnlineUtility.finalizeVoiceChat();
+            Lobby.leaveRoom();
+            sRequireLeaveRoom = false;
+        }
+
+        if (sRequireClearResource)
+        {
+            LaunchRaceUtil::clearResource();
+            sRequireClearResource = false;
+        }
+
+    }
+
+    function onTickReceiveGameStats(context)
+    {
+        var now = pdistd::GetSystemTimeMicroSecond() / 1000;
+        if (OnlineSession.hasValidGameInformation() || 
+            now - sReceiveGameStatsBeginTime > ReceiveGameStatsTimeout || !Lobby.isJoinedRoom())
+        {
+            if (sEventLoop != nil)
+            {
+                sEventLoop.leave();
+                sEventLoop = nil;
+            }
+        }
+        else
+        {
+            var interval = __toplevel__::System::Math::abs(now - OnlineSession.getLastGameInformationRequestTime());
+            if (interval > RequestGameStatsInterval)
+            {
+                if (!OnlineSession.requestGameInformation())
+                {
+                    if (sEventLoop != nil)
+                    {
+                        sEventLoop.leave();
+                        sEventLoop = nil;
+                    }
+                }
+            }
+        }
+
+        if (sJoinProgress.value < 0.6f)
+        {
+            sJoinProgress.value = (0.6f - 0.2f) + (0.2f / (now.toFloat() / ReceiveGameStatsTimeout.toFloat()))
+        }
+    }
+
+    static sTrackEditData;
+    static sGeneratedCourseId = 0UL;
+
+    function loadTrackEditData(context, course_id)
+    {
+        if (sGeneratedCourseId == course_id && sTrackEditData != nil)
+            return sTrackEditData;
+
+        var request = main::Course.requestTed(course_id, nil);
+        if (Grim2Util::joinAwait(context, request))
+        {
+            var ted_path = main::Course.getTedPath(course_id);
+            var fst = pdistd::ReadFile(ted_path);
+            sTrackEditData = CourseMakerUtil::decrypt(fst["buffer"]);
+            sGeneratedCourseId = course_id;
+        }
+        else
+            releaseTrackEditData();
+
+        return sTrackEditData;
+    }
+
+    function releaseTrackEditData()
+    {
+        sTrackEditData = nil;
+        sGeneratedCourseId = 0;
+    }
+
+    function setTrackEditData(ted, course_id)
+    {
+        sTrackEditData = ted;
+        sGeneratedCourseId = course_id;
+    }
+
+    function getTrackEditData()
+    {
+        return sTrackEditData;
+    }
+
+    function setAppropriateNetworkParameter(rc)
+    {
+        if (OnlineUtility.isInsideOfControversialNetwork())
+            rc.auto_grant_ownership = false;
+
+        if (OnlineUtility.isLanMode())
+            rc.voice_chat = false;
+
+        if (rc.auto_grant_ownership)
+            rc.topology = pdistd::TopologyType::Mesh;
+        else
+            rc.topology = pdistd::TopologyType::Star;
+
+        rc.nat_restriction = rc.topology == pdistd::TopologyType::Mesh;
+    }
+
+    function getSuitableQcpTemplateType(rc)
+    {
+        if (OnlineUtility.isLanMode())
+            return gtengine::QualityControlTemplateType::LanMax;
+
+        var [up, down] = GAME_STATUS.user_profile.option.getAverageBandwidth();
+        var voiceQuality = rc.voice_chat ? rc.voice_quality : nil;
+        var isMesh = rc.topology == pdistd::TopologyType::Mesh;
+        var qcp = gtengine::MQualityControlParameter();
+        qcp.setSuitableTemplate(up, down, rc.room_max, voiceQuality, isMesh);
+        return qcp.template_type;
+    }
+
+    function setSuitableQualityControlParameter(rc)
+    {
+        rc.quality_control_template_type = getSuitableQcpTemplateType(rc);
+    }
+
+    function setOnlineCourseMapTable(context)
+    {
+        if (!OnlineSession.isCourseTableEmpty())
+            return;
+
+        var table = [];
+
+        foreach (var it in SPECDB.query("SELECT ID, BaseName FROM COURSE WHERE Online = 1 ORDER BY Length ASC, Reverse, ChangeTime, ChangeWeather"))
+        {
+            var value = pdistd::CRC32(it.BaseName);
+            if (value == 0)
+                table.push([it.ID, value]);
+        }
+
+        var code = gtengine::MSpecDB::getCourseCode("coursemaker");
+        var value = pdistd::CRC32("coursemaker");
+        table.push([code, value]);
+        OnlineSession.setCourseTable(table);
+    }
+
+    function reportLobbyServerStatus(context)
+    {
+        var serverCount = Lobby.getServerCount();
+        if (serverCount >= 0)
+        {
+            var olrc = 0;
+            var olmc = 0;
+            var qmrc = 0;
+            var qmmc = 0;
+            var clrc = 0;
+            var clmc = 0;
+            var cerc = 0;
+            var cemc = 0;
+
+            var worldList = Lobby.getWorldListLocal();
+            if (worldList != nil)
+            {
+                foreach (var world in worldList)
+                {
+                    var wn = world["worldNumber"];
+                    var rc = world["roomNum"];
+                    var mc = world["roomMemberNum"];
+
+                    if (wn == MatchingWorld::OpenLobbyPublic)
+                    {
+                        olrc += rc;
+                        olmc += mc;
+                    }
+                    else if (wn == MatchingWorld::ClubLobby)
+                    {
+                        clrc += rc;
+                        clmc += mc;
+                    }
+                    else if (wn == MatchingWorld::ClubEvent)
+                    {
+                        cerc += rc;
+                        cemc += mc;
+                    }
+                    else if (wn >= MatchingWorld::QuickMatchStart && wn <= MatchingWorld::QuickMatchEnd)
+                    {
+                        qmrc += rc;
+                        qmmc += mc;
+                    }
+                }
+            }
+
+            var ox = "%{olrc},%{qmrc},%{clrc},%{cerc}";
+            var oy = "%{olmc},%{qmmc},%{clmc},%{cemc}";
+
+            var str = "OA=LS:OU=%s:OB=%d:OS=%d:OR=%d:OM=%d:OX=%s:OY=%s".format(
+                PDINetwork.getClientName(),
+                serverCount, Lobby.getAvailableServerCount(),
+                Lobby.getWholeRoomCount(),
+                Lobby.getWholeRoomMemberCount(), ox, oy
+            );
+
+            Grim2.requestPutLog(str);
+        }
+    }
+
+    function initializeLobby2(context, server, worldNumber)
+    {
+        var ret = initializeLobby(context, false);
+        if (!ret)
+            return false;
+
+        ret = Lobby.getServerList();
+        if (ret == nil)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                manager.translate("OnlineMessage", "ERROR_200") + "\n[%{__LINE__}]");
+            return false;
+        }
+
+        if (server != nil)
+            Lobby.selectServer(server);
+
+        Lobby.selectWorldByWorldNumber(worldNumber);
+        reportLobbyServerStatus(context);
+        return true;
+    }
+
+    function initializeLobby(context, selectServerAndWorld = false, async = false)
+    {
+        ServerUtil::ResidentLobby::stay(context);
+
+        setOnlineCourseMapTable(context);
+
+        PDINetwork.clearError();
+        
+        OnlineUtility.setApplicationVersion(2);
+
+        if (AppOpt.defined("lanmode"))
+            OnlineUtility.setIsLanMode(true);
+        else
+            OnlineUtility.setIsLanMode(false);
+
+        if (AppOpt.defined("copudp"))
+            OnlineUtility.setUseCopUdp(true);
+
+        if (!OnlineUtility.isLanMode())
+        {
+            if (!LoginUtil::makeSureLogin(context, true))
+            {
+                sound.play("disable");
+                return false;
+            }
+
+            var roomServerVersion = Grim2.getServerOptionToInt("gt", "lobby_id", 0);
+            OnlineUtility.setRoomServerVersion(roomServerVersion);
+        }
+
+        if (OnlineUtility.isLanMode())
+        {
+            if (!OnlineUtility.beginSession())
+            {
+                if (GAME_STATUS.user_profile.option.bot_on)
+                    return false;
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("OnlineMessage", "OTHER_NETWORK_ERROR"));
+                return false;
+            }
+
+            OnlineUtility.switchLobby(true);
+        }
+        else
+        {
+            OnlineUtility.switchLobby(false);
+        }
+
+        if (!OnlineUtility.initializeLobby())
+        {
+            var error = PDINetwork.getFirstError(0);
+            if (GAME_STATUS.user_profile.option.bot_on)
+                return false;
+                
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                getErrorString(error, "UNABLE_TO_CONNECT_LOBBY_SERVER"));
+            return false;
+        }
+
+        if (!Lobby.prepareWorldList(async))
+        {
+            OnlineUtility.finalizeLobby();
+            if (GAME_STATUS.user_profile.option.bot_on)
+                return false;
+
+            var msg = getLobbyErrorString(pdistd::LobbyError::GenericServer, "ERROR_200") + "\n[%{__LINE__}]";
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+            return false;
+        }
+
+        if (selectServerAndWorld)
+        {
+            var ret = Lobby.selectServerAndWorld();
+            if (ret < 0)
+            {
+                OnlineUtility.finalizeLobby();
+                if (GAME_STATUS.user_profile.option.bot_on)
+                    return false;
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                    manager.translate("OnlineMessage", "ERROR_200")  + "\n[%{__LINE__}]");
+                return false;
+            }
+        }
+
+        reportLobbyServerStatus(context);
+        return true;
+    }
+
+    function finalizeLobby(context)
+    {
+        OnlineUtility.finalizeLobby();
+    }
+
+    function probeBandwidth(context, cachedLimit = DefaultProbedBandwidthCacheLifeTime)
+    {
+        if (OnlineUtility.isLanMode())
+            return true;
+
+        if (OnlineUtility.hasValidProbedBandwidth(cachedLimit - 1) && GAME_STATUS.user_profile.option.hasAmpleBandwidthData())
+            return true;
+
+        OnlineUtil.load("/scripts/gt6/util/HttpUtil");
+        HttpUtil::begin(HttpUtil::sInitParamsNpClan);
+        var res = OnlineUtility.probeBandwidth(cachedLimit);
+        HttpUtil::end();
+
+        OnlineUtil.removeStatic($"HttpUtil");
+        if (res)
+        {
+            var bandwidth = OnlineUtility.getProbedBandwidth();
+            GAME_STATUS.user_profile.option.addBandwidthRecord(bandwidth);
+
+            if (bandwidth != nil)
+            {
+                var str = "OA=BW:OU=%s:OC=%d:OD=%d:OW=%d".format(
+                    PDINetwork.getClientName(),
+                    bandwidth[0], bandwidth[1], pdistd::MNetworkInterface::isDeviceWireless()
+                );
+
+                Grim2.requestPutLog(str);
+            }
+        }
+
+        return res;
+    }
+
+    function _probeBandwidthFromProgress(context, args)
+    {
+        var [cachedLimit] = args;
+        return [probeBandwidth(context, cachedLimit), 1];
+    }
+
+    function canSkipCheckingEnvironment(context, cachedLimit = DefaultProbedBandwidthCacheLifeTime)
+    {
+        if (OnlineUtility.hasValidProbedBandwidth(cachedLimit - 1) &&
+            GAME_STATUS.user_profile.option.hasAmpleBandwidthData())
+            return true;
+        return false;
+    }
+
+    function checkEnvironment(context, cachedLimit = DefaultProbedBandwidthCacheLifeTime, withProgress = true)
+    {
+        if (canSkipCheckingEnvironment(context, cachedLimit))
+            return true;
+
+        if (!withProgress)
+            return probeBandwidth(context);
+
+        var checking = manager.translate("OnlineMessage", "PROGRESS_CHECKING_NETWORK");
+        var progress = pdistd::MProgress();
+        progress.constant_progress_speed = (1f / 60f) / 30f;
+        DialogUtil::setProgress(context, progress);
+        var res = DialogUtil::openProgressDialog(context, checking, checking, checking, _probeBandwidthFromProgress, [cachedLimit]);
+        return res;
+    }
+
+    function getErrorString(error, defaultKey)
+    {
+        var msg = "";
+        switch (error)
+        {
+            case pdistd::NetworkError::GrimIsNotOnline:
+                msg = manager.translate("OnlineMessage", "ERROR_206");
+                break;
+
+            case pdistd::NetworkError::NetworkIsNotOnline:
+                msg = manager.translate("OnlineMessage", "ERROR_112");
+                break; 
+
+            default:
+                if (defaultKey != nil)
+                    msg = manager.translate("OnlineMessage", defaultKey);
+                else
+                {
+                    var key = "ERROR_%d".format(error * -1);
+                    msg = manager.translate("OnlineMessage", key);
+                    if (msg == key)
+                        msg = "\n[0x%08x]".format(error);
+                }
+                break;
+        }
+
+        return msg;
+    }
+
+    function getLobbyErrorString(error, defaultKey)
+    {
+        var msg = "";
+        if (error < 0)
+        {
+            var key = "ERROR_%d".format(error * -1);
+            msg = manager.translate("OnlineMessage", key);
+
+            if (msg == key)
+            {
+                if (defaultKey != nil)
+                    msg = manager.translate("OnlineMessage", defaultKey) + "\n[0x%08x]".format(error);
+                else
+                    msg = "\n[0x%08x]".format(error);
+            }
+        }
+
+        return msg;
+    }
+
+    function enterRoomWithProgressDialog(context, args)
+    {
+        beginLog();
+        finally () => { endLog() };
+
+        sJoinProgress.value = 0f;
+        DialogUtil::setProgress(context, sJoinProgress);
+
+        var [joinParam, createParam, optionParam] = args;
+        if (optionParam == nil)
+            optionParam = Map();
+
+        if ((joinParam != nil && joinParam["overwriteUserName"]) || 
+            (createParam != nil && createParam.online_room.overwrite_user_name)
+            && optionParam["nickname"] == nil)
+        {
+            var inputedName = openInputNicknameDialog(context);
+            if (inputedName != nil)
+                optionParam["nickname"] = inputedName;
+        }
+
+        if ((joinParam != nil && joinParam["overwriteUserRegion"]) ||
+            (createParam != nil && createParam.online_room.overwrite_user_region)
+            && optionParam["accountRegion"] == nil)
+        {
+            var region = selectAccountRegionFromList(context);
+            optionParam["accountRegion"] = region;
+        }
+
+        var failedMessageKey = createParam != nil ? "FAILED_TO_CREATE_ROOM" : "FAILED_TO_JOIN_ROOM";
+        var failedMessage = manager.translate("OnlineMessage", failedMessageKey);
+        var syncMessage = manager.translate("OnlineMessage", "PROGRESS_SYNCHRONIZING_NETWORK");
+
+        var res = DialogUtil::openProgressDialog(context, "", syncMessage, failedMessage, enterRoomWithArrayArgs,
+                                                [joinParam, createParam, optionParam], nil);
+        return res;
+    }
+
+    function enterRoomWithArrayArgs(context, args)
+    {
+        var [joinParam, createParam, optionParam] = args;
+        return [enterRoom(context, joinParam, createParam, optionParam), 1];
+    }
+
+// F: Macro for the bot_on error handling should be here
+
+    function enterRoom(context, joinParam, gp, optionParam)
+    {
+        sJoinProgress.value = 0f;
+        if (joinParam != nil && gp != nil)
+            return false;
+
+        sJoinProgress.value = 0.05f;
+        DialogUtil::setProgressMessage(context, manager.translate("OnlineMessage", "PROGRESS_CONNECTING_TO_SERVER"));
+
+        if (optionParam != nil && optionParam["useInitialize2"] != nil && optionParam["useInitialize2"])
+        {
+            if (!OnlineUtil::initializeLobby2(context, nil, optionParam["MatchingWorld"]))
+            {
+                if (GAME_STATUS.user_profile.option.bot_on)
+                    return false;
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("OnlineMessage", "UNABLE_TO_CONNECT_LOBBY_SERVER"));
+                addLog("OlE");
+                return false;
+            }
+        }
+        else if (!OnlineUtil::initializeLobby(context, true))
+        {
+            if (GAME_STATUS.user_profile.option.bot_on)
+            return false;
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                manager.translate("OnlineMessage", "UNABLE_TO_CONNECT_LOBBY_SERVER"));
+            addLog("OlE");
+            return false;
+        }
+
+        PDINetwork.clearRoomParameter();
+
+        if (joinParam != nil && joinParam.isInstanceOf(ULong))
+        {
+            var roomId = joinParam;
+            joinParam = Lobby.getExternalRoomInfoSync(roomId);
+
+            if (joinParam.isInstanceOf(Int) || joinParam.size > 0 && joinParam[0]["version"] !=  OnlineUtility.getRoomVersion())
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("OnlineMessage", "ROOM_NOT_FOUND"));
+                addLog("OiE=%{roomId}");
+                return false;
+            }
+        }
+
+        sJoinProgress.value = 0.1f;
+        if (OnlineUtility.isLanMode())
+        {
+            if (gp != nil)
+                gp.online_room.is_lan = true;
+        }
+
+        if (gp != nil)
+        {
+            DialogUtil::setProgressMessage(context, manager.translate("OnlineMessage", "PROGRESS_JOINING_ROOM"));
+            if (gp.event.track.course_code == gtengine::MSpecDB::NO_CODE && 
+                gp.event.race_parameter.course_code != gtengine::MSpecDB::NO_CODE)
+                gp.event.track.course_code = gp.event.race_parameter.course_code;
+            else if (gp.event.race_parameter.course_code == gtengine::MSpecDB::NO_CODE && 
+                gp.event.track.course_code != gtengine::MSpecDB::NO_CODE)
+                gp.event.race_parameter.course_code = gp.event.track.course_code;
+
+            gp.online_room.game_region_code = gtengine::MGameParameter::GetOwnGameRegionCode();
+            setupRoomTypeParameter(gp.online_room.room_type);
+        }
+        else
+        {
+            Lobby.selectServer(joinParam["serverId"]);
+            Lobby.selectWorld(joinParam["worldId"]);
+            setupRoomTypeParameter(joinParam["roomType"]);
+        }
+
+        PDINetwork.clearUserList();
+        var profile_level = 0;
+
+        if (!OnlineUtility.isLanMode())
+        {
+            var request = UserProfile2.requestUserProfile(PDINetwork.getClientName(), args => { });
+            if (Grim2Util::join(context, request))
+            {
+                var u = UserProfile2.decodeUserProfile(request);
+                profile_level = u["profile_level"];
+            }
+            else
+            {
+                addLog("OwE");
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                    manager.translate("Network", "CANNOT_CONNECT_SERVER"));
+                return false;
+            }
+        }
+
+        if (optionParam != nil && optionParam["nickname"] != nil)
+        {
+            PDINetwork.setUseNickname(true);
+            PDINetwork.setPdiServerUserNickname(optionParam["nickname"]);
+        }
+        else
+        {
+            PDINetwork.setUseNickname(false);
+        }
+
+        var isGuest = false;
+        if (joinParam != nil && joinParam["roomType"] == gtengine::RoomType::CLUB_LOBBY
+            && joinParam["scope"] == gtengine::Scope::PUBLIC)
+        {
+            isGuest = true;
+            var clubId = joinParam["clubId"];
+
+            var req = Community.requestClubIdListByUser(PDINetwork.getClientName(), clubId, nil);
+            if (!Grim2Util::joinAwait(context, req))
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("Network", "CANNOT_CONNECT_SERVER"));
+                return false;
+            }
+
+            var clubUserList = Community.decodeClubUserList(req);
+            foreach (var cu in clubUserList)
+            {
+                if (cu["club_id"] == clubId)
+                {
+                    isGuest = false;
+                    break;
+                }
+            }
+        }
+
+        OnlineSession.initializeRoomMemberInfo(GAME_STATUS.user_profile.garage.getRidingCar(), 
+            isGuest,
+            profile_level,
+            optionParam != nil ? optionParam["accountRegion"] : nil);
+
+        OnlineUtility.setMigrationEnable(isGuest ? false : !OnlineUtility.isInsideOfControversialNetwork());
+
+        sJoinProgress.value = 0.15f;
+        probeBandwidth(context);
+
+        if (!OnlineUtility.beginSession())
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                manager.translate("OnlineMessage", "OTHER_NETWORK_ERROR"));
+
+            if (joinParam != nil)
+                addLog("OoE=%{joinParam["serverId"]},%{joinParam["worldId"]}");
+            else
+                addLog("OoE=0,0");
+
+            return false;
+        }
+
+        sRequireOnlineUtilityEndSession = true;
+
+        if (gp != nil)
+        {
+            var track = gp.event.track;
+            if (track.generated_course_id > 0)
+            {
+                if (sTrackEditData != nil)
+                    track.edit_data = sTrackEditData;
+                else
+                    sTrackEditData = track.edit_data.getByteData();
+
+                ORG.setGenerateData(sTrackEditData);
+            }
+
+            OnlineSession.setRoomType(gp.online_room.room_type);
+            var rc = gtengine::MRoomConfig(gp);
+            var createRoomParam = gtengine::MOnlineUtility::CreateCreateRoomParameter(rc);
+            var ret = Lobby.createRoom(createRoomParam);
+
+            if (ret < 0)
+            {
+                finalizeEveryComponent(context);
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("OnlineMessage", "FAILED_TO_CREATE_ROOM"));
+                addLog("OcE");
+                return false
+            }
+
+            sRequireLeaveRoom = true;
+            LaunchRaceUtil::setupRaceOperator(gp, nil, nil);
+            var sinfo = gtengine::MOnlineSessionInfo();
+            sinfo.initializeEventPhase(gp.online_room.room_game_mode);
+
+            if (gp.online_room.online_series.size > 1)
+                sinfo.series_index = 0;
+            
+            if (rc.course_code == gtengine::COURSE_CODE_GENERATED)
+                rc.scenery_course_code = gtengine::MSpecDB::getCourseCodeFromSceneryCode(rc.scenery_code);
+            
+            OnlineSession.updateRoomConfig(rc, sinfo);
+            OnlineSession.updateExternalRoomInformation();
+        }
+        else
+        {
+            var generatedCourseId = joinParam["generatedCourseId"];
+            if (generatedCourseId > 0)
+            {
+                if (loadTrackEditData(context, generatedCourseId) == nil)
+                {
+                    finalizeEveryComponent(context);
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                        manager.translate("OnlineMessage", "COURSE_NOT_FOUND_MAY_HAVE_BEEN_DELETED"));
+                    return false
+                }
+            }
+
+            DialogUtil::setProgressMessage(context, manager.translate("OnlineMessage", "PROGRESS_JOINING_ROOM"));
+            OnlineSession.setRoomType(joinParam["roomType"]);
+            
+            var param = Map();
+            param["roomId"] = joinParam["roomId"];
+            param["password"] = joinParam["password"];
+
+            sRequireLeaveRoom = true;
+
+            var ret = Lobby.joinRoom(param);
+            if (ret < 0)
+            {
+                finalizeEveryComponent(context);
+
+                if (ret == pdistd::LobbyError::NATTraverseFailed)
+                {
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                        manager.translate("OnlineMessage", "ERROR_412") + "\n[%{__LINE__}]");
+                    addLog("OnE=%{getNatType()}");
+                }
+                else if (!GAME_STATUS.user_profile.option.bot_on)
+                {
+                    if (ret != nil)
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                            getLobbyErrorString(ret, "FAILED_TO_JOIN_ROOM"));
+                    }
+                    else
+                    {
+                        var errmsg = manager.translate("OnlineMessage", "FAILED_TO_JOIN_ROOM");
+                        nil != nil ? "\n" + nil : ""; // WTF?
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, errmsg);
+                    }
+
+                    addLog("OjE");
+                }
+
+                return false;
+            }
+
+            sJoinProgress.value = 0.6f - 0.2f;
+            if (!OnlineSession.requestGameInformationSync())
+            {
+                finalizeEveryComponent(context);
+
+                 // Define macro
+                if (!GAME_STATUS.user_profile.option.bot_on)
+                {
+                    if (nil != nil)
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, getLobbyErrorString(nil, "FAILED_TO_JOIN_ROOM"));
+                    else
+                    {
+                        var errmsg = manager.translate("OnlineMessage", "FAILED_TO_JOIN_ROOM");
+                        nil != nil ? "\n" + nil : ""; // WTF?
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, errmsg);
+                    }
+                }
+
+                addLog("OjE");
+                return false;
+            }
+
+            OnlineSession.updateGameParameter();
+            addLog("Oj");
+        }
+
+        sJoinProgress.value = 0.6f;
+        OnlineSession.setRoomState(gtengine::RoomState::Creating);
+        OnlineSession.setLastGrantedRegulationTime(0);
+
+        if ((gp != nil && gp.online_room.voice_chat) ||
+            (joinParam != nil && joinParam["voiceChatActivity"]))
+        {
+            SoundUtil::SetSystemBGMEnable(context, false);
+            if (!OnlineUtility.joinVoiceChat(16, 4, 20))
+                ;
+            else
+            {
+                if (gp != nil)
+                    OnlineUtility.changeVoiceQuality(gp.online_room.voice_quality);
+                else
+                    OnlineUtility.changeVoiceQuality(joinParam["voiceQuality"]);
+            }
+        }
+        else
+        {
+            SoundUtil::SetSystemBGMEnable(context, true);
+        }
+
+        sJoinProgress.value = 0.7f;
+
+        DialogUtil::setProgressMessage(context, manager.translate("OnlineMessage", "PROGRESS_CONNECTING_TO_NETWORK"));
+        if (gp != nil)
+        {
+            gp.online_room.quality_control_parameter.setup();
+            RaceOperator.game_parameter = gp;
+            RaceOperator.useRaceBuildParameter();
+
+            if (!RaceOperator.buildRace())
+            {
+                finalizeEveryComponent(context);
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("OnlineMessage", "FAILED_TO_CREATE_ROOM"));
+                addLog("ObE");
+                return false;
+            }
+
+            do 
+            {
+                pdiext::ProcessUpdateIteration();
+            } while (!ORG.isBuildComplete())
+
+            sRequireDestroyRace = true;
+            var blob = OnlineSession.getCurrentGameInformation();
+            if (blob == nil)
+            {
+                finalizeEveryComponent(context);
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("OnlineMessage", "FAILED_TO_CREATE_ROOM"));
+                addLog("OeE");
+                return false;
+            }
+
+            var ret = Lobby.sendRoomBinaryMessage(pdistd::BinaryMessageType::GameStats, blob);
+            if (ret < 0 && ret != pdistd::LobbyError::RequestQueued)
+            {
+                finalizeEveryComponent(context);
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("OnlineMessage", "FAILED_TO_CREATE_ROOM"));
+                addLog("OaE");
+                return false;
+            }
+        }
+        else
+        {
+            var rp = OnlineSession.extractRaceParameterFromGameInformation();
+            if (rp == nil)
+            {
+                finalizeEveryComponent(context);
+                addLog("OrE");
+                return false;
+            }
+
+            if (GAME_STATUS.user_profile.option.lounge_split_screen)
+            {
+                var windowCount = 2;
+                RaceOperator.window_max = windowCount;
+                ORG.window_max = windowCount;
+                ORG.setSceneQualityInRaceNoInterior(true);
+                ORG.setSceneQualityInRaceNoCrowd(true);
+            }
+
+            RaceOperator.race_parameter = rp;
+            if (sTrackEditData != nil)
+                ORG.setGenerateData(sTrackEditData);
+
+            var rbp = gtengine::MRaceBuildParameter();
+            rbp.eligibleBackupHost = true;
+            RaceOperator.race_build_parameter = rbp;
+
+            if (!RaceOperator.joinRace())
+            {
+                var error = PDINetwork.getFirstError(0);
+                finalizeEveryComponent(context);
+                var errorString = getErrorString(error);
+
+                 // Define macro
+                if (!GAME_STATUS.user_profile.option.bot_on)
+                {
+                    if (nil != nil)
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, getLobbyErrorString(nil, "FAILED_TO_JOIN_ROOM"));
+                    else
+                    {
+                        var errmsg = manager.translate("OnlineMessage", "FAILED_TO_JOIN_ROOM");
+                        errorString != nil ? "\n" + errorString : "";
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, errmsg);
+                    }
+                }
+
+                addLog("OzE");
+                return false;
+            }
+
+            sRequireDestroyRace = true;
+            if (!waitJoinRaceComplete(context))
+                return false;
+
+            ORG.setDataSynchronizeAtStart(false);
+        }
+
+        sJoinProgress.value = 0.85f;
+        DialogUtil::setProgressMessage(context, manager.translate("OnlineMessage", "PROGRESS_SYNCHRONIZING_NETWORK"));
+        OnlineSession.updateParameter(gtengine::SessionParameter::CommunicatorIndex, OnlineSession.getCommunicatorIndex());
+        
+        var instance_id = RaceOperator.makeReservation(PDINetwork.getClientName(), PDINetwork.getRegionName());
+        if (instance_id < 0)
+        {
+            finalizeEveryComponent(context);
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                manager.translate("OnlineMessage", "OTHER_NETWORK_ERROR"));
+            addLog("OpE");
+            return false;
+        }
+
+        RaceOperator.setAccountPersonalID(instance_id, PDINetwork.getPdiServerUserNumber());
+        
+        clearCache();
+
+        if (sCallBeforeAllocateResourceFunction != nil)
+        {
+            sCallBeforeAllocateResourceFunction(context);
+            sCallBeforeAllocateResourceFunction = nil;
+        }
+
+        addLog("Oe");
+        return true;
+    }
+
+    function waitJoinRaceComplete(context)
+    {
+        var stime = pdistd::GetSystemTimeMicroSecond();
+        while (!ORG.isBuildComplete())
+        {
+            var now = pdistd::GetSystemTimeMicroSecond();
+            var elapsed = now - stime;
+
+            if (elapsed > 30 * 1000 * 1000)
+            {
+                // Timed out
+                finalizeEveryComponent(context);
+                var errorString = getErrorString(pdistd::NetworkError::RaceNetworkJoinTimeout);
+
+                 // Define macro
+                if (!GAME_STATUS.user_profile.option.bot_on)
+                {
+                    if (nil != nil)
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, getLobbyErrorString(nil, "FAILED_TO_JOIN_ROOM"));
+                    else
+                    {
+                        var errmsg = manager.translate("OnlineMessage", "FAILED_TO_JOIN_ROOM");
+                        errorString != nil ? "\n" + errorString : "";
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, errmsg);
+                    }
+                }
+
+                return false;
+            }
+            else
+            {
+                if (!ORG.checkEnableNetwork())
+                {
+                    var error = PDINetwork.getFirstError(0);
+                    finalizeEveryComponent(context);
+                    var errorString = getErrorString(error);
+
+                    // Define macro
+                    if (!GAME_STATUS.user_profile.option.bot_on)
+                    {
+                        if (nil != nil)
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, getLobbyErrorString(nil, "FAILED_TO_JOIN_ROOM"));
+                        else
+                        {
+                            var errmsg = manager.translate("OnlineMessage", "FAILED_TO_JOIN_ROOM");
+                            errorString != nil ? "\n" + errorString : "";
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, errmsg);
+                        }
+                    }
+
+                    return false;
+                }
+            }
+
+            pdiext::ProcessUpdateIteration();
+        }
+
+        return true;
+    }
+
+    function setupRoomTypeParameter(roomType)
+    {
+        var joinRetryableCount = -1;
+        var joinRetryInterval = -1;
+
+        if (roomType != nil)
+        {
+            OnlineUtility.setCurrentRoomType(roomType);
+
+            var prefix;
+            switch (roomType)
+            {
+                case gtengine::RoomType::QUICK_MATCH:
+                    prefix = "qmatch";
+                    break;
+
+                default:
+                    prefix = "lobby";
+            }
+
+            joinRetryableCount = Grim2.getServerOptionToInt("network", "%{prefix}.joinRetryableCount", joinRetryableCount);
+            joinRetryInterval = Grim2.getServerOptionToInt("network", "%{prefix}.joinRetryInterval", joinRetryInterval);
+        }
+
+        OnlineUtility.setJoinRetryableCount(joinRetryableCount);
+        OnlineUtility.setJoinRetryInterval(joinRetryInterval);
+    }
+
+    function selectAccountRegionFromList(context)
+    {
+        var regionList = [
+            "ae", "ar", "at", "au", "be", "bg", "bh", "br", "ca", "ch", "cl", "co",
+            "cy", "cz", "de", "dk", "es", "fi", "fr", "gb", "gr", "hk", "hr", "hu",
+            "id", "ie", "il", "in", "is", "it", "jp", "kr", "kw", "lb", "lu", "mt",
+            "mx", "my", "nl", "no", "nz", "om", "pdi","pe", "pl", "pt", "qa", "ro", 
+            "ru", "sa", "se", "sg", "si", "sk", "th", "tr", "tw", "ua", "us", "za"
+        ];
+
+        var data = __projects__::UIKitProject::SelectRoot::Data();
+        data.title_ = "Select region";
+        data.candidates_ = regionList;
+
+        var accountRegion = PDINetwork.getRegionName();
+        if (accountRegion != "--")
+        {
+            for (var i = 0; i < regionList.size; ++i)
+            {
+                if (regionList[i] == accountRegion)
+                {
+                    data.initial_selected_indices_ = [i];
+                    break;
+                }
+            }
+        }
+
+        var res = __projects__::UIKitProject::SelectRoot.open(context, data);
+        if (res == nil || res.size == 0)
+            return accountRegion;
+
+        return regionList[res[0]];
+    }
+
+    function openInputNicknameDialog(context, defaultValue)
+    {
+        var params = DialogUtil::createInputTextDialogParams();
+        params.defaultValue = defaultValue == nil ? PDINetwork.getClientName() : defaultValue;
+        params.title = "Input user name";
+        params.message = "Please input your user name.";
+        return DialogUtil::openInputTextDialog(context, params);
+    }
+
+    function goToRaceProject(context, room, gameMode = gtengine::GameMode::ONLINE_ROOM)
+    {
+        var gp = RaceOperator.game_parameter;
+        gp.unpackAsRoomConfig(OnlineSession.getRoomConfig().pack());
+        gp.event.game_mode = gameMode;
+        
+        var track = gp.event.track;
+        if (track.generated_course_id > 0 && sTrackEditData != nil)
+            track.edit_data = sTrackEditData;
+
+        if (room != nil)
+        {
+            gp.online_room.comment = room["comment"];
+            gp.event.track.course_code = room["courseCode"];
+        }
+
+        LaunchRaceUtil::launch(context, gp);
+    }
+}

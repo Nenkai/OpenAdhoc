@@ -1,0 +1,956 @@
+
+
+//---------------------------------------------------------------------------------------
+// ReplayFileUtil.ad
+//
+// Utility module for dealing with replays
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+
+module ReplayFileUtil
+{
+    static MODE_REPLAY = 0;
+    static MODE_ONELAP = 1;
+    static MODE_ATTACH = 2;
+
+    static TABLE_VERSION_PATCH105 = 110;
+    static TABLE_VERSION_PATCH120 = 201;
+    static TABLE_VERSION_PATCH121 = 202;
+    static TABLE_VERSION = 202;
+
+    class Data
+    {
+        attribute id;
+        attribute filename;
+        attribute filesize;
+        attribute onelap;
+        attribute event_id;
+        attribute bspec_type;
+        attribute title;
+        attribute subtitle;
+        attribute description;
+        attribute datetime;
+        attribute local_userid;
+        attribute course_code;
+        attribute course_name;
+        attribute target_car_code;
+        attribute target_car_color;
+        attribute target_name;
+        attribute best_time;
+        attribute total_time;
+        attribute result_order;
+        attribute quality_level;
+        attribute snapshot_filename;
+        attribute favorite;
+        attribute crc;
+        attribute online_id;
+        attribute download_user;
+        attribute score;
+        attribute total_frame_num;
+        attribute display_mode;
+        attribute scenery_code;
+        attribute course_id;
+
+        method create(buf, path, _download_user)
+        {
+            if (buf == nil)
+                buf = ORG.getReplayHeaderFromPath(path);
+
+            var info = gtengine::MReplayInfo();
+            if (buf == nil || !info.initialize(buf))
+                return false;
+
+            filesize = IO::File::GetFileSize(path);
+            onelap = info.onelap;
+
+            var gp = info.getGameParameter();
+            var event = gp.event;
+            var rp = info.getRaceParameter();
+            var cp = info.getCarParameter();
+            var dp = info.getDriverParameter();
+
+            var edit_data = gp.event.track.edit_data;
+            var crc32 = 0;
+
+            if (edit_data != nil)
+                crc32 = pdistd::CRC32(edit_data);
+
+            var res = gtengine::GameMode.find_static(pair => pair[1] == event.game_mode);
+            var game_mode_name = res[0][0].toString();
+
+            switch (game_mode_name)
+            {
+                case "EVENT_RACE":
+                case "MISSION":
+                case "LICENSE":
+                case "COFFEE_BREAK":
+                case "EVENT_RALLY":
+                    event_id = event.event_id;
+                    bspec_type = gp.event.play_style.bspec_type;
+                    break;
+
+                case "TOUR":
+                case "SCHOOL":
+                case "ONLINE_TIME_ATTACK":
+                case "PRACTICE":
+                    event_id = event.event_id;
+                    bspec_type = gtengine::BSpecType::BOTH_A_AND_B;
+                    break;
+
+                default:
+                    event_id = -1;
+                    bspec_type = gtengine::BSpecType::BOTH_A_AND_B;
+                    break;
+            }
+
+            display_mode = event.license_condition.display_mode;
+            title = game_mode_name;
+
+            if (gp.online_room.comment != "")
+                subtitle = gp.online_room.comment;
+            else
+                subtitle = event.information.title.getText();
+
+            description = "";
+            datetime = info.recorded_datetime;
+            local_userid = getUserId();
+            course_name = "";
+            course_code = rp.course_code;
+
+            if (course_code == gtengine::COURSE_CODE_GENERATED)
+            {
+                scenery_code = rp.scenery_code;
+                course_id = gp.event.track.generated_course_id;
+            }
+            else
+            {
+                scenery_code = course_code;
+                course_id = 0;
+            }
+
+            if (cp != nil)
+            {
+                target_car_code = cp.getCarCode();
+                target_car_color = cp.color;
+            }
+            else
+            {
+                target_car_code = gtengine::MSpecDB::NO_CODE;
+                target_car_color = -1;
+            }
+
+            if (dp != nil)
+            {
+                target_name = dp.display_name;
+                online_id = dp.online_id;
+            }
+            else
+            {
+                online_id = "";
+                target_name = "";
+            }
+
+            best_time = info.getBestTime();
+            score = info.getScore();
+            total_time = info.getTotalTime();
+            total_frame_num = info.total_frame_num;
+            result_order = info.getResultOrder();
+            quality_level = info.geometry_quality_level;
+            snapshot_filename = "";
+            favorite = 0;
+            crc = crc32;
+            download_user = _download_user;
+            if (rp.enable_pilot_commander)
+                snapshot_filename = "B";
+
+            return true;
+        }
+    }
+
+    function initialize()
+    {
+        var version = DBUtil::getTableVersion(USERDB, "t_replay_files");
+        if (version == nil)
+        {
+            if (!DBUtil::initializeTable(USERDB, "t_replay_files", TABLE_VERSION))
+                return true;
+
+            var sql = "CREATE TABLE IF NOT EXISTS "
+                      "t_replay_files"
+                      " ("
+                      "id INTEGER, "
+                      "filename TEXT, "
+                      "filesize INTEGER, "
+                      "onelap INTEGER, "
+                      "title TEXT, "
+                      "event_id INTEGER, "
+                      "bspec_type INTEGER, "
+                      "subtitle TEXT, "
+                      "description TEXT, "
+                      "datetime INTEGER, "
+                      "local_userid INTEGER, "
+                      "course_code INTEGER, "
+                      "course_name TEXT, "
+                      "target_car_code INTEGER, "
+                      "target_car_color INTEGER, "
+                      "target_name TEXT, "
+                      "best_time INTEGER, "
+                      "total_time INTEGER, "
+                      "result_order INTEGER, "
+                      "quality_level INTEGER, "
+                      "snapshot_filename TEXT, "
+                      "favorite INTEGER, "
+                      "crc INTEGER, "
+                      "online_id TEXT, "
+                      "download_user TEXT, "
+                      "score INTEGER, "
+                      "total_frame_num INTEGER, "
+                      "display_mode INTEGER, "
+                      "scenery_code INTEGER, course_id INTEGER, "
+                      "PRIMARY KEY (id))";
+
+            var res = USERDB.execute0(sql);
+            if (res != 0)
+                return false;
+            return true;
+        }
+
+        if (version == TABLE_VERSION_PATCH120)
+        {
+            USERDB.begin();
+
+            var sql_list = [
+                "ALTER TABLE %s ADD COLUMN scenery_code INTEGER".format("t_replay_files"),
+                "ALTER TABLE %s ADD COLUMN course_id INTEGER".format("t_replay_files"),
+                "UPDATE %s SET scenery_code = course_code, course_id = 0".format("t_replay_files"),
+            ];
+
+            foreach (var sql in sql_list)
+            {
+                var res = USERDB.execute0(sql);
+                if (res != 0)
+                    return false;
+            }
+        }
+
+        DBUtil::updateTableVersion(USERDB, "t_replay_files", TABLE_VERSION_PATCH121);
+        var version = TABLE_VERSION_PATCH121;
+
+        USERDB.commit();
+        return true;
+    }
+
+    function getSceneryCodeList(favorite)
+    {
+        var where = "WHERE local_userid = ?";
+        var params = [getUserId()];
+
+        if (favorite)
+        {
+            where += " AND favorite = ?";
+            params.push(1);
+        }
+
+        var sql = "SELECT DISTINCT scenery_code FROM %s %s ORDER BY scenery_code".format("t_replay_files", where);
+        var rows = USERDB.executeQuery(sql, params);
+
+        var result = Array(rows.size);
+        for (var i = 0; i < rows.size; i++)
+            result[i] = rows[i][0].toULong();
+        
+        return result;
+    }
+
+    function getTitleList(course_code, favorite)
+    {
+        var where = "WHERE local_userid = ?";
+        var params = [getUserId()];
+
+        if (course_code != nil)
+        {
+            where += " AND course_code = ?";
+            params.push(course_code);
+        }
+
+        if (favorite)
+        {
+            where += " AND favorite = ?";
+            params.push(1);
+        }
+
+        var sql = "SELECT DISTINCT title FROM %s %s ORDER BY title".format("t_replay_files", where);
+        var rows = USERDB.executeQuery(sql, params);
+
+        var result = Array(rows.size);
+        for (var i = 0; i < rows.size; i++)
+            result[i] = rows[i][0];
+        
+        return result;
+    }
+
+    function getOneLapCourseCodeList()
+    {
+        var where = "WHERE local_userid = ? AND onelap = ?";
+        var params = [getUserId(), 1];
+
+        var sql = "SELECT DISTINCT course_code FROM %s %s ORDER BY course_code".format("t_replay_files", where);
+        var rows = USERDB.executeQuery(sql, params);
+
+        var result = Array(rows.size);
+        for (var i = 0; i < rows.size; i++)
+            result[i] = rows[i][0].toULong();
+        
+        return result;
+    }
+
+    function getOneLapTitleList(course_code, id, filename, course_id)
+    {
+        var where = "WHERE local_userid = ? AND onelap = ?";
+        var params = [getUserId(), 1];
+
+        if (course_code != nil)
+        {
+            where += " AND course_code = ?";
+            params.push(course_code);
+
+            if (id != nil)
+            {
+                where += " AND id<>?";
+                params.push(id);
+            }
+
+            if (filename != nil)
+            {
+                where += " AND filename<>?";
+                params.push(filename);
+            }
+
+            if (course_id != nil)
+            {
+                where += " AND course_id<>?";
+                params.push(course_id);
+            }
+        }
+
+        var sql = "SELECT DISTINCT title FROM %s %s ORDER BY title".format("t_replay_files", where);
+        var rows = USERDB.executeQuery(sql, params);
+
+        var result = Array(rows.size);
+        for (var i = 0; i < rows.size; i++)
+            result[i] = rows[i][0];
+        
+        return result;
+    }
+
+    function getOneLapByID(id)
+    {
+        var query = DBUtil::getSelectQuery("t_replay_files", Data);
+        var cond = " WHERE id = ?";
+        var params = [id];
+
+        var res = USERDB.executeQuery(query + cond, params);
+        var result = DBUtil::getDataList(Data, res);
+
+        return result == nil ? nil : result[0];
+    }
+
+    function getFavoriteList(game_mode, scenery_code, order, by)
+    {
+        var condition = getListConditionByScenery(game_mode, scenery_code);
+        if (condition == "")
+            condition = "WHERE favorite = 1";
+        else
+            condition += " AND favorite = 1";
+
+        return getListImpl(condition, order, by);
+    }
+
+    function setFavorite(id, favorite)
+    {
+        var sql = "UPDATE %s SET favorite = %d WHERE id = %d".format("t_replay_files", favorite ? 1 : 0, id);
+        var res = USERDB.execute(sql);
+
+        if (!(res == 101)) { ErrorUtil::warningDBFailed(res, __FILE__, __LINE__); return false; }
+    }
+
+    function getFavoriteCount()
+    {
+        return getCount("WHERE favorite = 1");
+    }
+
+    function getFavoriteMax()
+    {
+        return 50;
+    }
+
+    function getData(path)
+    {
+        var query = DBUtil::getSelectQuery("t_replay_files", Data);
+        var cond = " WHERE filename = ?";
+        var params = [path];
+
+        var res = USERDB.executeQuery(query + cond, params);
+        var list = DBUtil::getDataList(Data, res);
+
+        if (list.size > 0)
+            return list[0];
+        else
+            return nil;
+    }
+
+    function getListConditionByScenery(game_mode, scenery_code)
+    {
+        var condition = "";
+        if (game_mode != nil)
+            condition = "WHERE title = '%{game_mode}' ";
+
+        if (scenery_code != nil)
+        {
+            if (condition == "")
+                condition = "WHERE scenery_code = %{scenery_code} ";
+            else
+                condition += " AND scenery_code = %{scenery_code} ";
+        }
+
+        return condition;
+    }
+
+    function getList(game_mode, scenery_code, order, by)
+    {
+        var condition = getListConditionByScenery(game_mode, scenery_code);
+        return getListImpl(condition, order, by);
+    }
+
+    function getListOneLap(game_mode, course_code, id, filename, event_id, course_id)
+    {
+        var query = DBUtil::getSelectQuery("t_replay_files", Data);
+        var cond = " WHERE onelap = ? AND local_userid = ?";
+        var params = [1, getUserId()];
+
+        if (game_mode != nil)
+        {
+            cond += " AND title = ?";
+            params.push(game_mode);
+        }
+
+        if (course_code != nil)
+        {
+            cond += " AND course_code = ?";
+            params.push(course_code);
+        }
+
+        if (isRestricted())
+        {
+            cond += " AND (download_user = '' OR download_user = ?)";
+            params.push(NP.getOnlineId());
+        }
+
+        if (id != nil)
+        {
+            cond += " AND id<>?";
+            params.push(id);
+        }
+
+        if (filename != nil)
+        {
+            cond += " AND filename<>?";
+            params.push(filename);
+        }
+
+        if (event_id != nil)
+        {
+            cond += " AND event_id = ?";
+            params.push(event_id);
+        }
+
+        if (course_id != nil)
+        {
+            cond += " AND course_id = ?";
+            params.push(course_id);
+        }
+
+        cond += " ORDER BY datetime DESC";
+        var res = USERDB.executeQuery(query + cond, params);
+
+        return DBUtil::getDataList(Data, res);
+    }
+
+    function getListGhostOneLap(course_code, event_id, scenery_code, course_id)
+    {
+        var query = DBUtil::getSelectQuery("t_replay_files", Data);
+        var cond = " WHERE onelap = ?";
+        var params = [1];
+
+        if (course_code != nil)
+        {
+            cond += " AND course_code = ?";
+            params.push(course_code);
+        }
+
+        if (event_id != nil)
+        {
+            cond += " AND event_id = ?";
+            params.push(event_id);
+        }
+
+        if (scenery_code != nil)
+        {
+            cond += " AND scenery_code = ?";
+            params.push(scenery_code);
+        }
+
+        if (course_id != nil)
+        {
+            cond += " AND course_id = ?";
+            params.push(course_id);
+        }
+
+        if (isRestricted())
+        {
+            cond += " AND (download_user = '' OR download_user = ?)";
+            params.push(NP.getOnlineId());
+        }
+
+        cond += " ORDER BY datetime DESC";
+        var res = USERDB.executeQuery(query + cond, params);
+
+        return DBUtil::getDataList(Data, res);
+    }
+
+    function getListGhostOneLapCourseMaker(course_code, crc32)
+    {
+        var query = DBUtil::getSelectQuery("t_replay_files", Data);
+        var cond = " WHERE onelap = ? AND course_code = ? AND crc = ?";
+        var params = [1, course_code, crc32];
+
+        if (isRestricted())
+        {
+            cond += " AND (download_user = '' OR download_user = ?)";
+            params.push(NP.getOnlineId());
+        }
+
+        cond += " ORDER BY datetime DESC";
+        var res = USERDB.executeQuery(query + cond, params);
+
+        return DBUtil::getDataList(Data, res);
+    }
+
+    function getListGhostOneLapForDataLogger(course_code, crc32)
+    {
+        var query = DBUtil::getSelectQuery("t_replay_files", Data);
+        var cond = " WHERE onelap = ? AND course_code = ? AND filename != ? ";
+
+        if (isRestricted())
+        {
+            cond += " AND (download_user = '' OR download_user = ?)";
+            params.push(NP.getOnlineId());
+        }
+
+        var datalogger = main::gtengine::MDataLogger();
+        var path = datalogger.getOriginalPath();
+
+        params = [1, course_code, path];
+
+        if (crc32 == nil || crc32 == 0)
+            cond += "ORDER BY datetime DESC";
+        else
+        {
+            cond += "AND crc = ? ORDER BY datetime DESC";
+            params.push(crc32);
+        }
+
+        var res = USERDB.executeQuery(query + cond, params);
+        return DBUtil::getDataList(Data, res);
+    }
+
+    function getListGhost(course_code, game_mode_name, event_id)
+    {
+        var query = DBUtil::getSelectQuery("t_replay_files", Data);
+        var cond = " WHERE onelap = ? AND course_code = ? AND best_time != ?";
+        var params = [0, course_code, pdiext::MAX_LAPTIME1000];
+
+        if (game_mode_name != nil)
+        {
+            cond += " AND title = ?";
+            params.push(game_mode_name);
+        }
+
+        if (event_id != nil)
+        {
+            cond += " AND event_id = ?";
+            params.push(event_id);
+        }
+
+        if (isRestricted())
+        {
+            cond += " AND (download_user = '' OR download_user = ?)";
+            params.push(NP.getOnlineId());
+        }
+
+        cond += " ORDER BY datetime DESC";
+        var res = USERDB.executeQuery(query + cond, params);
+
+        return DBUtil::getDataList(Data, res);
+    }
+
+    function getReplayOrgPath(mode)
+    {
+        var path;
+        switch (mode)
+        {
+            case MODE_REPLAY:
+                path = ORG.replay_org_path;
+                break;
+
+            case MODE_ONELAP:
+                path = ORG.replay_onelap_play_org_path;
+                break;
+
+            case MODE_ATTACH:
+                path = ORG.replay_onelap_attach_org_path;
+                break;
+        }
+
+        return path;
+    }
+
+    function canSave(mode = MODE_REPLAY)
+    {
+        var path = getReplayOrgPath(mode);
+        if (!pdistd::Exist(path))
+            return false;
+        
+        return true;
+    }
+
+    function enoughSpaceToCopySave(mode)
+    {
+        var path = getReplayOrgPath(mode);
+        var st = pdistd::GetFileStatus(path);
+        var size = st["size"];
+        var space = pdistd::GetDiskFreeSize("/APP_DATA");
+
+        if (space - size < 32 * 1024 * 1024) // 32 MB
+            return false;
+        else
+            return true;
+    }
+
+    function _save(mode, path, not_to_follow_work_path, download_user, play_id)
+    {
+        var buf = ORG.getReplayHeaderFromPath(path);
+        var data = Data();
+        
+        if (!data.create(buf, path, download_user))
+            return false;
+
+        return exec_save(data, mode, path, not_to_follow_work_path, play_id);
+    }
+
+    function save(context, mode, src_path, not_to_follow_work_path, download_user)
+    {
+        if (mode == nil)
+            mode = MODE_REPLAY;
+
+        src_path == nil; // Normal
+
+        var path = getReplayOrgPath(mode);
+        if (src_path != nil)
+            path = src_path;
+
+        if (download_user == nil)
+            download_user = "";
+        
+        return _save(mode, path, not_to_follow_work_path, download_user, pdiapp::play_id);
+    }
+
+    function save_file(path)
+    {
+        var cols = path.split("#");
+        var download_user = "";
+        var play_id = pdiapp::play_id;
+
+        if (cols.size >= 4)
+        {
+            download_user = cols[1];
+            play_id = ("0x" + cols[2]).toULong();
+        }
+
+        _save(nil, path, true, download_user, play_id);
+    }
+
+    function exec_save(data, mode, path, not_to_follow_work_path, play_id)
+    {
+        var path_base = IO::Path::GetDirName(ORG.replay_work_path) + ("/" "rpl#%s#%016lx#").format(data.download_user, play_id);
+        data.filename = DBUtil::getUniqFileName(USERDB, "t_replay_files", path_base);
+        DBUtil::insert(USERDB, "t_replay_files", data);
+
+        pdistd::RenameFile(path, data.filename);
+        if (ORG.getRecordedMarkPath() != nil)
+            pdistd::RenameFile(ORG.getRecordedMarkPath(), data.filename + "S");
+        
+        if (not_to_follow_work_path == nil || !not_to_follow_work_path)
+        {
+            switch (mode)
+            {
+                case MODE_REPLAY:
+                case false:
+                    if (ORG.replay_work_path == ORG.replay_org_path)
+                        ORG.replay_work_path = data.filename;
+                    break;
+
+                case MODE_ONELAP:
+                    var rp = ORG.getCurrentRaceParameter();
+                    if (!data.onelap || rp.ghost_type == gtengine::GhostType::SECTOR_ATTACK)
+                    {
+                        if (ORG.replay_onelap_attach_path == ORG.replay_onelap_play_org_path)
+                            ORG.replay_work_path = data.filename;
+                    }
+
+                    if (ORG.replay_onelap_play_work_path == ORG.replay_onelap_play_org_path)
+                        ORG.replay_onelap_play_work_path = data.filename;
+                    break;
+
+                case MODE_ATTACH:
+                    if (ORG.replay_work_path == ORG.replay_onelap_attach_org_path)
+                        ORG.replay_work_path = data.filename;
+
+                    if (ORG.replay_onelap_attach_path == ORG.replay_onelap_attach_org_path)
+                        ORG.replay_onelap_attach_path = data.filename;
+                    break;
+            }
+        }
+
+        return true;
+    }
+
+    function remove(data)
+    {
+        if (pdistd::Exist(data.filename))
+            pdistd::RemoveFile(data.filename);
+
+        DBUtil::deleteRow(USERDB, "t_replay_files", data);
+    }
+
+    function removeAll()
+    {
+        var list = getList();
+        foreach (var data in list)
+        {
+            if (main::pdistd::Exist(data.filename))
+                main::pdistd::RemoveFile(data.filename);
+        }
+
+        DBUtil::deleteAll(USERDB, "t_replay_files");
+    }
+
+    function removeByList(data_list)
+    {
+        foreach (var data in data_list)
+        {
+            if (pdistd::Exist(data.filename))
+                pdistd::RemoveFile(data.filename);
+        }
+
+        DBUtil::deleteRowBylist(USERDB, "t_replay_files", data_list);
+    }
+
+    function isExist(id)
+    {
+        var sql = "SELECT id FROM %s WHERE id = ?".format("t_replay_files");
+        var rows = USERDB.executeQuery(sql, [id]);
+
+        return rows.size > 0;
+    }
+
+    function getRaceResultText(data, force_best)
+    {
+        var text = "";
+
+        if (data.title == "SINGLE_RACE" || data.title == "EVENT_RACE" 
+            || data.title == "ONLINE_ROOM" || data.title == "ARENA" 
+            || data.title == "ONLINE_SINGLE_RACE")
+        {
+            var order = data.result_order + 1;
+
+            switch (order)
+            {
+                case 1:
+                    text = manager.translate("Number", "ordinal_st").build(order);
+                    break;
+
+                case 2:
+                    text = manager.translate("Number", "ordinal_nd").build(order);
+                    break;
+
+                case 3:
+                    text = manager.translate("Number", "ordinal_rd").build(order);
+                    break;
+
+                default:
+                    text = manager.translate("Number", "ordinal_th").build(order);
+                    break;
+            }
+        }
+        else if (data.title == "TIME_ATTACK" || 
+                data.title == "ONLINE_TIME_ATTACK" ||
+                data.title == "LICENSE" || 
+                data.title == "FREE_RUN" ||
+                data.title == "GPS_REPLAY" || 
+                data.title == "PRACTICE")
+        {
+            var time = data.best_time != 0 ? data.best_time : pdiext::MAX_LAPTIME1000;
+            if (data.onelap == 1 || force_best == true)
+                time = data.best_time != 0 ? data.best_time : pdiext::MAX_LAPTIME1000;
+            else if (data.total_time != 0)
+                time = data.total_time;
+            else 
+                time = data.best_time != 0 ? data.best_time : pdiext::MAX_LAPTIME1000;
+
+            text = pdiext::GetRaceTimeString(time);
+        }
+        else if (data.title == "DRIFT_ATTACK" || data.title == "ONLINE_DRIFT_ATTACK"
+                || data.title == "ARCADE_STYLE_RACE")
+        {
+            text = "%s%s".format(pdiext::GetNumberString(data.score), manager.translate("Unit", "PTS"));
+        }
+        else if (data.title == "COFFEE_BREAK")
+        {
+            switch (data.display_mode)
+            {
+                case gtengine::LicenseDisplayModeType::PYLON_NUM:
+                case gtengine::LicenseDisplayModeType::DRIFT_SCORE:
+                    text = data.score;
+                    break;
+
+                case gtengine::LicenseDisplayModeType::FUEL_DIST:
+                    text = pdiext::MUnit::GetCourseLengthString(data.score / 100f);
+                    text += pdiext::MUnit::GetUnitOfCourseLength();
+                    break;
+
+                default:
+                    var time = data.total_time != 0 ? data.total_time : pdiext::MAX_LAPTIME1000;
+                    text = pdiext::GetRaceTimeString(time);
+                    break;
+            }
+        }
+        else
+        {
+            var time = data.total_time != 0 ? data.total_time : pdiext::MAX_LAPTIME1000;
+            text = pdiext::GetRaceTimeString(time);
+        }
+
+        return text;
+    }
+
+    function getRaceBestResultText(data)
+    {
+        return getRaceResultText(data, true);
+    }
+
+    function getPlayTimeSec(data)
+    {
+        return (data.total_frame_num.toFloat() / 59.94f).toInt();
+    }
+
+    function getPlayTimeText(data)
+    {
+        var playtime_sec = getPlayTimeSec(data);
+        var hour = (playtime_sec / 3600) % 24;
+        var min = (playtime_sec % 3600) / 60;
+        var sec = playtime_sec % 60;
+
+        if (hour > 0)
+            return manager.translate("DateTime", "TIME_HOUR_MIN_SEC").build(hour, "%02d".format(min), "%02d".format(sec));
+        else
+            return manager.translate("DateTime", "TIME_MIN_SEC").build(min, "%02d".format(sec));
+    }
+
+    function updateComment(id, comment)
+    {
+        var sql = "UPDATE %s SET description = ? WHERE id = %d".format("t_replay_files", id);
+        var res = USERDB.execute(sql, [comment]);
+
+        if (!(res == 101)) { ErrorUtil::warningDBFailed(res, __FILE__, __LINE__); return false; }
+    }
+
+    function getUserId()
+    {
+        return pdiapp::play_id;
+    }
+
+    function isRestricted()
+    {
+        return PDINetwork.isChatRestricted();
+    }
+
+    function getListImpl(condition, order, by)
+    {
+        var params = [];
+        if (condition != "")
+            condition += " AND local_userid = ?";
+        else
+            condition = "WHERE local_userid = ?";
+
+        params.push(getUserId());
+
+        var sql = "%s %s %s".format(DBUtil::getSelectQuery("t_replay_files", Data),
+                    condition,
+                    createOrderBy(order, by));
+        var res = USERDB.executeQuery(sql, params);
+        return DBUtil::getDataList(Data, res);
+    }
+
+    function getCount(where)
+    {
+        var params = [];
+        if (where != nil && where != "")
+            where += " AND local_userid = ?";
+        else
+            where = "WHERE local_userid = ?";
+
+        params.push(getUserId());
+
+        var sql = "SELECT COUNT (*) FROM %s %s".format("t_replay_files", where);
+        var res = USERDB.executeQuery(sql, params);
+        var count = getResult1(res);
+
+        return count == nil ? 0 : count;
+    }
+
+    function getResult1(res)
+    {
+        if (res.size == 0)
+            return nil;
+
+        var row = res[0];
+        if (row.size == 0)
+            return nil;
+        return res[0][0];
+    }
+
+    function createOrderBy(order, by)
+    {
+        if (order == nil)
+            order = "datetime";
+
+        if (by == nil)
+            by = "ASC";
+
+        var by2 = by;
+        if (order == "datetime")
+        {
+            if (by == "ASC")
+                by2 = "DESC";
+            else if (by == "DESC")
+                by2 == "ASC";
+        }
+
+        return "order by %{order} %{by2}, id";
+    }
+}

@@ -1,0 +1,429 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module SennaSlideShowRoot
+{
+    hidden.visible = false;
+
+    attribute modal;
+    attribute current_chapter;
+    attribute photo_list;
+
+    method open(context, chapter)
+    {
+        self.current_chapter = chapter;
+        self.modal = SequenceUtil::ModalPage(context, self);
+        self.modal.open();
+    }
+
+    method close(context)
+    {
+        if (self.modal != nil)
+        {
+            menu::FrameInterval = 2;
+            PageUtil::visibleUnderPages(context, self);
+            
+            var actor = self.Fade;
+            actor.backward();
+            actor.restart();
+        
+            self.modal.close(actor.total_time);
+            self.modal = nil;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        self.photo_list = MENUDB.queryList("SELECT * FROM t_senna_slideshow WHERE chapter=? ORDER BY display_order", [self.current_chapter]);
+        Image1.visible = self.current_chapter == 1;
+        Image2.visible = self.current_chapter == 2;
+        Image3.visible = self.current_chapter == 3;
+        Image4.visible = self.current_chapter == 4;
+
+        PlaySlideShow::Base1.visible = self.current_chapter == 1;
+        PlaySlideShow::Base2.visible = self.current_chapter == 2;
+        PlaySlideShow::Base3.visible = self.current_chapter == 3;
+        PlaySlideShow::Base4.visible = self.current_chapter == 4;
+
+        PlaySlideShow::Photos.text = manager.translate("Unit", "PHOTOS").build(photo_list.size);
+
+        hidden::PhotoThumb::Number.text = "";
+
+        PhotoList.setItemTemplate(context, hidden::PhotoThumb);
+        PhotoList.setItemCount(photo_list.size);
+        
+        ChapterTitle.text = manager.translate("GTModeProject::SennaChapterRoot", "CHAPTER%d_TITLE".format(self.current_chapter));
+
+        ContextMain.disableInput();
+
+        var actor = self.Fade;
+        actor.forward();
+        actor.restart();
+
+        actor.on_effect_end = (context) => 
+        {
+            actor.on_effect_end = nil;
+            menu::FrameInterval = 1;
+            PageUtil::invisibleUnderPages(context, self);
+            ContextMain.enableInput();
+        };
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel"); 
+        self.close(context);
+        return STATE_YIELD;
+    }
+
+    module PlaySlideShow::Icon
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+
+            SennaSlideShowRoot::PhotoList.insensitive = true;
+            self.insensitive = true;
+
+            SlideShow.open(context);
+
+            self.insensitive = false;
+            SennaSlideShowRoot::PhotoList.insensitive = false;
+
+            return STATE_YIELD;
+        }
+    }
+
+    module PhotoList
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+
+            SennaSlideShowRoot::PlaySlideShow::Icon.insensitive = true;
+            self.insensitive = true;
+
+            Viewer.open(context, self.focus_index);
+
+            self.insensitive = false;
+            SennaSlideShowRoot::PlaySlideShow::Icon.insensitive = false;
+
+            return STATE_YIELD;
+        }
+
+        method onVisibleNotify(context, indexes)
+        {
+            foreach (var i in indexes)
+            {
+                if (self.getItemVisible(i))
+                {
+                    var w = self.getItemWidget(i);
+                    if (w == nil)
+                    {
+                        var photo_info = SennaSlideShowRoot.photo_list[i];
+                        w = self.getItemWidget(i, context);
+                        w.ImageFace.image_path = "piece/gt6/senna/thumbnail/%s.img".format(photo_info.image);
+                        w.Number.text = i + 1;
+                    }
+                }
+            }
+        }
+    }
+
+    module Viewer
+    {
+        attribute current_index;
+        attribute event_loop;
+
+        method onInitialize(context)
+        {
+            self.Fade.forward();
+            self.Fade.reset();
+        }
+
+        method open(context, index)
+        {
+            self.current_index = index;
+            self.setIndex(context, index);
+
+            self.Fade.forward();
+            self.Fade.start();
+
+            var focus = SennaSlideShowRoot.getFocusWidget();
+            SennaSlideShowRoot.setFocus(self);
+            self.insensitive = false;
+            context.cursor_visible = false;
+
+            self.event_loop = main::menu::EventLoop(context);
+            self.event_loop.enter();
+
+            context.cursor_visible = true;
+            self.insensitive = true;
+            SennaSlideShowRoot.setFocus(focus);
+            self.Fade.backward();
+            self.Fade.start();
+        }
+
+        method close(context)
+        {
+            if (self.event_loop != nil)
+            {
+                self.event_loop.leave();
+                self.event_loop = nil;
+            }
+        }
+
+        method setIndex(context, index)
+        {
+            var min = 0;
+            var max = SennaSlideShowRoot.photo_list.size - 1;
+
+            if (index < min || max < index)
+                return false;
+
+            dec_arrow.visible = min < index;
+            inc_arrow.visible = index < max;
+
+            var photo_info = SennaSlideShowRoot.photo_list[index];
+            var image_path = "piece/gt6/senna/%s.img".format(photo_info.image);
+
+            self.setImagePath(context, image_path);
+
+            self.current_index = index;
+            self.SBox::Caption.text = manager.translate(photo_info.page, photo_info.caption);
+            self.SBox::Opacity.restart();
+
+            Copyright.text = manager.translate("Senna01", photo_info.copyright);
+            PhotoList.focus_index = index;
+            return true;
+        }
+
+        method addIndex(context)
+        {
+            var index = self.current_index + 1;
+            return self.setIndex(context, index);
+        }
+
+        method decIndex(context)
+        {
+            var index = self.current_index - 1;
+            return self.setIndex(context, index);
+        }
+
+        method setImagePath(context, image_path)
+        {
+            var imageface = self.ImageFace;
+            imageface.image_path = image_path;
+            imageface.Fade.reset();
+
+            var end_load_img = method (context)
+            {
+                imageface.Fade.start();
+                imageface.on_delay_load_complete = nil;
+            };
+
+            imageface.on_delay_load_complete = *self{end_load_img};
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            self.close(context);
+            return STATE_YIELD;
+        }
+
+        method onKeyPress(context, event)
+        {
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L3_RIGHT:
+                case CELL_PAD_CTRL_R1:
+                    if (self.addIndex(context))
+                        sound.play("cursor");
+                    break;
+
+                case CELL_PAD_CTRL_L3_LEFT:
+                case CELL_PAD_CTRL_L1:
+                    if (self.decIndex(context))
+                        sound.play("cursor");
+                    break; 
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module SlideShow
+    {
+        attribute play_loop_thread;
+        attribute event_loop;
+
+        method onInitialize(context)
+        {
+            self.Fade.forward();
+            self.Fade.reset();
+            reset();
+        }
+
+        method reset()
+        {
+            Caption::Opacity.rewind();
+            Caption::Opacity.stop();
+            Caption.text = "";
+            Copyright.text = "";
+
+            Image01::Opacity.rewind();
+            Image01::Opacity.stop();
+            Image01::Zoom.rewind();
+            Image01::Zoom.stop();
+            Image01.image_path = "";
+
+            Image02::Opacity.rewind();
+            Image02::Opacity.stop();
+            Image02::Zoom.rewind();
+            Image02::Zoom.stop();
+            Image02.image_path = "";
+        }
+
+        method open(context)
+        {
+            self.reset();
+            self.Fade.forward();
+            self.Fade.start();
+
+            var focus = SennaSlideShowRoot.getFocusWidget();
+            SennaSlideShowRoot.setFocus(self);
+            self.insensitive = false;
+            context.cursor_visible = false;
+
+            self.play_loop_thread = Thread(self.play_loop, context);
+            self.play_loop_thread.start();
+            SoundUtil::MenuBGMCrossfadeGroup("senna_slide_1", 0.0, 1.0);
+
+            self.event_loop = main::menu::EventLoop(context);
+            self.event_loop.enter();
+            SoundUtil::MenuBGMCrossfadeGroup("senna_menu", 0.0, 1.0);
+
+            context.cursor_visible = true;
+            self.insensitive = true;
+            SennaSlideShowRoot.setFocus(focus);
+            self.Fade.backward();
+            self.Fade.start();
+        }
+
+        method close(context)
+        {
+            if (self.play_loop_thread != nil)
+            {
+                self.play_loop_thread.terminate();
+                self.play_loop_thread = nil;
+            }
+
+            if (self.event_loop != nil)
+            {
+                self.event_loop.leave();
+                self.event_loop = nil;
+            }
+        }
+
+        method play_loop(context)
+        {
+            var fadein_image_w = Image01;
+            var fadeout_image_w = Image02;
+
+            var display_count = 0;
+            for (var i = 0; i < SennaSlideShowRoot.photo_list.size; ++i)
+            {
+                var photo_info = SennaSlideShowRoot.photo_list[i];
+                if (display_count == 0)
+                {
+                    if (i > 0)
+                    {
+                        var tmp_fadeout_image_w = fadeout_image_w;
+                        fadeout_image_w = fadein_image_w;
+                        fadein_image_w = tmp_fadeout_image_w;
+                    }
+
+                    var zoom_total_time = 0;
+                    for (var ii = i; ii < SennaSlideShowRoot.photo_list.size; ++ii)
+                    {
+                        var photo_info2 = SennaSlideShowRoot.photo_list[ii];
+                        if (photo_info.image != photo_info2.image)
+                            break;
+
+                        zoom_total_time += photo_info2.display_time;
+                        display_count++;
+                    }
+
+                    var scale = 1.0 + (0.04 * display_count);
+                    fadein_image_w.Zoom.setEndValue(0, [scale, scale]);
+                    fadein_image_w.Zoom.total_time = zoom_total_time + fadeout_image_w.Opacity.total_time;
+                    fadein_image_w.Opacity.forward();
+                    fadein_image_w.Opacity.reset();
+                    fadein_image_w.image_path = "";
+                    fadein_image_w.on_delay_load_complete = () =>
+                    {
+                        fadein_image_w.Opacity.start();
+                        fadein_image_w.on_delay_load_complete = nil;
+                    };
+                    fadein_image_w.image_path = "piece/gt6/senna/%s.img".format(photo_info.image);
+                    fadein_image_w.Zoom.restart();
+                    fadeout_image_w.Opacity.backward();
+                    fadeout_image_w.Opacity.restart();
+                }
+
+                Caption.text = manager.translate(photo_info.page, photo_info.caption);
+                Caption::Opacity.total_time = photo_info.display_time;
+                Caption::Opacity.restart();
+
+                if (photo_info.caption == "SENNA_P_4_320")
+                {
+                    SoundUtil::BGMFadeout(photo_info.display_time);
+                }
+
+                if (photo_info.caption == "SENNA_P_4_330")
+                {
+                    SoundUtil::MenuBGMCrossfadeGroup("senna_slide_2", photo_info.display_time);
+                }
+
+                Copyright.text = manager.translate("Senna01", photo_info.copyright);
+
+                while (Caption::Opacity.ramain_time > 0)
+                {
+                    Thread::Sleep(0.1);
+                }
+
+                display_count--;
+            }
+
+            fadein_image_w.Opacity.backward();
+            fadein_image_w.Opacity.restart();
+
+            Thread::Sleep(fadein_image_w.Opacity.ramain_time);
+
+            if (self.event_loop != nil)
+            {
+                self.event_loop.leave();
+                self.event_loop = nil;
+            }
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            self.close(context);
+            return STATE_YIELD;
+        }
+    }
+}

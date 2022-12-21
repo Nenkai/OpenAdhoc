@@ -1,0 +1,143 @@
+
+
+
+
+
+//////////////////////////////////
+// Modal for joining a room by ID
+//////////////////////////////////
+module DirectJoinDialog
+{
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+
+    method open(context, room, handler)
+    {
+        self.result = false;
+        self.closed = false;
+
+        self.popup = main::SequenceUtil::ModalPage(context, RoomDetailDialog);
+
+        self.popup.open();
+        return self.result;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        if (DirectJoinDialog.popup != nil)
+        {
+            DirectJoinDialog.popup.close();
+            DirectJoinDialog.popup = nil;
+        }
+    }
+
+    method abort(context)
+    {
+        context.closeOSK();
+
+        close(context);
+        ContextMain.enableInput();
+    }
+
+    method onInitialize(context)
+    {
+        DirectJoinDialog.setFocus(Popup::Pane::Body::ID::Text::input);
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        DirectJoinDialog.setFocus(Popup::Pane::Body::Buttons::Cancel);
+
+        return STATE_YIELD;
+    }
+
+    module Popup::Pane::Body
+    {
+        module Buttons::Cancel
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                DirectJoinDialog.close(context);
+                return STATE_YIELD;
+            }
+
+            method onCancel(context)
+            {
+                main::sound.play("cancel");
+                DirectJoinDialog.close(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module Buttons::OK
+        {
+            method onActivate(context)
+            {
+                var roomId;
+                if (OnlineUtility.isLanMode())
+                {
+                    roomId = Popup::Pane::Body::ID::Text::input;
+                    roomId = pdistd::MPDINetwork::ConvertIPv4Address32(roomId);
+                }
+                else
+                {
+                    var roomId = Popup::Pane::Body::ID::Text::input.value.toULong();
+                    if (roomId < 1)
+                    {
+                        main::sound.play("disable");
+                        return STATE_YIELD;
+                    }
+
+                    roomId = roomId ^ Lobby.getRoomIdKey();
+                    main::sound.play("ok");
+                }
+
+                var ret = Lobby.getExternalRoomInfoSync(roomId);
+                if (ret.isInstanceOf(Int) || ret.size < 1)
+                {
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                        manager.translate("OnlineMessage", "ROOM_NOT_FOUND"));
+
+                    return STATE_YIELD;
+                }
+
+                var room = ret[0];
+                if (room["version"] != OnlineUtility.getRoomVersion() || // Version mismatch?
+                    room["roomType"] == gtengine::RoomType::CLUB_EVENT || // Room is club event, only members can join
+                    (room["roomType"] == gtengine::RoomType::CLUB_LOBBY && room["scope"] != gtengine::Scope::PUBLIC) || // Room is club lobby, but not allowed to public
+                    room["isHidden"]) // Room is marked as hidden
+                {
+                    // Then Room is "not found" for the user
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                        manager.translate("OnlineMessage", "ROOM_NOT_FOUND"));
+
+                    return STATE_YIELD;
+                }
+
+                // Join room
+                var res = OnlineUtil::enterRoomWithProgressDialog(context, [room, nil]);
+                if (res)
+                {
+                    DirectJoinDialog.result = true;
+                    DirectJoinDialog.close(context);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+    }
+}

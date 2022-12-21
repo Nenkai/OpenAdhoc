@@ -1,0 +1,416 @@
+
+
+//---------------------------------------------------------------------------------------
+// LoginUtil.ad
+//
+// Utility module for basic and critical login operations.
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+
+module LoginUtil
+{
+    static sPutLogAfterLoggedInSent = false;
+
+    function isOnline()
+    {
+        return Login.isOnline();
+    }
+
+    function makeSureLogin(context, showLoginRequiredDialog = false)
+    {
+        if (OnlineUtility.isLanMode())
+            return true;
+
+        var withEula = true;
+        Login.setWithEula(withEula);
+        Login.setCheckSession(false);
+
+        var tryLogin = false;
+        var ret = Login.makeSureLogin(tryLogin);
+
+        checkError(context);
+        checkSaveDataBind();
+
+        if (!ret && showLoginRequiredDialog)
+            openLoginRequiredDialog(context);
+
+        return ret;
+    }
+
+    function makeSureLoginWithExtendSessionError(context, showLoginRequiredDialog = false)
+    {
+        Login.setWithEula(false);
+        Login.setCheckSession(true);
+        var ret = Login.makeSureLogin(false);
+
+        checkError(context);
+        checkSaveDataBind();
+
+        if (!ret && showLoginRequiredDialog)
+            openLoginRequiredDialog(context);
+
+        return ret;
+    }
+
+    function tryLogin(context, with_eula = true)
+    {
+        var res = tryLoginBackground(context, with_eula);
+        if (res)
+            Login.waitForWakingUp();
+
+        return sync(context);
+    }
+
+    function showNpEula(context)
+    {
+        if (tryLogin(context, false))
+            NpEula.show();
+    }
+
+    function isParentalLock(context)
+    {
+        if (Login.isParentalLock())
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                manager.translate("Network", "PARENTAL_CONTROL_LOCK"));
+            return true;
+        }
+
+        return false;
+    }
+
+    function isChatRestricted(context)
+    {
+        if (PDINetwork.isChatRestricted())
+        {
+            var text = main::manager.translate("OnlineMessage", "ERROR_CHAT_RESTRICTED");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+            return true;
+        }   
+
+        return false;
+    }
+
+    function putLogUserEnvironment()
+    {
+        var resolutionConfig = pdiext::MSystemConfiguration::GetDisplayResolution();
+        var resolution = "%dx%d%s %.2t".format(resolutionConfig[0], resolutionConfig[1], resolutionConfig[2], (resolutionConfig[3] * 100f).toInt());
+
+        var macaddr = pdistd::MNetworkInterface::getMacAddress();
+        macaddr = macaddr.split(":").join("");
+
+        var wireless = pdistd::MNetworkInterface::isDeviceWireless();
+        var account = PDINetwork.getClientName();
+        var region = PDINetwork.getRegionName();
+        var nat = 0;
+        var nat_info = pdistd::MNetworkInterface::getNatInfo();
+
+        var nat;
+        if (nat_info != nil)
+            nat = nat_info["nat"];
+
+        var lang = pdistd::MLocale::getLanguage();
+        var is3DTV = pdiext::MSystemConfiguration::is3DTVAvailable();
+        var freeDiskSpace = pdistd::GetDiskFreeSize("/APP_DATA");
+
+        var strlog = "QA=%{resolution}:QM=%{macaddr}:QW=%{wireless}:QU=%{account}:QN=%{nat}:QR=%{region}:QL=%{lang}:Q3=%{is3DTV}:QF=%{freeDiskSpace}";
+        main::Grim2.requestPutLog(strlog);
+    }
+
+    function processAfterLogin(context)
+    {
+        if (!sPutLogAfterLoggedInSent)
+        {
+            putLogUserEnvironment();
+            Grim2Util::PUTLOG::CURRENT::status("login");
+            sPutLogAfterLoggedInSent = true;
+        }
+
+        Grim2Util::updateFriendList(context);
+    }
+
+    function updateNews(context)
+    {
+        if (GAME_STATUS == nil)
+            return;
+
+        var request1 = News2.requestCategoryList(args => {});
+        if (Grim2Util::join(context, request1))
+        {
+            var category_list = News2.decodeCategoryList(request1);
+            var news = GAME_STATUS.user_profile.news;
+
+            if (request1.isUpdated() || category_list.size != news.getCategoryCount())
+                news.updateCategoryList(category_list);
+        }
+    }
+
+    function tryLoginBackground(context, with_eula)
+    {
+        Login.setWithEula(with_eula);
+        Login.backgroundLogin();
+        return true;
+    }
+
+    function checkBackgroundProgress(context)
+    {
+        if (Login.isWaitingUi())
+            _executeLoginUiFunction(context);
+    }
+
+    function _executeLoginUiFunction(context)
+    {
+        var [func, args] = Login.getUiFunction();
+        if (func != nil)
+            func(...args);
+        else
+            ;
+    }
+
+    function openLoginRequiredDialog(context)
+    {
+        sound.play("disable");
+        var ret = Login.getRetMap();
+
+        if (ret["showParentalControlLock"] != nil)
+            return;
+
+        if (ret["showGrimMaintenanceMessage"] != nil)
+            return;
+
+        var message;
+        if (ret["isPatchExist"] != nil)
+            message = manager.translate("Network", "CANNOT_CONNECT_SERVER_WITHOUT_APPLYING_PATCH");
+        else if (ret["eulaCheckFailed"] != nil)
+            message = manager.translate("Network", "YOU_CANNOT_PROCEED_WITHOUT_AGREEMENT_ON_EULA");
+        else
+            message = manager.translate("Network", "NP_YOU_CANNOT_ENTER_WITHOUT_SIGNING_IN");
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, message);
+    }
+
+    function checkError(context)
+    {
+        var error = Login.getLastError();
+        var ret = Login.getRetMap();
+
+        if (ret["isPatchExist"] != nil)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+                manager.translate("Network", "SYSTEM_PATCH_EXIST"));
+        }
+
+        if (ret["showParentalControlLock"] != nil)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                manager.translate("Network", "PARENTAL_CONTROL_LOCK"));
+        }
+
+        if (ret["showChatRestricted"] != nil)
+        {
+            var text = main::manager.translate("OnlineMessage", "ERROR_CHAT_RESTRICTED");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+        }
+
+        if (ret["eulaCheckFailed"] != nil)
+        {
+            var text = manager.translate("Network", "YOU_CANNOT_LOGIN_WITHOUT_AGREEMENT_ON_EULA");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+        }
+
+        if (ret["showGrimMaintenanceMessage"] != nil)
+        {
+            var maintenanceMessage = main::Grim2.getMaintenanceMessage();
+            if (maintenanceMessage == "")
+                maintenanceMessage = manager.translate("Network", "MAINTENANCE_SERVER");
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, maintenanceMessage);
+        }
+
+        if (ret["ticketLoginFailed"] != nil)
+        {
+            var statusCode = ret["httpStatusCode"];
+            if (statusCode == nil)
+            {
+                var text = manager.translate("Network", "CANNOT_CONNECT_SERVER");
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+            }
+            else
+            {
+                var consoleBanned = false;
+                var accountBanned = false;
+                var text = "";
+
+                switch (statusCode)
+                {
+                    case 497:
+                    case 498:
+                        consoleBanned = true;
+                        text = manager.translate("Network", "YOUR_CONSOLE_IS_BANNED");
+                        break;
+
+                    case 499:
+                        accountBanned = true;
+                        text = manager.translate("Network", "YOUR_ACCOUNT_IS_BANNED");
+                        break;
+
+                    case 496:
+                        accountBanned = true;
+                        text = manager.translate("Network", "YOUR_ACCOUNT_IS_SUSPENDED");
+                        break;
+                }
+
+                if (consoleBanned || accountBanned)
+                {
+                    DialogUtil::openTextReaderDialog(context, nil, [text]);
+                    ret["showHttpErrorDialog"] = nil;
+                }
+            }
+        }
+
+        if (ret["showHttpErrorDialog"] != nil)
+            Grim2Util::openHttpErrorDialog(context, ret["httpErrorInfo"], error);
+
+        if (ret["isWrongClientTime"] != nil)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+                manager.translate("Network", "WRONG_CLIENT_TIME"));
+        }
+        
+        if (Login.isGrimLoginForbidden())
+        {
+            if (ret["processAfterLogin"] != nil)
+                processAfterLogin(context);
+        }
+    }
+
+    function sync(context)
+    {
+        while (Login.isRunning())
+        {
+            if (Login.isWaitingUi())
+                _executeLoginUiFunction(context);
+            else
+                pdistd::DelayThread(16 * 1000);
+        }
+
+        Login.sync();
+        checkError(context);
+        return Login.isOnline();
+    }
+
+    function checkSaveDataBind()
+    {
+        if (Login.isOnline())
+        {
+            if (!GAME_STATUS.user_profile.context.special_save)
+            {
+                var violated = false;
+                if (GAME_STATUS.user_profile.online_id != "")
+                {
+                    if (GAME_STATUS.user_profile.online_id != NP.getOnlineId())
+                    {
+                        Grim2.setInitialize(false);
+                        Login.setGrimLoginForbidden(true);
+                        violated = true;
+                    }
+                    else { }
+                }
+
+                if (!violated)
+                {
+                    GAME_STATUS.user_profile.online_id = NP.getOnlineId();
+                }
+            }
+        }
+    }
+
+    function setPresence(online, join)
+    {
+        var message = online ? "ENTER COMMUNITY" : "LEAVE COMMUNITY";
+
+        var request = UserProfile2.requestSetPresence(message, args => {});
+        if (join != nil && join)
+        {
+            var context = manager.getUpdateContext().getRenderContext(0);
+            Grim2Util::join(context, request);
+        }
+    }
+}
+
+// The engine will refer to these directly
+static module main
+{
+    function onForegroundLoginUiHook()
+    {
+        LoginUtil::_executeLoginUiFunction();
+    }
+
+    function onOpenServerSelectDialog(context, args)
+    {
+        var [request] = args;
+        var regionList = Grim2.decodeRegionList(request);
+
+        var selectedServer = DialogUtil::openServerSelectDialog(context, regionList);
+        Login.setGrimServerRegion(selectedServer);
+        Login.finishUiProcess();
+    }
+
+    function onOpenSignInDialog(context, args)
+    {
+        var [isBackgroundMode] = args;
+        if (!isBackgroundMode)
+            DialogUtil::openDimmerDialog(context);
+
+        NP.openSignInDialog();
+        if (!isBackgroundMode)
+            DialogUtil::closeDimmerDialog(context);
+
+        Login.finishUiProcess();
+    }
+
+    function restartServer()
+    {
+        if (main::networkServerEnabled)
+        {
+            if (WebAd == nil)
+            {
+                main::WebAd = pdistd::MWebAd();
+                main::WebAd.setFileRootPath("/www/gt6/adhoc");
+            }
+
+            var config = "/www/gt6/config/server.conf";
+            PDINetwork.startWebServer(config);
+        }
+    }
+
+    function onNetworkStateOnline(context) 
+    { 
+
+    }
+
+    function onNetworkStateOffline(context)
+    {
+        if (Grim2.isInitialize())
+            Grim2.setInitialize(false);
+    }
+
+    function onNetworkInterfaceOnline(context)
+    {
+        restartServer();
+    }
+
+    function onNetworkInterfaceOffline(context)
+    {
+
+    }
+
+    function onNetworkPresenceUpdated(context, presence)
+    {
+        
+    }
+}

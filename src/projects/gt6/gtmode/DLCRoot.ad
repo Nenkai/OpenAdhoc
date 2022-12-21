@@ -1,0 +1,924 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module DLCRoot
+{
+    class PSNData
+    {
+        attribute sku_list;
+
+        method __init__()
+        {
+            self.sku_list = Map();
+        }
+
+        method get(context)
+        {
+            NPCommerceUtil::begin(context);
+            getImpl(context, nil);
+            NPCommerceUtil::end(context);
+        }
+
+        method getImpl(context, category_id)
+        {
+            var category = NPCommerceUtil::getCategory(category_id);
+            if (category == nil)
+            {
+                main::Grim2.setInitialize(false);
+                return;
+            }
+
+            var contents = category["contents"];
+            foreach (var content in contents)
+            {
+                if (content["contentType"] == "CATEGORY")
+                {
+                    getImpl(context, content["categoryId"]);
+                }
+                else if (content["contentType"] == "PRODUCT")
+                {
+                    var sku_all = content["sku"];
+                    var sku_id = sku_all["skuId"];
+                    var product_id = content["productId"];
+
+                    var sku = [
+                        "sku_id" : sku_id,
+                        "price" : sku_all["price"],
+                        "category_id" : category_id,
+                        "product_id" : product_id
+                    ];
+
+                    sku["price_text"] = NPCommerceUtil::getPrice(sku_all["price"]);
+                    self.sku_list[product_id] = sku;
+                }
+            }
+        }
+    }
+
+    function updateTicketForce(context)
+    {
+        if (!NP.isOnline())
+            return;
+
+        NP.requestTicketRequest();
+
+        var limit = 60 * 5;
+        while (limit > 0 && NP.getTicketStatus() > 0)
+        {
+            --limit;
+            context.wait(0.2);
+        }
+
+        if (limit == 0)
+            ;
+    }
+
+    function getPrice(entitlement)
+    {
+        var entitlement_id = entitlement.entitlement_id;
+        foreach (var [key, value] in DLCRoot.psn_data.sku_list)
+        {
+            if (key.beginWith(entitlement_id))
+            {
+                entitlement.sku_id = value["sku_id"];
+                return value["price_text"];
+            }
+        }
+
+        return manager.translate("DLC", "SUSPEND_SALE");
+    }
+
+    function getTitle(entitlement)
+    {
+        var region = pdiext::MProductInformation::GetGameRegionCode() == "scej" ? "_SCEJ" : "";
+        var key = "";
+
+        switch (entitlement.type)
+        {
+            case DLCUtil::TYPE::CREDIT_0050:
+                key = "GAME_CREDIT_RED%{region}";
+                break;
+
+            case DLCUtil::TYPE::CREDIT_0100:
+                key = "GAME_CREDIT_BLUE%{region}";
+                break;
+                    
+            case DLCUtil::TYPE::CREDIT_0250:
+                key = "GAME_CREDIT_GOLD%{region}";
+                break;
+
+            case DLCUtil::TYPE::CREDIT_0700:
+                key = "GAME_CREDIT_PLATINUM%{region}";
+                break;
+        }
+
+        return manager.translate("DLC", key);
+    }
+
+    function getDescription(entitlement)
+    {
+        var region = pdiext::MProductInformation::GetGameRegionCode() == "scej" ? "_SCEJ" : "";
+        var key = "";
+
+        switch (entitlement.type)
+        {
+            case DLCUtil::TYPE::CREDIT_0050:
+                key = "GAME_CREDIT_DESCRIPTION_RED%{region}";
+                break;
+
+            case DLCUtil::TYPE::CREDIT_0100:
+                key = "GAME_CREDIT_DESCRIPTION_BLUE%{region}";
+                break;
+                    
+            case DLCUtil::TYPE::CREDIT_0250:
+                key = "GAME_CREDIT_DESCRIPTION_GOLD%{region}";
+                break;
+
+            case DLCUtil::TYPE::CREDIT_0700:
+                key = "GAME_CREDIT_DESCRIPTION_PLATINUM%{region}";
+                break;
+        }
+
+        return manager.translate("DLC", key);
+    }
+
+    function getImagePath(entitlement)
+    {
+        var dir = "";
+        if (pdiext::MProductInformation::GetGameRegionCode() == "scej")
+            dir = "jp";
+        else
+        {
+            var language = pdistd::MLocale::getLanguage();
+            switch (language)
+            {
+                case "RU":
+                    dir = "kp";
+                    break;
+
+                case "PL":
+                case "TR":
+                case "CZ":
+                case "HU":
+                    dir = "kr";
+                    break;
+
+                case "EL":
+                    dir = "mov";
+                    break;
+
+                default:
+                    dir = "cr";
+                    break;
+            }
+        }
+
+        var file = "";
+
+        switch (entitlement.type)
+        {
+            case DLCUtil::TYPE::CREDIT_0050:
+                file = "red";
+                break;
+
+            case DLCUtil::TYPE::CREDIT_0100:
+                file = "blue";
+                break;
+                    
+            case DLCUtil::TYPE::CREDIT_0250:
+                file = "gold";
+                break;
+
+            case DLCUtil::TYPE::CREDIT_0700:
+                file = "platinum";
+                break;
+        }
+
+        return "/piece/gt6/credit/%{dir}/%{file}.img";
+    }
+
+    function checkOnline(context)
+    {
+        if (LoginUtil::isOnline())
+            return true;
+
+        ERROR(context, "DLC", "ERROR_NOT_SIGNIN");
+        DLCRoot.close(context);
+
+        return false;
+    }
+
+    attribute modal_page;
+    attribute closed;
+    attribute psn_data;
+    attribute need_save;
+
+    hidden.visible = false;
+
+    method open(context)
+    {
+        self.need_save = false;
+        self.closed = false;
+        self.modal_page = main::SequenceUtil::ModalPage(context, DLCRoot);
+        self.modal_page.open();
+
+        return true;
+
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        if (self.need_save)
+            SaveDataUtilGT6::saveEveryWhere(context);
+
+        PageUtil::visibleUnderPages(context, self);
+
+        DLCRoot.setFocus(nil);
+
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        if (self.modal_page != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+        }
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        ContextMain.disableInput();
+
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+        actor.on_effect_end = (context) => 
+        {
+            if (DLCRoot.closed)
+                return;
+
+            actor.on_effect_end = nil;
+            PageUtil::invisibleUnderPages(context, self);
+            ContextMain.enableInput();
+        };
+
+        self.CloseActor.stop();
+
+        var target = ListMenu::Categories::ScrolledWindow::clip::space::Contents::VBox::GameCredit;
+        ListMenu.setActiveGroup(context, target);
+        ListMenu.updateList(context);
+
+        DLCRoot.setFocus(target);
+
+        HttpUtil::begin(HttpUtil::sInitParamsNpCommerce2);
+        
+        self.psn_data = PSNData();
+        self.psn_data.get(context);
+
+        if (!Grim2.isInitialize())
+        {
+            context.pushEvent(menu::MScriptEvent(context, self, "on_error"));
+        }
+
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        HttpUtil::end();
+        return STATE_YIELD;
+    }
+
+    method on_error(context)
+    {
+        checkOnline(context);
+    }
+
+    module ListMenu
+    {
+        attribute active_w;
+
+        method onInitialize(context)
+        {
+            self.insensitive = false;
+        }
+
+        method setActiveGroup(context, group_item)
+        {
+            var change_active_w = self.active_w != group_item;
+            if (self.active_w != nil)
+            {
+                self.active_w.active = false;
+                self.active_w = nil;
+            }
+
+            self.active_w = group_item;
+            if (!group_item.insensitive)
+            {
+                group_item.active = true;
+                ListWindow::Empty.visible = false;
+                ListWindow::Head::Label.text = group_item.Label.text;
+            }
+            else
+            {
+                ListWindow::Empty.visible = true;
+                ListWindow::Empty::TextFace.text= manager.translate("DLC", "Label_NoDLC");
+                ListWindow::Head::Label.text = "";
+            }
+
+            return change_active_w;
+        }
+
+        method updateList(context)
+        {
+            if (self.active_w == nil)
+                return;
+
+            if (self.active_w.defined("updateList"))
+                self.active_w["updateList"](context);
+
+            DLCRoot.setFocus(self.active_w);
+        }
+    }
+
+    module ListMenu::Categories
+    {
+        attribute focus_widget_;
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_RIGHT)
+            {
+                self.focus_widget_ = DLCRoot.getFocusWidget()
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module ListMenu::ListWindow::clip::ListBox
+    {
+        attribute data_list;
+
+        method onVisibleNotify(context, indices)
+        {
+            foreach (var i in indices)
+            {
+                if (self.getItemVisible(i))
+                {
+                    var item = self.getItemWidget(i);
+                    if (item == nil)
+                    {
+                        item = self.getItemWidget(i, context);
+                    }
+                    
+                    if (item.value == nil)
+                    {
+                        item.initialize(context, self.data_list[i]);
+                    }   
+                }
+            }
+        }
+
+        method onActivate(context, event)
+        {
+            sound.play("ok");
+            var item = self.getItemWidget(self.focus_index, context);
+            if (item.defined("on_activate"))
+                item.on_activate(context);
+
+            return STATE_YIELD;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+            {
+                var w = ListMenu::Categories.focus_widget_;
+                if (w != nil)
+                {
+                    sound.play("cursor");
+                    DLCRoot.setFocus(w);
+                    return STATE_YIELD;
+                }
+            }
+            else if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
+            {
+                var item = self.getItemWidget(self.focus_index, context);
+                if (item.defined("on_triangle"))
+                {
+                    item.on_triangle(context);
+                }
+            }
+
+            return STATE_EXIT;
+        }
+
+        method setList(context, data_list, template)
+        {
+            var listbox = self;
+            listbox.setItemCount(0);
+
+            if (data_list.size > 0)
+            {
+                listbox.setItemTemplate(context, template);
+                listbox.setItemCount(data_list.size);
+                listbox.data_list = data_list;
+                listbox.focus_index = 0;
+                listbox.is_enable = true;
+            }
+            else
+            {
+                listbox.is_enable = false;
+            }
+        }
+    }
+
+    module ListMenu::Categories::ScrolledWindow::clip::space::Contents::VBox::GameCredit
+    {
+        method onInitialize(context)
+        {
+            self.insensitive = false;
+        }
+
+        method onFinalize(context)
+        {
+            self.active = false;
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            var res = ListMenu.setActiveGroup(context, self);
+            if (res)
+            {
+                updateList(context);
+            }
+
+            return STATE_YIELD;
+        }
+
+        method updateList(context)
+        {
+            var type_list = [
+                DLCUtil::TYPE::CREDIT_0050,
+                DLCUtil::TYPE::CREDIT_0100,
+                DLCUtil::TYPE::CREDIT_0250,
+                DLCUtil::TYPE::CREDIT_0700,
+            ];
+
+            var data_list = [];
+
+            foreach (var type in type_list)
+            {
+                data_list.push(DLCUtil::getEntitlement(type));
+            }
+
+            var listbox = ListMenu.getListBox();
+            listbox.setList(context, data_list, hidden::ContentsItem);
+            ListMenu.setActiveGroup(context, self);
+        }
+    }
+
+    module ListMenu::Categories::ScrolledWindow::clip::space::Tool::VBox::Purchased
+    {
+        method onInitialize(context)
+        {
+            self.insensitive = false;
+        }
+
+        method onFinalize(context)
+        {
+            self.active = false;
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            var res = ListMenu.setActiveGroup(context, self);
+            if (res)
+            {
+                updateList(context);
+            }
+
+            return STATE_YIELD;
+        }
+
+        method updateList(context)
+        {
+            var type_list = [
+                DLCUtil::TYPE::CREDIT_0050,
+                DLCUtil::TYPE::CREDIT_0100,
+                DLCUtil::TYPE::CREDIT_0250,
+                DLCUtil::TYPE::CREDIT_0700,
+            ];
+
+            var data_list = [];
+
+            foreach (var type in type_list)
+            {
+                var entitlement = DLCUtil::getEntitlement(type);
+                var remaining_count = entitlement.remaining_count;
+
+                var installable_count = entitlement.remaining_count - entitlement.consumed_count;
+                for (var i = 0; i < remaining_count; ++i)
+                {
+                    var e = DLCUtil::getEntitlement(type);
+                    if (i < installable_count)
+                        e.installed = false;
+                    else
+                        e.installed = true;
+
+                        data_list.push(e);
+                }
+            }
+
+            var listbox = ListMenu.getListBox();
+            listbox.setList(context, data_list, hidden::PurchasedItem);
+            ListMenu.setActiveGroup(context, self);
+        }
+    }
+
+    module ListMenu::Categories::ScrolledWindow::clip::space::Tool::VBox::ProductCode
+    {
+        method onInitialize(context)
+        {
+            self.insensitive = false;
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+
+            if (!checkOnline(context))
+                return STATE_YIELD;
+
+            var check_voucher = false;
+
+            var res = NPCommerceUtil::begin(context);
+            if (res)
+                check_voucher = NPCommerceUtil::openProductCodeInputDialog(context);
+            
+            NPCommerceUtil::end(context);
+
+            if (check_voucher)
+            {
+                pdistd::DeviceRescan();
+                updateTicketForce(context);
+
+                GTModeProject.load("/scripts/gt6/util/VoucherUtil");
+                var available = DLCUtil::isAvailableAnyTime();
+
+                VoucherUtil::loadVouchers(context, GAME_STATUS, available, true);
+                DLCRoot.need_save = true;
+            }
+
+            checkOnline(context);
+            return STATE_YIELD;
+        }
+    }
+
+    module Popup
+    {
+        attribute target_widget;
+        attribute entitlement;
+        
+        method onInitialize(context)
+        {
+            self.insensitive = true;
+        }
+
+        method show(context, target_widget, entitlement, mode, long_description)
+        {
+            if (!self.insensitive)
+                return;
+
+            self.insensitive = false;
+
+            ListMenu.insensitive = true;
+            self.target_widget = target_widget;
+            self.entitlement = entitlement;
+
+            initialize(context, entitlement, mode, long_description);
+
+            self.FadeActor.reverse = false;
+            self.FadeActor.restart();
+
+            DLCRoot.setFocus(self.Dialog::Button::OK);
+        }
+
+        method hide(context)
+        {
+            if (self.insensitive)
+                return;
+
+            self.insensitive = true;
+
+            ListMenu.insensitive = false;
+
+            self.FadeActor.reverse = true;
+            self.FadeActor.restart();
+
+            DLCRoot.setFocus(self.target_widget);
+            self.target_widget = nil;
+            self.entitlement = nil;
+        }
+
+        method initialize(context, entitlement, mode, long_description)
+        {
+            var target = self.Dialog::Body::MessageBox::clip::space;
+            target.SBox::ImageFace.image_path = getImagePath(entitlement);
+            target.SBox::VBox::TextFace.text = getTitle(entitlement);
+            target.SBox::VBox::HBox2::Price::TextFace.text = getPrice(entitlement);
+
+            var description = getDescription(entitlement);
+            if (long_description != "")
+                description = long_description;
+
+            target.TextFace.text = description;
+
+            var button = self.Popup::Dialog::Button;
+            if (mode == "CHECKOUT")
+            {
+                target.SBox::VBox::HBox2.Price.visible = true;
+                target.SBox::VBox::HBox2.Installed.visible = false;
+                target.SBox::VBox::HBox2.Installable.visible = false;
+                button.Cancel.visible = true;
+
+                var text = manager.translate("DLC", "CHECKOUT");
+                button.OK.label.text = text;
+                button.OK.label_i.text = text;
+            }
+            else
+            {
+                target.SBox::VBox::HBox2.Price.visible = false;
+                target.SBox::VBox::HBox2.Installed.visible = entitlement.installed;
+                target.SBox::VBox::HBox2.Installable.visible = !entitlement.installed;
+                button.Cancel.visible = !entitlement.installed;
+
+                
+                var text = entitlement.installed ? manager.translate("Component", "Label_OK") : manager.translate("DLC", "INSTALL");
+                button.OK.label.text = text;
+                button.OK.label_i.text = text;
+            }
+
+            var adj = menu::MAdjustment();
+            var messagebox = self.Dialog::Body::MessageBox;
+
+            messagebox.VScrollArrow.adjustment = adj;
+            messagebox.clip.v_adjustment = adj;
+            messagebox.clip.space.y = 0.0;
+            messagebox.clip.manual_target_y = 0.0;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            hide(context);
+            return STATE_YIELD;
+        }
+
+        method onKeyPress(context, event)
+        {
+            var scrollclip = self.Dialog::Body::MessageBox::clip;
+            var space = scrollclip.space;
+            var textface = space.TextFace;
+            var line_height = textface.line_height;
+
+            var status = 0;
+
+            if (event.keysym == CELL_PAD_CTRL_L3_UP)
+            {
+                if (scrollclip.manualTargetIncY(line_height))
+                    status = 1;
+            }
+
+            if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+            {
+                if (scrollclip.manualTargetIncY(-line_height))
+                status = 1;
+            }
+
+            return status;
+        }
+
+        module Dialog::Button
+        {
+            module OK
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+
+                    var res = Popup.target_widget.onDetailCallback(context);
+                    if (res)
+                        Popup.hide(context);
+
+                    return STATE_YIELD;
+                }
+            }
+
+            module Cancel
+            {
+                method onActivate(context)
+                {
+                    sound.play("cancel");
+                    Popup.hide(context);
+
+                    return STATE_YIELD;
+                }
+            }
+        }
+    }
+
+    module hidden::ContentsItem
+    {
+        attribute value;
+
+        method onRealize(context)
+        {
+            self.VBox::HBox0::TextFacePurchased.visible = false;
+            self.VBox::HBox0::Count.visible = false;
+        }
+
+        method initialize(context, entitlement)
+        {
+            self.value = entitlement;
+            self.ImageFace.image_path = getImagePath(entitlement);
+            self.VBox::HBox0::TextFace.text = getTitle(entitlement);
+
+            var count = entitlement.remaining_count;
+            self.VBox::HBox0::Count::TextFace.text = count;
+            self.VBox::HBox0::Count.visible = count > 0;
+            self.VBox::HBox0::TextFacePurchased.visible = count > 0;
+
+            self.VBox::HBox2::Price::TextFace.text = getPrice(entitlement);
+        }
+
+        method on_activate(context)
+        {
+            var entitlement = self.value;
+            var sku;
+
+            foreach (var [key, value] in DLCRoot.psn_data.sku_list)
+            {
+                if (key.beginWith(entitlement.entitlement_id))
+                {
+                    sku = value;
+                    break;
+                }
+            }
+
+            var long_description = "";
+            if (sku != nil)
+            {
+                NPCommerceUtil::begin(context);
+                var product_info = NPCommerceUtil::getProduct(sku["category_id"], sku["product_id"]);
+                if (product_info != nil)
+                {
+                    var text = product_info["productLongDescription"];
+                    text.replaceAll("\u00A0", " ");
+                    text.replaceAll("\r\n", "");
+                    text.replaceAll("\n", "");
+                    text.replaceAll("<br>", "\n");
+                    text.replaceAll("<br />", "\n");
+
+                    long_description = text.split(Regexp("<[^>]*>")).join("");
+                }
+                NPCommerceUtil::end(context);
+            }
+
+            Popup.show(context, self, self.value, "CHECKOUT", long_description);
+        }
+
+        method onDetailCallback(context)
+        {
+            if (!checkOnline(context))
+                return false;
+
+            var entitlement = self.value;
+            if (entitlement.sku_id == nil)
+            {
+                ERROR(context, "DLC", "ERROR_SUSPEND_SALE");
+                return false;
+            }
+
+            var credit = DLCUtil::getContents(entitlement.type);
+            if (GAME_STATUS.user_profile.checkCashOverLimit(credit))
+            {
+                var title = getTitle(entitlement);
+                OK(context, "DLC", "ERROR_LIMIT_OVER_BUY", title);
+                return false;
+            }
+
+            var sku = entitlement.sku_id;
+            var bought = false;
+
+            var res0 = NPCommerceUtil::begin(context);
+            if (res0)
+            {
+                var res1 = NPCommerceUtil::checkout(context, [sku]);
+                bought = res1;
+            }
+
+            NPCommerceUtil::end(context);
+
+            if (bought)
+            {
+                updateTicketForce(context);
+                var entitlement0 = DLCUtil::getEntitlement(entitlement.type);
+
+                if (entitlement0.remaining_count > entitlement.remaining_count)
+                {
+                    DialogUtil::openGameCreditDialog(context, entitlement.type);
+                    DLCUtil::install(entitlement.type);
+                }
+
+                var count = entitlement0.remaining_count;
+                self.VBox::HBox0::Count::TextFace.text = count;
+                self.VBox::HBox0::Count.visible = count > 0;
+                self.VBox::HBox0::TextFacePurchased.visible = count > 0;
+                self.value = entitlement0;
+                DLCRoot.need_save = true;
+                Grim2Util::PUTLOG::DLC::buy(entitlement0.type, entitlement0.remaining_count);
+            }
+
+            checkOnline(context);
+
+            return bought;
+        }
+    }
+
+    module hidden::PurchasedItem
+    {
+        attribute value;
+
+        method initialize(context, entitlement)
+        {
+            self.value = entitlement;
+            self.ImageFace.image_path = getImagePath(entitlement);
+
+            self.VBox::HBox0::TextFace.text = getTitle(entitlement);
+            self.VBox::HBox2::Installed.visible = entitlement.installed;
+            self.VBox::HBox2::Installable.visible = !entitlement.installed;
+        }     
+        
+        method on_activate(context)
+        {
+            Popup.show(context, self, self.value, "INSTALL", "");
+        }
+
+        method onDetailCallback(context)
+        {
+            var entitlement = self.value;
+            if (entitlement.installed)
+                return true;
+
+            var credit = DLCUtil::getContents(entitlement.type);
+            if (GAME_STATUS.user_profile.checkCashOverLimit(credit))
+            {
+                var title = getTitle(entitlement);
+                ERROR(context, "DLC", "ERROR_LIMIT_OVER_INSTALL", title);
+                return false;
+            }
+
+            DialogUtil::openGameCreditDialog(context, entitlement.type);
+            DLCUtil::install(entitlement.type);
+
+            entitlement.installed = true;
+            self.VBox::HBox2::Installed.visible = true;
+            self.VBox::HBox2::Installable.visible = false;
+
+            DLCRoot.need_save = true;
+
+            Grim2Util::PUTLOG::DLC::install(entitlement.type, entitlement.remaining_count);
+            return true;
+        }
+    }
+}

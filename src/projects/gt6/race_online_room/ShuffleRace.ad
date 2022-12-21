@@ -1,0 +1,152 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ShuffleRace
+{
+    static sProgress = pdistd::MProgress();
+    static sCarFixed = false;
+    static sDirtMode = false;
+    static sPointTable = [
+    /*        1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16   */
+    /* 16 */ [3,  3,  2,  2,  2,  1,  1,  0,  0, -1, -1, -2, -2, -2, -3, -3],
+    /* 15 */ [3,  3,  2,  2,  2,  1,  1,  0, -1, -1, -2, -2, -2, -3, -3],
+    /* 14 */ [3,  2,  2,  2,  1,  1,  0,  0, -1, -1, -2, -2, -2, -3],
+    /* 13 */ [3,  2,  2,  2,  1,  1,  0, -1, -1, -2, -2, -2, -3],
+    /* 12 */ [3,  2,  2,  1,  1,  0,  0, -1, -1, -2, -2, -3],
+    /* 11 */ [3,  2,  2,  1,  1,  0, -1, -1, -2, -2, -3],
+    /* 10 */ [2,  2,  1,  1,  0,  0, -1, -1, -2, -2],
+    /*  9 */ [2,  2,  1,  1,  0, -1, -1, -2, -2],
+    /*  8 */ [2,  2,  1,  0,  0, -1, -2, -2],
+    /*  7 */ [2,  2,  1,  0, -1, -2, -2],
+    /*  6 */ [2,  1,  0,  0, -1, -2],
+    /*  5 */ [2,  1,  0, -1, -2],
+    /*  4 */ [2,  1, -1, -2],
+    /*  3 */ [2,  0, -2],
+    /*  2 */ [1, -1],
+    /*  1 */ [0],
+    ];
+
+    function getProgressObject() { return sProgress; }
+
+    function resetProgress()
+    {
+        sProgress.value = 0.0;
+    }
+
+    function isCarFixed() { return sCarFixed; }
+
+    function resetCarFixed() 
+    {
+        sCarFixed = false;
+    }
+
+    function setCarFixed()
+    {
+        sCarFixed = true; 
+    }
+
+    function isDirtMode()
+    {
+        return sDirtMode;
+    }
+
+    function shuffleAndSelectCar(context)
+    {
+        var rc = OnlineSession.getRoomConfig();
+        var isDirt = gtengine::MSpecDB::isDirtSnow(rc.course_code);
+        sDirtMode = isDirt;
+
+        var gp = RaceOperator.game_parameter;
+        var point = OnlineSession.getPoint();
+
+        var carList = [];
+        var online_room = gp.online_room;
+        var shuffle_base = online_room.shuffle_base;
+
+        if (isDirt)
+        {
+            if (shuffle_base > 450)
+                shuffle_base = 450;
+            else if (shuffle_base < 400)
+                shuffle_base = 400;
+        }
+
+        var base_pp = shuffle_base - (point * online_room.shuffle_ratio);
+        var range = 20;
+
+        var sql = "SELECT * FROM t_shuffler WHERE pp BETWEEN %d AND %d AND dirt = %d LIMIT 20".format(
+            base_pp - range, base_pp + range, isDirt ? 1 : 0);
+
+        foreach (var car in MENUDB.query(sql))
+        {
+            carList.push(car);
+        }
+
+        var shuffling = manager.translate("OnlineMessage", "SHUFFLE_IN_PROGRESS");
+        var index;
+        var carName;
+        for (var i = 1; i <= 60; i++)
+        {
+            index = pdistd::MRandom::GetValue(0, carList.size);
+            carName = gtengine::MSpecDB::getCarShortName(carList[index].label);
+
+            DialogUtil::setProgressMessage(context, "%s\n\n%s".format(shuffling, carName));
+            sProgress.value = i.toFloat() / 60.0;
+
+            main::sound.play("cursor");
+
+            // Actual PDI code
+            context.wait(i < 40 ? 0.05 : i < 50 ? 0.1 : i < 60 ? 0.2 : 0.4);
+        }
+
+        var msg = "\n\n\n%s\n[%s: %s]".format(
+            carName, manager.translate("Regulation", "drivetrain"),
+            manager.translate("DriveTrainName", gtengine::MSpecDB::getCarDriveTrain(carList[index].label)));
+        
+        DialogUtil::setProgressMessage(context, msg);
+        main::sound.play("ok_mid");
+        
+        RaceOnlineRoomProject::updateGarageCar();
+
+        RaceOnlineRoomProject::sRidingCar = gtengine::MCarParameter(carList[index].label);
+        RaceOnlineRoomProject::changeRidingCarColorAtRandom();
+        RaceOnlineRoomProject::changeCurrentCar(context);
+
+        context.wait(2.0);
+        return [true, 1];
+    }
+
+    function updatePoint(order_list)
+    {
+        if (ORG.isFreeRun())
+            return;
+
+        var account_id = 0;
+        var slot_id = RaceOperator.getAccountSlotID(account_id);
+        var myOrder = -1;
+
+        if (myOrder >= 0 && order_list.size > 0 && myOrder < order_list.size)
+        {
+            var tableIndex = sPointTable.size - order_list.size;
+            var currentPoint = OnlineSession.getPoint();
+            var newPoint = currentPoint + sPointTable[tableIndex][myOrder];
+            OnlineSession.updatePoint(newPoint);
+            RaceOperator.setAccountPoint(account_id, newPoint);
+        }
+        else
+        {
+            resetCarFixed();
+        }
+    }
+}

@@ -1,0 +1,714 @@
+
+
+
+//---------------------------------------------------------------------------------------
+// Grim2Util.ad
+//
+// Utility module for various Grim operations (logging, handling requests)
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+
+module Grim2Util
+{
+    import main::LoginUtil;
+    
+    static total = 0f;
+
+    function openHttpErrorDialog(context, info, http_error_code)
+    {
+        var http_error_id = main::Grim2.convertHttpResultToId(http_error_code);
+        var detail = "";
+        if (info != nil)
+            detail += "%{info}:";
+
+        detail += "%{http_error_id}";
+
+        var msg = manager.translate("Network", "ERROR_FORMAT").build(
+            manager.translate("Network", "CANNOT_CONNECT_SERVER"),
+            "ID = %{detail}"
+        );
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+    }
+
+    async function join_sleep(request)
+    {
+        var stime = pdistd::GetSystemTimeMicroSecond();
+        while (!request.isDone() && !request.isError())
+        {
+            if (!NP.isOnline())
+                break;
+
+            if (pdistd::GetSystemTimeMicroSecond() - stime > 55000000)
+                break;
+            Thread::Sleep(0.2f);
+        }
+
+        return pdistd::GetSystemTimeMicroSecond() - stime;
+        
+    }
+
+    async function join_await(request)
+    {
+        return await function() 
+        {
+            var stime = pdistd::GetSystemTimeMicroSecond();
+            while (!request.isDone() && !request.isError())
+            {
+                if (!NP.isOnline())
+                    break;
+
+                if (pdistd::GetSystemTimeMicroSecond() - stime > 55000000)
+                    break;
+            }
+
+            return pdistd::GetSystemTimeMicroSecond() - stime;
+        };
+    }
+
+    function join(context, request, is_await = false)
+    {
+        if (request == nil)
+            return false;
+
+        if (!main::Grim2.isInitialize2())
+            return false;
+
+        var elapsed;
+        if (!is_await)
+            elapsed = join_sleep(request);
+        else
+            elapsed = join_await(request);
+
+        return request.isDone();
+    }
+
+    function joinAwait(context, request)
+    {
+        return join(context, request, true);
+    }
+
+    
+    function joinSleep(context, request)
+    {
+        return join(context, request, false);
+    }
+
+    function getNextMaintenanceDatetime()
+    {
+        var now = main::pdiext::getBetterTime();
+        if (now == nil)
+            return nil;
+
+        var dispdate = main::Grim2.getNextMaintenanceDisplayDateTime();
+        if (dispdate == nil)
+            return nil;
+
+        if (dispdate.year == 0 || dispdate.month == 0 || dispdate.day == 0)
+            return nil;
+
+        if (now.getBySecond() > dispdate.getBySecond())
+        {
+            var date = main::Grim2.getNextMaintenanceDateTime();
+            if (date != nil)
+            {
+                if (date.year == 0 || date.month == 0 || date.day == 0)
+                    date = nil;
+            }
+
+            return date;
+        }
+
+        return nil;
+    }
+
+    static sLatestRequestedFriendListHash;
+
+    function updateFriendList(context, friend_list)
+    {
+        if (friend_list == nil)
+            friend_list = NP.getFriendList();
+
+        var friend_list_csv = friend_list.join(",");
+        var hash = pdistd::AsciiStringHash(friend_list_csv);
+
+        if (sLatestRequestedFriendListHash == nil || sLatestRequestedFriendListHash != hash)
+        {
+            sLatestRequestedFriendListHash = hash;
+            main::UserProfile2.requestUpdateFriendList(friend_list_csv, (args) => 
+            {
+                var [context1, request] = args;
+                if (request.isDone() && main::UserProfile2.decodeResult(request))
+                    ;
+                else
+                    sLatestRequestedFriendListHash = nil;
+            });
+        }
+        else
+            ;
+    }
+
+    static sLatestGameStatsHash = "";
+
+    function updateGameStats(context)
+    {
+        var license = GAME_STATUS.user_profile.career_mode_license;
+        var achievement0 = GAME_STATUS.user_profile.record.event_record.getOfflineTrophyCount();
+        var car_count = GAME_STATUS.user_profile.garage.getCarCount() + GAME_STATUS.user_profile.garage_stockyard_carcount;
+        var trophy = GAME_STATUS.user_profile.record.event_record.getLicenseTrophyCount();
+        var star = GAME_STATUS.user_profile.record.event_record.getStars();
+        var odometer = GAME_STATUS.user_profile.total_aspec_running_km;
+
+        var hash = "%{license}:%{achievement0}:%{car_count}:%{trophy}:%{star}:%{odometer}";
+        if (sLatestGameStatsHash == hash)
+            return;
+
+        var total_trophy_count = 0;
+        var st = pdistd::ReadFile("/game_parameter/gt6/event/event_information.xml");
+        var buf = st["buffer"];
+        if (buf != nil)
+        {
+            var xml = pdistd::MXml();
+            xml.parse(buf);
+            var dom = xml.result;
+            var dom_nodes = dom["event_information"][0];
+            total_trophy_count = dom_nodes["total_trophy_count"][0].value;
+        }
+
+        var achievement = 0;
+        if (total_trophy_count > 0)
+        {
+            var percent_f = (achievement0.toFloat() / total_trophy_count.toFloat()) * 100;
+            if (percent_f > 0 && percent_f < 1)
+                percent_f = 1;
+            achievement = percent_f.toInt();
+        }
+
+        sLatestGameStatsHash = hash;
+
+        var license_level = ["N":0, "B":1, "A":2, "IB":3, "IA":4, "S":5][license];
+        UserProfile2.requestUpdateGameStats(license_level, achievement, car_count, trophy, star, odometer, (args) =>
+        {
+            var [context1, request] = args;
+            if (request.isDone())
+                ;
+            else    
+                sLatestGameStatsHash = "";
+        });
+    }
+
+    function updateNickName(context, nickname)
+    {
+        main::UserProfile2.requestUpdateNickname(nickname, (args) =>
+        {
+            var [context1, request] = args;
+            if (request.isDone() && main::UserProfile2.decodeResult(request))
+                ;
+            else
+                ;
+        });
+    }
+
+    module Photo
+    {
+        function getOnlineMax()
+        {
+            return Grim2.getServerOptionToInt("gt", "online.photo.max", 8);
+        }
+    }
+
+    module News
+    {
+        function isEnable()
+        {
+            var res = Grim2.getServerOptionToInt("gt", "online.gtnews.enable", 1);
+            return res != 0;
+        }
+    }
+
+    module Ranking
+    {
+        function isEnable() 
+        {
+            return true;
+        }
+
+        function isCountryVisible()
+        {
+            return true;
+        }
+
+        function isEnableLicenseRanking()
+        {
+            return Grim2.getServerOptionToInt("gt", "online.ranking.license.enable", 1);
+        }
+
+        function isEnableLicenseRankingUpload()
+        {
+            return Grim2.getServerOptionToInt("gt", "online.ranking.license_upload.enable", 1);
+        }
+
+        function CreateRankingStatsStructure()
+        {
+            var st = STStructure("RankingStats");
+            st.define("car_code", STLong());
+            st.define("color", STInt());
+            st.define("painted", STByte());
+            st.define("version", STByte());
+            st.define("transmission", STByte());
+            st.define("professional", STByte());
+            st.define("asm", STByte());
+            st.define("tcs", STByte());
+            st.define("abs", STByte());
+            st.define("active_steering", STByte());
+            st.define("front_tire", STByte());
+            st.define("rear_tire", STByte());
+            st.define("country_code", STString(4));
+            st.define("controller_type", STInt());
+            st.define("special_guest", STByte());
+            st.define("special_guest_name", STString(64));
+            return st;
+        }
+
+        function CreateRankingStats()
+        {
+            var st = CreateRankingStatsStructure();
+            var instance = st();
+            instance.car_code = main::gtengine::MSpecDB::NO_CODE;
+            instance.color = 0;
+            instance.painted = 0;
+            instance.version = 2;
+            instance.transmission = 0;
+            instance.professional = 0;
+            instance.asm = 0;
+            instance.tcs = 0;
+            instance.abs = 0;
+            instance.active_steering = 0;
+            instance.front_tire = 0;
+            instance.rear_tire = 0;
+            instance.country_code = "";
+            instance.controller_type = 0;
+            instance.special_guest = 0;
+            instance.special_guest_name = "";
+            return instance;
+        }
+
+        function PackRankingStats(stats)
+        {
+            var d = ByteData();
+            if (stats.special_guest == 0)
+                d.size = 24;
+            else
+                d.size = 24 + 64;
+            
+            d[0x00] = 2; // version
+            d[0x01] = d.size;
+            d[0x02] = stats.version;
+            d[0x03] = stats.special_guest;
+            d[0x04] = stats.transmission;
+            d[0x05] = stats.professional;
+            d[0x06] = (stats.active_steering << 4) | (stats.asm & 0b1111);
+            d[0x07] = (stats.abs << 4) | (stats.tcs & 0b1111);
+            d[0x08] = 0;
+            d[0x09] = stats.front_tire;
+            d[0x0A] = stats.rear_tire;
+            var cc = stats.country_code.toString();
+            d[0x0B] = cc.at(0);
+            d[0x0C] = cc.at(1);
+            
+            d[0x0D] = (stats.painted ? 0b10000000 : 0) | (stats.color >> 8 & 0b1111111);
+            d[0x0E] = stats.controller_type;
+            d[0x0F] = stats.color & 0b11111111;
+
+            cc = stats.car_code.toLong();
+            d[0x10] = cc >> 56;
+            d[0x11] = cc >> 48;
+            d[0x12] = cc >> 40;
+            d[0x13] = cc >> 32;
+            d[0x14] = cc >> 24;
+            d[0x15] = cc >> 16;
+            d[0x16] = cc >> 8;
+            d[0x17] = cc;
+            
+            var i;
+            if (stats.special_guest != 0)
+            {
+                var name = stats.special_guest_name.toString();
+                for (i = 0; i < 63 && i < name.size; i++)
+                    d[0x18 + i] = name.at(i);
+            }
+
+            d[0x18 + i] = 0;
+            return d;
+        }
+
+        function UnpackRankingStats(d)
+        {
+            var stats = CreateRankingStats();
+            if (d[0] < 1 || d[0] > 2) // Version check
+                return nil;
+
+            stats.version = d[0x02];
+            stats.special_guest = d[0x03];
+            stats.transmission = d[0x04] & 1;
+            stats.professional = d[0x05] & 1;
+            stats.asm = d[0x06] & 0b1111;
+            stats.tcs = d[0x07] & 0b1111;
+            stats.active_steering = d[0x06] >> 4;
+            stats.abs = d[0x07] >> 4;
+            stats.front_tire = d[0x09];
+            stats.rear_tire = d[0x0A];
+            stats.country_code = "%c%c".format(d[0x0B], d[0x0C]);
+            stats.controller_type = d[0x0E];
+            stats.color = (d[0x0D] & 0b1111111) << 8 | d[0x0F];
+            stats.painted = d[13] & 0b10000000 ? 1 : 0;
+
+            var v = (d[0x10].toLong() & 0b11111111) << 56;
+            v |=   (d[0x11].toLong() & 0b11111111) << 48;
+            v |=   (d[0x12].toLong() & 0b11111111) << 40;
+            v |=   (d[0x13].toLong() & 0b11111111) << 32;
+            v |=   (d[0x14].toLong() & 0b11111111) << 24;
+            v |=   (d[0x15].toLong() & 0b11111111) << 16;
+            v |=   (d[0x16].toLong() & 0b11111111) << 8;
+            v |=   (d[0x17].toLong() & 0b11111111);
+            stats.car_code = v;
+
+            var len = d[1];
+            if (stats.special_guest)
+            {
+                if (len == 24 + 64)
+                {
+                    var str = d.getByteData(24).toString();
+                    stats.special_guest_name = str;
+                }
+                else
+                    stats.special_guest = 0;
+            }
+
+            return stats;
+        }
+
+        function CompareRankingStats(s1, s2) { }
+
+        function SerializeRankingStats(stats)
+        {
+            if (stats == nil)
+                return nil;
+
+            var bytedata = PackRankingStats(stats);
+            var blob = main::pdistd::MBlob(bytedata);
+            var encrypted_blob = main::pdistd::MCipher::encrypt(blob);
+            return encrypted_blob;
+        }
+
+        function DeserializeRankingStats(encrypted_blob)
+        {
+            if (encrypted_blob == nil)
+                return nil;
+
+            var blob = main::pdistd::MCipher::decrypt(encrypted_blob);
+            if (blob == nil)
+                return nil;
+
+            var bytedata = blob.getByteData();
+            var stats = UnpackRankingStats(bytedata);
+            return stats;
+        }
+    }
+
+    module OnlineRace
+    {
+        function isEnable()
+        {
+            return true;
+        }
+    }
+
+    //////////////////////////////////////////
+    ////////////// Put Log section (Logging)
+    //////////////////////////////////////////
+    module PUTLOG
+    {
+        function user()
+        {
+            return main::PDINetwork.getClientName();
+        }
+
+        function putlog(log)
+        {
+            if (GetVersionBranch() == "demo")
+                return;
+
+            Grim2.requestPutLog(log);
+        }
+    }
+
+    module PUTLOG::RACE
+    {
+        function startRace(gameMode, event_id, course_code)
+        {
+            var log = "RA=SR:RU=%{user()}:RM=%{gameMode}:RE=%{event_id}:RC=%{course_code}";
+            putlog(log);
+        }
+
+        function finishRace(windowId, controller, camera, gameMode)
+        {
+            var log = "RA=FR:RU=%{user()}:RC=%{controller}:RV=%{camera}:RM=%{gameMode}:RN=%{windowId}";
+            putlog(log);
+        }
+
+        function resultRace(gameMode, event_id, order)
+        {
+            var log = "RA=RR:RU=%{user()}:RM=%{gameMode}:RE=%{event_id}:RO=%{order}";
+            putlog(log);
+        }
+
+        function status(map)
+        {
+            var online_id = user();
+            var a = map["game_mode"];
+            var b = map["course"];
+            var c = map["car"];
+            var d = map["rental"];
+            var e = map["mileage"];
+            var f = map["total_time"];
+            var g = map["scenery"];
+            var h = map["course_id"];
+            var log = "TU=%{online_id}:TA=%{a}:TB=%{b}:TC=%{c}:TD=%{d}:TE=%{e}:TF=%{f}:TG=%{g}:TH=%{h}";
+            putlog(log);
+        }
+    }
+
+    module PUTLOG::WEAR
+    {
+        function change(dp)
+        {
+            var head_code = dp.head_code;
+            var head_color = dp.head_color_code;
+            var body_code = dp.body_code;
+            var body_color = dp.body_color_code;
+            var online_id = user();
+
+            var log = "WU=%{online_id}:WH=%{head_code}:WI=%{head_color}:WB=%{body_code}:WC=%{body_color}";
+            putlog(log);
+        }
+    }
+
+    module PUTLOG::ITEM
+    {
+        function have()
+        {
+            var head_count = GameItemUtil::ItemBox::getNumByCategory(gtengine::GameItemCategory::DRIVER_HEAD);
+            var body_count = GameItemUtil::ItemBox::getNumByCategory(gtengine::GameItemCategory::DRIVER_BODY);
+            var set_count = GameItemUtil::ItemBox::getNumByCategory(gtengine::GameItemCategory::DRIVER_SET);
+
+            var online_id = user();
+            var log = "JU=%{online_id}:JH=%{head_count}:JB=%{body_count}:JS=%{set_count}";
+            putlog(log);
+        }
+    }
+
+    module PUTLOG::RACE_PRESENT
+    {
+        function get(type_id, category_id, argument1, argument4, f_name)
+        {
+            var online_id = user();
+            var log = "IU=%{online_id}:IT=%{type_id}:IC=%{category_id}:I1=%{argument1}:IG=%{argument4}:IF=%{f_name}";
+            putlog(log);
+        }   
+    }
+
+    module PUTLOG::DLC
+    {
+        function buy(type, remaining_count)
+        {
+            var online_id = user();
+            var log = "XU=%{online_id}:XA=buy:XT=%{type}:XR=%{remaining_count}";
+            putlog(log);
+        }
+
+        function install(type, remaining_count)
+        {
+            var online_id = user();
+            var log = "XU=%{online_id}:XA=install:XT=%{type}:XR=%{remaining_count}";
+            putlog(log);
+        }
+    }
+
+    module PUTLOG::EVENT
+    {
+        function disqualify(disqualify, event_id, pos_x, pos_z)
+        {
+            var online_id = user();
+            var log = "GA=DS:GD=%{disqualify}:GK=%{event_id}:GU=%{online_id}:GX=%{pos_x}:GZ=%{pos_z}";
+            putlog(log);
+        }
+
+        function update(start_num, disqualify, event_id, result, time)
+        {
+            var online_id = user();
+            var log = "GA=UP:GE=%{start_num}:GD=%{disqualify}:GK=%{event_id}:GU=%{online_id}:GR=%{result}:GT=%{time}";
+            putlog(log);
+        }
+
+        function update_license(patern, start_num, disqualify, event_id, result, time)
+        {
+            var online_id = user();
+            var log = "GA=GL:GP=%{patern}:GE=%{start_num}:GD=%{disqualify}:GK=%{event_id}:GU=%{online_id}:GR=%{result}:GT=%{time}";
+            putlog(log);
+        }
+
+        function update_mission(patern, start_num, disqualify, event_id, result, time)
+        {
+            var online_id = user();
+            var log = "GA=GM:GP=%{patern}:GE=%{start_num}:GD=%{disqualify}:GK=%{event_id}:GU=%{online_id}:GR=%{result}:GT=%{time}";
+            putlog(log);
+        }
+    }
+
+    module PUTLOG::CREDIT
+    {
+        function income(type, credit, args)
+        {
+            var online_id = user();
+            var cash = GAME_STATUS.user_profile.cash;
+            var credit0 = credit.toInt();
+
+            var log = "YU=%{online_id}:YT=%{type}:YC=%{credit0}:YN=%{cash}:YA=%{args}";
+            putlog(log);
+        }
+
+        function withdraw(type, credit, arg1, arg2, arg3)
+        {
+            var online_id = user();
+            var cash = GAME_STATUS.user_profile.cash;
+            var credit0 = credit.toInt();
+
+            var log = "ZU=%{online_id}:ZT=%{type}:ZC=%{credit0}:ZN=%{cash}:ZA=%{arg1}:ZB=%{arg2}:ZD=%{arg3}";
+            putlog(log);
+        }
+    }
+
+    module PUTLOG::LOGINBONUS
+    {
+        function outlier(bonus_ratio)
+        {
+            var online_id = user();
+            var log = "NB=%{bonus_ratio}:NU=%{online_id}";
+            putlog(log);
+        }
+    }
+
+    module PUTLOG::CURRENT
+    {
+        function _getDlcInfo()
+        {
+            var result = [];
+            var type_list = ["CR0050", "CR0100", "CR0250", "CR0700", "GT6CR1", "GT6CR2"];
+
+            foreach (var type in type_list)
+            {
+                var consumed_key = "%{type}_consumed";
+                var consumed_count = KeyValueUtil::getInt("dlc", consumed_key);
+                result.push(consumed_count);
+            }
+
+            return result.join(",");
+        }
+
+        function status(from)
+        {
+            var online_id = user();
+            var up = GAME_STATUS.user_profile;
+            
+            var va = up.career_mode_license;
+            var vb = up.record.event_record.getOfflineTrophyCount();
+            var vc = up.record.event_record.getLicenseTrophyCount();
+            var vd = up.record.event_record.getStars();
+            var ve = up.garage.getCarCount() + up.garage_stockyard_carcount;
+            var vf = up.total_aspec_race_complete;
+            var vg = up.total_aspec_win;
+            var vh = up.cash;
+            var vi = up.total_prize;
+            var vj = up.total_tuning_cost;
+            var vk = up.total_aspec_running_km;
+            var vl = up.total_aspec_time;
+            var vm = up.total_photo_count;
+            var vn = up.item.paint.getCount();
+            var vo = up.item.racing_gear.getItemVarietyCount();
+            var vp = _getDlcInfo();
+            var vq = up.total_gas_consumption;
+            var vr = up.total_all_gas_consumption;
+
+
+            var log = "VU=%{online_id}:VZ=%{from}:VA=%{va}:VB=%{vb}:VC=%{vc}:VD=%{vd}:VE=%{ve}:VF=%{vf}:VG=%{vg}:VH=%{vh}:VI=%{vi}:VJ=%{vj}:VK=%{vk}:VL=%{vl}:VM=%{vm}:VN=%{vn}:VO=%{vo}:VP=%{vp}:VQ=%{vq}:VR=%{vr}";
+            putlog(log);
+        }
+    }
+
+    module PUTLOG::VGT
+    {
+        function _select(car_label, type, color)
+        {
+            var online_id = user();
+            var log = "LU=%{online_id}:LA=%{car_label}:LB=%{type}";
+            if (color != nil)
+                log += ":LC=%{color}";
+            putlog(log);
+        }
+
+        function gallery(car_label)
+        {
+            _select(car_label, "gallery");
+        }
+
+        function description(car_label)
+        {
+            _select(car_label, "description");
+        }
+
+        function buy(car_label, color)
+        {
+            _select(car_label, "buy", color);
+        }
+
+        function movie(car_label)
+        {
+            _select(car_label, "movie");
+        }
+
+        function sketch(car_label)
+        {
+            _select(car_label, "sketch");
+        }
+
+        function team(car_label)
+        {
+            _select(car_label, "team");
+        }
+    }
+
+    module PUTLOG::TIMERALLY
+    {
+        function send(event_id, complete, score, remain_second, overtake, combo, perfect, current_section)
+        {
+            var online_id = user();
+            var log = "KU=%{online_id}:KA=%{event_id}:KB=%{complete}:KC=%{score}:KD=%{remain_second}:KE=%{overtake}:KF=%{combo}:KG=%{perfect}:KH=%{current_section}";
+            putlog(log);
+        }
+    }
+
+    function makeRequestError(context, text, request)
+    {
+        if (request == nil)
+            return text;
+        else
+            return manager.translate("SaveData", "FORMAT_NAME").build(text, 
+                "ID = %d".format(request.getLastErrorById()));
+    }
+}

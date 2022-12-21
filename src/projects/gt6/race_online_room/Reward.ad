@@ -1,0 +1,188 @@
+
+
+
+
+
+
+module Reward
+{
+    static sFinishCourseCode = gtengine::MSpecDB::NO_CODE;
+    static sFinishLaps = 0;
+    static sFinishRacerCount = 0;
+    static sFinishCompleteType = gtengine::CompleteType::BYLAPS;
+    static sCheckRequired = false;
+
+    static sPrizeBase = Grim2.getServerOptionToInt("game", "room.prize_base", 1500);
+
+    static sPrizeOrderTable = Grim2.getServerOption("game", "room.prize_order_table", 
+        "100,70,60,55,53,50,48,45,43,40,38,35,33,30,28,25").split(",");
+
+    static sEntryNumTable = Grim2.getServerOption("game", "room.prize_entries_num_table", 
+        "100,100,100,100,100,100,105,110,115,120,125,130,135,140,145,150").split(",");
+
+    static sPrizeModeTable = [
+        gtengine::RoomGameMode::RACE : "room.prize_mode_pr",
+        gtengine::RoomGameMode::RACE_WITH_QUALIFIER : "room.prize_mode_pqr",
+        gtengine::RoomGameMode::TIME_TRIAL : "room.prize_mode_pt",
+        gtengine::RoomGameMode::DRIFT_TRIAL : "room.prize_mode_pd",
+        gtengine::RoomGameMode::ENDURANCE : "room.prize_mode_pe",
+        gtengine::RoomGameMode::ENDURANCE_WITH_QUALIFIER : "room.prize_mode_pqe",
+    ];
+
+    function initialize()
+    {
+        foreach (var [mode, key] in sPrizeModeTable)
+        {
+            var ratio = Grim2.getServerOptionToInt("game", key, 100);
+            sPrizeModeTable[mode] = nil;
+            sPrizeModeTable[mode] = ratio.toFloat() / 100.0;
+        }
+    }
+
+    function getGameModeRatio(roomGameMode)
+    {
+        foreach (var [mode, ratio] in sPrizeModeTable)
+        {
+            if (mode == roomGameMode)
+                return ratio;
+        }
+
+        return 0.0;
+    }
+
+    function getReward(courseCode, laps, order, racerCount)
+    {
+        var prize = 0;
+        if (order < 0 || courseCode == gtengine::MSpecDB::NO_CODE)
+            return prize;
+
+        // Apply course length coeff
+        prize = sPrizeBase.toFloat();
+        if (courseCode == gtengine::COURSE_CODE_GENERATED)
+        {
+            var length = ORG.getCourseLength();
+            if (length > 0.0)
+            {
+                length /= 1000.0;
+                prize *= length;
+            }
+        }
+        else
+        {
+            var course = CourseList::getCourse(courseCode);
+            var eval = RewardUtil::getCourseEval(course.Label);
+            prize *= eval;
+        }
+
+        // Apply lap coeff
+        prize *= laps;
+
+        // Apply order coeff
+        prize *= order < sPrizeOrderTable.size ? sPrizeOrderTable[order].toFloat() * 0.01 : 0.0;
+
+        // Apply number of entrants in race coeff
+        var index = racerCount - 1;
+        prize *= index < sEntryNumTable.size ? sEntryNumTable[index].toFloat() * 0.01 : 0.00;
+
+        // Apply game mode coeff
+        var rc = OnlineSession.getRoomConfig();
+        var ratio = getGameModeRatio(rc.room_game_mode);
+        prize *= ratio;
+
+        return prize.toInt();
+    }
+
+    function onFinishRace()
+    {
+        var rp = ORG.getCurrentRaceParameter();
+        if (rp.session_type == gtengine::SessionType::FINAL)
+        {
+            sFinishCourseCode = rp.course_code;
+            sFinishLaps = rp.race_limit_laps;
+            sFinishCompleteType = rp.complete_type;
+            sCheckRequired = true;
+        }
+        else
+            ;
+    }
+
+    function hasRaceResult()
+    {
+        return sCheckRequired;
+    }
+
+    function check(context)
+    {
+        if (!sCheckRequired)
+            return;
+
+        var lt = ORG.getLiveTimingRecord();
+        var my_slot_id = RaceOperator.getAccountSlotID(0);
+        var count_enabled = lt.countEnabled(true);
+        var slot_rank_list = lt.getRankingTable(true);
+        var my_rank = slot_rank_list[my_slot_id];
+
+        var finish_result = my_rank < count_enabled ? 
+            gtengine::FinishResult::RANK_1 + my_rank : 
+            gtengine::FinishResult::NONE;
+
+        var record = lt.getEntries(false, true);
+        var my_record = record[my_slot_id];
+        var laps = my_record.total_laps;
+        var my_laps = Math::max(laps, 0).toInt();
+
+        if (sFinishCompleteType == gtengine::CompleteType::BYTIME)
+            sFinishLaps = my_laps;
+        else
+        {
+            sFinishLaps = Math::min(sFinishLaps, my_laps).toInt();
+            var rc = OnlineSession.getRoomConfig();
+            if (rc.hasQualifier())
+            {
+                var qualifierRecords = lt.getEntries(false, 2);
+                var myQualifierRecord = qualifierRecords[my_slot_id];
+                var myQualifierLaps = myQualifierRecord.total_laps;
+                if (myQualifierLaps > 0)
+                    sFinishLaps += myQualifierLaps;
+            }
+        }
+
+        sFinishRacerCount = count_enabled;
+
+        var user_profile = GAME_STATUS.user_profile;
+        if (finish_result != nil && finish_result != gtengine::FinishResult::NONE && 
+            sFinishRacerCount >= 2 && !user_profile.option.lounge_demo)
+        {
+            if (finish_result == gtengine::FinishResult::RANK_1 && !sRidingCar.rentacar)
+            {
+                sRidingCar.win_count += 1;
+                RaceOnlineRoomProject::updateGarageCar();
+                user_profile.incrementWinCount(true);
+            }
+
+            user_profile.incrementRaceCompleteCount(true);
+            var aborted = false;
+
+            var prize = getReward(sFinishCourseCode, sFinishLaps, finish_result, sFinishRacerCount);
+            if (prize > 0)
+            {
+                var bonus_ratio = GAME_STATUS.user_profile.context.getBonusRatio();
+                if (bonus_ratio != nil)
+                {
+                    prize = (prize * bonus_ratio).toInt();
+                    bonus_ratio = (bonus_ratio * 100).toInt();
+                }
+
+                if (!DialogUtil::openPrizeDialog(context, prize, true, bonus_ratio, nil, finish_result))
+                    aborted = true;
+            }
+
+            gSequenceCondition.finish_result = gtengine::FinishResult::NONE;
+            sFinishRacerCount = 0;
+            sFinishCourseCode = gtengine::MSpecDB::NO_CODE;
+            sFinishLaps = 0;
+            sCheckRequired = false;
+        }
+    }
+
+}

@@ -1,0 +1,487 @@
+
+
+//---------------------------------------------------------------------------------------
+// GameNews.ad
+//
+// Creates the save profile entity
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module GameNews
+{
+    class Data
+    {
+        attribute id;
+        attribute code;
+        attribute title;
+        attribute artist;
+        attribute genre;
+        attribute race_bgm;
+        attribute menu_bgm;
+        attribute slideshow_bgm;
+    }
+    
+    function clearInitializer()
+    {
+        undef CreateStructure;
+        undef Initialize;
+        undef clearInitializer;
+    }
+
+    function CreateStructure()
+    {
+        var st = STStructure("Impl");
+        GameNews.defineModule(st);
+
+        DefineMethod();
+
+        return st;
+    }
+
+    function Initialize(instance)
+    {
+        instance.initialize();
+    }
+
+    function GetResult1(res)
+    {
+        if (res.size == 0)
+            return nil;
+
+        var row = res[0];
+        if (row.size == 0)
+            return nil;
+
+        return res[0][0];
+    }
+
+    function GetCount(table_name, condition)
+    {
+        var sqlite = getSqlite();
+        var sql = "SELECT COUNT (*) FROM %{table_name} WHERE language = ? ";
+        if (condition != "")
+            sql += "AND %{condition}";
+
+        var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage()]);
+        var count = GetResult1(res);
+        return count == 0 ? 0 : count;
+    }
+
+    function InitializeDB()
+    {
+        var sqlite = getSqlite();
+        DBUtil::initializeTable(sqlite, "t_news", 1);
+        DBUtil::initializeTable(sqlite, "t_news_category", 1);
+        DBUtil::initializeTable(sqlite, "t_news_id_list", 1);
+        DBUtil::initializeTable(sqlite, "t_news_image", 1);
+        DBUtil::initializeTable(sqlite, "t_news_result", 1);
+        DBUtil::initializeTable(sqlite, "t_news_read", 1);
+
+        var sql_list = [
+            ("CREATE TABLE IF NOT EXISTS t_news_category (category_id1 INTEGER, category_id2 INTEGER, category_id3 INTEGER, language TEXT, name TEXT, "
+            "PRIMARY KEY (category_id1, category_id2, category_id3, language))"),
+            ("CREATE TABLE IF NOT EXISTS t_news_id_list (category_id1 INTEGER, category_id2 INTEGER, news_id INTEGER, language TEXT,  "
+             "PRIMARY KEY (category_id1, category_id2, news_id, language))"),
+            ("CREATE TABLE IF NOT EXISTS t_news (news_id INTEGER, language TEXT, category_id1 INTEGER, category_id2 INTEGER, category_id3 INTEGER, "
+            "title TEXT, headline TEXT, comment TEXT, news_date INTEGER, gttv INTEGER, "
+            "PRIMARY KEY (news_id, language))"),
+            ("CREATE TABLE IF NOT EXISTS t_news_image (news_id INTEGER, image_id INTEGER, language TEXT, caption TEXT, "
+            "PRIMARY KEY (news_id, image_id, language))"),
+            ("CREATE TABLE IF NOT EXISTS t_news_result (news_id INTEGER, result_id INTEGER, language TEXT, name TEXT, content TEXT, "
+            "PRIMARY KEY (news_id, result_id, language))"),
+            ("CREATE TABLE IF NOT EXISTS t_news_read (result_id INTEGER, news_id INTEGER, language TEXT,  "
+            "PRIMARY KEY (news_id, language))"),
+        ];
+
+        var dummy_param = [];
+        var sql_list0 = Array();
+
+        foreach (var sql in sql_list)
+            sql_list0.push([sql, dummy_param]);
+
+        var res = sqlite.executeTransaction(sql_list0);
+        if (GetCount("t_news", "") > 0)
+        {
+            sql_list = [
+                "DELETE FROM t_news",
+                "DELETE FROM t_news_image",
+                "DELETE FROM t_news_result"
+            ];
+
+            foreach (var sql in sql_list)
+            {
+                res = sqlite.execute0(sql);
+                if (!(res == 0)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+            }
+
+            sqlite.execute0("VACUUM");
+        }
+    }
+
+    function getSqlite()
+    {
+        return GlobalStatus::getSqlite();
+    }
+
+    function DefineMethod()
+    {
+        module Impl
+        {
+            method initialize()
+            {
+
+            }
+
+            method getCategoryCount()
+            {
+                return getCount("t_news_category", "");
+            }
+
+            method updateCategoryList(category_list)
+            {
+                var sqlite = getSqlite();
+                sqlite.begin();
+
+                var sql_update = "UPDATE t_news_category SET name = ? WHERE category_id1 = ? AND category_id2 = ? AND category_id3 = ? AND language = ?";
+                var sql_insert = "INSERT INTO t_news_category (category_id1, category_id2, category_id3, language, name) VALUES (?, ?, ?, ?, ?)";
+
+                var res = nil;
+                var language = pdistd::MLocale::getLanguage();
+
+                foreach (var category in category_list)
+                {
+                    var params = [
+                        category["category_name"],
+                        category["category_id1"],
+                        category["category_id2"],
+                        category["category_id3"],
+                        language,
+                    ];
+
+                    res = sqlite.execute(sql_update, params);
+                    if (isFailed(res))
+                        break;
+
+                    if (sqlite.changes() == 0)
+                    {
+                        var params1 = [
+                            category["category_id1"],
+                            category["category_id2"],
+                            category["category_id3"],
+                            language,
+                            category["category_name"],
+                        ];
+
+                        res = sqlite.execute(sql_insert, params1);
+                        if (isFailed(res))
+                            break;
+                    }
+                }
+
+                var failed = isFailed(res);
+                if (failed)
+                    sqlite.rollback();
+                else
+                    sqlite.commit();
+
+                return !failed;
+            }
+
+            method getCategoryList()
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT * FROM t_news_category WHERE language = ? ORDER BY category_id1, category_id2, category_id3";
+                var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage()]);
+                return res;
+            }
+
+            method getCategoryName(category_id1, category_id2, category_id3)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT name FROM t_news_category WHERE language = ? AND category_id1 = ? AND category_id2 = ? AND category_id3 = ?";
+                var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage(), category_id1, category_id2, category_id3]);
+                var name = GetResult1(res);
+                return name == nil ? "" : name;
+            }
+
+            method getCategoryId1List()
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT DISTINCT category_id1 FROM t_news_category WHERE language = ? ORDER BY category_id1";
+                var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage()]);
+                return res;
+            }
+
+            method getLatestNewsIdList(category_id1, count)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT news_id FROM t_news_id_list WHERE category_id1 = ? AND category_id2 = 0 AND language = ? ORDER BY news_id DESC LIMIT %{count}";
+                var res = sqlite.executeQuery(sql, [category_id1, pdistd::MLocale::getLanguage()]);
+                return res;
+            }
+
+            method getNewsIdList(category_id1, category_id2)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT news_id FROM t_news_id_list WHERE category_id1 = ? AND category_id2 = ? AND language = ? ORDER BY news_id DESC";
+                var res = sqlite.executeQuery(sql, [category_id1, category_id2, pdistd::MLocale::getLanguage()]);
+                return res;
+            }
+
+            method getNewsIdListCount(category_id1, category_id2)
+            {
+                return GetCount("t_news_id_list", "category_id1 = %{category_id1} AND category_id2 = %{category_id2}");
+            }
+
+            method createUpdateNewsIdListSql(category_id1, category_id2, news_id_list)
+            {
+                var sql = "INSERT INTO t_news_id_list (category_id1, category_id2, news_id, language) VALUES (?, ?, ?, ?)";
+                var sql_list = [];
+                var language = pdistd::MLocale::getLanguage();  
+
+                foreach (var news_id in news_id_list)
+                { 
+                    var params = [
+                        category_id1,
+                        category_id2,
+                        news_id,
+                        language
+                    ];
+
+                    sql_list.push([sql, params]);
+                }
+
+                return sql_list;
+            }
+
+            method updateNewsIdListByList(news_id_list_list)
+            {
+                var sqlite = getSqlite();
+                var sql_delete = "DELETE FROM t_news_id_list WHERE category_id1 = ? AND category_id2 = ? AND language = ?";
+                var language = pdistd::MLocale::getLanguage();
+                var sql_list = [];
+                foreach (var l in news_id_list_list)
+                {
+                    var [category_id1, category_id2, news_id_list] = l;
+                    sql_list.push([
+                        sql_delete,
+                        [category_id1, category_id2, language],
+                    ]);
+
+                    var list = createUpdateNewsIdListSql(category_id1, category_id2, news_id_list);
+                    sql_list += list;
+                }
+
+                var res = sqlite.executeTransaction(sql_list);
+                if (isFailed(res))
+                {
+                    foreach (var s in sql_list)
+                        ;
+
+                    return false;
+                }
+
+                return true;
+            }
+
+            method updateNewsIdList(category_id1, category_id2, news_id_list)
+            {
+                return updateNewsIdListByList([[category_id1, category_id2, news_id_list]]);
+            }
+
+            method getUsedCategory2List(category_id1)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT DISTINCT category_id2 FROM t_news_id_list WHERE language = ? AND category_id1 = ? ORDER BY category_id2";
+                var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage(), category_id1]);
+                var result_list = [];
+
+                foreach (var r in res)
+                    result_list.push(r[0]);
+                
+                return result_list;
+            }
+
+            method getNews(news_id)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT * FROM t_news WHERE language = ? AND news_id = ?";
+                var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage(), news_id]);
+                var news = GetResult1(res);
+                
+                return news;
+            }
+
+            method createUpdateNewsSql(news)
+            {
+                var sql_list = [];
+                var news_id = news["news_id"];
+                var language = pdistd::MLocale::getLanguage();
+                var sql = "INSERT OR REPLACE INTO t_news (news_id, language, category_id1, category_id2, category_id3, "
+                          "title, headline, comment, news_date, gttv) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+                var params = [
+                    news_id,
+                    language,
+                    news["category_id1"],
+                    news["category_id2"],
+                    news["category_id3"],
+                    news["title"],
+                    news["headline"],
+                    news["comment"],
+                    news["news_time"].getBySecond(),
+                    news["gttv"],
+                ];
+
+                sql_list.push([sql, params]);
+
+                var image_id_list = news["images"];
+                var sql_image = "INSERT OR REPLACE INTO t_news_image (news_id, image_id, language, caption) VALUES (?, ?, ?, ?)";
+
+                foreach (var image_id in image_id_list)
+                {
+                    var params = [
+                        news_id,
+                        image_id["image_id"],
+                        language,
+                        image_id["caption"],
+                    ];
+
+                    sql_list.push([sql_image, params]);
+                }
+
+                var result_list = news["results"];
+                var sql_result = "INSERT OR REPLACE INTO t_news_result (news_id, result_id, language, name, content) VALUES (?, ?, ?, ?, ?)";
+
+                foreach (var result in result_list)
+                {
+                    var params = [
+                        news_id,
+                        result["result_id"],
+                        language,
+                        result["name"],
+                        result["content"],
+                    ];
+
+                    sql_list.push([sql_result, params]);
+                }
+
+                return sql_list;
+            }
+
+            method updateNewsByList(news_list)
+            {
+                var sqlite = getSqlite();
+                var sql_list = [];
+                foreach (var news in news_list)
+                {
+                    var list = createUpdateNewsSql(news);
+                    sql_list += list;
+                }
+
+                var res = sqlite.executeTransaction(sql_list);
+                if (isFailed(res))
+                    return false;
+
+                return true;
+            }
+
+            method updateNews(news)
+            {
+                var sqlite = getSqlite();
+                var sql_list = createUpdateNewsSql(news);
+                var res = sqlite.executeTransaction(sql_list);
+                if (isFailed(res))
+                    return false;
+                return true;
+            }
+
+            method getReadNewsList(news_id_list)
+            {
+                var sqlite = getSqlite();
+                var csv = news_id_list.join(",");
+                var sql = "SELECT news_id FROM t_news_read WHERE language = ? AND news_id IN (%{csv})";
+                var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage()]);
+                return res;
+            }
+
+            method isReadNews(news_id)
+            {
+                var count = GetCount("t_news_read", "news_id = %{news_id}");
+                return count > 0;
+            }
+
+            method readNews(news_id)
+            {
+                var sqlite = getSqlite();
+                var sql = "INSERT INTO t_news_read (news_id, language) VALUES (?, ?)";
+                var params = [news_id, pdistd::MLocale::getLanguage()];
+                var res = sqlite.execute(sql, params);
+                if (isFailed(res))
+                    return false;
+                return true;
+            }
+
+            method getImageList(news_id)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT image_id, caption FROM t_news_image WHERE language = ? AND news_id = ?";
+                var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage(), news_id]);
+                return res;
+            }
+
+            method getResultList(news_id)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT result_id, name, content FROM t_news_result WHERE language = ? AND news_id = ?";
+                var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage(), news_id]);
+                return res;
+            }
+
+            method getZeroCategoryList(category_id1)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT category_id2 FROM t_news_category WHERE language = ? AND category_id1 = ? AND category_id2 != 0 "
+                        "EXCEPT SELECT category_id2 FROM t_news_id_list WHERE language = ? AND category_id1 = ? GROUP BY category_id2";
+                var language = pdistd::MLocale::getLanguage();
+                var res = sqlite.executeQuery(sql, [language, category_id1, language, category_id1]);
+
+                return res;
+            }
+
+            method getReadNewsCount(category_id1, category_id2)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT COUNT (*) FROM t_news_read WHERE language = ? AND news_id in (SELECT news_id FROM t_news_id_list WHERE category_id1 = ? AND category_id2 = ?)";
+                var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage(), category_id1, category_id2]);
+                var count = GetResult1(res);
+                return count == nil ? 0 : count;
+            }
+
+            method getNotYetReadCount()
+            {
+                var total_count = GetCount("t_news_id_list", "category_id1 = 1");
+                var sqlite = getSqlite();
+                var sql = "SELECT COUNT (*) FROM t_news_read WHERE language = ? AND news_id in (SELECT news_id FROM t_news_id_list WHERE category_id1 = 1)";
+                var res = sqlite.executeQuery(sql, [pdistd::MLocale::getLanguage()]);
+                var read_count0 = GetResult1(res);
+                var read_count = read_count0 == nil ? 0 : read_count0;
+                return total_count - read_count;
+            }
+
+            method getCount(table_name, condition)
+            {
+                return GetCount(table_name, condition);
+            }
+
+            method isFailed(res)
+            {
+                return res != 101;
+            }
+        }
+    }
+}

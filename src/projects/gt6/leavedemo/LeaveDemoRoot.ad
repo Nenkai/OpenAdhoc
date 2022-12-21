@@ -1,0 +1,516 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module LeaveDemoRoot
+{
+    DebugInfo.visible = false;
+    SceneFace.visible = false;
+
+    static sFiles = [
+        "d001.xml",
+        "d002.xml",
+        "d003.xml",
+        "d004.xml",
+        "d005.xml",
+        "d006.xml",
+        "d007.xml",
+        "d008.xml",
+        "d009.xml",
+        "d010.xml",
+        "d011.xml",
+        "d012.xml",
+        "d013.xml",
+        "d014.xml",
+        "d015.xml",
+        "d016.xml",
+        "d017.xml",
+        "d018.xml",
+        "d019.xml",
+        "d020.xml",
+        "d021.xml",
+        "d022.xml",
+        "d023.xml",
+        "d024.xml",
+        "d025.xml",
+        "d026.xml",
+        "d027.xml",
+        "d028.xml",
+        "d029.xml",
+        "d030.xml",
+        "d031.xml",
+        "d032.xml",
+        "d033.xml",
+        "d034.xml",
+        "d035.xml",
+        "d036.xml",
+        "d037.xml",
+        "d038.xml",
+        "d039.xml",
+        "d040.xml",
+        "d041.xml",
+        "d042.xml",
+    ];
+
+    static sThreadTick;
+    static sThreadRace;
+    static sPlayingCarDemo = false;
+    static sCarStartTime = nil;
+    static sRaceStartTime = nil;
+    static sTimeOutLimit = GAME_STATUS.user_profile.option.autodemo_time_limit;
+
+    static sTimeOut = 30;
+
+    static sDuringRaceLoad = false;
+    static sCloseFlg = false;
+    static sCarDemoShortestTime = 60000000;
+    
+    method close(context)
+    {
+        if (sCloseFlg)
+            return;
+
+        sCloseFlg = true;
+     
+        SceneFaceUtil::SetWaitSceneFace(context, nil);
+        end_race(context, true);
+        SequenceUtil::startProjectSimple(context, GameSequence::getArgument());
+    }
+
+    method tick_entry(context)
+    {
+        while (true)
+        {
+            if (sRaceStartTime != nil)
+            {
+                var now = pdistd::GetSystemTimeMicroSecond();
+                var diff = (now - sRaceStartTime) / 1000000;
+                if (diff > sTimeOut)
+                    doNext(context);
+            }
+
+            Thread::Sleep(1);
+        }
+    }
+
+    method onInitialize(context)
+    {
+        if (AppOpt.defined("demo_idx"))
+        {
+            if (AUTODEMO_INDEX_LIST == nil || AUTODEMO_INDEX_LIST.size != sFiles.size)
+            {
+                AUTODEMO_INDEX_LIST = Array(sFiles.size);
+                for (var i = 0; i < sFiles.size; ++i)
+                    AUTODEMO_INDEX_LIST[i] = i;
+
+                var idx = AppOpt["demo_idx"];
+                var game_context = GAME_STATUS.user_profile.context;
+                game_context.leavedemo_course_index = idx;
+            }
+        }
+        else
+            ;
+
+        ORG.setEnableStereoRendering(true);
+        
+        sThreadTick = Thread(tick_entry, context);
+        sThreadTick.start();
+
+        self.start_race(context);
+    }
+
+    method onFinalize(context)
+    {
+        if (sThreadTick != nil)
+        {
+            sThreadTick.terminate();
+            sThreadTick = nil;
+        }
+
+        ORG.enableRenderingRace();
+        ORG.enableSoundingRace();
+        ORG.setEnableStereoRendering(false);
+
+        menu::FrameInterval = 1;
+        SoundUtil::SetupSound(SoundUtil::SCENE_MENU);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        LeaveDemoRoot.close(context);
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_L1:
+            case CELL_PAD_CTRL_R1:
+                main::sound.play("cursor");
+                doNext(context);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_CIRCLE:
+                main::sound.play("ok");
+                LeaveDemoRoot.close(context);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_CROSS:
+                main::sound.play("ok");
+                LeaveDemoRoot.close(context);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_START:
+                main::sound.play("ok");
+                LeaveDemoRoot.close(context);
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    function delay_thread(context, usec = 100000)
+    {
+        context.flushEvent(e => true);
+        pdiext::ProcessUpdateIteration(usec);
+    }
+
+    function setup_gap(gp)
+    {
+        var meter = 200;
+        var rp = gp.event.race_parameter;
+        
+        for (var i = 0; i < rp.racers_max; ++i)
+        {
+            rp.setStartTypeSlot(i, gtengine::StartType::ROLLING3);
+            rp.setLaunchPosition(i, i == 0 ? -1 : -meter * i);
+            rp.setLaunchSpeed(i, 100);
+        }
+
+        rp.useLaunchData(true);
+    }
+
+    function start_race_entry(context)
+    {
+        sDuringRaceLoad = true;
+
+        SequenceUtil::setupTransition(context, CursorProject::GTLogoTransition);
+        SoundUtil::MenuBGMCrossfadeGroup("menu", 0.0, 3.0);
+        SoundUtil::SetupSound(SoundUtil::SCENE_REPLAY);
+
+        var gp = getNextGameParameter(context, &sTimeOut);
+        gp.keep_sequence = true;
+
+        GameParameterUtil::executeAutoDemo(context, gp, GAME_STATUS);
+        LaunchRaceUtil::execute(true);
+        ORG.disableRenderingRace();
+        ORG.disableSoundingRace();
+        
+        var success = RaceOperator.allocateResource(0);
+        ORG.setSequentialLoadMode(false);
+        ORG.requestLoadingCourse();
+
+        var check_in_success = RaceOperator.checkIn(false);
+
+        while (true)
+        {
+            var res = RaceOperator.hasEntryDone();
+            if (res)
+                break;
+
+            Thread::Sleep(0.5);
+        }
+
+        RaceOperator.processAfterCheckIn();
+
+        while (!ORG.canEnterCourse(false))
+            Thread::Sleep(1);
+
+        while (!ORG.enterCourse())
+            Thread::Sleep(1);
+
+        while (!ORG.inCourse())
+            Thread::Sleep(1);
+
+        while (!ORG.hasLoadingCarDone())
+            Thread::Sleep(1);
+
+        ORG.startSession(gp.event.race_parameter, false, gtengine::StartSessionCameraType::DISABLE_INPUT_WITHOUT_ZOOM, true);
+        
+        while (!ORG.inSession())
+            Thread::Sleep(1);
+
+        ORG.pauseHandleAvailable = false;
+        ORG.pauseAvailable = false;
+
+        var target = (RaceOperator.checked_in_car_num - 1) / 2;
+        for (var i = 0; i < RaceOperator.checked_in_car_num; ++i)
+        {
+            var cp = ORG.getEntriedCarParameter(i);
+            if (cp != nil && cp.target)
+            {
+                target = i;
+                break;
+            }
+        }
+
+        ORG.setCameraTarget(0, target);
+        ORG.setRaceDisplayTarget(0, target);
+        
+        while (!ORG.isFinishedFirstLoad())
+            Thread::Sleep(1);
+
+        LeaveDemoRoot.end_cardemo(context);
+        ORG.enableRenderingRace();
+        ORG.enableSoundingRace();
+
+        SoundUtil::BGMPlayGroup(SoundUtil::SCENE_REPLAY, "racing", nil, 0.0, 3.0);
+
+        context.pageInRootTransition();
+        sRaceStartTime = pdistd::GetSystemTimeMicroSecond();
+        sDuringRaceLoad = false;
+    }
+
+    method start_race(context)
+    {
+        self.end_race(context);
+
+        sThreadRace = Thread(start_race_entry, context);
+        sThreadRace.start();
+    }
+
+    method end_race(context, without_transition)
+    {
+        if (sThreadRace == nil)
+            return;
+
+        sThreadRace.terminate();
+        sThreadRace = nil;
+        sRaceStartTime = nil;
+
+        if (without_transition == nil || !without_transition)
+        {
+            SequenceUtil::setupTransition(context, context.getCursorProject().GTLogoTransition);
+            context.pageOutRootTransition();
+            context.syncOutRootTransition();
+        }
+
+        ORG.endSession();
+
+        do
+        {
+            pdiext::ProcessUpdateIteration(16000);
+        }
+        while (ORG.inSession());
+
+        RaceOperator.checkOut();
+        ORG.exitCourse();
+        RaceOperator.destroyRace();
+
+        do
+        {
+            pdiext::ProcessUpdateIteration(16000);
+        }
+        while (ORG.isBuildComplete());
+
+        LaunchRaceUtil::clearResource();
+        RaceOperator.clear();
+    }
+
+    method doRaceNext(context)
+    {
+        end_race(context);
+        start_race(context);
+    }
+
+    static sXesList = [
+        ["color_select_white", "black"],
+        ["color_select_day", "white"],
+        ["color_select_morning", "white"],
+        ["color_select_night", "white"],
+    ];
+
+    method loadSceneFace(context, car_code, car_color)
+    {
+        var cp;
+        if (main::GAME_STATUS.user_profile.option.kiosk_limit_car && main::GAME_STATUS.user_profile.option.hasLimitedCar())
+        {
+            var cars = main::GAME_STATUS.user_profile.option.getLimitedCars();
+            cars.randomShuffle();
+
+            var i = pdistd::MRandom::GetValue(0, cars.size);
+            var car_code = cars[i];
+            var col_num = gtengine::MSpecDB::getCarVariation(car_code);
+            cp = gtengine::MCarParameter(car_code);
+            cp.color = pdistd::MRandom::GetValue(0, col_num);
+        }
+
+        if (cp == nil)
+        {
+            if (car_code == nil)
+                car_code = gtengine::MSpecDB::getCarCode("gtr_nismo_gt3_13");
+
+            if (car_color == nil)
+                car_color = 0;
+
+            cp = gtengine::MCarParameter();
+            cp.setCarCode(car_code);
+            cp.color = car_color;
+        }
+
+        SceneFaceUtil::loadScene(SceneFace, "colorSelect", cp, nil, true);
+    }
+
+    method start_cardemo(context)
+    {
+        self.end_cardemo(context);
+        sPlayingCarDemo = true;
+
+        SoundUtil::MenuBGMCrossfadeGroup("menu", 0.0, 3.0);
+
+        var cars = SPECDB.executeQuery1C("SELECT ID FROM GENERIC_CAR WHERE SpecifyFlags1&%d AND Category=0 AND InDealer=1 ORDER BY RANDOM()".format(gtengine::GenericFlag::USE_PREMIUM_MODEL));
+        var game_context = GAME_STATUS.user_profile.context;
+        var idx = game_context.leavedemo_course_index % cars.size;
+
+        SequenceUtil::setupTransition(context, CursorProject::GTLogoTransition);
+        context.pageOutRootTransition();
+
+        sCarStartTime = pdistd::GetSystemTimeMicroSecond();
+    }
+
+    method end_cardemo(context, without_transition)
+    {
+        if (!sPlayingCarDemo)
+            return;
+
+        if (without_transition == nil || !without_transition)
+        {
+            SequenceUtil::setupTransition(context, context.getCursorProject().GTLogoTransition);
+            context.pageOutRootTransition();
+            context.syncOutRootTransition();
+        }
+
+        SceneFace.execCommand("clearAllModel");
+
+        context.wait();
+        context.wait();
+
+        SceneFace.visible = false;
+        sPlayingCarDemo = false;
+        sCarStartTime = false;
+    }
+
+    function getNextGameParameter(context, time_out_limit_ref)
+    {
+        var game_context = GAME_STATUS.user_profile.context;
+        var idx = game_context.leavedemo_course_index;
+        game_context.leavedemo_course_index++;
+
+        var gp;
+        if (main::GAME_STATUS.user_profile.option.kiosk_limit_democar && main::GAME_STATUS.user_profile.option.hasLimitedDemoCar())
+        {
+            var cars = main::GAME_STATUS.user_profile.option.getLimitedDemoCars();
+            var car_code = cars[pdistd::MRandom::GetValue(0, cars.size)];
+            var cp = gtengine::MCarParameter(car_code);
+            cp.color = pdistd::MRandom::GetValue(0, gtengine::MSpecDB::getCarVariation(car_code));
+
+            var courses = [];
+
+            if (main::GAME_STATUS.user_profile.option.kiosk_limit_course && main::GAME_STATUS.user_profile.option.hasLimitedCourse())
+            {
+                courses = main::GAME_STATUS.user_profile.option.getLimitedCourses();
+                courses = SPECDB.executeQuery1C("SELECT ID FROM COURSE WHERE Arcade=1 AND Loop=1 AND CourseCategory<>'snow_dirt' AND ID IN (%s)".format(courses.join(",")));
+            }
+
+            if (courses.size == 0)
+                courses = SPECDB.executeQuery1C("SELECT ID FROM COURSE WHERE Arcade=1 AND Loop=1 AND CourseCategory IN ('circuit', 'city')");
+
+            if (game_context.leavedemo_course_index >= courses.size)
+                game_context.leavedemo_course_index = 0;
+
+            idx = idx % courses.size;
+            var course_code = courses[idx];
+            
+            gp = GameParameterUtil::createAutoDemo(course_code, 1);
+            var entry_set = gp.event.entry_set;
+            entry_set.entry_generate.generate_type = gtengine::GenerateType::NONE;
+            entry_set.entries.resize(1);
+
+            var entry0 = entry_set.entries[0];
+            entry0.player_no = 0;
+            entry0.car_parameter = cp;
+
+            var course_info = SPECDB.query1("SELECT TimeProgressSpeed, StartDateTime, WeatherValue, NoPrecipitation FROM COURSE WHERE ID=?", [course_code]);
+
+            var rp = gp.event.race_parameter;
+            rp.decisive_weather = gtengine::DecisiveWeather::NONE;
+            rp.weather_no_schedule = false;
+            rp.weather_point_num = 2;
+            rp.weather_total_sec = 300;
+            rp.weather_no_precipitation = course_info.NoPrecipitation;
+            rp.setWeatherValue(0, 0, course_info.WeatherValue, course_info.WeatherValue);
+            rp.setWeatherValue(1, 1.0, course_info.WeatherValue, course_info.WeatherValue);
+            rp.weather_accel10 = 0;
+            rp.time_progress_speed = course_info.TimeProgressSpeed;
+
+            var start_datetime = pdistd::MTime::getCurrentTime();
+            if (course_info.StartDateTime > 0)
+                start_datetime.setForCourse(course_info.StartDateTime);
+
+            rp.datetime = start_datetime;
+        }
+        else
+        {
+            if (game_context.leavedemo_course_index >= sFiles.size)
+                game_context.leavedemo_course_index = 0;
+
+            idx = idx % AUTODEMO_INDEX_LIST.size;
+            idx = AUTODEMO_INDEX_LIST[idx];
+            idx = idx % sFiles.size;
+
+            gp = GameParameterUtil::createFromFile("/game_parameter/gt6/autodemo/" + sFiles[idx]);
+        }
+
+        var time_out = 180;
+        if (0 < sTimeOutLimit && sTimeOutLimit < time_out)
+            time_out = sTimeOutLimit;
+
+        &time_out_limit_ref = time_out;
+        return gp;
+    }
+
+    static sDemoCount = 0;
+
+    function doNext(context)
+    {
+        if (sDuringRaceLoad)
+            return;
+
+        if (sCloseFlg)
+            return;
+
+        sDemoCount++;
+
+        if (sDemoCount > GAME_STATUS.user_profile.option.demo_returning_to_menu_interval &&
+            GAME_STATUS.user_profile.option.demo_returning_to_menu_interval != 0)
+            LeaveDemoRoot.close(context);
+        else
+            LeaveDemoRoot.doRaceNext(context);
+    }
+}

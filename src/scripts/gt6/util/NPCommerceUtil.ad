@@ -1,0 +1,296 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module NPCommerceUtil
+{
+    import main::WatcherUtil;
+
+    static sNPCommerce = nil;
+    static sWatcher = nil;
+    static sBuffer = nil;
+    static sRequestID = nil;
+    static sBlockMode = nil;
+    static sSuccess = nil;
+    static sTimeOutToAbort = nil;
+    static sEventLoop = nil;
+    static sLastErrorCode = 0;
+
+    function get_last_error_code()
+    {
+        if (sLastErrorCode != 0)
+            return sLastErrorCode;
+        else if (sNPCommerce != nil)
+            return sNPCommerce.getLastErrrorCode();
+        
+        return 0;
+    }
+
+    function startBlockMode(context)
+    {
+        sBlockMode = true;
+        context.event_mask &= ~0x0F;
+        sEventLoop = main::menu::EventLoop(context);
+        sEventLoop.enter();
+    }
+
+    function finishBlockMode(context)
+    {
+        if (sBlockMode)
+        {
+            sEventLoop.leave();
+            sEventLoop = nil;
+        }
+
+        context.event_mask |= 0x0F;
+    }
+
+    function on_np_commerce_event(context, event_type, request_id, error_code, ctxt)
+    {
+        switch (event_type)
+        {
+            case main::pdistd::NPCommerce2EventType::REQUEST_ERROR:
+                sSuccess = false;
+                sLastErrorCode = error_code;
+                finishBlockMode(context);
+                break;
+
+            case main::pdistd::NPCommerce2EventType::CREATE_SESSION_DONE:
+                sSuccess = true;
+                finishBlockMode(context);
+                break;
+
+            case main::pdistd::NPCommerce2EventType::CREATE_SESSION_ABORT:
+                sSuccess = false;
+                finishBlockMode(context);
+                break;
+
+            case main::pdistd::NPCommerce2EventType::DO_CHECKOUT_STARTED:
+                break;
+
+            case main::pdistd::NPCommerce2EventType::DO_CHECKOUT_SUCCESS:
+                sSuccess = true;
+                break;
+
+            case main::pdistd::NPCommerce2EventType::DO_CHECKOUT_BACK:
+                break;
+
+            case main::pdistd::NPCommerce2EventType::DO_CHECKOUT_FINISHED:
+                finishBlockMode(context);
+                break;
+
+            case main::pdistd::NPCommerce2EventType::DO_PRODUCT_CODE_STARTED:
+                break;
+
+            case main::pdistd::NPCommerce2EventType::DO_PRODUCT_CODE_SUCCESS:
+                sSuccess = true;
+                sNPCommerce.finalizeProductCodeInputDialogRequest();
+                break;
+
+            case main::pdistd::NPCommerce2EventType::DO_PRODUCT_CODE_BACK:
+                sNPCommerce.finalizeProductCodeInputDialogRequest();
+                break;
+
+            case main::pdistd::NPCommerce2EventType::DO_PRODUCT_CODE_FINISHED:
+                finishBlockMode(context);
+                break;
+            
+            default:
+                break;
+        }
+    }
+
+    function on_tick(context)
+    {
+        main::pdistd::MNPCommerce::updateCommerce(context, on_np_commerce_event);
+    }
+
+    function begin(context)
+    {
+        if (sNPCommerce != nil)
+            sNPCommerce = nil;
+
+        sNPCommerce = main::pdistd::MNPCommerce();
+        if (!sNPCommerce.initialize())
+        {
+            sNPCommerce = nil;
+            return false;
+        }
+
+        sWatcher = WatcherUtil::Create(context, on_tick, 10);
+
+        var res = sNPCommerce.startCreateSession();
+        if (!res)
+            return false;
+
+        sSuccess = false;
+        startBlockMode(context);
+        return sSuccess;
+    }
+
+    function end(context)
+    {
+        sTimeOutToAbort = nil;
+        sSuccess = nil;
+        sBlockMode = nil;
+        sRequestID = nil;
+
+        WatcherUtil::Delete(sWatcher);
+        sWatcher = nil;
+
+        sBuffer = nil;
+
+        if (sNPCommerce != nil)
+        {
+            sNPCommerce.finalize();
+            sNPCommerce = nil;
+        }
+
+        context.event_mask |= 0x0F;
+    }
+
+    function isBusy()
+    {
+        return sRequestID != nil;
+    }
+
+    function getCurrencyCode()
+    {
+        if (sNPCommerce != nil)
+        {
+            var info = sNPCommerce.getSessionInfo();
+            return info["currencyCode"];
+        }
+
+        return nil;
+    }
+
+    function getDecimals()
+    {
+        if (sNPCommerce != nil)
+        {
+            var info = sNPCommerce.getSessionInfo();
+            return info["decimals"];
+        }
+
+        return nil;
+    }
+
+    function getCategory(category_id)
+    {
+        if (sNPCommerce == nil)
+            return nil;
+
+        if (!sNPCommerce.beginGetCategoryInfo(category_id))
+            return nil;
+        
+        var info = sNPCommerce.getCategoryInfo();
+        sNPCommerce.endGetCategoryInfo();
+
+        return info;
+    }
+
+    function getProduct(category_id, product_id)
+    {
+        if (sNPCommerce == nil)
+            return nil;
+
+        if (!sNPCommerce.beginGetProductInfo(category_id, product_id))
+            return nil;
+
+        var info = sNPCommerce.getProductInfo();
+        sNPCommerce.endGetProductInfo();
+
+        return info;
+    }
+
+    function getPrice(price)
+    {
+        if (sNPCommerce == nil)
+            return price;
+
+        var price_text = sNPCommerce.getPrice(price);
+        var info = sNPCommerce.getSessionInfo();
+
+        var currencyCode = info["currencyCode"];
+        var i = price_text.find(currencyCode);
+
+        if (i == -1)
+            return price_text;
+
+        var result = price_text.substr(0, i);
+        result += info["currencySymbol"];
+        result += price_text.substr(i + currencyCode.size);
+        return result;
+    }
+
+    function beginCheckout(context, sku_ids)
+    {
+        if (sNPCommerce == nil)
+            return false;
+
+        sSuccess = false;
+        var request_id = sNPCommerce.startCheckout(sku_ids);
+        if (request_id == 0)
+        {
+            main::pdistd::MSystemDialog::open(get_last_error_code());
+            return false;
+        }
+
+        sRequestID = request_id;
+        return true;
+    }
+
+    function endCheckout(context)
+    {
+        if (sNPCommerce == nil)
+            return false;
+
+        sNPCommerce.endCheckout();
+        sRequestID = nil;
+
+        context.event_mask |= 0x0F;
+
+        return sSuccess;
+    }
+
+    function checkout(context, sku_ids)
+    {
+        var res = beginCheckout(context, sku_ids);
+        if (!res)
+            return false;
+
+        startBlockMode(context);
+        return endCheckout(context);
+    }
+
+    function openProductCodeInputDialog(context)
+    {
+        sLastErrorCode = 0;
+
+        var res = sNPCommerce.openProductCodeInputDialog();
+        if (!res)
+            return false;
+
+        startBlockMode(context);
+
+        if (sLastErrorCode != 0)
+        {
+            sNPCommerce.finalizeProductCodeInputDialogRequest();
+            startBlockMode(context);
+        }
+
+        sNPCommerce.finalizeProductCodeInputDialog();
+        return true;
+    }
+}

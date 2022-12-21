@@ -1,0 +1,536 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+module OnlineRoomUtil
+{
+    static sDataProvider;
+    static sLobbyEventHandler;
+
+    function getDataProvider()
+    {
+        if (sDataProvider == nil)
+            sDataProvider = OnlineUtil::OnlineDataProvider();
+
+        return sDataProvider;
+    }
+
+    function onLobbyServerConnected(context)
+    {
+        Lobby.setLobbyHandler(context, CommunityProject, sLobbyEventHandler.onLobbyEvent);
+    }
+
+    static sConnectLobbyConfig = [
+        "server" : gtengine::MLobby::ServerIdJoining,
+        "worldNumber" : OnlineUtil::MatchingWorld::ClubLobby,
+        "connectedCallback" : onLobbyServerConnected,
+    ];
+
+    function load(context)
+    {
+        if (sLobbyEventHandler == nil)
+            sLobbyEventHandler = LobbyUtil::EventHandler();
+
+        ServerUtil::LOBBY::connectRequest(context, sConnectLobbyConfig);
+    }
+
+    function unload()
+    {
+        ServerUtil::LOBBY::clearConfig();
+
+        if (sLobbyEventHandler != nil)
+        {
+            Lobby.unsetLobbyHandler(CommunityProject, sLobbyEventHandler.onLobbyEvent);
+            sLobbyEventHandler.finalize();
+            sLobbyEventHandler = nil;
+        }
+    }
+
+    function connectLobbyServer(context)
+    {
+        var ret = ServerUtil::LOBBY::connect(context, sConnectLobbyConfig);
+        return ret;
+    }
+
+    function searchRoomRequest(context, clubId, clubEventId, roomType)
+    {
+        var param = Map();
+        var cond = Map();
+        cond["roomType"] = [roomType];
+        cond["clubId"] = [clubId];
+
+        if (clubEventId != nil)
+            cond["clubEventId"] = [clubEventId];
+
+        param["conditional"] = Lobby.createRoomConditional(cond);
+        param["serverId"] = gtengine::MLobby::ServerIdThrough;
+        param["worldNumber"] = OnlineUtil::MatchingWorld::getByRoomType(roomType);
+        param["natFilter"] = true;
+        param["random"] = true;
+        param["excludeFull"] = false;
+        param["excludeClosed"] = false;
+        param["max"] = Lobby.getRoomResultMax();
+
+        var ret = Lobby.searchRoomAsync(param);
+        if (ret < 0)
+            return false;
+
+        return true;
+    }
+
+    function searchClubRoomRequest(context, clubId)
+    {
+        return searchRoomRequest(context, clubId, nil,gtengine::RoomType::CLUB_LOBBY);
+    }
+
+    function searchClubEventRoomRequest(context, clubId, clubEventId)
+    {
+        return searchRoomRequest(context, clubId, clubEventId, gtengine::RoomType::CLUB_EVENT);
+    }
+
+    function joinRoom(context, room)
+    {
+        CommunityProject::sHealthCheck = false;
+
+        var res = GTModeProject::EnterRoomDialog.open(context, room);
+        if (res == nil || !res)
+        {
+            CommunityProject::sHealthCheck = true;
+            return false;
+        }
+
+        res = OnlineUtil::enterRoomWithProgressDialog(context, [room, nil]);
+        if (res)
+        {
+            CommunityProject::markAsReturnProject();
+            OnlineUtil::goToRaceProject(context, room);
+        }
+        else
+        {
+            CommunityProject::sHealthCheck = true;
+        }
+
+        return res;
+    }
+
+    function getMemberCount(roomList)
+    {
+        var count = 0;
+        foreach (var room in roomList)
+            count += room["memberNum"];
+
+        return count;
+    }
+
+    function getMemberCountString(roomList, max = 99)
+    {
+        var count = getMemberCount(roomList);
+        if (count == 0)
+            return "";
+        else if (count > max)
+            return ">%{count}";
+        else
+            return count;
+    }
+
+    function createRoomByClub(context, club_id)
+    {
+        var rc = EventSettingUtil::getDefaultSetting(context);
+        if (rc != nil)
+        {
+            rc.room_type = gtengine::RoomType::CLUB_LOBBY;
+            if (rc.scope != gtengine::Scope::CLUB && rc.scope != gtengine::Scope::PUBLIC)
+                rc.scope = gtengine::Scope::CLUB;
+        }
+        else
+        {
+            var gp = GameParameterUtil::createOnlineBattle(OnlineUtil::getDefaultCourseCode(), 
+                gtengine::RoomType::CLUB_LOBBY);
+            rc = gtengine::MRoomConfig(gp);
+        }
+
+        rc.club_id = club_id;
+
+        var mode = EventSettingProject::EventSettingRoot::Mode::CreateClubRoom;
+        var res = EventSettingProject::EventSettingRoot.open(context, &rc, mode, getDataProvider());
+        if (res)
+            CommunityProject::markAsReturnProject();
+
+        return res;
+    }
+
+    function setupGeneratedCourseInfo(gp, rc)
+    {
+        if (rc.isGeneratedCourse())
+        {
+            var courseInfo = getDataProvider().getCourseInfoFromTed(gp.event.track.edit_data, rc.generated_course_id);
+            if (courseInfo == nil)
+                return false;
+
+            EventSettingProject::setTargetCourseInfo(courseInfo);
+            var mapData = gtengine::convertTedToMapData(gp.event.track.edit_data);
+            if (mapData != nil)
+                EventSettingProject::EventSettingRoot.setMapData(mapData);
+            else
+                return false;
+        }
+
+        return true;
+    }
+
+    function createRoomByEvent(context, club_id, club_event_id, gp)
+    {
+        if (!connectLobbyServer(context))
+            return false;
+
+        var rc = gtengine::MRoomConfig(gp);
+        rc.club_id = club_id;
+        rc.club_event_id = club_event_id;
+        rc.room_type = gtengine::RoomType::CLUB_EVENT;
+
+        if (!setupGeneratedCourseInfo(gp, rc))
+            return false;
+
+        var track = gp.event.track;
+        if (track.generated_course_id > 0)
+        {
+            var ted = OnlineUtil::loadTrackEditData(context, track.generated_course_id);
+            if (ted == nil)
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                    manager.translate("OnlineMessage", "COURSE_NOT_FOUND_MAY_HAVE_BEEN_DELETED"));
+                return false;
+            }
+        }
+
+        var mode = EventSettingProject::EventSettingRoot::Mode::CreateClubEventRoom;
+        var res = EventSettingProject::EventSettingRoot.open(context, &rc, mode, getDataProvider());
+        if (res)
+            CommunityProject::markAsReturnProject();
+
+        return res;
+    }
+
+    function viewEventSetting(context, gp)
+    {
+        var rc = gtengine::MRoomConfig(gp);
+        if (!setupGeneratedCourseInfo(gp, rc))
+            return false;
+
+        var mode = EventSettingProject::EventSettingRoot::Mode::ViewAtClub;
+        var res = EventSettingProject::EventSettingRoot.open(context, &rc, mode, getDataProvider());
+        return res;
+    }
+
+    function createEventSetting(context, club_id)
+    {
+        var gp = GameParameterUtil::createOnlineBattle(OnlineUtil::getDefaultCourseCode(), gtengine::RoomType::CLUB_EVENT);
+        var room_config = gtengine::MRoomConfig(gp);
+        room_config.club_id = club_id;
+
+        var mode = EventSettingProject::EventSettingRoot::Mode::EditClubEvent;
+        var res = EventSettingProject::EventSettingRoot.open(context, &room_config, mode, getDataProvider());
+        if (!res)
+            return nil;
+
+        gp.deepCopy(room_config.getGameParameter());
+        return gp;
+    }
+
+    function loadEventSetting(context)
+    {
+        var rc = openEventListRootForLoad(context);
+        if (rc != nil)
+        {
+            var gp = GameParameterUtil::createOnlineBattle(OnlineUtil::getDefaultCourseCode()
+                gtengine::RoomType::CLUB_EVENT);
+            
+            EventSettingUtil::overwriteLoadedConfigWithCurrent(gtengine::MRoomConfig(gp), rc, false);
+            return rc.createGameParameter();
+        }
+
+        return nil;
+    }
+
+    function editEventSetting(context, gp)
+    {
+        var rc = gtengine::MRoomConfig(gp);
+        if (!setupGeneratedCourseInfo(gp, rc))
+            return nil;
+
+        var mode = EventSettingProject::EventSettingRoot::Mode::EditClubEvent;
+        var res = EventSettingProject::EventSettingRoot.open(context, &rc, mode, getDataProvider());
+        if (!res)
+            return nil;
+    
+        gp.deepCopy(rc.getGameParameter());
+        return gp;
+    }
+
+    function openEventListRootForEdit(context, clubId, withLocal = true)
+    {
+        var gp = GameParameterUtil::createOnlineBattle(OnlineUtil::getDefaultCourseCode(),
+            gtengine::RoomType::CLUB_EVENT);
+
+        var rc = gtengine::MRoomConfig(gp);
+        var params = UIKitProject::EventListRoot::Params();
+        params.dataProvider = getDataProvider();
+        params.eventTemplate = rc;
+        params.categoryList = [UIKitProject::EventListRoot::Category::Club];
+        params.clubId = clubId;
+
+        if (withLocal)
+            params.categoryList.push(UIKitProject::EventListRoot::Category::Local);
+
+        UIKitProject::EventListRoot.openForEdit(context, params);
+        return rc;
+    }
+
+    function openEventListRootForLoad(context)
+    {
+        var params = UIKitProject::EventListRoot::Params();
+        params.dataProvider = getDataProvider();
+        params.categoryList = [UIKitProject::EventListRoot::Category::Club];
+
+        var rc = UIKitProject::EventListRoot.openForLoad(context, params);
+        return rc;
+    }
+
+    function getRaceType(context, gp)
+    {
+        var room_config = gp != nil ? gtengine::MRoomConfig(gp) : nil;
+        var game_mode = room_config != nil ? room_config.room_game_mode : gtengine::RoomGameMode::NONE;
+
+        var p = true;
+        var q = false;
+        var r = false;
+        var t = false;
+        var d = false;
+        var f = false;
+        var e = false;
+
+        switch (game_mode)
+        {
+            case gtengine::RoomGameMode::FREERUN:
+                f = true;
+                p = false;
+                break;
+
+            case gtengine::RoomGameMode::RACE:
+                r = true;
+                break;
+
+            case gtengine::RoomGameMode::RACE_WITH_QUALIFIER:
+                r = true;
+                q = true;
+                break;
+
+            case gtengine::RoomGameMode::TIME_TRIAL:
+                t = true;
+                break;
+
+            case gtengine::RoomGameMode::DRIFT_TRIAL:
+                d = true;
+                break;
+
+            case gtengine::RoomGameMode::RALLY:
+                break;
+
+            case gtengine::RoomGameMode::ENDURANCE:
+                e = true;
+                break;
+
+            case gtengine::RoomGameMode::ENDURANCE_WITH_QUALIFIER:
+                e = true;
+                q = true;
+                break;
+        }
+
+        var value_q_t_d;
+        var value_r;
+        var value_e;
+        if (q || t || d)
+            value_q_t_d = manager.translate("OnlineMessage", "RoomGameModeInfo_Qualify_Time").build(room_config.qualifier_period / 60);
+
+        if (r)
+            value_r = manager.translate("OnlineMessage", "RoomGameModeInfo_Race_Lap").build(room_config.race_limit_laps);
+
+        if (e)
+        {
+            var minutes = room_config.race_limit_minute;
+            var isHour = MiscUtil::isHourSuitableForMinute(minutes, Constant::Online::HourThresholdMinutes);
+            var key = isHour ? "RoomGameModeInfo_Race_Time_Hour" : "RoomGameModeInfo_Race_Time";
+            value_e = manager.translate("OnlineMessage", key).build(isHour ? minutes / 60 : minutes);
+        }
+
+        return [
+            "P" : [p],
+            "Q" : [q, value_q_t_d],
+            "R" : [r, value_r],
+            "T" : [t, value_q_t_d],
+            "D" : [d, value_q_t_d],
+            "F" : [f],
+            "E" : [e, value_e],
+        ];
+    }
+
+    function getGameModeText(gp)
+    {
+        return EventSettingProject::sRoomGameModeList.getName(gp.online_room.room_game_mode);
+    }
+
+    function getRoomTypeString(roomType)
+    {
+        var roomTypeKey = nil;
+        switch (roomType)
+        {
+            case gtengine::RoomType::OPEN_MATCH:
+                roomTypeKey = "ROOM_OPEN_MATCH";
+                break;
+
+            case gtengine::RoomType::QUICK_MATCH:
+                roomTypeKey = "ROOM_ONLINE_EVENT";
+                break;
+                    
+            case gtengine::RoomType::CLUB_LOBBY:
+                roomTypeKey = "ROOM_CLUB_LOBBY";
+                break;
+
+                case gtengine::RoomType::CLUB_EVENT:
+                roomTypeKey = "ROOM_CLUB_EVENT";
+                break;
+
+            case gtengine::RoomType::NONE:
+        }
+
+        var msg = roomTypeKey != nil ? manager.translate("Community", roomTypeKey) : "";
+        return msg;
+    }
+
+    function hasCurrentSession(context, friend, cache_manager)
+    {
+        var roomType = friend["roomType"];
+        if (roomType == gtengine::RoomType::OPEN_MATCH)
+        {
+            return true;
+        }
+        else if (roomType == gtengine::RoomType::CLUB_LOBBY)
+        {
+            if (friend["roomScope"] == gtengine::Scope::PUBLIC)
+                return true;
+
+            var clubId = friend["clubId"];
+            if (cache_manager.isClubMember(context, Grim2.getLoginUserId(), clubId))
+                return true;
+        }
+        else if (roomType == gtengine::RoomType::CLUB_EVENT)
+        {
+            var clubId = friend["clubId"];
+            var userId = Grim2.getLoginUserId();
+            if (cache_manager.isClubMember(context, userId, clubId))
+            {
+                var club = cache_manager.getClub(context, clubId);
+                if (club != nil)
+                {
+                    var eventList = cache_manager.getEventList(context, club, userId);
+                    if (eventList != nil)
+                    {
+                        var clubEventId = friend["clubEventId"];
+                        foreach (var event in eventList)
+                        {
+                            if (event["club_event_id"] == clubEventId && event["_join"])
+                                return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    function joinCurrentSession(context, friend)
+    {
+        CursorUtil::setCursor(ContextMain, "wait");
+        if (!connectLobbyServer(context))
+            return false;
+
+        var roomType = getRoomTypeString(friend["roomType"]);
+        if (roomType == "")
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                manager.translate("OnlineMessage", "THIS_FRIEND_IS_NOT_JOINING_ANY_SESSIONS").build(friend["id"]));
+            return false;
+        }
+
+        var roomId = friend["roomId"];
+        var ret = Lobby.getExternalRoomInfoSync(roomId);
+        if (ret.isInstanceOf(Int))
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                manager.translate("OnlineMessage", "ROOM_NOT_FOUND") + "\n[%d:%d".format(ret, roomId));
+            return false;
+        }
+
+        var room = ret[0];
+        return joinRoom(context, room);
+    }
+
+    function CreateAsyncRoomList()
+    {
+        return LobbyUtil::AsyncRoomList(sLobbyEventHandler);
+    }
+
+    class ActiveMemberCounter
+    {
+        attribute roomList;
+        attribute label;
+
+        method initialize(context, clubId, clubEventId, label)
+        {
+            self.label = label;
+            self.roomList = OnlineRoomUtil::CreateAsyncRoomList();
+            self.roomList.initialize(context);
+
+            var me = self;
+            self.roomList.setListUpdateCallback(function(context, roomList) 
+            {
+                me.setRoomMemberCount(OnlineRoomUtil::getMemberCount(roomList));
+            });
+
+            self.roomList.setFilterFunction(function(context, room)
+            {
+                return room["clubEventId"] == clubEventId;
+            });
+
+            OnlineRoomUtil::searchClubEventRoomRequest(context, clubId, clubEventId);
+        }
+
+        method finalize(context)
+        {
+            if (self.roomList != nil)
+            {
+                self.roomList.finalize(context);
+                self.roomList = nil;
+            }
+
+            self.label = nil;
+        }
+
+        method setRoomMemberCount(count)
+        {
+            var text = manager.translate("Community", "ACTIVE_MEMBER_COUNT");
+            self.label.text = text.build(count);
+        }
+    }
+    
+}

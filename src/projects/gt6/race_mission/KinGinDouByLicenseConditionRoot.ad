@@ -1,0 +1,597 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module KinGinDouByLicenseConditionRoot
+{
+    hidden.visible = true;
+    
+    attribute event_id;
+    attribute license_result;
+    attribute current_result;
+    attribute score;
+    attribute show_button;
+    attribute all_disp_same_time;
+    attribute popup;
+    attribute closed;
+    attribute result;
+
+    method open(context, event_id, license_result, laptime, show_button, all_disp_same_time)
+    {
+        var license_condition = gSequenceCondition.event.license_condition;
+        var display_mode = license_condition.display_mode;
+
+        self.event_id = event_id;
+        self.license_result = license_result;
+
+        var LicenseMode = LicenseCondition::getLicenseMode();
+        switch (display_mode)
+        {
+            case gtengine::LicenseDisplayModeType::PYLON_NUM:
+                self.score = LicenseMode.getHitGadgetCount_Success();
+                break;
+
+            case gtengine::LicenseDisplayModeType::PYLON_TIME:
+                self.score = laptime;
+                break;
+
+            case gtengine::LicenseDisplayModeType::FUEL_DIST:
+                self.score = LicenseMode.getRoadDistance();
+                break;
+
+            case gtengine::LicenseDisplayModeType::FUEL_TIME:
+                self.score = laptime;
+                break;
+
+            case gtengine::LicenseDisplayModeType::DRIFT_SCORE:
+                self.score = LicenseMode.getSubModeScore();
+                break;
+
+            default:
+                self.score = laptime;
+                break;
+        }
+
+        self.show_button = show_button;
+        self.all_disp_same_time = all_disp_same_time;
+        if (self.all_disp_same_time == nil)
+            self.all_disp_same_time = false;
+
+        self.result = false;
+        self.closed = false;
+
+        self.popup = main::SequenceUtil::ModalPage(context, KinGinDouByLicenseConditionRoot);
+        self.popup.open();
+
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        FadeActor.on_effect_end = (context) => 
+        {
+            if (KinGinDouByLicenseConditionRoot.popup != nil)
+            {
+                KinGinDouByLicenseConditionRoot.popup.close();
+                KinGinDouByLicenseConditionRoot.popup = nil;
+            }
+        }
+
+        FadeActor.out = false;
+    }
+
+    method abort(context)
+    {
+        if (KinGinDouByLicenseConditionRoot.popup != nil)
+        {
+            KinGinDouByLicenseConditionRoot.popup.close();
+            KinGinDouByLicenseConditionRoot.popup = nil;
+        }
+    }
+
+    async method onInitialize(context)
+    {
+        var license_condition = gSequenceCondition.event.license_condition;
+        var display_mode = license_condition.display_mode;
+        
+        var [old_eval_type, old_best_score] = await () => GAME_STATUS.user_profile.record.event_record.getBestRecord(self.event_id);
+        var compare_ls = true;
+
+        var old_result = await () => GAME_STATUS.user_profile.record.event_record.getEventResult(self.event_id);
+        switch (display_mode)
+        {
+            case gtengine::LicenseDisplayModeType::PYLON_NUM:
+            case gtengine::LicenseDisplayModeType::FUEL_DIST:
+            case gtengine::LicenseDisplayModeType::DRIFT_SCORE:
+                if (old_best_score == -1)
+                    old_best_score = 0;
+
+                compare_ls = false;
+                break;
+
+
+            default:
+                if (old_best_score == -1)
+                    old_best_score = pdiext::MAX_LAPTIME1000;
+                break;
+        }
+        on_initialize_score(context, old_best_score);
+        on_initialize_all(context, old_best_score);
+
+        var update_score = false;
+        if (compare_ls)
+        {
+            update_score = self.score < old_best_score;
+        }
+        else
+        {
+            update_score = self.score > old_best_score;
+        }
+
+        if (update_score)
+        {
+            var record_result = -1;
+            switch (self.license_result)
+            {
+                case gtengine::LicenseResultType::GOLD:
+                    record_result = 0;
+                    break;
+
+                case gtengine::LicenseResultType::SILVER:
+                    record_result = 1;
+                    break;
+
+                case gtengine::LicenseResultType::BRONZE:
+                    record_result = 2;
+                    break;
+            }
+
+            var eval_type = gtengine::EvalType::TIME;
+            switch (display_mode)
+            {
+                case gtengine::LicenseDisplayModeType::DRIFT_SCORE:
+                    eval_type = gtengine::EvalType::DRIFT;
+                    break;
+
+                case gtengine::LicenseDisplayModeType::PYLON_NUM:
+                    eval_type = gtengine::EvalType::PYLON;
+                    break;
+
+                case gtengine::LicenseDisplayModeType::PYLON_TIME:
+                    eval_type = gtengine::EvalType::TIME;
+                    break;
+
+                case gtengine::LicenseDisplayModeType::FUEL_DIST:
+                    eval_type = gtengine::EvalType::DIST;
+                    break;
+
+                case gtengine::LicenseDisplayModeType::FUEL_TIME:
+                    eval_type = gtengine::EvalType::TIME;
+                    break;
+            }
+
+            await () => { GAME_STATUS.user_profile.record.event_record.updateResult(self.event_id, record_result, eval_type, self.score, 0) };
+            
+            var new_result = record_result;
+            if (old_result == -1 || old_result >= 3)
+            {
+                var [start_num, disqualify] = await () => GAME_STATUS.user_profile.record.playlog_record.getPlayLog(self.event_id);
+                Grim2Util::PUTLOG::EVENT::update_mission("new", start_num, disqualify, self.event_id, new_result, self.score);
+            }
+            else if (new_result != old_result)
+            {
+                var [start_num, disqualify] = await () => GAME_STATUS.user_profile.record.playlog_record.getPlayLog(self.event_id);
+                Grim2Util::PUTLOG::EVENT::update_mission("normal", start_num, disqualify, self.event_id, new_result, self.score);
+            }
+            
+        }
+
+        LeaveDetectUtil::begin(context, 75, self, onLeaveDetect, nil);
+    }
+
+    method on_initialize_score(context, old_best_score)
+    {
+        var license_condition = gSequenceCondition.event.license_condition;
+        var finish_condition = license_condition.finish_condition[0];
+        var display_mode = license_condition.display_mode;
+
+        if (self.license_result < gtengine::LicenseResultType::CLEAR)
+        {
+            Time::Info::NewRecord.visible = false;
+        }
+        else
+        {
+            var is_new = false;
+            switch (display_mode)
+            {
+                case gtengine::LicenseDisplayModeType::PYLON_NUM:
+                case gtengine::LicenseDisplayModeType::FUEL_DIST:
+                case gtengine::LicenseDisplayModeType::DRIFT_SCORE:
+                    is_new = self.score > old_best_score;
+                    break;
+
+                default:
+                    is_new = self.score < old_best_score;
+                    break;
+            }
+
+            Time::Info::NewRecord.visible = is_new;
+        }
+
+        var record = RaceRoot::getScoreText(self.score, "---");
+        if (self.license_result >= gtengine::LicenseResultType::CLEAR)
+        {
+            Time::Info::Result::Time::TextFace.visible = true;
+            Time::Info::Result::Time::TextFaceInvalid.visible = false;
+            Time::Info::Result::Time::TextFace.text = record[0];
+            Time::Info::Result::Time::TextFaceUnit.text = record[1];
+        }
+        else
+        {
+            Time::Info::Result::Time::TextFace.visible = false;
+            Time::Info::Result::Time::TextFaceInvalid.visible = true;
+            Time::Info::Result::Time::TextFaceInvalid.text = record[0];
+            Time::Info::Result::Time::TextFaceUnit.text = record[1];
+        }
+
+        Time::Info::Result::Time::TextFace_shadow.text = record[0];
+        if (self.all_disp_same_time)
+        {
+            Time.ScalarInterpolator.restart();
+        }
+        else
+        {
+            Time::Info::Result::Time.VectorInterpolator.restart();
+        }
+
+        Time::Info::Result::Time::Trophy.visible = false;
+        Time::Info::Cause.visible = false;
+
+        if (display_mode == gtengine::LicenseDisplayModeType::FUEL_TIME ||
+            display_mode == gtengine::LicenseDisplayModeType::PYLON_TIME)
+        {
+            switch (self.license_result)
+            {
+                case gtengine::LicenseResultType::EMPTY:
+                    Time::Info::Cause.visible = true;
+                    Time::Info::Cause.TextFace.text = manager.translate("Game", "UNDER_CLEAR_TIME");
+                    break;
+    
+                case gtengine::LicenseResultType::FAILURE:
+                    Time::Info::Cause.visible = true;
+                    Time::Info::Cause.TextFace.text = manager.translate("Game", "INVALID_TIME");
+                    break;
+            }
+        }
+    }
+
+    method startSE(context)
+    {
+        if (self.license_result >= gtengine::LicenseResultType::CLEAR)
+        {
+            switch (self.license_result)
+            {
+                case gtengine::LicenseResultType::CLEAR:
+                case gtengine::LicenseResultType::GOLD:
+                    if (Time::Info::NewRecord.visible)
+                        sound.play("big_cheer");
+                    else
+                        sound.play("clap_b");
+                    break;
+
+                case gtengine::LicenseResultType::SILVER:
+                    sound.play("clap_m");
+                    break;
+
+                case gtengine::LicenseResultType::BRONZE:
+                    sound.play("clap_s");
+                    break;
+            }
+        }
+    }
+
+    method startTrophyActor(widget, visible)
+    {
+        widget.visible = visible;
+        if (visible)
+        {
+            widget.ParallelActor.ScalarInterpolator.restart();
+            widget.ParallelActor.ScalarInterpolator0.restart();
+        }
+    }
+
+    method on_initialize_all(context, old_best_score)
+    {
+        var gp = gSequenceCondition.gp;
+        var license_condition = gSequenceCondition.event.license_condition;
+        var finish_condition = license_condition.finish_condition[0];
+        var display_mode = license_condition.display_mode;
+
+        var message = "";
+        switch (self.license_result)
+        {
+            case gtengine::LicenseResultType::GOLD:
+                message = "ACHIEVEMENT_GOLD";
+                sound.play("clap_b");
+                break;
+
+            case gtengine::LicenseResultType::SILVER:
+                message = "ACHIEVEMENT_SILVER";
+                sound.play("clap_m");
+                break;
+
+            case gtengine::LicenseResultType::BRONZE:
+                message = "ACHIEVEMENT_BRONZE";
+                sound.play("clap_s");
+                break;
+        }
+        
+
+        if (message != "")
+        {
+            message = manager.translate("QuickMenu", message);
+        }
+
+        Trophy::message::TextFace.text = message;
+
+        startTrophyActor(Time::Info::Result::Time::Trophy::Gold, self.license_result == gtengine::LicenseResultType::GOLD);
+        startTrophyActor(Time::Info::Result::Time::Trophy::Silver, self.license_result == gtengine::LicenseResultType::SILVER);
+        startTrophyActor(Time::Info::Result::Time::Trophy::Bronze, self.license_result == gtengine::LicenseResultType::BRONZE);
+
+        Time::Info::Result::Time::Trophy.visible = true;
+
+        var my_record = RaceRoot::getScoreText(old_best_score, "---");
+        Trophy::MyRecord::HBox::Time.text = my_record[0];
+        Trophy::MyRecord::HBox::Unit.text = my_record[1];
+
+        var [gold, silver, bronze] = RaceRoot::getTargetScoreByLicenseCondition();
+        var better_best_score;
+
+        switch (display_mode)
+        {
+            case gtengine::LicenseDisplayModeType::PYLON_NUM:
+            case gtengine::LicenseDisplayModeType::FUEL_DIST:
+            case gtengine::LicenseDisplayModeType::DRIFT_SCORE:
+                better_best_score = self.score > old_best_score ? self.score : old_best_score;
+                break;
+
+            default:
+                better_best_score = self.score < old_best_score ? self.score : old_best_score;
+                break;
+
+        }
+
+        var [is_gold, is_silver, is_bronze] = RaceRoot::isClearByLicenseCondition(better_best_score);
+        var mission = gSequenceCondition.game_mode == gtengine::GameMode::MISSION;
+
+        Trophy::Target::Hbox::Target_Gold::Time.text = gold[0];
+        Trophy::Target::Hbox::Target_Gold::Unit.text = gold[1]
+        Trophy::Target::Hbox::Target_Gold::Check_on.visible = is_gold && !mission;
+        Trophy::Target::Hbox::Target_Gold::Check_on_mission.visible = is_gold && mission;
+        Trophy::Target::Hbox::Target_Gold::Check_off.visible = !is_gold;
+
+        Trophy::Target::Hbox::Target_Silver::Time.text = silver[0];
+        Trophy::Target::Hbox::Target_Silver::Unit.text = silver[1];
+        Trophy::Target::Hbox::Target_Silver::Check_on.visible = is_silver && !mission;
+        Trophy::Target::Hbox::Target_Silver::Check_on_mission.visible = is_silver && mission;
+        Trophy::Target::Hbox::Target_Silver::Check_off.visible = !is_silver;
+
+        Trophy::Target::Hbox::Target_Bronze::Time.text = bronze[0];
+        Trophy::Target::Hbox::Target_Bronze::Unit.text = bronze[1];
+        Trophy::Target::Hbox::Target_Bronze::Check_on.visible = is_bronze && !mission;
+        Trophy::Target::Hbox::Target_Bronze::Check_on_mission.visible = is_bronze && mission;
+        Trophy::Target::Hbox::Target_Bronze::Check_off.visible = !is_bronze;
+
+        if (self.show_button)
+        {
+            context.cursor_visible = true;
+            RaceMenuSimple.initialize(context);
+        }
+        else
+        {
+            context.cursor_visible = false;
+            RaceMenuSimple::SBox0.ScalarInterpolator.reverse = true;
+            RaceMenuSimple::SBox0.ScalarInterpolator.warp();
+            KinGinDouByLicenseConditionRoot.setFocus(KinGinDouByLicenseConditionRoot);
+        }
+
+        Trophy.ScalarInterpolator.restart();
+        Trophy.visible = true;
+
+        bg.FadeActor.restart();
+        bg.visible = true;
+        
+        context.addTimeOut("start_se", startSE, context);
+        context.setTimeOut("start_se", 0.5);
+    }
+
+    method onFinalize(context)
+    {
+        LeaveDetectUtil::end(context);
+        return STATE_YIELD;
+    }
+
+    method onCancel(context)
+    {
+        if (!self.show_button)
+        {
+            sound.play("cancel");
+            close(context);
+        }
+
+        return STATE_YIELD;
+    }
+
+    method onActivate(context)
+    {
+        if (!self.show_button)
+        {
+            sound.play("ok");
+            close(context);
+        }
+
+        return STATE_YIELD;
+    }
+
+    function onRestart(context)
+    {
+        if (RaceRoot.checkRemainTime())
+        {
+            main::sound.play("disable");
+            return STATE_YIELD;
+        }
+
+        sound.play("ok");
+        KinGinDouByLicenseConditionRoot.result = true;
+        RaceMenuSimple.terminate(context);
+        KinGinDouByLicenseConditionRoot.close(context);
+    }
+
+    method onLeaveDetect(context)
+    {
+        RaceMenuSimple.terminate(context);
+        KinGinDouByLicenseConditionRoot.close(context);
+    }
+
+    function onExit(context)
+    {
+        if (RaceRoot.checkRemainTime())
+        {
+            main::sound.play("disable");
+            return STATE_YIELD;
+        }
+
+        sound.play("ok");
+        RaceMenuSimple.terminate(context);
+        KinGinDouByLicenseConditionRoot.close(context);
+    }
+
+    module RaceMenuSimple
+    {
+        method initialize(context)
+        {
+            var icons = [];
+            icons.push(RaceMenuUtil::Icon("RESTART", "icon_restart.dds", onRestart));
+            icons.push(RaceMenuUtil::Icon("EXIT", "icon_exit.dds", onExit));
+
+            var item = hidden::RaceMenuItem;
+            self.visible = true;
+            var actor = self.SBox0.SBox1.Caption.FadeActor;
+
+            actor.repeat = false;
+            actor.out = false;
+            actor.warp();
+
+            self.SBox0::ScalarInterpolator.reverse = false;
+            self.SBox0::ScalarInterpolator.restart();
+
+            var listbox = self.SBox0.SBox1.ListBox;
+            listbox.ScalarInterpolator.reverse = true;
+            listbox.ScalarInterpolator.reset();
+
+            var unit_w = item.w;
+            listbox.keep_alignment = false;
+            listbox.alignment = 0.5;
+            listbox.interpolate_ratio = 0.2;
+            listbox.ScalarInterpolator.start_value = unit_w;
+            listbox.ScalarInterpolator.end_value = (unit_w + listbox.spacing) * icons.size - listbox.spacing;
+            listbox.setItemTemplate(context, item);
+            listbox.setItemCount(icons.size);
+            listbox.focus_callback = listbox.onFocus;
+            listbox.focus_active = true;
+
+            for (var i = 0; i < icons.size; i++)
+            {
+                var icon = icons[i];
+                var w = listbox.getItemWidget(i, context);
+                w.icon = icon;
+                icon.caption = manager.translate("QuickMenu", "caption_" + icon.caption_key);
+                w.image.image_path = "/image/gt6/quick_menu/" + icon.image_path ;
+                w.doInitialize(context);
+                w.separator.visible = i != 0;
+            }
+
+            self.SBox0.visible = true;
+            KinGinDouByLicenseConditionRoot.setFocus(listbox);
+        }
+
+        method terminate(context)
+        {
+            var sbox1 = self.SBox0.SBox1;
+            var listbox = sbox1.ListBox;
+            var actor = sbox1.Caption.FadeActor;
+            actor.out = true;
+            self.SBox0.ScalarInterpolator.reverse = true;
+            self.SBox0.ScalarInterpolator.start();
+
+            var item = listbox.getItemWidget(listbox.focus_index, context);
+            var a = listbox.w - item.w;
+            a = a > 0 ? item.x / a : 0;
+
+            listbox.keep_scroll_point = true;
+            listbox.interpolate_ratio = 1.0;
+            listbox.scroll_point = a;
+            listbox.ScalarInterpolator.reverse = true;
+            listbox.ScalarInterpolator.start();
+            item.separator.visible = false;
+
+            item.Blink.restart();
+            context.cursor_visible = false;
+            context.wait(0.8);
+        }
+
+        module SBox0::SBox1::ListBox
+        {
+            method onFocus(context, new_index, old_index)
+            {
+                var new_widget = self.getItemWidget(new_index, context);
+                if (new_widget != nil)
+                {
+                    SBox1.Caption.label.text = new_widget.icon.caption;
+                    var i = new_widget.image::VectorInterpolator;
+                    i.reverse = false;
+                    i.start();
+                }
+
+                var old_widget = self.getItemWidget(old_index, context);
+                if (old_widget != nil)
+                {
+                    var i = old_widget.image::VectorInterpolator;
+                    i.reverse = true;
+                    i.start();
+                }
+            }
+
+            method onActivate(context)
+            {
+                var widget = self.getItemWidget(self.focus_index, context);
+                if (widget != nil)
+                {
+                    widget.icon.func(context);
+                }
+            }
+        }
+    }
+
+    module hidden::RaceMenuItem
+    {
+        attribute icon;
+    }
+}

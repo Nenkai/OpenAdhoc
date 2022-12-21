@@ -1,0 +1,520 @@
+
+
+
+
+
+
+
+module RoomConfigUtil
+{
+    function resetRegulationAndConstraint(rc)
+    {
+        var invalid = gtengine::MGameParameter::INVALID_VALUE_INT;
+        rc.simulation = invalid;
+        rc.driving_line = invalid;
+        rc.active_steering = invalid;
+        rc.tcs = invalid;
+        rc.asm = invalid;
+        rc.limit_tire = invalid;
+        rc.tuning = invalid;
+        RaceOnlineRoomProject::OnlineUtil::resetCarCodeRegulations(rc);
+        RaceOnlineRoomProject::OnlineUtil::resetCarSpecRegulations(rc);
+    }
+
+    function setAppropriateCourseParameter(rc)
+    {
+        var course = CourseList::getCourse(rc.real_course_code);
+        if (course.ChangeWeather)
+            rc.weather = gtengine::TrackDayWeather::SUNNY_DYNAMIC;
+
+        if (course.ChangeTime)
+            rc.time_progress_speed = 10;
+        else
+            rc.time_progress_speed = 0;
+
+        var datetime = rc.datetime;
+        var minutes = course.StartDateTime % (24 * 3600) / 60;
+        datetime.setTimeFromMinutes(minutes);
+        rc.datetime = datetime;
+
+        RaceOnlineRoomProject::sDataProvider.resolveRoomConfigInconsistency(rc, course);
+    }
+
+    function isParameterChanged(diff, latest, list)
+    {
+        foreach (var name in list)
+        {
+            if (diff[name] != nil)
+                return true;
+        }
+
+        return false;
+    }
+
+    function isRestartingSessionNeeded(diff, latest)
+    {
+        var list = [
+            "weather_accel10",
+            "weather_accel_water_retention10",
+            "weather_value0",
+            "initial_retention10",
+            "datetime",
+            "time_progress_speed",
+            "enable_damage",
+            "behavior_damage_type",
+            "behavior_slip_stream_type",
+            "low_mu_type",
+            "consume_tire",
+            "consume_fuel",
+            "disable_collision",
+            "freerun_penalty",
+        ];
+
+        return isParameterChanged(diff, latest, list);
+    }
+
+    function isInitCourseNeeded(diff, latest)
+    {
+        var list = [
+            "weather_accel10",
+            "weather_accel_water_retention10",
+            "weather_value0",
+            "initial_retention10",
+            "datetime",
+            "time_progress_speed",
+        ];
+
+        return isParameterChanged(diff, latest, list);
+    }
+
+    function createDiffMessage(rc, before, diff)
+    {
+        var unchanged = gtengine::MRoomConfig::UNCHANGED_VALUE_INT;
+        var invalid = gtengine::MGameParameter::INVALID_VALUE_INT;
+
+        if (diff == nil)
+        {
+            var diff = rc.createChanged(before);
+        }
+
+        var course = CourseList::getCourse(rc.real_course_code);
+        var msg = "";
+        if (diff["room_game_mode"] != nil)
+        {
+            var name = EventSettingProject::sRoomGameModeList.getName(rc.room_game_mode);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_ROOM_GAME_MODE").build(name);
+        }
+
+        if (rc.hasQualifier())
+        {
+            if (diff["attack_separate_type"] != nil)
+            {
+                var name = EventSettingProject::sAttackSeparateTypeList.getName(rc.attack_separate_type);
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_QUALIFIER_ATTACK_SEPARATE_TYPE").build(name);
+            }
+
+            if (diff["qualifier_period"] != nil)
+            {
+                var minutesString = manager.translate("DateTime", "MINUTE_FORMAT").build(rc.qualifier_period / 60);
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_QUALIFIER_PERIOD").build(minutesString);
+            }
+        }
+
+        if (rc.isEnduranceMode())
+        {
+            if (diff["race_limit_minute"] != nil)
+            {
+                var str = MiscUtil::getHoursOrMinutes(rc.race_limit_minute, Constant::Online::HourThresholdMinutes);
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_RACE_PERIOD").build(str);
+            }
+        }
+
+        if (rc.room_game_mode == gtengine::RoomGameMode::TIME_TRIAL ||
+            rc.room_game_mode == gtengine::RoomGameMode::DRIFT_TRIAL)
+        {
+            if (diff["attack_separate_type"] != nil)
+            {
+                var name = EventSettingProject::sAttackSeparateTypeList.getName(rc.attack_separate_type);
+                msg += "\n" + manager.translate("OnlineMessage", "A_BECAME_B").build(
+                    manager.translate("RaceTypeName", "AttackSeparateType"), name
+                );
+            }
+
+            if (diff["qualifier_period"] != nil)
+            {
+                var minutesString = manager.translate("DateTime", "MINUTE_FORMAT").build(rc.qualifier_period / 60);
+                msg += "\n" + manager.translate("OnlineMessage", "A_BECAME_B").build(
+                    manager.translate("RaceTypeName", "LimitMinute"), minutesString
+                );
+            }
+        }
+
+        if (diff["trial_start_type"] != nil)
+        {
+            var name = EventSettingProject::sStartTypeListForTrial.getName(rc.trial_start_type);
+            msg += "\n" + ModeTextUtil::getNextEventText("ModeText_MESSAGE_CHANGED_TRIAL_START_TYPE").build(name);
+        }
+
+        if (diff["online_series"] != nil)
+        {
+            var m;
+            if (rc.online_series_count > 1)
+            {
+                m = manager.translate("OnlineMessage", "MESSAGE_CHANGED_SERIES_ENABLED").build(rc.online_series_count);
+            }
+            else
+            {
+                m = manager.translate("OnlineMessage", "MESSAGE_CHANGED_SERIES_DISABLED");
+            }
+
+            msg += "\n" + m;
+        }
+
+        if (course.ChangeTime && diff["datetime"] != nil)
+        {
+            var time = "%d:%02d".format(rc.datetime.hour, rc.datetime.minute);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_COURSE_BASE_TIME").build(time);
+        }
+
+        if (course.ChangeTime && diff["time_progress_speed"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_COURSE_TIME_SCALE").build(rc.time_progress_speed.toInt());
+        }
+
+        if (course.ChangeWeather)
+        {
+            if (diff["weather_value0"] != nil)
+            {
+                var percent = manager.translate("Unit", "PERCENT")
+                    .build( ((rc.weather_value0 * -2.0 + 2.0) * 2500).toInt() / 240 * 250 / 1000 * 10);
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_WEATHER_PROBABILITY").build(percent);
+            }
+
+            if (diff["weather_accel10"] != nil)
+            {
+                var scale = rc.weather_accel10 / 10;
+                var str = scale > 0 ? "%{scale}%s".format(manager.translate("Unit", "TIMES")) : 
+                                      manager.translate("OnlineMessage", "FIXED_WEATHER");
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_WEATHER_TIME_SCALE").build(str);
+            }
+
+            if (diff["initial_retention10"] != nil && rc.initial_retention10 >= 0)
+            {
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_WATER_RETENTION")
+                                .build(manager.translate("Unit", "PERCENT").build(rc.initial_retention10 * 10));
+            }
+        }
+
+        if (diff["comment"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_COMMENT").build(rc.comment);
+        }
+
+        if (rc.trackday_mode == gtengine::TrackDayMode::SHUFFLE_RACE)
+        {
+            if (diff["shuffle_base"] != nil)
+            {
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_SHUFFLE_BASE").build(rc.shuffle_base);
+            }
+
+            if (diff["shuffle_ratio"] != nil)
+            {
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_SHUFFLE_RATIO").build(rc.shuffle_ratio);
+            }
+        }
+
+        if (diff["race_limit_laps"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_RACE_LAPS").build(rc.race_limit_laps);
+        } 
+
+        if (diff["time_to_finish"] != nil)
+        {
+            var sec = manager.translate("DateTime", "SECOND_FORMAT").build(rc.time_to_finish / 1000);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_TIME_TO_FINISH").build(sec);
+        } 
+
+        if (diff["alarm_time_value"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_ALARM_TIME")
+                .build(rc.alarm_time_value <= 0 ? manager.translate("OnlineMessage", "DISABLED") : "%{rc.alarm_time_value}" + manager.translate("DateTime", "MINUTE"));
+        }
+
+
+        if (diff["alarm_time"] != nil)
+        {
+            var time = rc.alarm_time_local;
+            if (time != nil)
+            {
+                msg += "\n" + ModeTextUtil::getNextEventText("ModeText_SCHEDULED_EVENT_WILL_BEGIN_AT")
+                    .build("%02d:%02d".format(time.hour, time.minute));
+            }
+        }
+
+        if (diff["boost_level"] != nil)
+        {
+            var name = EventSettingProject::getBoostLevelString(rc.boost_level);
+
+            // Not a new line for this one
+            msg += " " + manager.translate("OnlineMessage", "MESSAGE_CHANGED_RACE_BOOST").build(name);
+        }
+
+        if (diff["start_type"] != nil)
+        {
+            var name = EventSettingProject::sStartTypeList.getName(rc.start_type);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_RACE_START_TYPE").build(name);
+        }
+
+        if (diff["grid_sort_type"] != nil)
+        {
+            var name = EventSettingProject::sGridSortTypeList.getName(rc.grid_sort_type);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_RACE_GRID_SORT_TYPE").build(name);
+        }
+
+        if (diff["penalty_level"] != nil)
+        {
+            var name = EventSettingProject::getPenaltyLevelString(rc.penalty_level);
+            if (rc.penalty_level != gtengine::PenaltyLevelTypes::OFF && rc.freerun_penalty == rc.penalty_level)
+                ;
+
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_RACE_PENALTY").build(name);
+        }
+
+        if (diff["freerun_penalty"] != nil)
+        {
+            var name = EventSettingProject::getPenaltyLevelString(rc.freerun_penalty);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_RACE_PENALTY").build(name);
+        }
+
+        if (diff["pit_constraint"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "A_BECAME_B").build(
+                manager.translate("Regulation", "pit_constraint"), 
+                rc.pit_constraint == 0 ? manager.translate("OnlineMessage", "INEFFECTIVE")
+                                       : rc.pit_constraint.toString() + manager.translate("Unit", "COUNT")
+            );
+        }
+
+        if (diff["need_tire_change"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "A_BECAME_B").build(
+                manager.translate("Regulation", "need_tire_change"), 
+                manager.translate("OnlineMessage", rc.need_tire_change ? "EFFECTIVE" : "INEFFECTIVE")
+            );
+        }
+
+        if (diff["car_select_method"] != nil)
+        {
+            var name = EventSettingProject::sCarSelectMethodList.getName(rc.car_select_method);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_CAR_SELECT_METHOD").build(name);
+        }
+
+        if (diff["cars"] != nil)
+        {
+            if (rc.cars.size == 0)
+            {
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_CAR_TYPE")
+                    .build(manager.translate("OnlineMessage", "NO_FILTERING"));
+            }
+            else if (!isIdenticalVector(rc.cars, before.cars))
+            {
+                if (rc.car_select_method == gtengine::CarSelectMethod::ONE_MAKE)
+                {
+                    var name = gtengine::MSpecDB::getCarShortName(rc.cars[0].code);
+                    msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_ONE_MAKE_MODEL").build(name);
+                }
+                else
+                {
+                    var str = "\n";
+                    for (var i = 0; i < rc.cars.size; i++)
+                    {
+                        str += gtengine::MSpecDB::getCarName(rc.cars[i].code) + "\n";
+                    }
+
+                    msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_CAR_TYPE").build(str);
+                }
+            }
+        }
+
+        if (diff["car_tag_id"] != nil)
+        {
+            var name = rc.car_tag_id == invalid ? LocalizedText::UNRESTRICTED : EventSettingProject::sCarTagList.getName(rc.car_tag_id);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_CAR_CATEGORY").build(name);
+        }
+
+        if (diff["countries"] != nil)
+        {
+            var str = "";
+            if (rc.countries.size == 0)
+                str = LocalizedText::UNRESTRICTED;
+            else
+            {
+                for (var i = 0; i < rc.countries.size; ++i)
+                {
+                    str += EventSettingProject::sCarCountryList.getName(rc.countries[i]) + "\n";
+                }
+            }
+
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_COUNTRIES").build(str);
+        }
+
+        if (diff["tuners"] != nil)
+        {
+            var str = "";
+            if (rc.tuners.size == 0)
+                str = LocalizedText::UNRESTRICTED;
+            else
+            {
+                if (rc.tuners.size > 1)
+                    str += "\n";
+
+                for (var i = 0; i < rc.tuners.size; ++i)
+                {
+                    str += EventSettingProject::sCarTunerList.getName(rc.tuners[i]) + "\n";
+                }
+            }
+
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_TUNERS").build(str);
+        }
+
+        if (diff["limit_pp"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_PP_LIMIT")
+                .build(rc.limit_pp == invalid ? LocalizedText::UNRESTRICTED : pdiext::GetNumberString(rc.limit_pp));
+        }
+
+        if (diff["limit_power"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_POWER_LIMIT")
+                .build(rc.limit_power == invalid ? LocalizedText::UNRESTRICTED : EventSettingProject::getPowerString(rc.limit_power));
+        }
+
+        if (diff["simulation"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", rc.simulation == 1 ? 
+                "REGULATION_PHYSICS_RESTRICTION_ENABLED" :
+                "REGULATION_PHYSICS_RESTRICTION_DISABLED");
+        }
+
+        if (diff["driving_line"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", rc.driving_line == 0 ? 
+            "REGULATION_NO_DRIVING_LINE_ENABLED" :
+            "REGULATION_NO_DRIVING_LINE_DISABLED");
+        }
+
+        if (diff["active_steering"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", rc.active_steering == 0 ? 
+            "REGULATION_NO_ACTIVE_STEERING_ENABLED" :
+            "REGULATION_NO_ACTIVE_STEERING_DISABLED");
+        }
+
+        if (diff["tcs"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", rc.tcs == 0 ? 
+            "REGULATION_NO_TCS_ENABLED" :
+            "REGULATION_NO_TCS_DISABLED");
+        }
+
+        if (diff["asm"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", rc.asm == 0 ? 
+            "REGULATION_NO_ASM_ENABLED" :
+            "REGULATION_NO_ASM_DISABLED");
+        }
+
+        if (diff["abs"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", rc.abs == 0 ? 
+            "REGULATION_NO_ABS_ENABLED" :
+            "REGULATION_NO_ABS_DISABLED");
+        }
+
+        if (diff["limit_tire"] != nil || 
+            (before.trackday_mode == gtengine::TrackDayMode::RACE && rc.trackday_mode == gtengine::TrackDayMode::SHUFFLE_RACE) ||
+            (before.trackday_mode == gtengine::TrackDayMode::SHUFFLE_RACE && rc.trackday_mode == gtengine::TrackDayMode::RACE))
+        {
+            var tirename = EventSettingProject::getLimitTireName(rc.limit_tire);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_TIRE").build(tirename);
+        }
+
+        if (diff["limit_weight"] != nil || diff["need_weight"] != nil)
+        {
+            if (rc.need_weight == invalid && rc.limit_weight == invalid)
+            {
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_UNRESTRICTED_WEIGHT");
+            }
+            else
+            {
+                var need = EventSettingProject::getNeedWeightString(rc.need_weight);
+                var limit = EventSettingProject::getLimitWeightString(rc.limit_weight);
+                msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_WEIGHT").build(need, limit);
+            }
+        }
+
+        if (diff["need_drivetrain"] != nil)
+        {
+            var unrestricted = true;
+            var str = EventSettingProject::getAvailableDriveTrainTypeString(rc.need_drivetrain, &unrestricted);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_DRIVE_TRAIN").build(
+                unrestricted ? LocalizedText::UNRESTRICTED : str
+            );
+        }
+
+        if (diff["tuning"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_REGULATION_TUNING").build(
+                rc.tuning == invalid ? LocalizedText::UNRESTRICTED : LocalizedText::PROHIBITED
+            );
+        }
+
+        if (diff["nitro"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "A_BECAME_B").build(
+                manager.translate("Regulation", "NOS"),
+                rc.nitro == invalid ? LocalizedText::UNRESTRICTED : LocalizedText::PROHIBITED
+            );
+        }
+
+        if (diff["low_mu_type"] != nil)
+        {
+            var name = EventSettingProject::sLowMuTypeList.getName(rc.low_mu_type);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_LOW_MU_TYPE").build(name);
+        }
+
+        if (diff["enable_damage"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_ENABLE_DAMAGE").build(
+                manager.translate("TrialSetting", rc.enable_damage ? "ON" : "OFF")
+            );
+        }
+
+        if (diff["behavior_damage_type"] != nil)
+        {
+            var name = EventSettingProject::sBehaviorDamageTypeList.getName(rc.behavior_damage_type);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_BEHAVIOR_DAMAGE_TYPE").build(name);
+        }
+
+        if (diff["behavior_slip_stream_type"] != nil)
+        {
+            var name = EventSettingProject::sBehaviorSlipStreamTypeList.getName(rc.behavior_slip_stream_type);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_BEHAVIOR_SLIP_STREAM_TYPE").build(name);
+        }
+
+        if (diff["consume_tire"] != nil)
+        {
+            var name = EventSettingProject::sConsumptionTypeList.getName(rc.consume_tire);
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_CONSUMPTION").build(name);
+        }
+
+        if (diff["disable_collision"] != nil)
+        {
+            msg += "\n" + manager.translate("OnlineMessage", "MESSAGE_CHANGED_RACE_COLLISION").build(
+                manager.translate("TrialSetting", rc.disable_collision ? "OFF" : "ON")
+            );
+        }
+        
+        return msg;
+    }
+}

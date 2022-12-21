@@ -1,0 +1,4569 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CommunityRoot
+{
+    hidden.visible = false;
+
+    attribute closed = false;
+    attribute disable_cnt = 0;
+    attribute prev_page;
+    attribute cache_manager;
+    attribute args;
+    attribute tutorial_count;
+
+    function setClubInfo(context, club, refresh)
+    {
+        if (club["_member"] != nil)
+            return;
+
+        var user_id_list = club["user_id_list"];
+        var user_id = Grim2.getLoginUserId();
+        var owner = user_id_list.indexOf(user_id) != -1;
+        var member = CommunityRoot.cache_manager.isClubMember(context, user_id, club["club_id"], refresh);
+        club["_member"] = member;
+        club["_owner"] = owner;
+    }
+
+    function setClubFavorite(context, club_list, refresh)
+    {
+        var user_id = Grim2.getLoginUserId();
+        var favorite_club_list = CommunityRoot.cache_manager.getFavoriteClubList(context, user_id, refresh);
+        foreach (var club in club_list)
+        {
+            var club_id = club["club_id"];
+            club["_favorite"] = false;
+
+            foreach (var favorite_club in favorite_club_list)
+            {
+                if (club_id == favorite_club["club_id"])
+                {
+                    club["_favorite"] = true;
+                    break;
+                }
+            }
+        }
+
+        club_list.sort(sortClubList);
+        CommunityRoot.cache_manager.updateClubList(context, club_list);
+    }
+
+    function openClub(context, club, event, bbs_thread)
+    {
+        if (!healthCheck())
+            return nil;
+
+        var club_id = club["club_id"];
+        if (club == 0 || club_id == 0)
+        {
+            ERROR(context, "Community", "NO_CLUB_FOUND");
+            return nil;
+        }
+
+        if (club["_favorite"] == nil)
+        {
+            setClubFavorite(context, [club]);
+        }
+
+        setClubInfo(context, club);
+        setPresenceIf(context);
+
+        var result = ClubRoot.open(context, club, event, bbs_thread);
+        if (result.update)
+        {
+            CommunityRoot.cache_manager.clearClubMember();
+            CommunityRoot.cache_manager.clearClubFavorite();
+        }
+
+        if (result.delete)
+        {
+            CommunityRoot.cache_manager.clearClub(Grim2.getLoginUserId(), club_id);
+        }
+
+        if (result.room)
+        {
+            CommunityRoot.closeAndNeverGoBack(context);
+        }
+
+        if (result.force_exit)
+        {
+            CommunityRoot.close(context);
+            return nil;
+        }
+
+        return result;
+    }
+
+    function openClubByClubID(context, club_id)
+    {
+        var club = CommunityRoot.cache_manager.getClub(context, club_id);
+        openClub(context, club);
+    }
+
+    function openClubByClubIDEventID(context, club_id, club_event_id)
+    {
+        var club = CommunityRoot.cache_manager.getClub(context, club_id);
+        if (club == nil || club["club_id"] == 0)
+        {
+            ERROR(context, "Community", "NO_CLUB_EVENT_FOUND");
+            return;
+        }
+
+        var event = CommunityRoot.cache_manager.getEvent(context, club_id, club_event_id);
+        if (event == nil || event["club_event_id"] == 0)
+        {
+            ERROR(context, "Community", "NO_CLUB_EVENT_FOUND");
+            return;
+        }
+
+        openClub(context, club, event);
+    }
+
+    function openClubByClubIDThread(context, club_id, bbs_thread)
+    {
+        var club = CommunityRoot.cache_manager.getClub(context, club_id);
+        openClub(context, club, nil, bbs_thread);
+    }
+
+    function openNews(context, news_id)
+    {
+        var news = nil;
+        if (news_id != nil)
+        {
+            news = CommunityRoot.cache_manager.getNews(context, news_id);
+            if (news == nil)
+            {
+                var request = News2.requestNews(news_id, (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    news = News2.decodeNews(request);
+                    CommunityRoot.cache_manager.updateNews(news_id, news);
+                }
+            }
+        }
+
+        NewsRoot.open(context, news);
+        var count = NewsFileUtil::getNotYetReadCount();
+        ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space.Category::VBox::News::Count::Label.text = count;
+        ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space.Category::VBox::News::Count.visible = count > 0;
+    }
+
+    function openMessage(context)
+    {
+        var res = MessageRoot.open(context, false);
+        var count = GAME_STATUS.user_profile.mail.getNewCount();
+        ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space.Category::VBox::Message::Count::Label.text = count;
+        ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space.Category::VBox::Message::Count.visible = count > 0;
+
+        if (res == nil)
+            return;
+
+        var [club, event] = res;
+        openClub(context, club, event);
+    }
+
+    function getUserProfile(context, user_id, refresh)
+    {
+        var user_profile = CommunityRoot.cache_manager.getUserProfile(user_id);
+        if (user_profile == nil || refresh)
+        {
+            var request = UserProfile2.requestUserProfile(user_id, (args) => {});
+            if (Grim2Util::joinAwait(context, request))
+            {
+                user_profile = UserProfile2.decodeUserProfile(request);
+                CommunityRoot.cache_manager.updateUserProfile(user_id, user_profile);
+            }
+        }
+
+        return user_profile;
+    }
+
+    /////////////////////////////////////
+    // Root starts here
+    /////////////////////////////////////
+    method open(context, args)
+    {
+        self.args = args;
+        self.cache_manager = CommunityCache::Manager();
+        self.closed = false;
+        self.prev_page = context.getRootWindow();
+        
+        if (self.prev_page == nil && __projects__.defined("GTModeProject"))
+            self.prev_page = GTModeProject::GTModeRoot;
+
+        SequenceUtil::startPageSimple(context, CommunityRoot);
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        Community.clearCallback();
+        UserProfile2.clearCallback();
+        Activity.clearCallback();
+        News2.clearCallback();
+        GTMail.clearCallback();
+       
+        CommunityRoot.setFocus(nil);
+
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        pdiext::ProcessUpdateIteration(actor.Fade.total_time * 1000 * 1000);
+        
+        var next_page = self.prev_page;
+        self.prev_page = nil;
+
+        if (GetVersionBranch() == "runviewer")
+        {
+            SequenceUtil::startPage(context, next_page);
+        }
+        else if (next_page != nil)
+        {
+            if (self.tutorial_count != getTutorialCount(context))
+                SaveDataUtilGT6::saveEveryWhere(context);
+
+            ServerUtil::ResidentLobby::leave(context);
+            next_page.open(context);
+        }
+    }
+
+    method closeAndNeverGoBack(context)
+    {
+        self.prev_page = nil;
+        self.close(context);
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        context.cursor_visible = false;
+        self.visible = !checkTutorial(context);
+        self.disable_cnt = 0;
+        self.disableInput(context);
+        
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+
+        actor.on_effect_end = (context) => 
+        {
+            actor.on_effect_end = nil;
+            self.enableInput(context);
+        };
+
+        self.CloseActor.stop();
+
+        foreach (var label in ["MyPage", "TimeLine", "Club", "ClubSearch", "ClubFavorite", "PhotoStream"])
+        {
+            var w2 = ListMenu::ListWindow::clip["Main%{label}"];
+            w2.insensitive = true;
+            w2.visible = false; 
+        }
+
+        OnlineRoomUtil::load(context);
+        self.tutorial_count = getTutorialCount(context);
+        updateMessage(context);
+        updateNews(context);
+        setEmpty(false);
+
+        ListMenu::Menus.shiftMainMenu(context, $"Main_TopMenu", true);
+        context.pushEvent(menu::MFunctionEvent(postInitialize, context));
+        return STATE_YIELD;
+    }
+
+    method postInitialize(context)
+    {
+        if (checkTutorial(context))
+        {
+            ProfileEditRoot.open(context);
+            if (QUERY(context, "Community", "QUERY_SHOW_YOUR_PROFILE"))
+                UIKitProject::ProfileRoot.open(context, Grim2.getLoginUserId());
+        }
+
+        context.cursor_visible = true;
+    }
+
+    method checkTutorial(context)
+    {
+        return !TutorialUtil::isDone("community", "mypage") && !PDINetwork.isChatRestricted();
+    }
+
+    method getTutorialCount(context)
+    {
+        var count = 0;
+        foreach (var key in ["mypage", "timeline", "club", "friend", "photostream", "message", "news"])
+        {
+            if (TutorialUtil::isDone("community", key))
+                ++count;
+        }
+        return count;
+    }
+
+    method onFinalize(context)
+    {
+        self.cache_manager = nil;
+        OnlineRoomUtil::unload();
+        return STATE_YIELD;
+    }
+
+    method forceExit(context)
+    {
+        if (self.closed)
+            return;
+
+        Grim2.setInitialize(false);
+        ERROR(context, "Community", "GOTO_GRANDTOP_IF");
+        close(context);
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (self != context.getRootWindow())
+            return;
+
+        if (CommunityProject::sHealthCheck)
+        {
+            if (!LoginUtil::isOnline())
+            {
+                CommunityProject::sHealthCheck = false;
+                context.pushEvent(menu::MFunctionEvent(forceExit, context));
+            }
+        }
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (event.keysym == CELL_PAD_CTRL_L1)
+        {
+            var w = ListMenu::ListWindow.active_main;
+            if (w != nil && w.VBox["Header"] != nil && w.VBox::Header["HBox"] != nil)
+                w.VBox::Header::HBox.goPrevious(context);
+        }
+        else if (event.keysym == CELL_PAD_CTRL_R1)
+        {
+            var w = ListMenu::ListWindow.active_main;
+            if (w != nil && w.VBox["Header"] != nil && w.VBox::Header["HBox"] != nil)
+                w.VBox::Header::HBox.goNext(context);
+        }
+        else if (event.keysym == CELL_PAD_CTRL_SELECT)
+        {
+            var w = self.getFocusWidget();
+            if (w != nil && w.defined("getReportInfo"))
+            {
+                var p = w.getReportInfo(context);
+                if (p != nil)
+                {
+                    sound.play("ok");
+                    SendReportRoot.open(context, p);
+                    return STATE_YIELD;
+                }
+            }
+        }
+
+        return STATE_EXIT;
+    }
+
+    method onFocusEnter(context, event)
+    {
+        var show_report = false;
+        var w = self.getFocusWidget();
+        if (w != nil && w.defined("getReportInfo"))
+        {
+            if (w.getReportInfo(context) != nil)
+                show_report = true;
+        }
+
+        ReportHelp.set(context, show_report);
+        return STATE_EXIT;
+    }
+
+    method disableInput(context)
+    {
+        if (self.disable_cnt == 0)
+        {
+            context.event_mask = 5;
+            context.disableInput();
+            context.filterKeyEvent();
+            self.disable_cnt++;
+        }
+    }
+
+    method enableInput(context)
+    {
+        self.disable_cnt--;
+        if (disable_cnt < 0)
+            disable_cnt = 0;
+
+        if (disable_cnt == 0)
+        {
+            context.event_mask = 5;
+            context.enableInput();
+        }
+    }
+
+    method updateMessage(context)
+    {
+        var max_mail_id = GAME_STATUS.user_profile.mail.getMaxMailId();
+        
+        GTMail.requestAllMailList(max_mail_id, (args) => 
+        {
+            var [context, request] = args;
+            var count = 0;
+            if (request.isDone())
+            {
+                var mail_list = GTMail.decodeMailList(request);
+                GAME_STATUS.user_profile.mail.add(mail_list);
+                count = GAME_STATUS.user_profile.mail.getNewCount();
+            }
+
+            ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space.Category::VBox::Message::Count::Label.text = count;
+            ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space.Category::VBox::Message::Count.visible = count > 0;
+        });
+    }
+
+    method updateNews(context)
+    {
+        var category_id1 = 1;
+        foreach (var category_id2 in [1, 2])
+        {
+            News2.requestNewsIdList(category_id1, category_id2, (args) => 
+            {
+                var [context, request] = args;
+                var count;
+                if (request.isDone())
+                {
+                    var news_id_list = News2.decodeNewsIdList(request);
+                    NewsFileUtil::updateNewsIdList(category_id1, category_id2, news_id_list);
+                    if (category_id2 == 1)
+                        return;
+
+                    count = NewsFileUtil::getNotYetReadCount();
+                }
+    
+                ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space.Category::VBox::News::Count::Label.text = count;
+                ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space.Category::VBox::News::Count.visible = count > 0;
+            });
+        }
+    }
+
+    method setEmpty(visible, text, image_key)
+    {
+        ListMenu::ListWindow.EmptyBox.visible = visible;
+        if (text != nil)
+            text = manager.translate("Community", text);
+        else
+            text = "";
+
+        ListMenu::ListWindow.EmptyBox::Empty::TextFace.text = text;
+        if (image_key != nil)
+            ListMenu::ListWindow.EmptyBox::Empty::ImageFace.image_path = "/piece/gt6/community/icon_%{image_key}_l.img";
+    }
+
+    module ImportMenuCommons
+    {
+        attribute focus_;
+        attribute active_;
+
+        method setActiveMenu(a, w)
+        {
+            if (self.active_ != nil)
+            {
+                self.active_.active = false;
+                self.active_ = nil;
+            }
+
+            if (w != nil)
+            {
+                w.active = a;
+                self.active_ = w;
+            }
+        }
+
+        method _on_focus_CB(context)
+        {
+            var focus_w;
+            if (self.active_ != nil)
+            {                
+                focus_w = self.active_;
+            }
+            else if (self.defined($"default_focus_") && self.default_focus_ != nil)
+            {
+                focus_w = self.default_focus_;
+            }
+
+            if (focus_w != nil)
+            {
+                if (self["ScrolledWindow"] != nil)
+                {
+                    self.ScrolledWindow::clip.warp(focus_w);
+                }
+
+                CommunityRoot.setFocus(focus_w);
+                if (focus_w.defined($"onFocus_CB"))
+                {
+                    focus_w[$"onFocus_CB"](context);
+                }
+
+                if (self.defined($"onFocus_CB"))
+                {
+                    self[$"onFocus_CB"](context);
+                }
+            }
+        }
+
+        method _leave_focus_CB(context)
+        {
+            if (self.defined($"leaveFocus_CB"))
+            {
+                self[$"leaveFocus_CB"](context);
+            }
+        }
+    }
+
+    module ImportMainHeader
+    {
+        method go(context, widget)
+        {
+            if (widget == nil || !widget.visible)
+                return;
+
+            if (widget.name == "Club" || widget.name == "Event" ||
+                widget.name == "Car" || widget.name == "Photo" || widget.name == "Course")
+            {
+                if (PDINetwork.isChatRestricted())
+                {
+                    ERROR(context, "Community", "ERROR_CHAT_RESTRICTED");
+                    return STATE_YIELD;
+                }
+            }
+
+            sound.play("ok");
+
+            for (var w = self.first; w != nil; w = w.next)
+                w.active = w == widget;
+
+            widget.active = true;
+            CommunityRoot.setFocus(widget);
+            
+            var name = widget.name;
+            self.Body["%{name}"].initialize(context);
+        }
+
+        method goPrevious(context)
+        {
+            var active_widget = self.first;
+            for (var w = self.first; w != nil; w = w.next)
+            {
+                if (w.active)
+                    active_widget = w;
+            }
+
+            go(context, active_widget.prev);
+        }
+
+        method goNext(context)
+        {
+            var active_widget = self.first;
+            for (var w = self.first; w != nil; w = w.next)
+            {
+                if (w.active)
+                    active_widget = w;
+            }
+
+            go(context, active_widget.next);
+        }
+
+        method onActivate(context, event)
+        {
+            go(context, event.widget);
+            return STATE_YIELD;
+        }
+    }
+
+    module ListMenu::Menus
+    {
+        attribute main_menu_;
+        attribute sub_menu_;
+
+        method shiftMainMenu(context, main_menu, warp)
+        {
+            CommunityRoot.disableInput(context);
+
+            var sub_menu_w = self.sub_menu_ != nil ? ListMenu::Menus[self.sub_menu_] : nil;
+            var main_menu_w = ListMenu::Menus[main_menu];
+            if (main_menu_w != nil)
+            {
+                main_menu_w.x = 0.0;
+                main_menu_w.visible = true;
+                if (main_menu_w.defined("init_CB"))
+                    main_menu_w.init_CB(context);
+            }
+
+            if (sub_menu_w != nil)
+            {
+                if (sub_menu_w.defined("_leave_focus_CB"))
+                sub_menu_w._leave_focus_CB(context);
+            }
+
+            if (main_menu_w != nil)
+            {
+                if (main_menu_w.defined("_on_focus_CB"))
+                    main_menu_w._on_focus_CB(context);
+            }
+
+            self.MoveActor.reverse = false;
+            self.MoveActor.start();
+            self.MoveActor.on_effect_end = (context) => 
+            {
+                if (sub_menu_w != nil)
+                {
+                    sub_menu_w.visible = false;
+                }
+
+                ListMenu::Menus::MoveActor.on_effect_end = nil;
+                CommunityRoot.enableInput(context);
+            }
+
+            if (warp == true)
+                self.MoveActor.warp();
+
+            self.main_menu_ = main_menu;
+            self.sub_menu_ = nil;
+        }
+
+        method shiftSubMenu(context, sub_menu, warp)
+        {
+            CommunityRoot.disableInput(context);
+
+            var main_menu_w = self.main_menu_ != nil ? ListMenu::Menus[self.main_menu_] : nil;
+            var sub_menu_w = ListMenu::Menus[sub_menu];
+
+            if (sub_menu_w != nil)
+            {
+                sub_menu_w.x = 480.0;
+                sub_menu_w.visible = true;
+                if (sub_menu_w.defined("init_CB"))
+                    sub_menu_w.init_CB(context);
+
+                yield;
+            }
+
+            if (main_menu_w != nil)
+            {
+                if (main_menu_w.defined("_leave_focus_CB"))
+                    main_menu_w._leave_focus_CB(context);
+            }
+
+            if (sub_menu_w != nil)
+            {
+                if (sub_menu_w.defined("_on_focus_CB"))
+                sub_menu_w._on_focus_CB(context);
+            }
+
+            self.MoveActor.reverse = true;
+            self.MoveActor.start();
+            self.MoveActor.on_effect_end = (context) => 
+            {
+                if (main_menu_w != nil)
+                {
+                    main_menu_w.visible = false;
+                }
+
+                ListMenu::Menus::MoveActor.on_effect_end = nil;
+                CommunityRoot.enableInput(context);
+            }
+
+            if (warp == true)
+                self.MoveActor.warp();
+
+            self.sub_menu_ = sub_menu;
+        }
+
+        method onInitialize(context)
+        {
+            for (var w = self.first; w != nil; w = w.next)
+            {
+                w.visible = false;
+            }
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_RIGHT)
+            {
+                sound.play("cursor");
+                var res = ListMenu::ListWindow.setFocusMain(context);
+                if (!res)
+                {
+                    ListMenu::ListWindow.inViewMode(context);
+                }
+
+                return STATE_YIELD;
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module ListMenu::Menus::Main_TopMenu
+    {
+        import ImportMenuCommons::*;
+
+        attribute default_focus_ = ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Category::VBox::MyPage;
+
+        method onFinalize(context)
+        {
+            self.setActiveMenu(false);
+        }
+    }
+
+    module ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Category::VBox
+    {
+        module MyPage
+        {
+            method onFocus_CB(context)
+            {
+                setPresenceIf(context);
+                CommunityRoot.setEmpty(false);
+
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+
+                var user_id = Grim2.getLoginUserId();
+                ListMenu::ListWindow.setMain(context, "MyPage", user_id);
+            }
+
+            method onActivate(context)
+            {
+                sound.play("ok");
+                self.onFocus_CB(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module TimeLine
+        {
+            method onFocus_CB(context)
+            {
+                showTutorialIf(context, "timeline");
+                setPresenceIf(context);
+                CommunityRoot.setEmpty(false);
+
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+
+                ListMenu::ListWindow.setMain(context, "TimeLine");
+            }
+
+            method onActivate(context)
+            {
+                if (PDINetwork.isChatRestricted())
+                {
+                    ERROR(context, "Community", "ERROR_CHAT_RESTRICTED");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+                self.onFocus_CB(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module Message
+        {
+            method onActivate(context)
+            {
+                if (PDINetwork.isChatRestricted())
+                {
+                    ERROR(context, "Community", "ERROR_CHAT_RESTRICTED");
+                    return STATE_YIELD;
+                }
+                
+                sound.play("ok");
+                showTutorialIf(context, "message");
+                setPresenceIf(context);
+                openMessage(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module News
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+                showTutorialIf(context, "news");
+                setPresenceIf(context);
+                openNews(context);
+            }
+        }
+
+        module Club
+        {
+            method onActivate(context)
+            {
+                if (PDINetwork.isChatRestricted())
+                {
+                    ERROR(context, "Community", "ERROR_CHAT_RESTRICTED");
+                    return STATE_YIELD;
+                }
+                
+                sound.play("ok");
+                showTutorialIf(context, "club");
+                setPresenceIf(context);
+
+                CommunityRoot.setEmpty(false);
+
+                ListMenu::ListWindow::clip::MainMyPage.user_id = Grim2.getLoginUserId();
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+                ListMenu::Menus.shiftSubMenu(context, $"Sub_GroupByClub");
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Friend
+        {
+            method onActivate(context)
+            {                
+                showTutorialIf(context, "friend");
+                setPresenceIf(context);
+
+                CommunityRoot.setEmpty(false);
+
+                Grim2Util::updateFriendList(context);
+
+                var friend_list = getFriendListByPresence(context);
+                if (friend_list.size == 0)
+                {
+                    sound.play("disable");
+                    ERROR(context, "Community", "NO_FRIEND");
+                    return STATE_YIELD;
+                }
+
+                ListMenu::Menus::Sub_GroupByFriend.friend_list = friend_list;
+                sound.play("ok");
+
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+                ListMenu::Menus.shiftSubMenu(context, $"Sub_GroupByFriend");
+
+                return STATE_YIELD;
+            }
+        }
+
+        module PhotoStream
+        {
+            method onFocus_CB(context)
+            {
+                showTutorialIf(context, "photostream");
+                setPresenceIf(context);
+
+                CommunityRoot.setEmpty(false);
+
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+                ListMenu::ListWindow.setMain(context, "PhotoStream", "World");
+            }
+
+            method onActivate(context)
+            {
+                if (PDINetwork.isChatRestricted())
+                {
+                    ERROR(context, "Community", "ERROR_CHAT_RESTRICTED");
+                    return STATE_YIELD;
+                }
+                
+                sound.play("ok");
+               self.onFocus_CB(context);
+                return STATE_YIELD;
+            }
+        }
+    }
+
+    module ListMenu::Menus::Sub_GroupByClub
+    {
+        import ImportMenuCommons::*;
+
+        attribute default_focus_ = ListMenu::Menus::Sub_GroupByClub::ScrolledWindow::clip::space::ClubList;
+
+        method init_CB(context)
+        {
+            ListMenu::Menus::Sub_GroupByClub.setActiveMenu(true, ListMenu::Menus::Sub_GroupByClub::ScrolledWindow::clip::space::ClubList);
+        }
+
+        method onFinalize(context)
+        {
+            self.setActiveMenu(false);
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            
+            var w = CommunityRoot.getFocusWidget();
+            if (w.defined("onFocus_CB"))
+            {
+                w.onFocus_CB(context);
+            }
+
+            return STATE_YIELD;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            ListMenu::Menus.shiftMainMenu(context, $"Main_TopMenu");
+            return STATE_YIELD;
+        }
+    }
+
+    module ListMenu::Menus::Sub_GroupByClub::ScrolledWindow::clip::space
+    {
+        module ClubList
+        {
+            method onFocus_CB(context)
+            {
+                var title = manager.translate("Community", "CLUB_LIST");
+                ListMenu::Menus::Sub_GroupByClub.setActiveMenu(true, self);
+                ListMenu::ListWindow.setMain(context, "Club", title);
+            }
+        }
+
+        module SearchClub
+        {
+            method onFocus_CB(context)
+            {
+                CommunityRoot.setEmpty(false);
+                ListMenu::Menus::Sub_GroupByClub.setActiveMenu(true, self);
+                ListMenu::ListWindow.setMain(context, "ClubSearch");
+            }
+        }
+
+        module Create
+        {
+            method checkClubCreateMax(context)
+            {
+                var user_id = Grim2.getLoginUserId();
+
+                var request = Community.requestClubListByUser(user_id, (args) => {});
+                var owner_count = 9999;
+
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    owner_count = 0;
+                    var club_list = Community.decodeClubList(request);
+
+                    foreach (var club in club_list)
+                    {
+                        var user_id_list = club["user_id_list"];
+                        var owner = user_id_list.indexOf(user_id) != -1;
+
+                        if (owner)
+                            ++owner_count;
+                    }
+                }
+
+                return owner_count < 1;
+            }
+
+            method onFocus_CB(context)
+            {
+                if (!checkClubCreateMax(context))
+                {
+                    ERROR(context, "Community", "ERROR_CLUB_CREATE_MAX", 1);
+                    return;
+                }
+
+                var club_id = ClubEditRoot.open(context);
+                if (club_id != nil && healthCheck())
+                {
+                    CommunityRoot.cache_manager.isClubMember(context, Grim2.getLoginUserId(), club_id, true);
+                    openClubByClubID(context, club_id);
+                }
+            }
+        }
+
+        module FavoriteList
+        {
+            method onFocus_CB(context)
+            {
+                ListMenu::Menus::Sub_GroupByClub.setActiveMenu(true, self);
+                ListMenu::ListWindow.setMain(context, "ClubFavorite");
+            }
+        }
+    }
+
+    module ListMenu::Menus::Sub_GroupByFriend
+    {
+        import ImportMenuCommons::*;
+
+        attribute default_focus_ = ListMenu::Menus::Sub_GroupByFriend::ScrolledWindow::clip::space::ListBox;
+        attribute friend_list;
+
+        method onInitialize(context)
+        {
+            var target = self.ScrolledWindow;
+            var adj = menu::MAdjustment();
+            target.VScrollbar.adjustment = adj;
+            target.clip::space::ListBox.v_adjustment = adj;
+        }
+
+        method onFinalize(context)
+        {
+            self.setActiveMenu(false);
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            ListMenu::Menus.shiftMainMenu(context, $"Main_TopMenu");
+            return STATE_YIELD;
+        }
+
+        method init_CB(context)
+        {
+            var listbox = ListMenu::Menus::Sub_GroupByFriend::ScrolledWindow::clip::space::ListBox;
+            listbox.setItemTemplate(context, hidden::FriendItem);
+            listbox.setItemCount(0);
+            listbox.postRedraw();
+            listbox.user_profile_list = self.friend_list;
+            listbox.setItemCount(self.friend_list.size);
+            listbox.focus_index = 0;
+        }
+    }
+
+    module ListMenu::Menus::Sub_GroupByFriend::ScrolledWindow::clip::space
+    {
+        module ListBox
+        {
+            attribute user_profile_list;
+            attribute selected_index;
+
+            method onFocus_CB(context)
+            {
+                var user_profile_list = self.user_profile_list;
+                if (user_profile_list.size > 0)
+                {
+                    self.selected_index = 0;
+                    var u = user_profile_list[0];
+                    var user_id = u[0]["user_id"];
+                    ListMenu::ListWindow.setMain(context, "MyPage", user_id);
+                }
+            }
+
+            method onVisibleNotify(context, indices)
+            {
+                var count = self.getItemCount();
+                foreach (var i in indices)
+                {
+                    if (self.getItemVisible(i))
+                    {
+                        var item = self.getItemWidget(i);
+                        if (item == nil)
+                            item = self.getItemWidget(i, context);
+
+                        if (item.user_profile == nil)
+                        {
+                            item.initialize(context, self.user_profile_list[i], i == self.selected_index);
+                        }
+                    }
+                    else
+                    {
+                        self.setItemWidget(i, context, nil);
+                    }
+                }
+            }
+
+            method onActivate(context, event)
+            {
+                sound.play("ok");
+
+                for (var i = 0; i < self.getItemCount(); ++i)
+                {
+                    var item = self.getItemWidget(i);
+                    if (item != nil)
+                    {
+                        item.active0 = false;
+                        item.Presence.active0 = false;
+                        item.Room.active0 = false;
+                    }
+                }
+
+                var item = self.getItemWidget(self.focus_index, context);
+                if (item == nil)
+                    return STATE_YIELD;
+
+                self.selected_index = self.focus_index;
+                if (item.defined("on_activate"))
+                    item.on_activate(context);
+
+                return STATE_YIELD;
+            }
+
+            method onFocusEnter(context, event)
+            {
+                var show_report = false;
+                ReportHelp.set(context, show_report);
+                return STATE_EXIT;
+            }
+        }
+    }
+
+    module ListMenu::ListWindow
+    {
+        attribute contents_list;
+        attribute prev_focus_w_;
+        attribute prev_button_set_;
+        attribute is_empty_;
+        attribute active_main;
+
+        method onInitialize(context)
+        {
+            self.is_empty_ = false;
+            self.outViewMode(context, true);
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (self.active_main == nil)
+            {
+                if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+                {
+                    sound.play("cursor");
+                    self.outViewMode(context);
+                    return STATE_YIELD;
+                }
+
+                if (event.keysym == CELL_PAD_CTRL_L3_RIGHT)
+                    return STATE_YIELD;
+            }
+
+            return STATE_EXIT;
+        }
+
+        method onActivate(context, event)
+        {
+            var listbox = ListMenu.getListBox();
+            var item = listbox.getItemWidget(listbox.focus_index);
+            if (item == nil)
+                return STATE_YIELD;
+
+            if (!item.initialized_)
+                return STATE_YIELD;
+
+            if (item.unselectable_)
+            {
+                sound.play("disable");
+                return STATE_YIELD;
+            }
+
+            sound.play("ok");
+            if (item.defined("on_activate"))
+                item.on_activate(context);
+
+            return STATE_YIELD;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            self.outViewMode(context);
+            return STATE_YIELD;
+        }
+
+        method inViewMode(context, warp)
+        {
+            if (self.is_empty_)
+                return;
+
+            var focus_w = CommunityRoot.getFocusWidget();
+            if (focus_w == nil)
+                return;
+
+            
+            ListMenu.MoveActor.reverse = false;
+            ListMenu.MoveActor.start();
+
+            if (warp == true)
+                ListMenu.MoveActor.warp();
+            
+            ListMenu::Menus.insensitive = true;
+            self.insensitive = false;
+            self.prev_focus_w_ = focus_w;
+            
+            CommunityRoot.setFocus(ListMenu.getListBox());
+            
+            clip::VScrollbar.display_policy = "automatic";
+        }
+
+        method outViewMode(context, warp)
+        {
+            ListMenu.MoveActor.reverse = true;
+            ListMenu.MoveActor.start();
+
+            if (warp == true)
+                ListMenu.MoveActor.warp();
+            
+            self.insensitive = true;
+            ListMenu::Menus.insensitive = false;
+
+            if (self.prev_focus_w_ != nil)
+            {
+                CommunityRoot.setFocus(self.prev_focus_w_);
+                self.prev_focus_w_ = nil;
+            }
+            
+            clip::VScrollbar.display_policy = "never";
+
+            if (self.prev_button_set_ != nil)
+            {
+                var button_set = self.prev_button_set_ == "" ? "onMain" : self.prev_button_set_;
+                self.prev_button_set_ = nil;
+            }
+        }
+
+        method setMain(context, label, arg1, arg2)
+        {
+            if (self.active_main != nil)
+            {
+                self.active_main.finalize(context);
+                self.active_main.insensitive = true;
+                self.active_main = nil;
+            }
+
+            var listbox = ListMenu.getListBox();
+            var w = ListMenu::ListWindow.clip["Main%{label}"];
+            if (w != nil)
+            {
+                ListMenu::ListWindow.insensitive = false;
+                w.initialize(context, arg1, arg2);
+                self.active_main = w;
+                listbox.visible = false;
+                self.active_main.insensitive = false;
+            }
+            else
+            {
+                listbox.visible = true;
+            }
+        }
+
+        method setFocusMain(context)
+        {
+            if (self.active_main != nil)
+            {
+                self.active_main.on_focus(context);
+                return true;
+            }
+
+            return false;
+        }
+
+        module clip
+        {
+            module MainMyPage
+            {
+                attribute user_id;
+                
+                method onInitialize(context)
+                {
+                    var target = self.VBox::Body;
+
+                    foreach (var name in ["Club", "Event"])
+                    {
+                        var adj = menu::MAdjustment();
+                        var w = target[name];
+                        w.VScrollbar.adjustment = adj;
+                        w.ListBox.v_adjustment = adj;
+                    }
+
+                    foreach (var name in ["Car", "Photo", "Course"])
+                    {
+                        var adj = menu::MAdjustment();
+                        var w = target[name];
+                        w.VScrollbar.adjustment = adj;
+                        w.IconBox.v_adjustment = adj;
+                    }
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("ok");
+
+                    var target;
+                    if (isMyPage())
+                        target = ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Category::VBox::MyPage;
+                    else if (ListMenu::Menus.sub_menu_ == $"Sub_GroupByFriend")
+                        target = ListMenu::Menus::Sub_GroupByFriend::ScrolledWindow::clip::space::ListBox;
+                    else
+                        target = ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Category::VBox::Friend;
+
+                    CommunityRoot.setFocus(target);
+                    return STATE_YIELD;
+                }
+
+                method initialize(context, arg1, arg2)
+                {
+                    self.visible = true;
+
+                    self.user_id = arg1;
+
+                    for (var w = self.VBox::Header::HBox.first; w != nil; w = w.next)
+                        w.active = false;
+
+                    self.VBox::Header::HBox::Profile.active = true;
+
+                    var header = self.isMyPage() ? manager.translate("Community", "MYPAGE") : self.user_id;
+                    self.VBox::PageTitle::TextFace.text = header;
+                    
+                    var target = self.VBox::Body;
+                    target.Profile.initialize(context, arg2);
+                }
+                
+                method finalize(context)
+                {
+                    self.visible = false;
+                }
+
+                method on_focus(context)
+                {
+                    CommunityRoot.setFocus(self.VBox::Header::HBox::Profile);
+                }
+
+                method isMyPage()
+                {
+                    var user_id = MainMyPage.user_id;
+                    var my_user_id = Grim2.getLoginUserId();
+                    return user_id == my_user_id;
+                }
+
+
+                module VBox
+                {
+                    module Header::HBox
+                    {
+                        import ImportMainHeader::*;
+                    }
+
+                    module Body
+                    {
+                        attribute active_body;
+
+                        method onInitialize(context)
+                        {
+                            for (var w = self.first; w != nil; w = w.next)
+                                w.insensitive = true;
+                        }
+
+                        method fire(context, w)
+                        {
+                            if (self.active_body != nil)
+                            {
+                                self.active_body.insensitive = true;
+                                var o = self.active_body.Opacity;
+                                o.reverse = true;
+                                o.start();
+                            }
+
+                            self.active_body = w;
+                            var o = w.Opacity;
+                            o.reverse = false;
+                            o.start();
+                            self.active_body.insensitive = false;
+
+                            var is_mypage = MainMyPage.isMyPage();
+                            w.Header::Title::Me.visible = is_mypage;
+                            w.Header::Title::Friend.visible = !is_mypage;
+                        }
+
+                        module Profile
+                        {
+                            attribute user_profile;
+                            attribute presence;
+
+                            method onInitialize(context)
+                            {
+                                var body = self.MyProfileItem::Body;
+                                body.Image::ImageFace.image_path = "";
+                                body.VBox::Name::TextFace.text = "";
+                                body.VBox::Nickname::TextFace.text = "";
+                                body.VBox::Nickname::Country::TextFace.text = "";
+                                body.VBox::Nickname::Country::ImageFace.image_path = "";
+                                body.VBox::Tag::TextFace.text = "";
+                                body.VBox::Stats::MBox::License::ImageFace.image_path = "";
+                                body.VBox::Stats::MBox::License::Label.text = "";
+                                body.VBox::Stats::MBox::Trophy::Label.text = "";
+                                body.VBox::Stats::MBox::GameProgress::Label.text = "";
+                                body.VBox::Stats::MBox::Star::Label.text = "";
+                                body.VBox::Stats::MBox::OwnedCars::Label.text = "";
+                                body.VBox::Stats::MBox::TotalDistance::Label.text = "";
+
+                                var ImageFaceCombo = body.VBox::Stats::ImageFaceCombo;
+                                ImageFaceCombo.Head.image_path = "";
+                                ImageFaceCombo.Body.image_path = "";
+                                body.VBox::Nickname::Presence::Label.text = "";
+                                body.VBox::Nickname::Presence::Label_a.text = "";
+
+                                body = self.MyRecentItem::Body;
+                                body.Head::Date.text = "";
+                                body.TextFace.text = "";
+
+                            }
+
+                            method initializeUserProfile(context, refresh, np_presence, arg2)
+                            {
+                                var user_id = MainMyPage.user_id;
+                                var widget = arg2;
+                                var user_profile = getUserProfile(context, user_id, refresh);
+
+                                if (user_profile != nil)
+                                {
+                                    var body = self.MyProfileItem::Body;
+                                    var photo_id = user_profile["photo_id_avatar"];
+                                    setImage(body.Image::ImageFace, photo_id);
+                                    body.VBox::Name::TextFace.text = user_id;
+
+                                    body.VBox::Nickname::TextFace.text = checkNickName(context, user_profile);
+
+                                    var country = user_profile["country"];
+                                    body.VBox::Nickname::Country::TextFace.text = manager.translate("Country", country.upcase());
+
+                                    setFlagImage(body.VBox::Nickname::Country::ImageFace, country);
+
+                                    var tag_list = [];
+                                    foreach (var tag_id in user_profile["tag_id_list"])
+                                        tag_list.push(manager.translate("CommunityTag","CATEGORY_%d".format(tag_id)));
+
+                                    body.VBox::Tag::TextFace.text = tag_list.join(", ");
+
+                                    var license_level = user_profile["license_level"];
+                                    var license = ["n", "b", "a", "ib", "ia", "s"][license_level];
+                                    body.VBox::Stats::MBox::License::ImageFace.image_path = "/piece/gt6/profile/license_%{license}.img";
+                                    body.VBox::Stats::MBox::License::Label.text = manager.translate("CommonGTMode", "CareerCategory_%s".format(license.upcase()));
+                            
+                                    body.VBox::Stats::MBox::Trophy::Label.text = user_profile["trophy"];
+                                    body.VBox::Stats::MBox::GameProgress::Label.text = manager.translate("Unit", "PERCENT").build(user_profile["achievement"]);
+                                    body.VBox::Stats::MBox::Star::Label.text = user_profile["star"];
+                                    body.VBox::Stats::MBox::OwnedCars::Label.text = manager.translate("Unit", "CARS").build(user_profile["car_count"]);
+                                    body.VBox::Stats::MBox::TotalDistance::Label.text = distanceText(user_profile["odometer"]);
+
+                                    var ImageFaceCombo = body.VBox::Stats::ImageFaceCombo;
+                            
+                                    var head_image_path = ThumbnailUtil::Avatar::getImagePathGT6(
+                                        ThumbnailUtil::Avatar::Genre::COMBO,
+                                        ThumbnailUtil::Avatar::Type::MET,
+                                        user_profile["menu_helmet"], user_profile["menu_helmet_color"],
+                                        nil, nil
+                                    );
+                            
+                                    var body_image_path = ThumbnailUtil::Avatar::getImagePathGT6(
+                                        ThumbnailUtil::Avatar::Genre::COMBO,
+                                        ThumbnailUtil::Avatar::Type::SUITS,
+                                        nil, nil,
+                                        user_profile["menu_wear"], user_profile["menu_wear_color"],
+                                    );
+                            
+                                    var need_update = ImageFaceCombo.Head.image_path != head_image_path || ImageFaceCombo.Body.image_path != body_image_path;
+                                    if (need_update)
+                                    {
+                                        ImageFaceCombo.Head.image_path = "";
+                                        ImageFaceCombo.Body.image_path = "";
+                                        ImageFaceCombo.FadeActor.reset();
+
+                                        var head_load_complete = method(context)
+                                        {
+                                            ImageFaceCombo.Head.on_delay_load_complete = nil;
+                                            if (ImageFaceCombo.Body.on_delay_load_complete == nil)
+                                                ImageFaceCombo.FadeActor.start();
+                                        };
+
+                                        var body_load_complete = method(context)
+                                        {
+                                            ImageFaceCombo.Body.on_delay_load_complete = nil;
+                                            if (ImageFaceCombo.Head.on_delay_load_complete == nil)
+                                                ImageFaceCombo.FadeActor.start();
+                                        };
+
+                                        ImageFaceCombo.Head.on_delay_load_complete = *self{head_load_complete};
+                                        ImageFaceCombo.Body.on_delay_load_complete = *self{body_load_complete};
+                                        ImageFaceCombo.Head.image_path = head_image_path;
+                                        ImageFaceCombo.Body.image_path = body_image_path;
+                                    }
+
+                                    body.VBox::Nickname::Presence.visible = false;
+                                    
+                                    UserProfile2.requestGetPresence(user_id, (args) => 
+                                    {
+                                        var [context, request] = args;
+                                        if (request.isDone())
+                                        {
+                                            var presence_list = UserProfile2.decodePresenceList(request);
+                                            var [online, text] = getPresenceInfo(context, presence_list, np_presence);
+                                            body.VBox::Nickname::Presence.visible = true;
+                                            body.VBox::Nickname::Presence.active = online;
+                                            body.VBox::Nickname::Presence::Label.text = text;
+                                            body.VBox::Nickname::Presence::Label_a.text = text;
+
+                                            if (widget != nil)
+                                            {
+                                                widget.onActivateCallback(context, presence_list, np_presence);
+                                            }
+                                        }
+                                    });
+
+                                    body = self.MyRecentItem::Body;
+                                    body.Head::Date.text = dateTimeString(localtime(user_profile["recent_update_time"]));
+                                    body.TextFace.text = checkText(context, nolinebreak(user_profile["recent"]), user_profile["recent_hidden"], "DELETED_RECENT");
+                                    self.user_profile = user_profile;
+                                }
+                            }
+
+                            method initialize(context, arg2)
+                            {
+                                Body.fire(context, self);
+                                CommunityRoot.setEmpty(false);
+
+                                self.user_profile = nil;
+                                var user_id = MainMyPage.user_id;
+                                var my_page = MainMyPage.isMyPage();
+
+                                self.MyRecentItem.insensitive = !my_page;
+                                self.MyRecentItem::Body::Head::Edit.visible = my_page;
+                                self.MyProfileItem::Body::Status::Private.visible = my_page;
+                                self.MyProfileItem::Body::Status::Member.visible = !my_page;
+
+                                if (my_page)
+                                {
+                                    self.Header::ProfileSetting::Label.text = manager.translate("Community", "PROFILE_SETTING");
+                                    self.Header::ProfileSetting::Icon::ImageFace.image_path = "/image/gt6/community/icon_setting.dds";
+                                }
+                                else
+                                {
+                                    self.Header::ProfileSetting::Label.text = manager.translate("Community", "SHOW_PROFILE");
+                                    self.Header::ProfileSetting::Icon::ImageFace.image_path = "/image/gt6/community/icon_profile.dds";
+                                }
+
+                                self.presence = nil;
+
+                                var show_presence = false;
+                                var np_presence;
+                                if (!my_page)
+                                {
+                                    var np_friend_list = OnlineUtility.getFriendPresenceList();
+                                    foreach (var f in np_friend_list)
+                                    {
+                                        var u = f["id"].toString();
+                                        if (user_id == u)
+                                        {
+                                            self.presence = f;
+                                            break;
+                                        }
+                                    }
+
+                                    if (self.presence != nil)
+                                    {
+                                        show_presence = OnlineRoomUtil::hasCurrentSession(context, self.presence, CommunityRoot.cache_manager);
+                                    }
+                                    
+                                    np_presence = self.presence;
+                                }
+                                else
+                                {
+                                    np_presence = [
+                                        "presenceState" : pdistd::PresenceState::SameContext
+                                    ];
+                                }
+
+                                self.MyProfileItem::Body::VBox::Name::Foot::HBoxR.visible = show_presence;
+                                self.MyProfileItem.can_focus = show_presence;
+                                initializeUserProfile(context, false, np_presence, arg2);
+                            }
+
+                            module Header::ProfileSetting
+                            {
+                                method getReportInfo(context)
+                                {
+                                    if (MainMyPage.isMyPage())
+                                        return nil;
+
+                                    var user_profile = Profile.user_profile;
+                                    if (user_profile == nil)
+                                        return nil;
+
+                                    return ReportUtil::ProfileData(user_profile);
+                                }
+
+                                method onActivate(context)
+                                {
+                                    sound.play("ok");
+
+                                    var need_update = false;
+                                    var my_page = MainMyPage.isMyPage();
+                                    if (my_page)
+                                    {
+                                        if (PDINetwork.isChatRestricted())
+                                        {
+                                            ERROR(context, "Community", "ERROR_CHAT_RESTRICTED");
+                                            return STATE_YIELD;
+                                        }
+
+                                        need_update = ProfileEditRoot.open(context);
+                                    }
+                                    else
+                                    {
+                                        var user_id = MainMyPage.user_id;
+                                        UIKitProject::ProfileRoot.open(context, user_id);
+                                    }
+
+                                    if (need_update && healthCheck())
+                                    {
+                                        var np_presence = [
+                                            "presenceState" : pdistd::PresenceState::SameContext
+                                        ];
+
+                                        Profile.initializeUserProfile(context, true, np_presence);
+                                    }
+
+                                    return STATE_YIELD;
+                                }
+                            }
+
+                            module MyProfileItem
+                            {
+                                method onActivate(context)
+                                {
+                                    if (PDINetwork.isChatRestricted())
+                                    {
+                                        ERROR(context, "Community", "ERROR_CHAT_RESTRICTED");
+                                        return STATE_YIELD;
+                                    }
+
+                                    sound.play("ok");
+
+                                    if (OnlineRoomUtil::joinCurrentSession(context, Profile.presence))
+                                        CommunityRoot.closeAndNeverGoBack(context);
+
+                                    return STATE_YIELD;
+                                }
+                            }
+
+                            module MyRecentItem
+                            {
+                                method onActivate(context)
+                                {
+                                    if (PDINetwork.isChatRestricted())
+                                    {
+                                        ERROR(context, "Community", "ERROR_CHAT_RESTRICTED");
+                                        return STATE_YIELD;
+                                    }
+
+                                    sound.play("ok");
+
+                                    var message = self.Body::TextFace.text;
+                                    var res = SendMessageRoot.openProfileRecent(context, message);
+
+                                    if (res)
+                                    {
+                                        var np_presence = [
+                                            "presenceState" : pdistd::PresenceState::SameContext
+                                        ];
+
+                                        Profile.initializeUserProfile(context, true, np_presence);
+                                    }
+
+                                    return STATE_YIELD;
+                                }
+                            }
+                        }
+
+                        module Club
+                        {
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+                                var user_id = MainMyPage.user_id;
+                                var listbox = self.ListBox;
+                                listbox.setItemTemplate(context, hidden::MyClubItem);
+                                listbox.setItemCount(0);
+                                listbox.postRedraw();
+
+                                var request = Community.requestClubListByUser(user_id, (args) => {});
+                                var club_list0 = [];
+
+                                if (Grim2Util::joinAwait(context, request))
+                                    club_list0 = Community.decodeClubList(request);
+
+                                var club_list = [];
+                                foreach (var club in club_list0)
+                                {
+                                    if (CommunityRoot.cache_manager.isClubMember(context, user_id, club["club_id"]))
+                                        club_list.push(club);
+                                }
+
+                                setClubFavorite(context, club_list);
+                                listbox.data_list = club_list;
+                                listbox.setItemCount(club_list.size);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = club_list.size > 0;
+
+                                var keyword = MainMyPage.isMyPage() ? "EMPTY_CLUB_JOIN" : "EMPTY_CLUB_JOIN_FRIEND";
+                                CommunityRoot.setEmpty(club_list.size == 0, keyword, "join");
+                            }
+
+                            module ListBox
+                            {
+                                method onFocusNotify(context, new_index, old_index)
+                                {
+                                    ReportHelp.set(context, getReportInfo(context) != nil);
+                                }
+
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil)
+                                        return nil;
+
+                                    return ReportUtil::ClubData(w.club);
+                                }
+
+                                method on_activate(context, item)
+                                {
+                                    if (item.club == nil)
+                                    {
+                                        ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                                        return;
+                                    }
+
+                                    var res = openClub(context, item.club);
+                                    if (res == nil)
+                                        return;
+
+                                    var is_mypage = MainMyPage.isMyPage();
+                                    if (res.delete || (is_mypage && res.leave))
+                                    {
+                                        item.clear(context);
+                                        self.updateDataList(context, self.focus_index, nil);
+                                    }
+                                    else if(res.update || res.favorite || (!is_mypage && res.leave))
+                                    {
+                                        item.refresh(context);
+                                        self.updateDataList(context, self.focus_index, item.club);
+                                    }
+                                }
+                            }
+                        }
+
+                        module Event
+                        {
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+
+                                var user_id = MainMyPage.user_id;
+                                var is_mypage = MainMyPage.isMyPage();
+
+                                var listbox = self.ListBox;
+                                listbox.setItemTemplate(context, hidden::MyEventItem);
+                                listbox.setItemCount(0);
+                                listbox.postRedraw();
+
+                                var event_list = [];
+                                var request = Community.requestEventListByUser(0, user_id, (args) => {});
+                                var event_user_list = [];
+
+                                if (!is_mypage)
+                                {
+                                    var event_user_list0 = CommunityRoot.cache_manager.getMyEventUserList(context);
+                                    if (event_user_list0 != nil)
+                                        event_user_list = event_user_list0;
+                                }
+
+                                if (Grim2Util::joinAwait(context, request))
+                                {
+                                    var event_list0 = Community.decodeEventList(request);
+                                    foreach (var event in event_list0)
+                                    {
+                                        if (is_mypage)
+                                        {
+                                            event["_join"] = true;
+                                        }
+                                        else
+                                        {
+                                            var _join = false;
+                                            foreach (var event_user in event_user_list)
+                                            {
+                                                if (event_user["club_event_id"] == event["club_event_id"])
+                                                {
+                                                    _join = true;
+                                                    break;
+                                                }
+                                            }
+
+                                            event["_join"] = _join;
+                                        }
+
+                                        var club = CommunityRoot.cache_manager.getClub(context, event["club_id"]);
+                                        if (club != nil)
+                                            event_list.push([club, event]);
+                                    }
+                                }
+
+                                event_list.sort(sortEventList);
+                                listbox.data_list = event_list;
+                                listbox.setItemCount(event_list.size);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = event_list.size > 0;
+
+                                var keyword = is_mypage ? "EMPTY_EVENT_JOIN" : "EMPTY_EVENT_JOIN_FRIEND";
+                                CommunityRoot.setEmpty(event_list.size == 0, keyword, "event");
+                            }
+
+                            module ListBox
+                            {
+                                method onFocusEnter(context, event)
+                                {
+                                    var show_report = true;
+                                    ReportHelp.set(context, show_report);
+                                    return 0;
+                                }
+
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil)
+                                        return nil;
+
+                                    return ReportUtil::EventData(w.club, w.event);
+                                }
+
+                                method on_activate(context, item)
+                                {
+                                    if (item.event == nil)
+                                    {
+                                        ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                                        return;
+                                    }
+
+                                    var result = openClub(context, item.club, item.event);
+                                    if (result == nil)
+                                        return;
+
+                                    var is_mypage = MainMyPage.isMyPage();
+                                    var res = result.direct_event;
+                                    if (res.delete || (is_mypage && res.leave))
+                                    {
+                                        item.clear(context);
+                                        self.updateDataList(context, self.focus_index, nil);
+                                    }
+                                    else if (res.update || (!is_mypage && res.leave))
+                                    {
+                                        item.refresh(context);
+                                        self.updateDataList(context, self.focus_index, [item.club, item.event]);
+                                    }
+                                }
+                            }
+                        }
+
+                        module Car
+                        {
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+
+                                var is_mypage = MainMyPage.isMyPage();
+
+                                self.Header::Upload.visible = is_mypage;
+                                var listbox = self.IconBox;
+                                listbox.setItemTemplate(context, hidden::CarPhotoItem);
+                                listbox.setItemCount(0, 0);
+                                listbox.postRedraw();
+
+                                var photo_list = getPhotoList(context);
+                                photo_list.sort(sortCreateTime);
+                                listbox.data_list = photo_list;
+                                listbox.setItemCount(2,  (photo_list.size + 1) / 2);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = photo_list.size > 0;
+
+                                var keyword = is_mypage ? "EMPTY_BESTCAR" : "EMPTY_BESTCAR_FRIEND";
+                                CommunityRoot.setEmpty(photo_list.size == 0, keyword, "car");
+
+                                if (photo_list.size % 2)
+                                    listbox.setItemVisibleValue(photo_list.size, false);
+                            }
+
+                            method getPhotoList(context)
+                            {
+                                var user_id = MainMyPage.user_id;
+                                var request = main::Photo.requestPublicCarList(user_id, (args) => {});
+                                var photo_list = [];
+
+                                if (Grim2Util::joinAwait(context, request))
+                                    photo_list = main::Photo.decodePhotoList(request);
+
+                                return photo_list;
+                            }
+
+                            module Header::Upload
+                            {
+                                method onActivate(context)
+                                {
+                                    sound.play("ok");
+                                    var photo_list = Car.getPhotoList(context);
+                                    if (photo_list.size >= 8)
+                                    {
+                                        ERROR(context, "Community", "ERROR_CAR_UPLOAD_MAX", 8);
+                                        return STATE_YIELD;
+                                    }
+
+                                    var need_update = false;
+                                    var project = LoadProject("garage", "GarageProject");
+                                    var garage_id = GarageProject::CarSelectPopup.openCarPickup(context, []);
+                                    if (garage_id != nil)
+                                    {
+                                        var cp = GAME_STATUS.user_profile.garage.getCar(garage_id);
+                                        need_update = PhotoEditRoot.openUploadCar(context, cp);
+                                    }
+
+                                    UnloadProject(project);
+
+                                    if (need_update && healthCheck())
+                                        Car.initialize(context);
+
+                                    return STATE_YIELD;
+                                }
+                            }
+
+                            module IconBox
+                            {
+                                method on_activate(context, item)
+                                {
+                                    if (item.photo == nil)
+                                    {
+                                        ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                                        return;
+                                    }
+
+                                    var photo_list = [];
+                                    foreach (var photo in self.data_list)
+                                    {
+                                        if (photo != nil)
+                                            photo_list.push(photo);
+                                    }
+
+                                    var res = PhotoViewerRoot.openViewCar(context, photo_list, item.photo, !isMyPage());
+
+                                    if (res.result && healthCheck())
+                                    {
+                                        if (res.delete_photo_id != "")
+                                        {
+                                            for (var i = 0; i < self.data_list.size; ++i)
+                                            {
+                                                var photo = self.data_list[i];
+                                                if (photo == nil)
+                                                    continue;
+
+                                                if (photo["photo_id"] == res.delete_photo_id)
+                                                    self.data_list[i] = nil;
+                                            }
+                                        }
+
+                                        self.reinitialize(context);
+                                    }
+                                }
+
+                                method onFocusEnter(context, event)
+                                {
+                                    var show_report = true;
+                                    ReportHelp.set(context, show_report);
+                                    return STATE_EXIT;
+                                }
+
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil || w.photo == nil)
+                                        return nil;
+
+                                    return ReportUtil::BestCarData(w.photo);
+                                }
+                            }
+                        }
+
+                        module Photo
+                        {
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+
+                                var is_mypage = MainMyPage.isMyPage();
+
+                                self.Header::Upload.visible = is_mypage;
+                                var listbox = self.IconBox;
+                                listbox.setItemTemplate(context, hidden::PhotoItem);
+                                listbox.setItemCount(0, 0);
+                                listbox.postRedraw();
+
+                                var photo_list = getPhotoList(context);
+                                photo_list.sort(sortCreateTime);
+                                listbox.data_list = photo_list;
+                                listbox.setItemCount(2,  (photo_list.size + 1) / 2);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = photo_list.size > 0;
+
+                                var keyword = is_mypage ? "EMPTY_PUBLICPHOTO" : "EMPTY_PUBLICPHOTO_FRIEND";
+                                CommunityRoot.setEmpty(photo_list.size == 0, keyword, "photo");
+
+                                if (photo_list.size % 2)
+                                    listbox.setItemVisibleValue(photo_list.size, false);
+                            }
+
+                            method getPhotoList(context)
+                            {
+                                var user_id = MainMyPage.user_id;
+                                var request = main::Photo.requestPublicPhotoList(user_id, (args) => {});
+                                var photo_list = [];
+
+                                if (Grim2Util::joinAwait(context, request))
+                                    photo_list = main::Photo.decodePhotoList(request);
+
+                                var u = CommunityRoot.cache_manager.getUserProfile(user_id);
+                                foreach (var photo in photo_list)
+                                {
+                                    photo["_country"] = u != nil ? u["country"] : "";
+                                }
+
+                                return photo_list;
+                            }
+
+                            module Header::Upload
+                            {
+                                method onActivate(context)
+                                {
+                                    sound.play("ok");
+                                    var photo_list = Photo.getPhotoList(context);
+                                    if (photo_list.size >= 16)
+                                    {
+                                        ERROR(context, "Community", "ERROR_PHOTO_UPLOAD_MAX", 16);
+                                        return STATE_YIELD;
+                                    }
+
+                                    var photo = GTModeProject::ReplayListRoot.open(context, GTModeProject::ReplayListRoot::MODE::PHOTO);
+                                    if (photo == nil)
+                                        return STATE_YIELD;
+
+                                    var need_update = PhotoEditRoot.openUploadPhoto(context, photo);
+                                    if (need_update && healthCheck())
+                                        Photo.initialize(context);
+
+                                    return STATE_YIELD;
+                                }
+                            }
+
+                            module IconBox
+                            {
+                                method on_activate(context, item)
+                                {
+                                    if (item.photo == nil)
+                                    {
+                                        ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                                        return;
+                                    }
+
+                                    var photo_list = [];
+                                    foreach (var photo in self.data_list)
+                                    {
+                                        if (photo != nil)
+                                            photo_list.push(photo);
+                                    }
+
+                                    var res = PhotoViewerRoot.openViewPhoto(context, photo_list, item.photo, !isMyPage(), "PHOTO");
+
+                                    if (res.result && healthCheck())
+                                    {
+                                        if (res.delete_photo_id != "")
+                                        {
+                                            for (var i = 0; i < self.data_list.size; ++i)
+                                            {
+                                                var photo = self.data_list[i];
+                                                if (photo == nil)
+                                                    continue;
+
+                                                if (photo["photo_id"] == res.delete_photo_id)
+                                                    self.data_list[i] = nil;
+                                            }
+                                        }
+
+                                        self.reinitialize(context);
+                                    }
+                                }
+
+                                method onFocusEnter(context, event)
+                                {
+                                    var show_report = true;
+                                    ReportHelp.set(context, show_report);
+                                    return STATE_EXIT;
+                                }
+
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil || w.photo == nil)
+                                        return nil;
+
+                                    return ReportUtil::PhotoData(w.photo);
+                                }
+                            }
+                        }
+
+                        module Course
+                        {
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+
+                                var is_mypage = MainMyPage.isMyPage();
+
+                                self.Header::Upload.visible = is_mypage;
+                                var listbox = self.IconBox;
+                                listbox.setItemTemplate(context, hidden::CourseItem);
+                                listbox.setItemCount(0, 0);
+                                listbox.postRedraw();
+
+                                var course_list = getCourseList(context, false);
+                                course_list.sort(sortCreateTime);
+                                listbox.data_list = course_list;
+                                listbox.setItemCount(2,  (course_list.size + 1) / 2);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = course_list.size > 0;
+
+                                var keyword = is_mypage ? "EMPTY_PUBLICCOURSE" : "EMPTY_PUBLICCOURSE_FRIEND";
+                                CommunityRoot.setEmpty(course_list.size == 0, keyword, "course");
+
+                                if (course_list.size % 2)
+                                    listbox.setItemVisibleValue(course_list.size, false);
+                            }
+
+                            method getCourseList(context, all)
+                            {
+                                var user_id = MainMyPage.user_id;
+                                var request = main::Course.requestList(user_id, (args) => {});
+                                var course_list = [];
+
+                                if (Grim2Util::joinAwait(context, request))
+                                    course_list = main::Course.decodeCourseList(request);
+
+                                if (all)    
+                                    return course_list;
+
+                                var course_list0 = [];
+                                foreach (var course in course_list)
+                                {
+                                    if (course["status"] != 2)
+                                        continue;
+
+                                    course_list0.push(course);
+                                }
+
+                                return course_list0;
+                            }
+
+                            module Header::Upload
+                            {
+                                method onActivate(context)
+                                {
+                                    sound.play("ok");
+                                    var course = GTModeProject::ReplayListRoot.open(context, GTModeProject::ReplayListRoot::MODE::COURSE, [1]);
+                                    if (course == nil)
+                                        return STATE_YIELD;
+
+                                    var res = ViewCourseRoot.openUpload(context, course);
+                                    if (healthCheck())
+                                    {
+                                        if (res.status)
+                                            Course.initialize(context);
+                                    }
+
+                                    return STATE_YIELD;
+                                }
+                            }
+
+                            module IconBox
+                            {
+                                method on_activate(context, item)
+                                {
+                                    if (item.course == nil)
+                                    {
+                                        ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                                        return;
+                                    }
+
+                                    var index = self.focus_index;
+                                    var res = ViewCourseRoot.openView(context, item.course, isMyPage());
+
+                                    if (healthCheck())
+                                    {
+                                        if (res.freerun)
+                                        {
+                                            LocalCourseMakerUtil::freeRun(context, item.course);
+                                        }
+                                        else if (res.edit)
+                                        {
+                                            self.reinitialize(context);
+                                        }
+                                        else if (res.delete || res.status)
+                                        {
+                                            self.data_list[self.focus_index] = nil;
+                                            self.reinitialize(context);
+                                        }
+                                    }
+                                }
+
+                                method onFocusEnter(context, event)
+                                {
+                                    var show_report = true;
+                                    ReportHelp.set(context, show_report);
+                                    return STATE_EXIT;
+                                }
+                            
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil || w.course == nil)
+                                        return nil;
+                                
+                                    return ReportUtil::CourseData(w.course);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            module MainTimeLine
+            {
+                method onInitialize(context)
+                {
+                    var adj = menu::MAdjustment();
+                    self.VBox::VScrollbar.adjustment = adj;
+                    self.VBox::ListBox.v_adjustment = adj;
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("ok");
+                    CommunityRoot.setFocus(ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Category::VBox::TimeLine);
+                    return STATE_YIELD;
+                }
+
+                method getActivityList(context)
+                {
+                    var list = [];
+                    var request = Activity.requestGetActivity((args) => {});
+                    if (Grim2Util::joinAwait(context, request))
+                    {
+                        var o = GAME_STATUS.user_profile.context.community;
+                        var activity_list = Activity.decodeActivityList(request);
+                        foreach (var activity in activity_list)
+                        {
+                            var keyword = activity["values"][0];
+                            var user_id = activity["user_id"];
+
+                            var me = user_id == Grim2.getLoginUserId();
+                            var ignore = true;
+
+                            switch (keyword)
+                            {
+                                case "RU":
+                                    if (activity["club_id"] != 0)
+                                    {
+                                        if (o.timeline_club)
+                                            ignore = false;
+                                    }
+                                    else if ((me && o.timeline_me) || (!me && o.timeline_friend))
+                                    {
+                                        ignore = false;
+                                    }
+                                    break;
+                                    
+                                case "CP":
+                                case "PPU":
+                                case "PP":
+                                case "CJ":
+                                case "CEE":
+                                case "CC":
+                                case "CSP":
+                                    if ((me && o.timeline_me) || (!me && o.timeline_friend))
+                                        ignore = false;
+                                    break;
+
+                                case "EC":
+                                case "EU":
+                                case "BTC":
+                                    if (o.timeline_club)
+                                        ignore = false;
+                                    break;
+
+                                default: 
+                                    break;
+                            }
+
+                            if (!ignore)
+                                list.push(activity);
+                        }
+                    }
+
+                    return list;
+                }
+
+                method initialize(context, args)
+                {
+                    self.visible = true;
+                    var target = self.VBox;
+                    var timeline_list = [];
+                    var listbox = target.ListBox;
+                    listbox.setItemTemplate(context, hidden::TimeLineItem);
+                    listbox.setItemCount(0);
+                    listbox.postRedraw();
+
+                    var activity_list = getActivityList(context);
+                    timeline_list.append(activity_list);
+
+                    if (GAME_STATUS.user_profile.context.community.timeline_news)
+                    {
+                        var category_id1 = 1;
+                        for (var i = 0; i < 2; ++i)
+                        {
+                            var category_id2 = i + 1;
+                            var request2 = News2.requestNewsIdList(category_id1, category_id2, (args) => {});
+                            if (Grim2Util::joinAwait(context, request2))
+                            {
+                                var news_id_list2 = News2.decodeNewsIdList2(request2);
+                                foreach (var news_id2 in news_id_list2)
+                                {
+                                    var keyword = category_id2 == 1 ? "NU" : "NI";
+                                    var timeline = Map();
+                                    timeline["create_time"] = news_id2["news_time"];
+                                    timeline["values"] = [keyword, news_id2["news_id"]];
+                                    timeline_list.push(timeline);
+                                }
+                            }
+                        }
+                    }
+
+                    timeline_list.sort(sortCreateTime);
+                    listbox.data_list = timeline_list;
+                    listbox.setItemCount(timeline_list.size);
+                    listbox.focus_index = 0;
+                    listbox.can_focus = timeline_list.size > 0;
+
+                    CommunityRoot.setEmpty(timeline_list.size == 0, "EMPTY_TIMELINE", "timeline");
+                }
+
+                method finalize(context)
+                {
+                    self.visible = false;
+                }
+
+                method on_focus(context)
+                {
+                    var w = self.VBox::ListBox.can_focus ? self.VBox::ListBox : self.VBox::Header::Setting;
+                    CommunityRoot.setFocus(w);
+                }
+
+                module VBox::Header::Setting
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+                        var res = TimeLineSettingRoot.open(context);
+
+                        if (res && healthCheck())
+                        {
+                            MainTimeLine.initialize(context);
+                        }
+
+                        return STATE_YIELD;
+                    }
+                }
+            }
+
+            module MainClub
+            {
+                attribute type;
+
+                function getClubList(context, type)
+                {
+                    var level_list = [1, 2, 3];
+                    var open_list = [1, 2, 3];
+
+                    var country_list = [NP.getRegionName()];
+                    var request;
+                    if (type == "recommend")
+                    {
+                        request = Community.requestClubListByRecommend(level_list, open_list, country_list, (args) => {});
+                    }
+                    else if (type == "new")
+                    {
+                        request = Community.requestClubListByNew(level_list, open_list, country_list, (args) => {});
+                    }
+                    else if (type == "rank")
+                    {
+                        request = Community.requestClubListByRank(level_list, open_list, country_list, (args) => {});
+                    }
+                    else if (type == "myclub")
+                    {
+                        var user_id = Grim2.getLoginUserId();
+                        request = Community.requestClubListByUser(user_id, (args) => {});
+                    }
+                    else if (type == "favorite")
+                    {
+                        var user_id = Grim2.getLoginUserId();
+                        request = Community.requestClubListByFavorite(user_id, (args) => {});
+                    }
+
+                    var club_list = [];
+                    if (Grim2Util::joinAwait(context, request))
+                        club_list = Community.decodeClubList(request);
+
+                    setClubFavorite(context, club_list);
+                    return club_list;
+                }
+
+                method onInitialize(context)
+                {
+                    var target = self.VBox::Body;
+                    for (var w = target.first; w != nil; w = w.next)
+                    {
+                        var adj = menu::MAdjustment();
+                        w.VScrollbar.adjustment = adj;
+                        w.ListBox.v_adjustment = adj;
+                    }
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("cancel");
+                    if (ListMenu::Menus.sub_menu_ == nil)
+                        CommunityRoot.setFocus(ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Category::VBox::Club);
+                    else
+                        CommunityRoot.setFocus(ListMenu::Menus::Sub_GroupByClub::ScrolledWindow::clip::space::ClubList);
+                    return STATE_YIELD;
+                }
+
+                method initialize(context, args)
+                {
+                    self.visible = true;
+                    self.type = args;
+                    var target = self.VBox;
+                    target.PageTitle::TextFace.text = self.type;
+
+                    for (var w = target.Header::HBox.first; w != nil; w = w.next)
+                        w.active = false;
+
+                    target.Header::HBox::MyClub.active = true;
+                    target.Body::MyClub.initialize(context);
+                }
+
+                method finalize(context)
+                {
+                    self.visible = false;
+                }
+
+                method on_focus(context)
+                {
+                    CommunityRoot.setFocus(self.VBox::Header::HBox::MyClub);
+                }
+
+                module VBox
+                {
+                    module Header::HBox
+                    {
+                        import ImportMainHeader::*;
+                    }
+
+                    module Body
+                    {
+                        
+                        attribute active_body;
+
+                        method onInitialize(context)
+                        {
+                            for (var w = self.first; w != nil; w = w.next)
+                                w.insensitive = true;
+                        }
+
+                        method fire(context, w)
+                        {
+                            if (self.active_body != nil)
+                            {
+                                self.active_body.insensitive = true;
+                                var o = self.active_body.Opacity;
+                                o.reverse = true;
+                                o.start();
+                            }
+
+                            self.active_body = w;
+                            var o = w.Opacity;
+                            o.reverse = false;
+                            o.start();
+                            self.active_body.insensitive = false;
+                        }
+
+                        module MyClub
+                        {
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+                                var listbox = self.ListBox;
+                                listbox.setItemTemplate(context, hidden::MyClubItem);
+                                listbox.setItemCount(0);
+                                listbox.postRedraw();
+
+                                var club_list0 = getClubList(context, "myclub");
+                                var club_list = [];
+
+                                var user_id = Grim2.getLoginUserId();
+
+                                foreach (var club in club_list0)
+                                {
+                                    if (CommunityRoot.cache_manager.isClubMember(context, user_id, club["club_id"]))
+                                        club_list.push(club);
+                                }
+
+                                listbox.data_list = club_list;
+                                listbox.setItemCount(club_list.size);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = club_list.size > 0;
+                                CommunityRoot.setEmpty(club_list.size == 0, "EMPTY_CLUB_JOIN", "join");
+                            }
+
+                            module ListBox
+                            {
+                                method onFocusNotify(context, new_index, old_index)
+                                {
+                                    ReportHelp.set(context, getReportInfo(context) != nil);
+                                }
+
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil)
+                                        return nil;
+
+                                    return ReportUtil::ClubData(w.club);
+                                }
+                                
+                                method on_activate(context, item)
+                                {
+                                    if (item.club == nil)
+                                    {
+                                        ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                                        return;
+                                    }
+
+                                    var res = openClub(context, item.club);
+                                    if (res == nil)
+                                        return;
+
+                                    if (res.delete || res.leave)
+                                    {
+                                        item.clear(context);
+                                        self.updateDataList(context, self.focus_index, nil);
+                                    }
+                                    else if (res.update || res.favorite)
+                                    {
+                                        item.refresh(context);
+                                        self.updateDataList(context, self.focus_index, item.club);
+                                    }
+                                }
+                            }
+                        }
+
+                        module Recommend
+                        {
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+                                var listbox = self.ListBox;
+                                listbox.setItemTemplate(context, hidden::MyClubItem);
+                                listbox.setItemCount(0);
+                                listbox.postRedraw();
+
+                                var club_list = getClubList(context, "recommend");
+
+                                listbox.data_list = club_list;
+                                listbox.setItemCount(club_list.size);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = club_list.size > 0;
+                                CommunityRoot.setEmpty(club_list.size == 0, "EMPTY_CLUB_RECOMMEND", "recommend");
+                            }
+
+                            module ListBox
+                            {
+                                method onFocusNotify(context, new_index, old_index)
+                                {
+                                    ReportHelp.set(context, getReportInfo(context) != nil);
+                                }
+
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil)
+                                        return nil;
+
+                                    return ReportUtil::ClubData(w.club);
+                                }
+                                
+                                method on_activate(context, item)
+                                {
+                                    if (item.club == nil)
+                                    {
+                                        ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                                        return;
+                                    }
+
+                                    var res = openClub(context, item.club);
+                                    if (res == nil)
+                                        return;
+
+                                    if (res.delete)
+                                    {
+                                        item.clear(context);
+                                        self.updateDataList(context, self.focus_index, nil);
+                                    }
+                                    else if (res.update || res.favorite || res.leave)
+                                    {
+                                        item.refresh(context);
+                                        self.updateDataList(context, self.focus_index, item.club);
+                                    }
+                                }
+                            }
+                        }
+
+                        module New
+                        {
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+                                var listbox = self.ListBox;
+                                listbox.setItemTemplate(context, hidden::MyClubItem);
+                                listbox.setItemCount(0);
+                                listbox.postRedraw();
+
+                                var club_list = getClubList(context, "new");
+
+                                listbox.data_list = club_list;
+                                listbox.setItemCount(club_list.size);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = club_list.size > 0;
+                                CommunityRoot.setEmpty(club_list.size == 0, "EMPTY_CLUB_NEW", "new_club");
+                            }
+
+                            module ListBox
+                            {
+                                method onFocusNotify(context, new_index, old_index)
+                                {
+                                    ReportHelp.set(context, getReportInfo(context) != nil);
+                                }
+
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil)
+                                        return nil;
+
+                                    return ReportUtil::ClubData(w.club);
+                                }
+                                
+                                method on_activate(context, item)
+                                {
+                                    if (item.club == nil)
+                                    {
+                                        ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                                        return;
+                                    }
+
+                                    var res = openClub(context, item.club);
+                                    if (res == nil)
+                                        return;
+
+                                    if (res.delete)
+                                    {
+                                        item.clear(context);
+                                        self.updateDataList(context, self.focus_index, nil);
+                                    }
+                                    else if (res.update || res.favorite || res.leave)
+                                    {
+                                        item.refresh(context);
+                                        self.updateDataList(context, self.focus_index, item.club);
+                                    }
+                                }
+                            }
+                        }
+
+                        module Rank
+                        {
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+                                var listbox = self.ListBox;
+                                listbox.setItemTemplate(context, hidden::MyClubItem);
+                                listbox.setItemCount(0);
+                                listbox.postRedraw();
+
+                                var club_list = getClubList(context, "rank");
+
+                                listbox.data_list = club_list;
+                                listbox.setItemCount(club_list.size);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = club_list.size > 0;
+                                CommunityRoot.setEmpty(club_list.size == 0, "EMPTY_CLUB_RANK");
+                            }
+
+                            module ListBox
+                            {
+                                method onFocusNotify(context, new_index, old_index)
+                                {
+                                    ReportHelp.set(context, getReportInfo(context) != nil);
+                                }
+
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil)
+                                        return nil;
+
+                                    return ReportUtil::ClubData(w.club);
+                                }
+                                
+                                method on_activate(context, item)
+                                {
+                                    if (item.club == nil)
+                                    {
+                                        ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                                        return;
+                                    }
+
+                                    var res = openClub(context, item.club);
+                                    if (res == nil)
+                                        return;
+
+                                    if (res.delete)
+                                    {
+                                        item.clear(context);
+                                        self.updateDataList(context, self.focus_index, nil);
+                                    }
+                                    else if (res.update || res.favorite || res.leave)
+                                    {
+                                        item.refresh(context);
+                                        self.updateDataList(context, self.focus_index, item.club);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            module MainClubFavorite
+            {
+                function getClubList(context)
+                {
+                    var user_id = Grim2.getLoginUserId();
+                    var request = Community.requestClubListByFavorite(user_id, (args) => {});
+
+                    var club_list = [];
+                    if (Grim2Util::joinAwait(context, request))
+                        club_list = Community.decodeClubList(request);
+
+                    setClubFavorite(context, club_list);
+                    return club_list;
+                }
+
+                method onInitialize(context)
+                {
+                    var adj = menu::MAdjustment();
+                    self.VBox::VScrollbar.adjustment = adj;
+                    self.VBox::ListBox.v_adjustment = adj;
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("cancel");
+                    CommunityRoot.setFocus(ListMenu::Menus::Sub_GroupByClub::ScrolledWindow::clip::space::FavoriteList);
+                    return STATE_YIELD;
+                }
+
+                method initialize(context, args)
+                {
+                    self.visible = true;
+                    var target = self.VBox;
+                    var listbox = target.ListBox;
+                    listbox.setItemTemplate(context, hidden::MyClubItem);
+                    listbox.setItemCount(0);
+                    listbox.postRedraw();
+
+                    var club_list = getClubList(context);
+                    listbox.data_list = club_list;
+                    listbox.setItemCount(club_list.size);
+                    listbox.focus_index = 0;
+                    listbox.can_focus = club_list.size > 0;
+
+                    CommunityRoot.setEmpty(club_list.size == 0, "EMPTY_CLUB_FAVORITE", "favorite");
+                }
+
+                method finalize(context)
+                {
+                    self.visible = false;
+                }
+
+                method on_focus(context)
+                {
+                    var w = self.VBox::ListBox;
+                    if (w.can_focus)
+                        CommunityRoot.setFocus(w);
+                }
+
+                module VBox::ListBox
+                {
+                    method onFocusNotify(context, new_index, old_index)
+                    {
+                        ReportHelp.set(context, getReportInfo(context) != nil);
+                    }
+
+                    method getReportInfo(context)
+                    {
+                        var w = self.getItemWidget(self.focus_index);
+                        if (w == nil)
+                            return nil;
+
+                        return ReportUtil::ClubData(w.club);
+                    }
+
+                    method on_activate(context, item)
+                    {
+                        if (item.club == nil)
+                        {
+                            ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                            return;
+                        }
+
+                        var res = openClub(context, item.club);
+                        if (res == nil)
+                            return;
+
+                        if (res.delete || res.favorite)
+                        {
+                            item.clear(context);
+                            self.updateDataList(context, self.focus_index, nil);
+                        }
+                        else if (res.update || res.leave)
+                        {
+                            item.refresh(context);
+                            self.updateDataList(context, self.focus_index, item.club);
+                        }
+                    }
+                }
+            }
+
+            module MainClubSearch
+            {
+                method onInitialize(context)
+                {
+                    var adj = menu::MAdjustment();
+                    self.VBox::SBox::VScrollbar.adjustment = adj;
+                    self.VBox::SBox::ListBox.v_adjustment = adj;
+
+                    var target0 = self.VBox::ScrolledWindow::clip::space::VBox::VBox::Description::VBox::MBox;
+                    for (var i = 0; i < 6; ++i)
+                    {
+                        var w = target0["Tag%{i + 1}"];
+                        w.tag_id = 0;
+                        w.label.text = manager.translate("CommunityTag", "CATEGORY_0");
+                    }
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("cancel");
+                    CommunityRoot.setFocus(ListMenu::Menus::Sub_GroupByClub::ScrolledWindow::clip::space::SearchClub);
+                    return STATE_YIELD;
+                }
+
+                method initialize(context, args)
+                {
+                    self.visible = true;
+                    var target = self.VBox;
+                    target.ScrolledWindow.visible = true;
+                    target.SBox.visible = false;
+
+                    target.Header::Title::Label.text = manager.translate("Community", "SEARCH_CONDITION");
+                    target.Header::SearchAgain.visible = false;
+                }
+
+                method finalize(context)
+                {
+                    self.visible = false;
+                }
+
+                method on_focus(context)
+                {
+                    if (self.VBox::SBox.visible)
+                        CommunityRoot.setFocus(self.VBox::SBox::ListBox);
+                    else
+                        CommunityRoot.setFocus(self.VBox::ScrolledWindow::clip::space::VBox::VBox::Description::VBox::InputTextBox::Text::input);
+                }
+
+                method showClubList(context, club_list)
+                {
+                    if (club_list.size == 0)
+                    {
+                        ERROR(context, "Community", "NO_CLUB_FOUND");
+                        return;
+                    }
+
+                    var target = self.VBox;
+                    var listbox = target.SBox::ListBox;
+                    listbox.setItemTemplate(context, hidden::MyClubItem);
+                    listbox.setItemCount(0);
+                    listbox.postRedraw();
+
+                    listbox.data_list = club_list;
+                    listbox.setItemCount(club_list.size);
+                    listbox.focus_index = 0;
+                    listbox.can_focus = club_list.size > 0;
+
+                    CommunityRoot.setEmpty(false);
+                    target.SBox.visible = true;
+                    target.ScrolledWindow.visible = false;
+
+                    target.Header::Title::Label.text = manager.translate("Community", "SEARCH_RESULT");
+                    target.Header::SearchAgain.visible = true;
+
+                    CommunityRoot.setFocus(self.VBox::SBox::ListBox);
+                }
+
+                module VBox::Header
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+                        MainClubSearch.initialize(context);
+                        MainClubSearch.on_focus(context);
+                        return STATE_YIELD;
+                    }
+                }
+
+                module VBox::SBox::ListBox
+                {
+                    method onFocusNotify(context, new_index, old_index)
+                    {
+                        ReportHelp.set(context, getReportInfo(context) != nil);
+                    }
+
+                    method getReportInfo(context)
+                    {
+                        var w = self.getItemWidget(self.focus_index);
+                        if (w == nil)
+                            return nil;
+
+                        return ReportUtil::ClubData(w.club);
+                    }
+
+                    method on_activate(context, item)
+                    {
+                        if (item.club == nil)
+                        {
+                            ERROR(context, "Community", "ERROR_CANT_SELECT_ITEM");
+                            return;
+                        }
+
+                        var res = openClub(context, item.club);
+                        if (res == nil)
+                            return;
+
+                        if (res.delete)
+                        {
+                            item.clear(context);
+                            self.updateDataList(context, self.focus_index, nil);
+                        }
+                        else if (res.update || res.favorite || res.leave)
+                        {
+                            item.refresh(context);
+                            self.updateDataList(context, self.focus_index, item.club);
+                        }
+                    }
+                }
+
+                module VBox::ScrolledWindow::clip::space::VBox::VBox
+                {
+                    module Description::VBox
+                    {
+                        method onInitialize(context)
+                        {
+                            var country_list = [
+                                manager.translate("Country", NP.getRegionName().upcase()),
+                                manager.translate("GTModeProject::RoomRoot", "ALL")
+                            ];
+
+                            OptionMenuUtil::initialize(context, self, self.Country::OptionMenu, hidden::PulldownItem, country_list);
+                            self.Country::OptionMenu.setIndex(context, 0);
+                        }
+
+                        method onFinalize(context)
+                        {
+                            OptionMenuUtil::finalize(context, self.Country::OptionMenu);
+                        }
+
+                        module MBox
+                        {
+                            method tagSelect(context, target)
+                            {
+                                sound.play("ok");
+
+                                var tag_id_list = [];
+                                for (var i = 0; i < 6; ++i)
+                                {
+                                    var w = target.parent["Tag%{i + 1}"];
+                                    if (w == target)
+                                        continue;
+
+                                    if (w.tag_id > 0)
+                                        tag_id_list.push(w.tag_id);
+                                }
+
+                                var tag_id = target.tag_id;
+                                var new_tag_id = TagSelectRoot.open(context, tag_id, tag_id_list);
+
+                                if (new_tag_id != nil && healthCheck())
+                                {
+                                    target.tag_id = new_tag_id;
+                                    target.label.text = manager.translate("CommunityTag", "CATEGORY_%d".format(new_tag_id));
+                                }
+
+                                return STATE_YIELD;
+                            }
+
+                            module Tag1
+                            {
+                                attribute tag_id;
+
+                                method onActivate(context)
+                                {
+                                    return tagSelect(context, self);
+                                }
+                            }
+
+                            module Tag2
+                            {
+                                attribute tag_id;
+
+                                method onActivate(context)
+                                {
+                                    return tagSelect(context, self);
+                                }
+                            }
+
+                            module Tag3
+                            {
+                                attribute tag_id;
+
+                                method onActivate(context)
+                                {
+                                    return tagSelect(context, self);
+                                }
+                            }
+
+                            module Tag4
+                            {
+                                attribute tag_id;
+
+                                method onActivate(context)
+                                {
+                                    return tagSelect(context, self);
+                                }
+                            }
+
+                            module Tag5
+                            {
+                                attribute tag_id;
+
+                                method onActivate(context)
+                                {
+                                    return tagSelect(context, self);
+                                }
+
+                                // BUGFIX: 'tag_id' was being redefined here
+                            }
+                        
+                            module Tag6
+                            {
+                                attribute tag_id;
+
+                                method onActivate(context)
+                                {
+                                    return tagSelect(context, self);
+                                }
+                            }
+                        }
+
+                        module Ok
+                        {
+                            method getClubList(context)
+                            {
+                                var level_list = [1, 2, 3];
+                                var open_list = [1, 2, 3];
+
+                                var description = self.VBox::InputTextBox::Text::input.value;
+                                var tag_id_list = [];
+                                for (var i = 0; i < 6; ++i)
+                                {
+                                    var w = MBox["Tag%{i + 1}"];
+                                    if (w.tag_id != 0)
+                                    {
+                                        tag_id_list.push(w.tag_id);
+                                    }
+                                }
+
+                                tag_id_list.sort();
+
+                                var country_list = Country::OptionMenu.index == 0 ? [NP.getRegionName()] : [];
+                                var request = Community.requestClubListByDescription(level_list, 
+                                    open_list, 
+                                    country_list, 
+                                    tag_id_list, 
+                                    description, (args) => {});
+                                
+                                var club_list = [];
+                                if (Grim2Util::joinAwait(context, request))
+                                    club_list = Community.decodeClubList(request);
+                                
+                                setClubFavorite(context, club_list);
+                                return club_list;
+                            }
+
+                            method onActivate(context)
+                            {
+                                sound.play("ok");
+                                var club_list = getClubList(context);
+                                MainClubSearch.showClubList(context, club_list);
+                                return STATE_YIELD;
+                            }
+                        }
+                    }
+
+                    module Number
+                    {
+                        method onActivate(context)
+                        {
+                            sound.play("ok");
+
+                            var club_id = self.VBox::InputTextBox::Text::input.value;
+                            var club = CommunityRoot.cache_manager.getClub(context, club_id);
+                            if (club == nil || club["club_id"] == 0)
+                            {
+                                ERROR(context, "Community", "NO_CLUB_NUMBER_FOUND");
+                                return STATE_YIELD;
+                            }
+
+                            openClub(context, club);
+                            return STATE_YIELD;
+                        }
+                    }
+                }
+            }
+
+            module MainPhotoStream
+            {
+                method onInitialize(context)
+                {
+                    foreach (var name in ["Friend", "World"])
+                    {
+                        var target = self.VBox::Body[name];
+                        var adj = menu::MAdjustment();
+                        target.VScrollbar.adjustment = adj;
+                        target.IconBox.v_adjustment = adj;
+                    }
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("ok");
+                    CommunityRoot.setFocus(ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Category::VBox::PhotoStream);
+                    return STATE_YIELD;
+                }
+
+                method initialize(context, args)
+                {
+                    self.visible = true;
+
+                    var target = self.VBox;
+                    target.Header::HBox::Friend.active = true;
+                    target.Header::HBox::World.active = false;
+                    target.Body::Friend.initialize(context);
+                }
+
+                method finalize(context)
+                {
+                    self.visible = false;
+                }
+
+                method on_focus(context)
+                {
+                    CommunityRoot.setFocus(self.VBox.Header::HBox::Friend);
+                }
+
+                module VBox
+                {
+                    module Header::HBox
+                    {
+                        import ImportMainHeader::*;
+                    }
+
+                    module Body
+                    {
+
+                        attribute active_body;
+
+                        method onInitialize(context)
+                        {
+                            for (var w = self.first; w != nil; w = w.next)
+                                w.insensitive = true;
+                        }
+
+                        method fire(context, w)
+                        {
+                            if (self.active_body != nil)
+                            {
+                                self.active_body.insensitive = true;
+                                var o = self.active_body.Opacity;
+                                o.reverse = true;
+                                o.start();
+                            }
+
+                            self.active_body = w;
+                            var o = w.Opacity;
+                            o.reverse = false;
+                            o.start();
+                            self.active_body.insensitive = false;
+                        }
+
+                        module World
+                        {
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+                                var listbox = self.IconBox;
+                                listbox.setItemTemplate(context, hidden::PhotoStreamItem);
+                                listbox.setItemCount(0, 0);
+                                listbox.postRedraw();
+
+                                var photo_list = [];
+                                var request = Photo.requestStreamList((args) => {});
+
+                                if (Grim2Util::joinAwait(context, request))
+                                {
+                                    var photo_id_list = Photo.decodeIdStringList(request);
+                                    foreach (var photo_id in photo_id_list)
+                                    {
+                                        var photo = [
+                                            "photo_id" : photo_id["id"],
+                                            "user_id" : photo_id["user_id"],
+                                            "comment" : "",
+                                            "comment_hidden" : 0,
+                                        ];
+
+                                        photo_list.push(photo);
+                                    }
+                                }
+
+
+                                listbox.data_list = photo_list;
+                                listbox.setItemCount(5, (photo_list.size + 4) / 5);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = photo_list.size > 0;
+                                CommunityRoot.setEmpty(photo_list.size == 0, "EMPTY_PHOTOSTREAM_WORLD", "world");
+
+                                for (var i = photo_list.size; i < listbox.getItemCount(); ++i)
+                                    listbox.setItemVisibleValue(i, false);
+                            }
+
+                            module IconBox
+                            {
+                                method on_activate(context, item)
+                                {
+                                    if (item.photo == nil)
+                                        return;
+
+                                    PhotoViewerRoot.openViewPhoto(context, self.data_list, item.photo, true, "WORLD");
+                                }
+
+                                method onFocusEnter(context, event)
+                                {
+                                    var show_report = true;
+                                    ReportHelp.set(context, show_report);
+                                    return STATE_EXIT;
+                                }
+
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil || w.photo == nil)
+                                        return nil;
+
+                                    return ReportUtil::WorldPhotoData(w.photo);
+                                }
+                            }
+                        }
+
+                        module Friend
+                        {
+                            attribute need_update;
+
+                            method onInitialize(context)
+                            {
+                                self.need_update = true;
+                            }
+
+                            method initialize(context)
+                            {
+                                Body.fire(context, self);
+                                var listbox = self.IconBox;
+                                listbox.setItemTemplate(context, hidden::PhotoStreamItem);
+                                listbox.setItemCount(0, 0);
+                                listbox.postRedraw();
+
+                                var photo_list = [];
+                                var request = Photo.requestListByFriend((args) => {});
+
+                                if (Grim2Util::joinAwait(context, request))
+                                    photo_list = Photo.decodePhotoList(request);
+
+                                photo_list.sort(sortCreateTime);
+
+                                listbox.data_list = photo_list;
+                                listbox.setItemCount(5, (photo_list.size + 4) / 5);
+                                listbox.focus_index = 0;
+                                listbox.can_focus = photo_list.size > 0;
+                                CommunityRoot.setEmpty(photo_list.size == 0, "EMPTY_PHOTOSTREAM_FRIEND", "friend");
+
+                                for (var i = photo_list.size; i < listbox.getItemCount(); ++i)
+                                    listbox.setItemVisibleValue(i, false);
+                            }
+
+                            module IconBox
+                            {
+                                method updateFriendUserProfile(context)
+                                {
+                                    var my_user_id = Grim2.getLoginUserId();
+                                    var request = UserProfile2.requestUserProfileListFriend(my_user_id, (args) => {});
+                                
+                                    if (Grim2Util::joinAwait(context, request))
+                                    {
+                                        var user_profile_list = UserProfile2.decodeUserProfileList(request);
+                                        foreach (var u in user_profile_list)
+                                        {
+                                            CommunityRoot.cache_manager.updateUserProfile(u["user_id"], u);
+                                        }
+                                    }
+                                }
+
+                                method on_activate(context, item)
+                                {
+                                    if (item.photo == nil)
+                                        return;
+
+                                    if (Friend.need_update)
+                                    {
+                                        updateFriendUserProfile(context);
+                                        Friend.need_update = false;
+                                    }
+
+                                    foreach (var photo in self.data_list)
+                                    {
+                                        var u = CommunityRoot.cache_manager.getUserProfile(photo["user_id"]);
+                                        photo["_country"] = u != nil ? u["country"] : "";
+                                    }
+
+                                    PhotoViewerRoot.openViewPhoto(context, self.data_list, item.photo, true, "FRIEND");
+                                }
+
+                                method onFocusEnter(context, event)
+                                {
+                                    var show_report = true;
+                                    ReportHelp.set(context, show_report);
+                                    return STATE_EXIT;
+                                }
+
+                                method getReportInfo(context)
+                                {
+                                    var w = self.getItemWidget(self.focus_index);
+                                    if (w == nil || w.photo == nil)
+                                        return nil;
+
+                                    return ReportUtil::FriendPhotoData(w.photo);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    module ReportHelp
+    {
+        method set(context, show)
+        {
+            self.Opacity.reverse = !show;
+            self.Opacity.start();
+        }
+    }
+
+    ////////////////////////////
+    // Hidden Widget Templates
+    ////////////////////////////
+
+    module hidden
+    {
+        module CourseItem
+        {
+            attribute initialized_ = false;
+            attribute course;
+
+            method onRealize(context)
+            {
+                self.Body::VBox::Head::Date.text = "";
+                self.Body::VBox::Head::TextFace.text = "";
+                self.Body::VBox::Foot::TextFaceTheme.text = "";
+                self.Body::VBox::Foot::TextFaceLength.text = "";
+            }
+
+            method initialize(context, course)
+            {
+                self.course = course;
+
+                if (course != nil)
+                {
+                    self.Body::VBox::Head::Date.text = dateTimeString(localtime(course["create_time"]));
+                    self.Body::VBox::Head::TextFace.text = checkText(context, course["title"], course["title_hidden"], "DELETED_TITLE");
+                    self.Body::VBox::Foot::TextFaceTheme.text = manager.translate("CourseName", course["theme"]);
+                    self.Body::VBox::Foot::TextFaceLength.text = manager.translate("SaveData", "FORMAT_NAME").build(
+                        pdiext::MUnit::GetCourseLengthString(course["length"], true),
+                        manager.translate("CourseMaker", course["one_way"] ? "COURSE_ONEWAY" : "COURSE_LOOP")
+                    );
+
+                    var photo_id = course["photo_id"];
+                    if (course["photo_hidden"] > 0)
+                        setPngImage(self.Body::Image::ImageFaceReject, "_" + photo_id);
+                    else
+                        setPngImage(self.Body::Image::ImageFace, photo_id);
+                }
+                else
+                {
+                    self.Body::VBox::Head::Date.text = "";
+                    self.Body::VBox::Head::TextFace.text = "";
+                    self.Body::VBox::Foot::TextFaceTheme.text = "";
+                    self.Body::VBox::Foot::TextFaceLength.text = "";
+                    self.Body::Image::ImageFace.image_path = "";
+                }
+
+                self.Body::Image::Dummy.visible = course == nil;
+                self.initialized_ = true;
+            }
+        }
+
+        module PhotoItem
+        {
+            attribute initialized_ = false;
+            attribute photo;
+
+            method onRealize(context)
+            {
+                self.Body::VBox::Head::Date.text = "";
+                self.Body::VBox::Head::TextFace.text = "";
+                self.Body::VBox::Foot::TextFace.text = "";
+            }
+
+            method initialize(context, photo)
+            {
+                self.photo = photo;
+
+                if (photo != nil)
+                {
+                    var place = photo["place"];
+                    var place_text = "";
+
+                    if (place.beginWith("PHOTO_"))
+                        place_text = manager.translate("PhotoMode", place);
+                    else
+                        place_text = manager.translate("CourseName", place);
+
+                    self.Body::VBox::Head::Date.text = dateTimeString(localtime(photo["create_time"]));
+                    self.Body::VBox::Head::TextFace.text = place_text;
+                    self.Body::VBox::Foot::TextFace.text = checkText(context, photo["comment"], photo["comment_hidden"], "DELETED_COMMENT");
+                        
+                    var photo_id = photo["photo_id"];
+
+                    setThumbnailImage(self.Body::Image::ImageFace, photo_id, photo["status"]);
+                }
+                else
+                {
+                    self.Body::VBox::Head::Date.text = "";
+                    self.Body::VBox::Head::TextFace.text = "";
+                    self.Body::VBox::Foot::TextFace.text = "";
+                    self.Body::Image::ImageFace.image_path = "";
+                }
+
+                self.initialized_ = true;
+            }
+        }
+
+        module CarPhotoItem
+        {
+            attribute initialized_ = false;
+            attribute photo;
+
+            method onRealize(context)
+            {
+                self.Body::Image::Dealer.image_path = "";
+                self.Body::VBox::Head::TextFace.text = "";
+                self.Body::VBox::Head::Dealer.text = "";
+                self.Body::VBox::Foot::TextFace.text = "";
+            }
+
+            method initialize(context, photo)
+            {
+                self.photo = photo;
+
+                if (photo != nil)
+                {
+                    var [tuner_label, country] = photo["place"].split(",");
+                    self.Body::VBox::Head::TextFace.text = photo["car_name"];
+                    self.Body::VBox::Head::Dealer.text = manager.translate("TunerName", tuner_label);
+                    self.Body::VBox::Foot::TextFace.text = checkText(context, photo["comment"], photo["comment_hidden"], "DELETED_COMMENT");
+                    self.Body::Image::Dealer.image_path = "piece/gt6/tunner_logo_M/%{tuner_label}.img";
+
+                    var photo_id = photo["photo_id"];
+
+                    setThumbnailImage(self.Body::Image::ImageFace, photo_id, photo["status"]);
+                }
+                else
+                {
+                    self.Body::VBox::Head::TextFace.text = "";
+                    self.Body::VBox::Head::Dealer.text = "";
+                    self.Body::VBox::Foot::TextFace.text = "";
+                    self.Body::Image::Dealer.image_path = "";
+                    self.Body::Image::ImageFace.image_path = "";
+                }
+
+                self.initialized_ = true;
+            }
+        }
+
+        module PhotoStreamItem
+        {
+            attribute initialized_ = false;
+            attribute unselectable_ = false;
+            attribute photo;
+
+            method initialize(context, photo)
+            {
+                self.photo = photo;
+
+                if (photo != nil)
+                {
+                    var photo_id = photo["photo_id"];
+                    setThumbnailImage(self.ImageFace, photo_id, photo["status"]);
+                }
+
+                self.initialized_ = true;
+            }
+        }
+
+        module MyClubItem
+        {
+            attribute initialized_ = false;
+            attribute club;
+
+            method onRealize(context)
+            {
+                var body = self.Body;
+
+                body.Image::ImageFace.image_path = "";
+                body.Image::Favorite.visible = false;
+                body.VBox::Head::Country::TextFace.text = "";
+                body.VBox::Head::Country::ImageFace.image_path = "";
+                body.VBox::Head::TextFace.text = "";
+                body.VBox::Foot::HBoxR::TextFace.text = "";
+                body.VBox::Foot::HBoxR::TextFaceJob.text = "";
+                body.VBox::Foot::HBoxR::TextFaceFriend.text = "";
+                body.VBox::Foot::HBoxR::TextFaceMember.text = "";
+                body.VBox::Description::TextFace.text = "";
+                body.VBox::Foot::Member.visible = false;
+                body.VBox::Foot::Owner.visible = false;
+            }
+
+            method initialize(context, club)
+            {
+                self.club = club;
+                var body = self.Body;
+
+                if (club == nil)
+                {
+                    body.Image::ImageFace.image_path = "";
+                    body.Image::Favorite.visible = false;
+                    body.VBox::Head::Country::TextFace.text = "";
+                    body.VBox::Head::Country::ImageFace.image_path = "";
+                    body.VBox::Head::TextFace.text = "";
+                    body.VBox::Foot::HBoxR::TextFace.text = "";
+                    body.VBox::Foot::HBoxR::TextFaceJob.text = "";
+                    body.VBox::Foot::HBoxR::TextFaceMember.text = "";
+                    body.VBox::Foot::HBoxR::TextFaceFriend.text = "";
+                    body.VBox::Foot::Member.visible = false;
+                    body.VBox::Foot::Owner.visible = false;
+                    body.VBox::Description::TextFace.text = "";
+                }
+                else
+                {
+                    var photo_id = club["photo_id"];
+                    setImage(body.Image::ImageFace, photo_id);
+                    
+                    var country = list2text(club["country_list"]);
+                    body.VBox::Head::Country::TextFace.text = manager.translate("Country", country.upcase());
+                    setFlagImage(body.VBox::Head::Country::ImageFace, country);
+
+                    body.VBox::Head::TextFace.text = checkText(context, club["title"], club["title_hidden"], "DELETED_TITLE");
+                    body.VBox::Foot::HBoxR::TextFaceMember.text = club["user_count"];
+
+                    var friend_count = club["friend_count"];
+                    body.VBox::Foot::HBoxR::IconFriend.visible = friend_count >= 0;
+                    body.VBox::Foot::HBoxR::TextFaceFriend.visible = friend_count >= 0;
+                    body.VBox::Foot::HBoxR::TextFaceFriend.text = friend_count;
+
+                    var d = localtime(club["create_time"]);
+                    body.VBox::Foot::HBoxR::TextFace.text = manager.translate("DateTime", "FORMAT_DATE")
+                        .build(d.year, d.month, d.day);
+
+                    var user_id_list = club["user_id_list"];
+                    body.VBox::Foot::HBoxR::TextFaceJob.text = user_id_list.join(",");
+
+                    var user_id = Grim2.getLoginUserId();
+                    var owner = user_id_list.indexOf(user_id) != -1;
+                    var member = CommunityRoot.cache_manager.isClubMember(context, user_id, club["club_id"]);
+                    body.VBox::Foot::Member.visible = member && !owner;
+                    body.VBox::Foot::Owner.visible = owner;
+
+                    self.club["_member"] = member;
+                    self.club["_owner"] = owner;
+
+                    body.VBox::Description::TextFace.text = checkText(context, list2text(club["description_list"]), club["description_hidden"], "DELETED_DESCRIPTION");
+                    
+                    var is_favorite = club["_favorite"];
+                    body.Image::Favorite.visible = is_favorite != nil && is_favorite;
+                }
+
+                self.initialized_ = true;
+            }
+
+            method clear(context)
+            {
+                var user_id = Grim2.getLoginUserId();
+                CommunityRoot.cache_manager.clearClub(user_id, self.club["club_id"]);
+                self.initialize(context, nil);
+            }
+
+            method refresh(context)
+            {
+                var refresh = true;
+                var club0 = CommunityRoot.cache_manager.getClub(context, self.club["club_id"], refresh);
+                setClubInfo(context, club0, refresh);
+                setClubFavorite(context, [club0], refresh);
+                self.initialize(context, club0);
+            }
+        }
+
+        module MyEventItem
+        {
+            attribute initialized_ = false;
+            attribute club;
+            attribute event;
+            attribute memberCounter;
+
+            method onRealize(context)
+            {
+                var body = self.Body;
+
+                body.VBox::Head::TextFace.text = "";
+                body.VBox::Foot::Date.text = "";
+                body.VBox::Foot::HBoxR::TextFace.text = "";
+                body.VBox::Description::TextFace.text = "";
+                body.VBox::Foot::Notice.visible = false;
+                body.VBox::Foot::Open.visible = false;
+                body.VBox::Foot::End.visible = false;
+                body.VBox::Foot::Count.text = "";
+                body.VBox::Foot::Entry.visible = false;
+                body.Image::ImageFace.image_path = "";
+
+                foreach (var label in ["P", "Q", "R", "T", "D", "F", "E"])
+                {
+                    body.VBox::Head::Race[label].visible = false;
+                }
+            }
+
+            method onFinalize(context)
+            {
+                self.finalizeMemberCounter(context);
+            }
+
+            method finalizeMemberCounter(context)
+            {
+                if (self.memberCounter != nil)
+                {
+                    self.memberCounter.finalize(context);
+                    self.memberCounter = nil;
+                }
+            }
+
+            method initialize(context, club_event)
+            {
+                var [club, event] = club_event;
+                self.club = club;
+
+                if (self.event == nil)
+                {
+                    self.event = event;
+                }
+                else if (event != nil)
+                {
+                    foreach (var [k, v] in event)
+                    {
+                        self.event[k] = event[k];
+                    }
+                }
+
+                var body = self.Body;
+                if (event == nil)
+                {
+                    body.VBox::Head::TextFace.text = "";
+                    body.VBox::Foot::Entry.visible = false;
+                    body.VBox::Foot::Date.text = "";
+                    body.VBox::Foot::HBoxR::TextFace.text = "";
+                    body.VBox::Foot::HBoxR::TextFaceMember.text = "";
+                    body.VBox::Foot::HBoxR::TextFaceFriend.text = "";
+                    body.VBox::Foot::Open.visible = false;
+                    body.VBox::Foot::Notice.visible = false;
+                    body.VBox::Foot::End.visible = false;
+                    body.VBox::Foot::Entry.visible = false; // done again
+                    body.VBox::Description::TextFace.text = "";
+
+                    foreach (var label in ["P", "Q", "R", "T", "D", "F", "E"])
+                        body.VBox::Head::Race[label].visible = false;
+                    
+                    body.Image::ImageFace.image_path = "";
+                    self.finalizeMemberCounter(context);
+                }
+                else
+                {
+                    var start_time = localtime(event["start_time"]);
+                    var end_time = localtime(event["end_time"]);
+                    body.VBox::Head::TextFace.text = checkText(context, list2text(event["title_list"]), event["title_hidden"], "DELETED_TITLE");
+                    body.VBox::Foot::Date.text = "%s - %s".format(dateTimeString(start_time), dateTimeString(end_time));
+                    body.VBox::Foot::HBoxR::TextFace.text = checkText(context, club["title"], club["title_hidden"], "DELETED_TITLE");
+                    body.VBox::Foot::HBoxR::TextFaceMember.text = event["user_count"];
+
+                    var friend_count = event["friend_count"];
+                    body.VBox::Foot::HBoxR::IconFriend.visible = friend_count >= 0;
+                    body.VBox::Foot::HBoxR::TextFaceFriend.visible = friend_count >= 0;
+                    body.VBox::Foot::HBoxR::TextFaceFriend.text = friend_count;
+
+                    var status = eventStatus(start_time, end_time);
+                    body.VBox::Foot::Open.visible = status == "open";
+                    body.VBox::Foot::Notice.visible = status == "notice";
+                    body.VBox::Foot::End.visible = status == "end";
+                    body.VBox::Foot::Entry.visible = event["_join"];
+                    body.VBox::Description::TextFace.text = checkText(context, list2text(event["description_list"]), event["description_hidden"], "DELETED_DESCRIPTION");
+
+                    var gp = CommunityRoot.cache_manager.getGp(event);
+                    var race = OnlineRoomUtil::getRaceType(context, gp);
+
+                    foreach (var label in ["P", "Q", "R", "T", "D", "F", "E"])
+                    {
+                        var [show, value] = race[label];
+                        var w = body.VBox::Head::Race[label];
+                        w.visible = show;
+                        if (w["SBox"] != nil && value != nil)
+                            w.SBox::Label.text = value;
+                    }
+
+                    var photo_id= event["photo_id"];
+                    setImage(body.Image::ImageFace, photo_id);
+
+                    var countActiveMember = status == "open";
+                    if (countActiveMember)
+                    {
+                        self.memberCounter = OnlineRoomUtil::ActiveMemberCounter();
+                        self.memberCounter.initialize(context, club["club_id"], event["club_event_id"], body.VBox::Foot::Count);
+                    }
+                }
+
+                self.initialized_ = true;
+            }
+
+            method clear(context)
+            {
+                CommunityRoot.cache_manager.updateEvent(self.event["club_event_id"], nil);
+                self.initialize(context, [self.club, nil]);
+            }
+
+            method refresh(context)
+            {
+                var event0 = CommunityRoot.cache_manager.getEvent(context, self.event["club_id"], self.event["club_event_id"], true);
+                var event_user_list = CommunityRoot.cache_manager.getMyEventUserList(context, true);
+                var _join = false;
+
+                foreach (var event_user in event_user_list)
+                {
+                    if (event_user["club_event_id"] == event0["club_event_id"])
+                    {
+                        _join = true;
+                        break;
+                    }
+                }
+
+                event0["_join"] = _join;
+                self.initialize(context, [self.club, event0]);
+            }
+        }
+
+        module TimeLineItem
+        {
+            attribute initialized_ = false;
+            attribute timeline;
+
+            method onRealize(context)
+            {
+                self.Body::Head::Date.text = "";
+                self.Body::Head::Name.text = "";
+                self.Body::Head::Comment.text = "";
+                self.Body::Head::Me.visible = false;
+                self.Body::Head::Friend.visible = false;
+                self.Body::Head::Club.visible = false;
+                self.Body::Head::News.visible = false;
+                self.Body::Foot::HBox::R::Normal::Title.text = "";
+                self.Body::Foot::HBox::R::Normal::Description.text = "";
+                self.Body::Foot::HBox::R::Event::Title.text = "";
+                self.Body::Foot::HBox::R::Event::Description.text = "";
+                self.Body::Foot::HBox::R::Event::Club.text = "";
+                self.Body::Foot::HBox::R::Text::Title.text = "";
+                self.Body::Foot::HBox::L::BgNews.visible = false;
+                self.Body::Foot::HBox::L::Club.visible = false;
+                self.Body::Foot::HBox::L::Profile.visible = false;
+                self.Body::Foot::HBox::L::Photo.visible = false;
+                self.Body::Foot::HBox::L::NewsUpdate.visible = false;
+                self.Body::Foot::HBox::L::NewsInformation.visible = false;
+            }
+
+            method set(context, title, icon_type, image_type)
+            {
+                self.Body::Head::Comment.text = title;
+                self.Body::Head::Me.visible = icon_type == "me";
+                self.Body::Head::Friend.visible = icon_type == "friend";
+                self.Body::Head::Club.visible = icon_type == "club";
+                self.Body::Head::News.visible = icon_type == "news";
+
+                self.Body::Foot::HBox::L::BgNews.visible = image_type == "update" || image_type == "announce" || image_type == "course";
+                self.Body::Foot::HBox::L::Club.visible = icon_type == "club";
+                self.Body::Foot::HBox::L::Profile.visible = icon_type == "profile";
+                self.Body::Foot::HBox::L::Photo.visible = icon_type == "photo";
+                self.Body::Foot::HBox::L::NewsUpdate.visible = icon_type == "update";
+                self.Body::Foot::HBox::L::NewsInformation.visible = icon_type == "announce";
+            }
+
+            method setText(context, title, description, club)
+            {
+                var target = self.Body::Foot::HBox::R;
+                if (club != nil)
+                {
+                    target.Event::Title.text = title;
+                    target.Event::Description.text = description;
+                    target.Event::Club.text = club;
+                }
+                else if (description != nil)
+                {
+                    target.Normal::Title.text = title;
+                    target.Normal::Description.text = description;
+                }
+                else
+                {
+                    target.Text::Title.text = title;
+                }
+            }
+
+            method setTimelineClub(context, club_id, image_face, override_text1, override_text2, override_text3)
+            {
+                var club = CommunityRoot.cache_manager.getClubIf(context, club_id);
+                if (club != nil)
+                {
+                    setText(context, not_nil(override_text1, club["title"]),
+                        not_nil(override_text2, list2text(club["description_list"])),
+                        override_text3);
+
+                    setImage(image_face, club["photo_id"]);
+                }
+                else
+                {
+                    var me = self;
+                    Community.requestClub(club_id, (args) => 
+                    {
+                        var [context, request] = args;
+                        if (request.isDone())
+                        {
+                            var club = Community.decodeClub(request);
+                            me.setText(context, not_nil(override_text1, club["title"]),
+                                not_nil(override_text2, list2text(club["description_list"])),
+                                override_text3);
+    
+                            setImage(image_face, club["photo_id"]);
+    
+                            CommunityRoot.cache_manager.updateClub(club_id, club);
+                        }
+                    })
+                }
+            }
+
+            method setTimelineClub2(context, club_id, image_face, recent)
+            {
+                var club = CommunityRoot.cache_manager.getClubIf(context, club_id);
+                if (club != nil)
+                {
+                    setText(context, recent);
+                    setImage(image_face, club["photo_id"]);
+                }
+                else
+                {
+                    var me = self;
+                    Community.requestClub(club_id, (args) => 
+                    {
+                        var [context, request] = args;
+                        if (request.isDone())
+                        {
+                            var club = Community.decodeClub(request);
+                            me.setText(context, recent);
+    
+                            setImage(image_face, club["photo_id"]);
+    
+                            CommunityRoot.cache_manager.updateClub(club_id, club);
+                        }
+                    })
+                }
+            }
+
+            method setHeaderByClub(context, club_id)
+            {
+                self.Body::Head::Name.text = "";
+
+                var club = CommunityRoot.cache_manager.getClubIf(context, club_id);
+                if (club != nil)
+                {
+                    self.Body::Head::Name.text = club["title"];
+                }
+                else
+                {
+                    var me = self;
+                    Community.requestClub(club_id, (args) => 
+                    {
+                        var [context, request] = args;
+                        if (request.isDone())
+                        {
+                            var club = Community.decodeClub(request);
+
+                            me.Body::Head::Name.text = club["title"];
+
+                            CommunityRoot.cache_manager.updateClub(club_id, club);
+                        }
+                    })
+                }
+            }
+
+            method initializeCC(context, title, values, image_face, user_id)
+            {
+                var icon_type = user_id == Grim2.getLoginUserId() ? "me" : "friend";
+                set(context, title, icon_type, "club");
+
+                var [keyword0, club_id, club_title, club_description] = values;
+                setTimelineClub(context, club_id, image_face, club_title, club_description);
+            }
+
+            method initializeCJ(context, title, values, image_face, user_id)
+            {
+                var icon_type = user_id == Grim2.getLoginUserId() ? "me" : "friend";
+                set(context, title, icon_type, "club");
+
+                var [keyword0, club_id, club_title, club_description, photo_id] = values;
+                setText(context, club_title, club_description);
+                setImage(image_face, photo_id);
+            }
+
+            method initializeCEE(context, title, values, image_face, user_id)
+            {
+                var icon_type = user_id == Grim2.getLoginUserId() ? "me" : "friend";
+                set(context, title, icon_type, "club");
+
+                var [keyword0, club_id, club_name, club_event_id, event_title, event_description, photo_id] = values;
+                setText(context, event_title, event_description, club_name);
+                setImage(image_face, photo_id);
+            }
+
+            method initializeBTC(context, title, values, image_face, club_id)
+            {
+                set(context, title, "club", "club");
+                setHeaderByClub(context, club_id);
+
+                var [keyword0, user_id, thread_id, thread_title, thread_comment] = values;
+                setTimelineClub(context, club_id, image_face, thread_title, thread_comment);
+            }
+
+            method initializeRU(context, title, values, image_face, user_id0, club_id)
+            {
+                if (club_id != 0)
+                {
+                    set(context, title, "club", "club");
+                    setHeaderByClub(context, club_id);
+                    
+                    var [keyword0, user_id, recent] = values;
+                    setTimelineClub2(context, club_id, image_face, recent);
+                }
+                else if (user_id0 == Grim2.getLoginUserId())
+                {
+                    set(context, title, "me", "profile");
+                }
+                else
+                {
+                    set(context, title, "friend", "profile");
+                }
+
+                var [keyword0, comment] = values;
+                setText(context, comment);
+
+                var user_profile = CommunityRoot.cache_manager.getUserProfile(user_id0);
+                if (user_profile != nil)
+                {
+                    setImage(image_face, user_profile["photo_id_avatar"]);
+                }
+                else
+                {
+                    UserProfile2.requestUserProfile(user_id0, (args) => 
+                    {
+                        var [context, request] = args;
+                        if (request.isDone())
+                        {
+                            user_profile = UserProfile2.decodeUserProfile(request);
+                            setImage(image_face, user_profile["photo_id_avatar"]);
+                            CommunityRoot.cache_manager.updateUserProfile(user_id0, user_profile);
+                        }
+                    })
+                }
+            }
+
+            method initializePPU(context, title, values, image_face, user_id)
+            {
+                if (user_id == Grim2.getLoginUserId())
+                {
+                    set(context, title, "me", "photo");
+                }
+                else
+                {
+                    set(context, title, "friend", "photo");
+                }
+
+                var [keyword0, photo_id] = values;
+                setImage(image_face, photo_id);
+
+                var user_profile = CommunityRoot.cache_manager.getUserProfile(user_id);
+                if (user_profile != nil)
+                {
+                    setText(context, user_id, checkNickName(context, user_profile));
+                }
+                else
+                {
+                    var me = self;
+                    UserProfile2.requestUserProfile(user_id, (args) => 
+                    {
+                        var [context, request] = args;
+                        if (request.isDone())
+                        {
+                            user_profile = UserProfile2.decodeUserProfile(request);
+                            me.setText(context, user_id, checkNickName(context, user_profile));
+                            CommunityRoot.cache_manager.updateUserProfile(user_id, user_profile);
+                        }
+                    })
+                }
+            }
+
+            method initializeCP(context, title, values, image_face, user_id)
+            {
+                if (user_id == Grim2.getLoginUserId())
+                {
+                    set(context, title, "me", "photo");
+                }
+                else
+                {
+                    set(context, title, "friend", "photo");
+                }
+
+                var [keyword0, photo_id, car_name, place, comment] = values;
+                setText(context, car_name, comment);
+                setThumbnailImage(image_face, photo_id);
+            }
+
+            method initializePP(context, title, values, image_face, user_id)
+            {
+                if (user_id == Grim2.getLoginUserId())
+                {
+                    set(context, title, "me", "photo");
+                }
+                else
+                {
+                    set(context, title, "friend", "photo");
+                }
+
+                var [keyword0, photo_id, comment] = values;
+                setText(context, comment);
+                setThumbnailImage(image_face, photo_id);
+            }
+
+            method initializeEC(context, title, values, image_face, club_id)
+            {
+                set(context, title, "club", "club");
+                setHeaderByClub(context, club_id);
+
+                var [keyword0, user_id, club_event_id, event_title, event_description] = values;
+                setText(context, event_title, event_description);
+
+                var event = CommunityRoot.cache_manager.getEventIf(context, club_id, club_event_id);
+                if (event != nil)
+                {
+                    setImage(image_face, event["photo_id"]);
+                }
+                else
+                {
+                    var me = self;
+                    Community.requestEvent(club_id, club_event_id, (args) => 
+                    {
+                        var [context, request] = args;
+                        if (request.isDone())
+                        {
+                            var event = Community.decodeEvent(request);
+                            setImage(image_face, event["photo_id"]);
+                            CommunityRoot.cache_manager.updateEvent(club_event_id, event);
+                        }
+                    })
+                }
+            }
+
+            method initializeEU(context, title, values, image_face, club_id)
+            {
+                initializeEC(context, title, values, image_face, club_id);
+            }
+
+            method initializeCSP(context, title, values, image_face, user_id)
+            {
+                if (user_id == Grim2.getLoginUserId())
+                {
+                    set(context, title, "me", "course");
+                }
+                else
+                {
+                    set(context, title, "friend", "course");
+                }
+
+                var [keyword0, course_id, course_title, course_comment, user_id0, photo_id] = values;
+                setText(context, course_title, course_comment);
+                setPngImage(image_face, photo_id);
+            }
+
+            method initializeActivity(context, values, user_id0, club_id)
+            {
+                if (values.size == 0)
+                    return "";
+
+                var keyword = values[0];
+                var title = "";
+
+                if (keyword == "RU" && club_id != 0)
+                    title = manager.translate("Community", "ACTIVITY_RU_CLUB");
+                else
+                    title = manager.translate("Community", "ACTIVITY_%{keyword}");
+
+                var image_face = self.Body::Foot::HBox::L::ImageFace;
+                var image_face_map = self.Body::Foot::HBox::L::ImageFaceMap;
+
+                var me = self;
+
+                switch (keyword)
+                {
+                    case "RU":
+                        initializeRU(context, title, values, image_face, user_id0, club_id);
+                        break;
+
+                    case "EC":
+                        initializeEC(context, title, values, image_face, club_id);
+                        break;
+
+                    case "PPU":
+                        initializePPU(context, title, values, image_face, user_id0);
+                        break;
+
+                    case "CJ":
+                        initializeCJ(context, title, values, image_face, user_id0);
+                        break;
+
+                    case "CEE":
+                        initializeCEE(context, title, values, image_face, user_id0);
+                        break;
+
+                    case "CP":
+                        initializeCP(context, title, values, image_face, user_id0);
+                        break;
+
+                    case "PP":
+                        initializePP(context, title, values, image_face, user_id0);
+                        break;
+
+                    case "BTC":
+                        initializeBTC(context, title, values, image_face, club_id);
+                        break;
+
+                    case "CC":
+                        initializeCC(context, title, values, image_face, user_id0);
+                        break;
+
+                    case "EU":
+                        initializeEU(context, title, values, image_face, club_id);
+                        break;
+
+                    case "CSP":
+                        initializeCSP(context, title, values, image_face_map, user_id0);
+                        break;
+
+                    default:
+                        set(context, title, "error", "error");
+                        setText(context, values);
+                        break;
+                }
+            }
+
+            method initializeNews(context, values)
+            {
+                var [keyword, news_id] = values;
+                self.Body::Head::Name.text = manager.translate("News", "Label_News");
+
+                var title = manager.translate("News", keyword == "NU" ? "Label_Update" : "Label_Announce");
+                set(context, title, "news", keyword == "NU" ? "update" : "announce");
+
+                var news = CommunityRoot.cache_manager.getNews(context, news_id);
+                if (news != nil)
+                {
+                    setText(context, news["title"], news["comment"]);
+                }
+                else
+                {
+                    var me = self;
+                    News2.requestNews(news_id, (args) => 
+                    {
+                        var [context, request] = args;
+                        if (request.isDone())
+                        {
+                            var news = News2.decodeNews(request);
+                            me.setText(context, news["title"], news["comment"]);
+                            CommunityRoot.cache_manager.updateNews(news_id, news);
+                        }
+                    })
+                }
+            }
+
+            method initialize(context, timeline)
+            {
+                self.timeline = timeline;
+                var user_id = timeline["user_id"];
+
+                if (user_id == "")
+                {
+                    user_id = timeline["values"].size > 1 ? timeline["values"][1] : "";
+                }
+
+                self.Body::Head::Name.text = user_id;
+
+                if (timeline["stats"] != nil)
+                {
+                    set(context, timeline["stats"], "", "", "");
+                }
+                else if (timeline["values"] != nil)
+                {
+                    var values = timeline["values"];
+                    var [keyword] = values;
+
+                    if (keyword == "NU" || keyword == "NI")
+                        initializeNews(context, values);
+                    else
+                        initializeActivity(context, values, user_id, timeline["club_id"]);
+                }
+
+                self.Body::Head::Date.text = dateTimeString(localtime(timeline["create_time"]));
+                self.initialized_ = true;
+            }
+
+            method openFriendMyPage(context, user_id)
+            {
+                var parent = ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Category::VBox;
+                var w = user_id == Grim2.getLoginUserId() ? parent["MyPage"] : parent["Friend"];
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, w);
+                ListMenu::ListWindow.setMain(context, "MyPage", user_id);
+                CommunityRoot.setFocus(w);
+            }
+
+            method openViewCourse(context, user_id, course_id)
+            {
+                var request = main::Course.requestList(user_id, (args) => {});
+                var course_list = [];
+
+                if (Grim2Util::joinAwait(context, request))
+                    course_list = main::Course.decodeCourseList(request);
+
+                var target_course = nil;
+
+                foreach (var course in course_list)
+                {
+                    if (course["course_id"] == course_id)
+                    {
+                        target_course = course;
+                        break;
+                    }
+                }
+
+                if (target_course == nil)
+                {
+                    ERROR(context, "Community", "NO_COURSE_FOUND");
+                    return;
+                }
+
+                var is_mypage = user_id == Grim2.getLoginUserId();
+                var res = ViewCourseRoot.openView(context, target_course, is_mypage);
+
+                if (healthCheck())
+                {
+                    if (res.freerun)
+                    {
+                        LocalCourseMakerUtil::freeRun(context, target_course);
+                    }
+                }
+            }
+
+            method on_activate(context)
+            {
+                var values = timeline["values"];
+                if (values == nil)
+                    return;
+
+                var club_id = timeline["club_id"];
+                var user_id = timeline["user_id"];
+
+                switch (values[0])
+                {
+                    case "BTC":
+                        var [keyword0, user_id, thread_id, thread_title, thread_comment] = values;
+                        var bbs_thread = [
+                            "thread_id" : thread_id,
+                            "title" : thread_title,
+                            "comment" : thread_comment,
+                            "create_time" : timeline["create_time"],
+                            "user_id" : user_id,
+                            "hidden" : 0,
+                        ];
+
+                        openClubByClubIDThread(context, club_id, bbs_thread);
+                        break;
+
+                    case "CC":
+                    case "CJ":
+                        var [keyword, club_id0] = values;
+                        openClubByClubID(context, club_id0);
+                        break;
+
+                    case "RU":
+                        if (club_id != 0)
+                            openClubByClubID(context, club_id);
+                        else
+                            openFriendMyPage(context, user_id);
+                        break;
+
+                    case "CP":
+                        var [keyword0, photo_id, car_name, place, comment] = values;
+                        var photo = [
+                            "photo_id" : photo_id,
+                            "car_name" : car_name,
+                            "place" : place,
+                            "comment" : comment,
+                            "user_id" : user_id,
+                            "comment_hidden" : 0,
+                        ];
+
+                        PhotoViewerRoot.openViewCar(context, [photo], photo, true);
+                        break;
+
+                    case "PP":
+                        var [keyword0, photo_id, comment] = values;
+                        var u = getUserProfile(context, user_id, false);
+                        var country = u != nil ? u["country"] : nil;
+
+                        var photo = [
+                            "photo_id" : photo_id,
+                            "comment" : comment,
+                            "user_id" : user_id,
+                            "_country" : country,
+                            "comment_hidden" : 0,
+                        ];
+
+                        PhotoViewerRoot.openViewPhoto(context, [photo], photo, true, "PHOTO");
+                        break;
+
+                    case "EC":
+                    case "EU":
+                        var [keyword0, user_id0, club_event_id] = values;
+                        openClubByClubIDEventID(context, club_id, club_event_id);
+                        break;
+
+                    case "CEE":
+                        var [keyword0, club_id0, club_name, club_event_id] = values;
+                        openClubByClubIDEventID(context, club_id0, club_event_id);
+                        break;
+
+                    case "PPU":
+                        openFriendMyPage(context, user_id);
+                        break;
+
+                    case "NU":
+                    case "NI":
+                        var [keyword0, news_id] = values;
+                        openNews(context, news_id);
+                        break;
+
+                    case "CSP":
+                        var [keyword0, course_id] = values;
+                        openViewCourse(context, user_id, course_id);
+                        break;
+
+                    default:
+                        ERROR(context, "", "___ UNKNOWN %{values[0]} ___");
+                        break;
+                }
+            }
+        }
+
+        module FriendItem
+        {
+            attribute user_profile;
+            attribute args;
+
+            method onRealize(context)
+            {
+                self.Label.text = "";
+                self.Label_a.text = "";
+                self.Label_i.text = "";
+                self.ID.text = "";
+                self.ID_a.text = "";
+                self.ID_i.text = "";
+            }
+
+            method initializePresence(context, presence_list, np_presence)
+            {
+                var [online, text] = getPresenceInfo(context, presence_list, np_presence);
+                self.Presence.active = online;
+                self.Presence.Label_a.text = text;
+                self.Presence.Label.text = text;
+                self.Room.visible = false;
+
+                if (np_presence != nil)
+                {
+                    var room_text = OnlineRoomUtil::getRoomTypeString(np_presence["roomType"]);
+                    self.Room::Label.text = room_text;
+                    self.Room::Label_a.text = room_text;
+                    self.Room.visible = room_text != "";
+                }
+            }
+
+            method initialize(context, args, selected)
+            {
+                self.args = args;
+
+                var [self.user_profile, presence_list, np_presence] = args;
+                var user_id = user_profile["user_id"];
+
+                var nickname = checkNickName(context, user_profile);
+                self.Label.text = nickname;
+                self.Label_a.text = nickname;
+                self.Label_i.text = nickname;
+                self.ID.text = user_id;
+                self.ID_a.text = user_id;
+                self.ID_i.text = user_id;
+
+                var photo_id = user_profile["photo_id_avatar"];
+                setImage(self.Image::ImageFace, photo_id);
+                setFlagImage(self.Country, user_profile["country"]);
+
+                self.active0 = selected;
+                self.Presence.active0 = selected;
+                self.Room.active0 = selected;
+
+                initializePresence(context, presence_list, np_presence);
+            }
+
+            method on_activate(context)
+            {
+                self.active0 = true;
+                self.Presence.active0 = true;
+                self.Room.active0 = true;
+
+                var user_id = self.user_profile["user_id"];
+                ListMenu::ListWindow.setMain(context, "MyPage", user_id, self);
+            }
+
+            method onActivateCallback(context, presence_list, np_presence)
+            {
+                initializePresence(context, presence_list, np_presence);
+
+                if (self.args != nil)
+                {
+                    self.args[1] = presence_list;
+                    self.args[2] = np_presence;
+                }
+            }
+        }
+    }
+}

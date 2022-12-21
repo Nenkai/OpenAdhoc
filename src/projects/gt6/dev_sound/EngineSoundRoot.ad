@@ -1,0 +1,525 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module EngineSoundRoot
+{
+    static engine_sound = nil;
+    static engine_id = nil;
+    static muffler_type = nil;
+    static max_rpm = nil;
+    static modal_page;
+
+    hidden.visible = false;
+
+    class ToneRange
+    {
+        attribute min;
+        attribute max;
+        attribute center;
+
+        method __init__()
+        {
+            self.min = 0.0;
+            self.max = 0.0;
+            self.center = 0.0;
+        }
+    }
+
+    function open(context, id, type)
+    {
+        engine_id = id;
+        muffler_type = type;
+        modal_page = main::SequenceUtil::ModalPage(context, EngineSoundRoot);
+        modal_page.open();
+    }
+
+    function close(context)
+    {
+        if (modal_page != nil)
+        {
+            modal_page.close();
+            modal_page = nil;
+        }
+    }
+
+    function onInitialize(context)
+    {
+        var ctx = main::sound_context;
+        ctx.enable = true;
+        ctx.master_output_gain = 1.0;
+
+        ctx.setEffectorParameter("world_deq", [
+            "eq_enable" : false,
+            "comp_gain_max" : 0.0,
+            "loudness_det_lowcut_fc" : 0.0,
+            "output_gain" : 0.0,
+            "comp_ratio" : 1.0,
+            "playback_spl_gain" : 0.0,
+            "agc_target_level" : 0.0,
+            "agc_min_gain" : 0.0,
+            "agc_max_gain" : 0.0,
+        ]);
+
+        ctx.setEffectorParameter("world_dist", [
+            "dist_enable" : false,
+        ]);
+
+        main::race_sound.world_se_volume = 1.0;
+        main::race_sound.start = true;
+
+        if (engine_sound != nil)
+        {
+            engine_sound.stop();
+            engine_sound.remove();
+        }
+
+        engine_sound = EngineSoundGenerator(context, "%05d".format(engine_id), muffler_type, on_tick);
+        var maxrpm1 = get_max_rpm(engine_sound.getEngineSound().getEngineToneInfo());
+        var maxrpm2 = get_max_rpm(engine_sound.getEngineSound().getMufflerToneInfo());
+        max_rpm = maxrpm1 > maxrpm2 ? maxrpm1 : maxrpm2;
+        max_rpm = max_rpm.toFloat() + 2500.0;
+
+        engine_sound.setMaxRPM(max_rpm);
+
+        Graph::max_rpm.text = max_rpm.toInt().toString();
+
+        setup_graph(context, Graph::Engine::HBox, engine_sound.getEngineSound().getEngineToneInfo());
+        setup_graph(context, Graph::Muffler::HBox, engine_sound.getEngineSound().getMufflerToneInfo());
+
+        Info::EngineID::id.text = engine_id;
+        Info::MufflerType::type.text = muffler_type;
+
+        var ext = ".esgx";
+        var e_path = engine_sound.getEngineSound().engine_data_path + ext;
+        var m_path = engine_sound.getEngineSound().muffler_data_path + ext;
+
+        Info::EngineFile::label.text = "%s (%dK)".format(e_path, IO::File::GetFileSize(e_path) / 1024);
+        Info::MufflerFile::label.text = "%s (%dK)".format(m_path, IO::File::GetFileSize(m_path) / 1024);
+
+        Status::EngineVolume::slider.setup(context);
+        Status::EngineVolume::slider.decide_cb = on_engine_volume_changed;
+        
+        Status::MufflerVolume::slider.setup(context);
+        Status::MufflerVolume::slider.decide_cb = on_muffler_volume_changed;
+
+        Status::EnginePan::slider.setup(context);
+        Status::EnginePan::slider.decide_cb = on_engine_pan_changed;
+
+        Status::MufflerPan::slider.setup(context);
+        Status::MufflerPan::slider.decide_cb = on_muffler_pan_changed;
+
+        Status::EnginePan::slider2.setup(context);
+        Status::EnginePan::slider2.decide_cb = on_engine_dist_changed;
+
+        Status::MufflerPan::slider2.setup(context);
+        Status::MufflerPan::slider2.decide_cb = on_muffler_dist_changed;
+
+        context.cursor_visible = true;
+        EngineSoundRoot::ToolTip::tip.remove();
+    }
+
+    function on_tick(context, instance)
+    {
+        var h = Graph.h;
+        Graph::CurrentRPM.y = h - (h * instance.rpm_) / max_rpm;
+        Status::CurrentRPM::rpm.text = "%d rpm".format(instance.rpm_);
+    }
+
+    function on_engine_volume_changed(context, value)
+    {
+        engine_sound.setEngineVolume(value.toFloat() * 0.01);
+    }
+
+    function on_muffler_volume_changed(context, value)
+    {
+        engine_sound.setMufflerVolume(value.toFloat() * 0.01);
+    }
+
+    function on_engine_pan_changed(context, value)
+    {
+        engine_sound.getEngineSound().engine_pan = value.toFloat() / 90.0;
+    }
+
+    function on_muffler_pan_changed(context, value)
+    {
+        engine_sound.getEngineSound().muffler_pan = value.toFloat() / 90.0;
+    }
+
+    function on_engine_dist_changed(context, value)
+    {
+        engine_sound.getEngineSound().engine_distance = value.toFloat() / 100.0;
+    }
+
+    function on_muffler_dist_changed(context, value)
+    {
+        engine_sound.getEngineSound().muffler_distance = value.toFloat() / 100.0;
+    }
+
+    function update_volume_slider(context)
+    {
+        Status::EngineVolume::slider.index = (engine_sound.getEngineVolume() * 100.0 + 0.5).toInt();
+        Status::EngineVolume::slider.reflect(context);
+
+        Status::MufflerVolume::slider.index = (engine_sound.getMufflerVolume() * 100.0 + 0.5).toInt();
+        Status::MufflerVolume::slider.reflect(context);
+
+        Status::EnginePan::slider.index = (engine_sound.getEngineSound().engine_pan * 90.0).toInt();
+        Status::EnginePan::slider.reflect(context);
+
+        Status::MufflerPan::slider.index = (engine_sound.getEngineSound().muffler_pan * 90.0).toInt();
+        Status::MufflerPan::slider.reflect(context);
+
+        Status::EnginePan::slider2.index = (engine_sound.getEngineSound().engine_distance * 100.0).toInt();
+        Status::EnginePan::slider2.reflect(context);
+
+        Status::MufflerPan::slider2.index = (engine_sound.getEngineSound().muffler_distance * 100.0).toInt();
+        Status::MufflerPan::slider2.reflect(context);
+    }
+
+    function get_max_rpm(info)
+    {
+        if (info == nil || info.size == 0)
+            return 0;
+
+        var maxrpm = 0;
+
+        foreach (var i in info)
+        {
+            foreach (var j in i)
+            {
+                if (maxrpm < j["center_rpm"])
+                {
+                    maxrpm = j["center_rpm"];
+                }
+            }
+        }
+
+        return maxrpm;
+    }
+
+    function setup_graph(context, target, info)
+    {
+        target.clearChildren(context);
+        if (info == nil || info.size == 0)
+            return;
+
+        var ei = info;
+        var t0 = ei[0];
+
+        var range_list = [];
+        var lower_range = ToneRange();
+
+        for (var i = 0; i < t0.size; i++)
+        {
+            var range = ToneRange();
+            range.min = i > 0 ? t0[i - 1]["max_rpm"] : 0;
+            range.max = 99999;
+            range.center = t0[i]["center_rpm"];
+            range_list.push(range);
+
+            lower_range.max = t0[i]["min_rpm"];
+            lower_range = range;
+        }
+
+        var h = Graph::Engine::HBox.h;
+        for (var i = 0; i < range_list.size; i++)
+        {
+            var r = range_list[i];
+            var item = hidden::ToneElement.doCopy();
+            item["upper"].y = h - (h * r.max / max_rpm);
+            item["upper"].h = h - (h * r.center / max_rpm) - item["upper"].y;
+            item["lower"].y = h - (h * r.center / max_rpm);
+            item["lower"].h = h - (h * r.min / max_rpm) - item["lower"].y;
+
+            var center_pitch = t0[i]["center_pitch"].toFloat() / 4096.0;
+            var maxrpm = r.max == 99999 ? "" : r.max.toInt();
+            var max_pitch = r.max == 99999 ? "" : "%.3f".format((center_pitch * r.max.toFloat()) / r.center.toFloat());
+            var min_pitch = (center_pitch * r.min.toFloat()) / r.center.toFloat();
+            var volume = t0[i]["volume"].toFloat() / 16384.0;
+            var db = volume > 0.0 ? "%.1f".format(20.0 * Math::log10(volume)) : "-INF";
+            
+            item.defineStatic("tip", "rpm: %d - %d - %s, pitch: %.3f - %.3f - %s, volume: %.3f (%sdB)".format(r.min, r.center, maxrpm, min_pitch, center_pitch, max_pitch, volume, db));
+            target.appendChild(context, item);
+        }
+    }
+
+    function onFinalize(context)
+    {
+        if (engine_sound != nil)
+        {
+            engine_sound.stop();
+            engine_sound.remove();
+            engine_sound = nil;
+        }
+
+        engine_id = nil;
+        muffler_type = nil;
+        max_rpm = nil;
+
+        Graph::Engine::HBox.clearChildren(context);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    function onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_SELECT:
+                if (engine_sound != nil)
+                    engine_sound.stop();
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_L1:
+                if (engine_sound != nil)
+                {
+                    var es = engine_sound;
+                    var evol = es.getEngineVolume();
+                    var mvol = es.getMufflerVolume();
+                    var mode = (evol > 0.0 ? 1 : 0) + (mvol > 0.0 ? 2 : 0);
+                    mode++;
+
+                    if (mode > 3)
+                        mode = 1;
+
+                    switch (mode)
+                    {
+                        case 1:
+                            evol = 1.0;
+                            mvol = 0.0;
+                            break;
+
+                        case 2:
+                            evol = 0.0;
+                            mvol = 1.0;
+                            break;
+
+                        case 3:
+                            evol = 1.0;
+                            mvol = 1.0;
+                            break;
+                    }
+
+                    var fader = 0.5;
+
+                    es.setEngineVolume(evol * fader);
+                    es.setMufflerVolume(mvol * fader);
+                    update_volume_slider(context);
+                    return STATE_YIELD;
+                }
+
+            case CELL_PAD_CTRL_R1:
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    class EngineSoundGenerator
+    {
+        attribute watcher_;
+        attribute rpm_;
+        attribute max_rpm_;
+        attribute es_;
+        attribute callback_;
+        attribute engine_volume_;
+        attribute muffler_volume_;
+        
+        method __init__(context, id, type, callback)
+        {
+            self.watcher_ = main::menu::MScriptWatcher(context, on_tick);
+            self.watcher_.interval = 1;
+            self.watcher_.append();
+
+            self.es_ = main::pdiext::MEngineSound();
+            self.es_.engine_data_path = "/carsound/engine/" + id;
+            self.es_.muffler_data_path = "/carsound/" + type + "/" + id;
+            self.es_.allocate(500 * 1024);
+            self.es_.load();
+
+            setEngineVolume(0.5);
+            setMufflerVolume(0.5);
+
+            self.es_.engine_rpm = 1000.0;
+            self.es_.play();
+
+            self.rpm_ = 1000.0;
+            self.max_rpm_ = 12000.0;
+            self.callback_ = callback;
+
+            var info = self.es_.getEngineToneInfo();
+            foreach (var it1 in info)
+            {
+                foreach (var it2 in it1)
+                {
+
+                }
+            }
+
+            var muffler_info = self.es_.getMufflerToneInfo();
+        }
+
+        method remove()
+        {
+            self.watcher_.remove();
+            self.watcher_ = nil;
+        }
+
+        method stop()
+        {
+            self.es_.stop();
+        }
+
+        method on_tick(context)
+        {
+            var update_context = context.getUpdateContext();
+            var r1 = update_context.getPadButtonState(0) & 0x800;
+            var rx = update_context.getPadAnalogChannel(0, 0);
+            var ry = update_context.getPadAnalogChannel(0, 1);
+            ry = Math::clamp(Math::max(Math::abs(rx), Math::abs(ry)) * 1.2, 0.0, 1.0);
+            var minrpm = 500.0;
+            var target_rpm = minrpm + ry * (self.max_rpm_ - minrpm);
+            var mass = r1 ? 0.1 : 0.03;
+            var d = target_rpm - self.rpm_;
+            var s = d * mass;
+            
+            self.rpm_ = self.rpm_ + s;
+            self.es_.engine_rpm = self.rpm_;
+
+            if (self.callback_ != nil)
+                self.callback_(context, self);
+        }
+
+        method getEngineVolume()
+        {
+            return self.engine_volume_;
+        }
+
+        method getMufflerVolume()
+        {
+            return self.muffler_volume_;
+        }
+
+        method setEngineVolume(vol)
+        {
+            self.engine_volume_ = vol;
+            vol *= main::sound_context.sound_driver_volume_scale;
+            self.es_.engine_volume = vol;
+        }
+
+        method setMufflerVolume(vol)
+        {
+            self.muffler_volume_ = vol;
+            vol *= main::sound_context.sound_driver_volume_scale;
+            self.es_.muffler_volume = vol;
+        }
+
+        method getEngineSound()
+        {
+            return self.es_;
+        }
+
+        method setMaxRPM(rpm)
+        {
+            self.max_rpm_ = rpm;
+        }
+    }
+}
+
+module EngineSoundRoot::hidden::ToneElement
+{
+    function onFocusEnter(context, event)
+    {
+        var w = event.widget;
+        EngineSoundRoot::ToolTip::tip.value = w["tip"];
+        return STATE_YIELD;
+    }
+}
+
+module EngineSoundRoot::ToneInfoButton
+{
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+
+        var info = engine_sound.es_.getEngineToneInfo();
+        var desc = "Engine tone info:\n";
+        desc += tone_info_to_string(info);
+        DialogUtil::openConfirmDialog(context, DialogUtil::OK, desc);
+
+        info = engine_sound.es_.getMufflerToneInfo();
+        desc = "Muffler tone info:\n";
+        desc += tone_info_to_string(info);
+        DialogUtil::openConfirmDialog(context, DialogUtil::OK, desc);
+
+        return STATE_YIELD;
+    }
+
+    function tone_info_to_string(info)
+    {
+        var desc = "";
+        for (var i = 0; i < info.size; i++)
+        {
+            for (var j = 0; j < info[i].size; j++)
+            {
+                desc += "#%d/%d: ".format(i, j);
+                foreach (var k in info[i][j])
+                    desc += "%s:%d, ".format(k[0], k[1]);
+
+                desc = desc.substr(0, desc.size - 2);
+                desc += "\n";
+            }
+        }
+
+        desc = desc.substr(0, desc.size - 1);
+        return desc;
+    }
+}
+
+module EngineSoundRoot::CarInfoButton
+{
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+
+        var res = SPECDB.executeQuery("SELECT DISTINCT CarLabel FROM GENERIC_CAR INNER JOIN ENGINE e ON GENERIC_CAR.ID=e.UseCar WHERE e.soundnum=%d ORDER BY CarLabel"
+            .format(engine_id));
+
+        var list = [];
+        foreach (var row in res)
+            list.push(row[0]);
+
+        var desc = "Cars use this sound ID (%05d):\n".format(engine_id);
+        foreach (var i in list)
+            desc += i + "\n";
+
+        desc = desc.substr(0, desc.size - 1);
+        DialogUtil::openConfirmDialog(context, DialogUtil::OK, desc);
+        return STATE_YIELD;
+    }
+}
+
+module EngineSoundRoot::Status::EngineVolume
+{
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+        return STATE_YIELD;
+    }
+}

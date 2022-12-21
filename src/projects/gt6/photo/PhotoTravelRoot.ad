@@ -1,0 +1,2780 @@
+
+
+
+
+
+
+
+
+
+
+
+
+module PhotoTravelRoot
+{
+    static sPrevMode = 0;
+    static sMode = 0;
+    static sIsRacePhoto = false;
+
+    static sLocationBaseCode = nil;
+    static sLocationData = nil;
+    static sAdditionalProjects = nil;
+    static sLocationIndex = nil;
+    static sViewPointIndex = nil;
+    static sStartTakePhoto = false;
+    static isPhotoPreview = false;
+    static sOjectMoveMode = 0;
+    static sOrg_x = 0;
+    static sOrg_y = 0;
+    static sOrg_w = 0;
+    static sOrg_h = 0;
+    static sLoadedCarNum = 1;
+
+    static sSlowMode = false;
+    static sIsAELock = false;
+
+    static sCameraSetting = nil;
+    static sCarSetting = Array(2);
+    static sCarIsStandard = Array(2);
+    static sObjectSetting = nil;
+
+    static sAspectMode = 0;
+
+    static sAspects = [
+        [1620, 1080, nil, nil],
+        [1080, 1080, nil, nil],
+        [1570, 1080, nil, nil],
+        [1747, 1080, nil, nil],
+        [1920, 1080, nil, nil],
+        [1920, 192, 400, nil],
+        [152, 152, 400, nil],
+    ];
+
+    static GC = [160 / 255.0, 240 / 255.0, 145 / 255.0];
+    static RC = [200 / 255.0, 30 / 255.0, 30 / 255.0];
+    static SC = [30 / 255.0, 30 / 255.0, 30 / 255.0];
+
+    static sPrevReqSixAxisCompetitionChange = false;
+
+    static sButtonCircle = true;
+    static sCloseCB = nil;
+    static sStandardList = nil;
+    static sCourseLabel = nil;
+    static sTargetCP = nil;
+    static sDisableTakePhoto = false;
+    static sNoGarageCarMode = false;
+    
+    static sSelectCameraNum = 0;
+    static sSelectCameraMax = 1;
+
+    attribute sOrientation = 1;
+
+    static sRenderFace;
+
+    method open(context, location_base_code, race_photo, closeCB, standard_slot_list, course_label, target_car_cp, is_inPit)
+    {
+        if (main::GetVersionBranch() != "runviewer")
+            sLocationBaseCode = location_base_code;
+
+        if (is_inPit != nil && is_inPit)
+            self.isInPit = true;
+        else
+            self.isInPit = false;
+
+        if (closeCB != nil)
+            sCloseCB = closeCB;
+        
+        if (standard_slot_list != nil)
+            sStandardList = standard_slot_list;
+
+        sCourseLabel = course_label;
+
+        if (target_car_cp != nil)
+            sTargetCP = target_car_cp;
+        else
+            sTargetCP = main::GAME_STATUS.user_profile.garage.getRidingCar();
+
+        sCarIsStandard[0] = gtengine::MSpecDB::isStandardModel(sTargetCP.getCarCode());
+        sCarIsStandard[1] = false;
+
+        sDisableTakePhoto = false;
+        if (race_photo == nil)
+        {
+            sIsRacePhoto = false;
+            sRenderFace = SceneFace;
+            SequenceUtil::startPage(context, self);
+        }
+        else
+        {
+            sIsRacePhoto = true;
+            sRenderFace = RenderControl;
+            KeyValueUtil::set("career", "lets_takephoto", true);
+            execCommand("setWalkCameraStandardCaution false");
+            SequenceUtil::pushPage(context, PhotoTravelRoot);
+        }
+    }
+
+    method close(context)
+    {
+        if (!context.getUpdateContext().zoom_for_SD)
+            context.getUpdateContext().zoom_for_SD = true;
+
+        sLocationBaseCode = nil;
+        sLocationData = nil;
+        sLocationIndex = nil;
+        sViewPointIndex = nil;
+        sDisableTakePhoto = false;
+        execCommand("setWalkCameraStandardCaution false");
+
+        SceneFace.setSoundFader(false);
+
+        if (sCloseCB != nil)
+        {
+            sCloseCB(context);
+            sCloseCB = nil;
+        }
+
+        sStandardList = nil;
+        sCourseLabel = nil;
+        sTargetCP = nil;
+
+        if (sIsRacePhoto)
+            SequenceUtil::popPage(context, PhotoTravelRoot);
+        else
+            SequenceUtil::startProject(context, PhotoProject.history[$"PrevProject"], "photo");
+    }
+
+    method onLoad(update_context)
+    {
+        sAdditionalProjects = Map();
+    }
+
+    method onUnload(update_context)
+    {
+        unloadAllProjects();
+    }
+
+    method loadProject(project_name)
+    {
+        if (sAdditionalProjects[project_name] != nil)
+            return;
+
+        var project = main::manager.loadProject("/%{main::PROJECT_ROOT_DIR}/%{project_name}/%{project_name}");
+        sAdditionalProjects[project_name] = project;
+    }
+
+    method unloadAllProjects()
+    {
+        foreach (var pair in sAdditionalProjects)
+        {
+            var project = pair[1];
+            main::manager.unloadProject(project);
+        }
+
+        sAdditionalProjects.clear();
+        sAdditionalProjects = nil;
+    }
+
+    method execCommand(str, que, at_render)
+    {
+        if (sIsRacePhoto)
+        {
+            if (at_render != nil)
+            {
+                main::ORG.execCommand(str, que, at_render);
+            }
+            else if (que != nil)
+            {
+                main::ORG.execCommand(str, que);
+            }
+            else
+            {
+                main::ORG.execCommand(str);
+            }
+        }
+        else
+        {
+            SceneFace.execCommand(str);
+        }
+    }
+
+    method isUnderSetup()
+    {
+        if (sIsRacePhoto)
+            return false;
+        else 
+            return SceneFace.isUnderPhotoRendering();
+    }
+
+    method isUnderPhotoRendering()
+    {
+        if (sIsRacePhoto)
+            return main::ORG.isUnderPhotoRendering();
+        else
+            return SceneFace.isUnderPhotoRendering();
+    }
+    
+    method isUnderPhotoEncoding()
+    {
+        if (sIsRacePhoto)
+            return main::ORG.isUnderPhotoEncoding();
+        else
+            return SceneFace.isUnderPhotoEncoding();
+    }
+
+    method isUnderPhotoExitWait()
+    {
+        if (sIsRacePhoto)
+            return main::ORG.isUnderPhotoExitWait();
+        else
+            return SceneFace.isUnderPhotoExitWait();
+    }
+
+    method getPhotoProgress()
+    {
+        if (sIsRacePhoto)
+            return main::ORG.getPhotoProgress();
+        else
+            return SceneFace.getPhotoProgress();
+    }
+
+    method getCommandTarget()
+    {
+        if (sIsRacePhoto)
+            return ORG;
+        else
+            return SceneFace;
+    }
+
+    method isNoGarageCarMode()
+    {
+        return sNoGarageCarMode;
+    }
+
+    method isAvatarAvailable()
+    {
+        var avatar_count = SceneFace.getReserveCount("avatar");
+        if (avatar_count > 0)
+            return true;
+        else
+            return false;
+    }
+
+    method isAvatarEnable()
+    {
+        if (isAvatarAvailable() && main::GAME_STATUS.user_profile.option.photo_avatar_visible)
+            return true;
+        else
+            return false;
+    }
+
+    function half_adjust(value, adjust)
+    {
+        return value + (value >= 0.0 ? adjust : -adjust);
+    }
+
+    static prev_ev = 0;
+    static prev_focal_int = 0;
+
+    method refreshCameraInfo(context)
+    {
+        var cam;
+        if (sIsRacePhoto)
+            cam = main::ORG.getCameraParameters();
+        else
+            cam = SceneFace.getCameraParameters();
+
+        var focal = half_adjust(cam["mm"], 0.5);
+
+        ShapeRefresh(FramingMode::Frame::mm::mm::numShape, 3, focal.toInt());
+        ShapeRefresh(FramingMode::Frame::Shutter::Shutter::numShape, 4, cam["shutter_speed"].toInt());
+        ShapeRefresh(FramingMode::Frame::F::F::numShape, 2, cam["f_value"].toInt() / 10);
+        ShapeRefresh(FramingMode::Frame::F::F::numShape_under, 1, cam["f_value"] % 10);
+
+        var ev = cam["exposure_correct"];
+        if (prev_ev != ev)
+        {
+            sIsAELock = false;
+            execCommand("enableFlags autoexposure");
+        }
+
+        prev_ev = ev;
+        if (ev >= 0)
+        {
+            ShapeRefresh(FramingMode::Frame::EV::EV::numShape, 1, ev / 10);
+            ShapeRefresh(FramingMode::Frame::EV::EV::numShape_under, 1, ev % 10);
+            FramingMode::Frame::EV::plus_minus.text = "+";
+        }
+        else
+        {
+            ShapeRefresh(FramingMode::Frame::EV::EV::numShape, 1, -ev / 10);
+            ShapeRefresh(FramingMode::Frame::EV::EV::numShape_under, 1, -ev % 10);
+            FramingMode::Frame::EV::plus_minus.text = "-";
+        }
+
+        var r_col = main::menu::MColorObject(RC[0], RC[1], RC[2]);
+        var g_col = main::menu::MColorObject(GC[0], GC[1], GC[2]);
+        var s_col = main::menu::MColorObject(SC[0], SC[1], SC[2]);
+        var mode = cam["value_mode"];
+
+        var gg_col = [GC[0], GC[1], GC[2], 1.0];
+        var rr_col = [RC[0], RC[1], RC[2], 1.0];
+
+        var target_x = 0;
+        var target_w = 0;
+
+        if (mode == main::gtengine::PhotoCameraValueType::FVALUE)
+        {
+            FramingMode::Frame::F_arrow.visible = true;
+            target_x = 1030;
+            target_w = 104;
+        }
+        else
+        {
+            FramingMode::Frame::F_arrow.visible = false;
+        }
+
+        if (mode == main::gtengine::PhotoCameraValueType::SHUTTER)
+        {
+            FramingMode::Frame::Shutter_arrow.visible = true;
+            target_x = 827;
+            target_w = 178;
+        }
+        else
+        {
+            FramingMode::Frame::Shutter_arrow.visible = false;
+        }
+
+        if (mode == main::gtengine::PhotoCameraValueType::EV)
+        {
+            FramingMode::Frame::EV_arrow.visible = true;
+            target_x = 1157;
+            target_w = 124;
+        }
+        else
+        {
+            FramingMode::Frame::EV_arrow.visible = false;
+        }
+
+        FramingMode::Frame::Shutter_hover.ScalarInterpolatorX.setStartValue(0, FramingMode::Frame::Shutter_hover.x);
+        FramingMode::Frame::Shutter_hover.ScalarInterpolatorW.setStartValue(0, FramingMode::Frame::Shutter_hover.w);
+        FramingMode::Frame::Shutter_hover.ScalarInterpolatorX.setEndValue(0, target_x);
+        FramingMode::Frame::Shutter_hover.ScalarInterpolatorW.setEndValue(0, target_w);
+        FramingMode::Frame::Shutter_hover.ScalarInterpolatorX.restart();
+        FramingMode::Frame::Shutter_hover.ScalarInterpolatorW.restart();
+
+        if (sIsAELock)
+        {
+            FramingMode::Frame::Texture_AE_Lock.setColor(g_col);
+            FramingMode::Frame::Texture_AE_Lock.opacity = 1.0;
+        }
+        else
+        {
+            FramingMode::Frame::Texture_AE_Lock.setColor(s_col);
+            FramingMode::Frame::Texture_AE_Lock.opacity = 0.4;
+        }
+
+        if (sCameraSetting.output_3d)
+        {
+            FramingMode::Frame::Texture_FormatJPEG.visible = false;
+            FramingMode::Frame::Texture_Format3DMPO.visible = true;
+        }
+        else
+        {
+            FramingMode::Frame::Texture_FormatJPEG.visible = true;
+            FramingMode::Frame::Texture_Format3DMPO.visible = false;
+        }
+
+        if (sCameraSetting.output_size)
+        {
+            FramingMode::Frame::Texture_Scalex1.visible = false;
+            FramingMode::Frame::Texture_Scalex2.visible = true;
+        }
+        else
+        {
+            FramingMode::Frame::Texture_Scalex1.visible = true;
+            FramingMode::Frame::Texture_Scalex2.visible = false;
+        }
+
+        var rate = (cam["fovy"] - 2.7) / 78.35033;
+        FramingMode::TW_Slider::TW_Slider_Marker.y = FramingMode::TW_Slider::TW_Slider_BG.y + (
+            FramingMode::TW_Slider::TW_Slider_BG.h * rate) - 3;
+        FramingMode::TW_Slider::numShape.y = FramingMode::TW_Slider::TW_Slider_Marker.y - 14;
+        ShapeRefresh(FramingMode::TW_Slider::numShape, 3, focal.toInt());
+
+        if (prev_focal_int != focal.toInt())
+        {
+            FramingMode::TW_Slider.ScalarInterpolator.reverse = false;
+            FramingMode::TW_Slider.ScalarInterpolator.restart();
+        }
+
+        prev_focal_int = focal;
+
+        var aspect_texts = ["ASPECT_2_3", "ASPECT_1_1", "ASPECT_1_1.4", "ASPECT_1_1.6", "ASPECT_9_16", "ASPECT_BANNAR", "ASPECT_AVATAR"];
+        FramingMode::HeaderInfo::HBox::aspect::TextFace0.text = context.translate(PhotoTravelRoot, "PhotoMode", aspect_texts[sCameraSetting.aspect]);
+
+        var effect_texts = ["FILTER_OFF", "FILTER_MONO", "FILTER_HARD_MONO", "FILTER_SEPIA", "FILTER_COOL", "FILTER_WARM", "FILTER_CROSSPROCESS", "FILTER_CROSSPROCESS2", "FILTER_CROSSPROCESS3", "FILTER_MINIATURE", "FILTER_PARTCOLOR"];
+        FramingMode::HeaderInfo::HBox::effect::TextFace0.text = context.translate(PhotoTravelRoot, "PhotoMode", effect_texts[sCameraSetting.filter]);
+
+        if (sIsRacePhoto)
+        {
+            var follow_texts = ["TARGET_FOLLOW_MODE1", "TARGET_FOLLOW_MODE2", "TARGET_FOLLOW_MODE3"];
+            FramingMode::HeaderInfo::HBox::FollowShot::TextFace0.text = context.translate(PhotoTravelRoot, "PhotoMode", follow_texts[sCameraSetting.camera_follow]);
+
+            FramingMode::HeaderInfo::HBox::FollowShot.visible = true;
+        }
+        else
+        {
+            FramingMode::HeaderInfo::HBox::FollowShot.visible = false;
+        }
+    }
+
+    attribute sWatcher = nil;
+    attribute isInPit = false;
+
+    method onInitialize(context)
+    {
+        hidden.visible = false;
+        sMode = 0;
+        sViewPointIndex = 0;
+        sSlowMode = false;
+        sIsAELock = false;
+
+        if (self.isInPit)
+            sSelectCameraNum = 1;
+        else
+            sSelectCameraNum = 0;
+
+        ORG.setWalkCameraMount(sSelectCameraNum);
+
+        var assign = main::pdiext::MSystemConfiguration::GetEnterButtonAssign();
+        sButtonCircle = true;
+
+        if (assign != "circle")
+            sButtonCircle = false;
+
+        if (sIsRacePhoto)
+        {
+            RenderControl.begin(main::ORG);
+            RenderControl.visible = true;
+        }
+        else
+        {
+            RenderControl.visible = false;
+        }
+
+        ShapeInit(FramingMode::TW_Slider::numShape);
+        WalkMode::ButtonHelp::Pane::Buttons::Aim::Circle.visible = sButtonCircle;
+        WalkMode::ButtonHelp::Pane::Buttons::Aim::Cross.visible = !sButtonCircle;
+
+        WalkMode::ButtonHelp::Pane::Buttons::Back::Circle.visible = !sButtonCircle;
+        WalkMode::ButtonHelp::Pane::Buttons::Back::Cross.visible = sButtonCircle;
+
+        WalkMode::CarSettingHelp::Pane::Buttons::Back::Circle.visible = !sButtonCircle;
+        WalkMode::CarSettingHelp::Pane::Buttons::Back::Cross.visible = sButtonCircle;
+
+        FramingMode::ButtonHelp::Right::Buttons::Back::Circle.visible = !sButtonCircle;
+        FramingMode::ButtonHelp::Right::Buttons::Back::Cross.visible = sButtonCircle;
+
+        FramingMode::ButtonHelp::Right::Buttons::Shoot::Circle.visible = sButtonCircle;
+        FramingMode::ButtonHelp::Right::Buttons::Shoot::Cross.visible = !sButtonCircle;
+
+        FramingMode::CarSettingHelp::Pane::Buttons::Back::Circle.visible = !sButtonCircle;
+        FramingMode::CarSettingHelp::Pane::Buttons::Back::Cross.visible = sButtonCircle;
+
+        AfterShootingHelp::Pane_new::Buttons::Save::Circle.visible = sButtonCircle;
+        AfterShootingHelp::Pane_new::Buttons::Save::Cross.visible = !sButtonCircle;
+
+        AfterShootingHelp::Pane_new::Buttons::Back::Circle.visible = !sButtonCircle;
+        AfterShootingHelp::Pane_new::Buttons::Back::Cross.visible = sButtonCircle;
+
+        ViewPointSelect::ButtonHelp_new::Pane::Buttons::Circle::Circle.visible = sButtonCircle;
+        ViewPointSelect::ButtonHelp_new::Pane::Buttons::Circle::Cross.visible = !sButtonCircle;
+
+        ViewPointSelect::ButtonHelp_new::Pane::Buttons::Back::Circle.visible = !sButtonCircle;
+        ViewPointSelect::ButtonHelp_new::Pane::Buttons::Back::Cross.visible = sButtonCircle;
+
+        FramingMode::ButtonHelp::Right::Buttons::Select.visible = !sIsRacePhoto;
+
+        sLocationData = PhotoModeUtil::getLocationData();
+        if (!sIsRacePhoto)
+            SceneFace.allocateSnapshotMemory(1024 * 1024 * 10);
+        
+        context.pushEvent(main::menu::MScriptEvent(context, PhotoTravelRoot, "on_initialize"));
+        var d_option = main::GAME_STATUS.user_profile.context.saved_driving_option[0];
+
+        sCameraSetting = PhotoCameraSettingRoot::Data(getCommandTarget(), PhotoTravelRoot, 8.0, 200.0, 0.0, 5.0, 50.0, 0,
+            0, 0, 1, 0, 0, 0, d_option.cam_y_inverse, 0);
+
+        if (sIsRacePhoto && PhotoProject.history[$"filter"] != nil)
+            sCameraSetting.popHistory(PhotoProject.history);
+
+        var g_array = [GAME_STATUS.user_profile.garage.getRidingGarageId(), nil, nil, nil];
+        sObjectSetting = PhotoObjectSettingRoot::Data(getCommandTarget(), PhotoTravelRoot, sViewPointIndex, 1, g_array);
+
+        context.cursor_visible = false;
+        FramingMode.visible = false;
+        WalkMode.visible = false;
+        DemoTitle.visible = false;
+        HeaderFooter.visible = false;
+        ScrollText.visible = false;
+        Switching_BG.visible = false;
+        Switching_BG_RacePhoto.visible = false;
+        Alert.visible = false;
+        AfterShootingHelp.visible = false;
+        ViewPointSelect.visible = false;
+
+        refreshCameraInfo(context);
+
+        sCarSetting[0] = PhotoCarSettingRoot::Data(getCommandTarget(), 0, 0, 0, PhotoTravelRoot);
+        sCarSetting[1] = PhotoCarSettingRoot::Data(getCommandTarget(), 0, 0, 0, PhotoTravelRoot);
+
+        sOrientation = 1;
+
+        changeAspect(context, -1, 0);
+
+        self.sWatcher = WatcherUtil::Create(context, onTick);
+
+        main::menu::FrameInterval = 2;
+
+        if (!sIsRacePhoto)
+            ORG.setEnableStereoRendering(true);
+
+        return STATE_YIELD;
+    }
+
+    method on_initialize(context)
+    {
+        if (sIsRacePhoto)
+        {
+            sLocationIndex = 0;
+            SceneFace.visible = false;
+            ViewPointSelect.visible = false;
+
+            var cam = main::ORG.getCameraParameters();
+            if (self.isInPit)
+                sSelectCameraNum = 1;
+            else
+                sSelectCameraNum = 0;
+
+            sSelectCameraMax = cam["selectable_num"];
+            setRacePhotoWalkVisible();
+        }
+        else
+        {
+
+            SceneFace.visible = true;
+
+            if (!loadLocation(context))
+            {
+                close(context);
+                return;
+            }
+
+            SoundUtil::BGMFadeout(3.0);
+            SoundUtil::SetupSound(SoundUtil::SCENE_PHOTO);
+        }
+
+        PhotoTravelRoot.setFocus(PhotoTravelRoot);
+        execCommand("setAAmode recommend");
+        execCommand("selectCurrentCamera generic");
+
+        var d_option = main::GAME_STATUS.user_profile.context.saved_driving_option[0];
+        if (d_option.cam_y_inverse)
+            execCommand("setWalkCamreaYInverse true");
+        else
+            execCommand("setWalkCamreaYInverse false");
+
+        var capture_cmd = "setScreenShotPath /app_home/preview/capture/%s".format(main::pdistd::SysParamCurrentUserName());
+        execCommand(capture_cmd);
+
+        if (sIsRacePhoto)
+            execCommand("pushPhotoEffectParameter")
+        else
+            execCommand("loadTexture //crs/race.txs  shared_tex");
+
+        if (sIsRacePhoto)
+            changeMode(context, 3);
+        else
+            changeMode(context, 1);
+    }
+
+    function getCarSize()
+    {
+        var size = 0.0;
+        if (sIsRacePhoto)
+        {
+            if (sStandardList != nil && sStandardList.size > 0)
+            {
+                size = ORG.getCarLODSize(sStandardList);
+            }
+        }
+        else 
+        {
+            if (sCarIsStandard[0])
+                size = SceneFace.getCarEntityLODSize("car0");
+            
+            if (sLoadedCarNum > 1 && sCarIsStandard[1])
+            {
+                var car1_size = SceneFace.getCarEntityLODSize("car1");
+                if (size < car1_size)
+                    size = car1_size;
+            }
+        }
+
+        return size;
+    }
+
+    method onTick(context)
+    {
+        var cam;
+        if (sIsRacePhoto)
+            cam = main::ORG.getCameraParameters();
+        else
+            cam = SceneFace.getCameraParameters();
+
+        if (sMode == 4 && !sStartTakePhoto)
+            refreshCameraInfo(context);
+    }
+
+    method onObjectSetting(context)
+    {
+        main::sound.play("ok");
+
+        LeaveDetectUtil::suspend(context);
+
+        sObjectSetting.view_point_index = sViewPointIndex;
+
+        var xes_map = sLocationData[sLocationIndex]["xes_map_array"];
+        sObjectSetting.car_num = xes_map[sViewPointIndex]["car_place_size"];
+
+        PhotoObjectSettingRoot.open(context, &sObjectSetting);
+
+        sLoadedCarNum = 0;
+
+        foreach (var id in sObjectSetting.garage_ids)
+        {
+            if (id != nil)
+                sLoadedCarNum++;
+        }
+
+        LeaveDetectUtil::resume(context);
+        context.cursor_visible = false;
+
+        execCommand("setCurrentModel  car0");
+        sOjectMoveMode = 0;
+
+        return STATE_YIELD;
+    }
+
+    method onCarSetting(context)
+    {
+        main::sound.play("ok");
+
+        var idx = sOjectMoveMode;
+
+        LeaveDetectUtil::suspend(context);
+        PhotoCarSettingRoot.open(context, &sCarSetting[idx]);
+        LeaveDetectUtil::resume(context);
+
+        context.cursor_visible = false;
+        return STATE_YIELD;
+    }
+
+    static originalW;
+    static offsetNow = 0;
+
+    method finderSliderToLeft(context, at_walk_base)
+    {
+        disableTakePhotoAtFramingStart = true;
+
+        var offset = 147;
+        if (sIsRacePhoto)
+            offset = 0;
+
+        var at_walk = false;
+        if (at_walk_base != nil)
+            at_walk = at_walk_base;
+
+        sRenderFace.WindowInterpolator.setStartValue(0, [sRenderFace.x, sRenderFace.y]);
+        sRenderFace.SizeInterpolator.setStartValue(0, [sRenderFace.w, sRenderFace.h]);
+
+        if (at_walk)
+        {
+            offset = 420;
+            sRenderFace.WindowInterpolator.setEndValue(0, [0, sRenderFace.y]);
+            sRenderFace.SizeInterpolator.setEndValue(0, [sRenderFace.w - offset, sRenderFace.h]);
+        }
+        else
+        {
+            sRenderFace.WindowInterpolator.setEndValue(0, [-offset, sRenderFace.y]);
+        }
+
+        offsetNow = offset;
+
+        originalW = Framing::ColorFaceL.w;
+        Framing::ColorFaceL.ScalarInterpolator.setStartValue(0, Framing::ColorFaceL.w);
+        Framing::ColorFaceR.ScalarInterpolator.setStartValue(0, Framing::ColorFaceR.w);
+        Framing::ColorFaceL.ScalarInterpolator.setEndValue(0, originalW - offset);
+
+        if (at_walk)
+            Framing::ColorFaceR.ScalarInterpolator.setEndValue(0, 426);
+        else
+            Framing::ColorFaceR.ScalarInterpolator.setEndValue(0, originalW + offset);
+
+        FramingMode.WindowInterpolator.setStartValue(0, [FramingMode.x, FramingMode.y]);
+        FramingMode.WindowInterpolator.setEndValue(0, [-offset, FramingMode.y]);
+
+        FramingMode::ButtonHelp.ScalarInterpolator.reverse = false;
+        FramingMode::ButtonHelp.ScalarInterpolator.restart();
+
+        Framing::ColorFaceL.ScalarInterpolator.restart();
+        Framing::ColorFaceR.ScalarInterpolator.restart();
+
+        sRenderFace.WindowInterpolator.restart();
+
+        sRenderFace.SizeInterpolator.restart();
+        FramingMode.WindowInterpolator.restart();
+
+        WalkMode::CarSettingHelp::Pane::Buttons::LS.visible = false;
+        WalkMode::CarSettingHelp::Pane::Buttons::RS.visible = false;
+        WalkMode::CarSettingHelp::Pane::Buttons::Start.visible = false;
+        WalkMode::CarSettingHelp::Pane::Buttons::Tri.visible = false;
+        FramingMode::CarSettingHelp::Pane::Buttons::LS.visible = false;
+        FramingMode::CarSettingHelp::Pane::Buttons::RS.visible = false;
+        FramingMode::CarSettingHelp::Pane::Buttons::Start.visible = false;
+        FramingMode::CarSettingHelp::Pane::Buttons::Tri.visible = false;
+    }
+
+    method finderSliderToRight(context, at_walk)
+    {
+        offsetNow = 0;
+        sRenderFace.WindowInterpolator.setStartValue(0, [sRenderFace.x, sRenderFace.y]);
+        sRenderFace.WindowInterpolator.setEndValue(0, [0, sRenderFace.y]);
+
+        sRenderFace.SizeInterpolator.setStartValue(0, [sRenderFace.w, sRenderFace.h]);
+        sRenderFace.SizeInterpolator.setEndValue(0, [1920, sRenderFace.h]);
+
+        Framing::ColorFaceL.ScalarInterpolator.setStartValue(0, Framing::ColorFaceL.w);
+        Framing::ColorFaceR.ScalarInterpolator.setStartValue(0, Framing::ColorFaceR.w);
+
+        Framing::ColorFaceL.ScalarInterpolator.setEndValue(0, originalW);
+        Framing::ColorFaceR.ScalarInterpolator.setEndValue(0, originalW);
+
+        FramingMode.WindowInterpolator.setStartValue(0, [FramingMode.x, FramingMode.y]);
+        FramingMode.WindowInterpolator.setEndValue(0, [0, FramingMode.y]);
+
+        FramingMode::ButtonHelp.ScalarInterpolator.reverse = true;
+        FramingMode::ButtonHelp.ScalarInterpolator.restart();
+
+        Framing::ColorFaceL.ScalarInterpolator.restart();
+        Framing::ColorFaceR.ScalarInterpolator.restart();
+
+        FramingMode.WindowInterpolator.restart();
+
+        sRenderFace.SizeInterpolator.restart();
+        sRenderFace.WindowInterpolator.restart();
+        
+        sRenderFace.WindowInterpolator.on_effect_end = function(context)
+        {
+            disableTakePhotoAtFramingStart = false;
+            sRenderFace.WindowInterpolator.on_effect_end = nil;
+        }
+
+        WalkMode::CarSettingHelp::Pane::Buttons::LS.visible = true;
+        WalkMode::CarSettingHelp::Pane::Buttons::RS.visible = true;
+        WalkMode::CarSettingHelp::Pane::Buttons::Start.visible = true;
+        WalkMode::CarSettingHelp::Pane::Buttons::Tri.visible = true;
+        FramingMode::CarSettingHelp::Pane::Buttons::LS.visible = true;
+        FramingMode::CarSettingHelp::Pane::Buttons::RS.visible = true;
+        FramingMode::CarSettingHelp::Pane::Buttons::Start.visible = true;
+        FramingMode::CarSettingHelp::Pane::Buttons::Tri.visible = true;
+    }
+
+    method onCameraSetting(context, noMenuAction)
+    {
+        main::sound.play("ok");
+
+        if (noMenuAction == nil)
+            PhotoTravelRoot.menuHideActionWithVeil(context);
+
+        var cam = getCommandTarget().getCameraParameters();
+        sCameraSetting.f_value = cam["f_value"] / 10.0;
+        sCameraSetting.shutter_speed = cam["shutter_speed"];
+        sCameraSetting.ev = cam["exposure_correct"] / 10.0;
+        sCameraSetting.focus = cam["target_length"];
+        sCameraSetting.mm = cam["mm"];
+
+        LeaveDetectUtil::suspend(context);
+
+        var nomove = false;
+        if (sSelectCameraNum != 0)
+            nomove = true;
+
+        var standard_limit = false;
+        if (sDisableTakePhoto)
+            standard_limit = true;
+
+        finderSliderToLeft(context);
+
+        PhotoCameraSettingRoot.open(context, &sCameraSetting, sIsRacePhoto, nomove, standard_limit);
+
+        finderSliderToRight(context);
+
+        LeaveDetectUtil::resume(context);
+
+        if (noMenuAction == nil)
+            PhotoTravelRoot.menuAppearAction(context);
+        else
+            context.cursor_visible = false;
+
+        return STATE_YIELD;
+    }
+
+    method onLocationSetting(context)
+    {
+        main::sound.play("ok");
+        return STATE_YIELD;
+    }
+
+    method onExit(context)
+    {
+        main::sound.play("ok");
+        close(context);
+
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        WatcherUtil::Delete(self.sWatcher);
+        self.sWatcher = nil;
+
+        SceneFaceUtil::SetWaitSceneFace(context, nil);
+
+        sSlowMode = false;
+
+        main::menu::FrameInterval = 1;
+
+        if (!sIsRacePhoto)
+            ORG.setEnableStereoRendering(false);
+
+        if (sIsRacePhoto)
+        {
+            sCameraSetting.pushHistory(PhotoProject.history);
+            RenderControl.end(main::ORG);
+        }
+
+        return STATE_YIELD;
+    }
+
+    method startSwitchingFade(context, no_need_icon)
+    {
+        Switching_BG::ScalarInterpolator.reverse = false;
+        Switching_BG::ScalarInterpolator.start();
+
+        Switching_BG::BG::Stripe::ScalarInterpolator.reverse = false;
+        Switching_BG::BG::Stripe::ScalarInterpolator.start();
+
+        Switching_BG.visible = true;
+        context.sync(0.15);
+    }
+
+    method endSwitchingFade(context)
+    {
+        Switching_BG::ScalarInterpolator.reverse = true;
+        Switching_BG::ScalarInterpolator.start();
+
+        Switching_BG::BG::Stripe::ScalarInterpolator.reverse = true;
+        Switching_BG::BG::Stripe::ScalarInterpolator.start();
+    }
+
+    method startRaceSwitchingFade(context)
+    {
+        Switching_BG_RacePhoto::ScalarInterpolator.reverse = false;
+        Switching_BG_RacePhoto::ScalarInterpolator.start();
+
+        Switching_BG_RacePhoto::BG::Stripe::ScalarInterpolator.reverse = false;
+        Switching_BG_RacePhoto::BG::Stripe::ScalarInterpolator.start();
+
+        Switching_BG_RacePhoto.visible = true;
+
+        context.sync(0.15);
+    }
+
+    method endRaceSwitchingFade(context)
+    {
+        Switching_BG_RacePhoto::ScalarInterpolator.reverse = true;
+        Switching_BG_RacePhoto::ScalarInterpolator.start();
+
+        Switching_BG_RacePhoto::BG::Stripe::ScalarInterpolator.reverse = true;
+        Switching_BG_RacePhoto::BG::Stripe::ScalarInterpolator.start();
+    }
+
+    function check_end_encoding_func(context)
+    {
+        while (PhotoTravelRoot.isUnderPhotoEncoding())
+            pdiext::ProcessUpdateIteration();
+
+        return 1;
+    }
+
+    function check_end_encoding_progress_func(context)
+    {
+        while (PhotoTravelRoot.isUnderPhotoRendering())
+        {
+            var progress = DialogUtil::getProgress(context);
+            progress.value = PhotoTravelRoot.getPhotoProgress();
+        }
+
+        isPhotoPreview = true;
+
+        Alert.visible = false;
+        FramingMode.visible = false;
+        Framing.visible = false;
+
+        while (PhotoTravelRoot.isUnderPhotoEncoding())
+        {
+            var progress = DialogUtil::getProgress(context);
+            progress.value = PhotoTravelRoot.getPhotoProgress();
+        }
+
+        return [true, true];
+    }
+
+    static sPhotoProgress = main::pdistd::MProgress();
+
+    method takePhoto(context)
+    {
+        if (disableTakePhotoAtFramingStart)
+            return;
+
+        var space = pdistd::GetDiskFreeSize("/APP_DATA");
+        if (space < 32 * 1024 * 1024) // 32 MB
+        {
+            pdistd::MSystemDialog::abortDiskFull(32 * 1024, false);
+            return;
+        }
+
+        if (sCameraSetting.output_3d && sCameraSetting.output_size > 0)
+        {
+            if (!DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, context.translate(PhotoTravelRoot, "PhotoMode", "DO_YOU_TAKE_PHOTO_AT_3DX2")))
+                return;
+        }
+
+        main::sound.play("shutter00");
+
+        sStartTakePhoto = true;
+
+        GAME_STATUS.user_profile.total_photo_count++;
+
+        var w, h;
+        getAspectWH(&w, &h);
+        adjustWidthIfVertical(&w, &h);
+
+        sOrg_x = sRenderFace.x;
+        sOrg_y = sRenderFace.y;
+        sOrg_w = sRenderFace.w;
+        sOrg_h = sRenderFace.h;
+
+        shutterDownEffect();
+
+        context.sync(0.1);
+
+        sRenderFace.x = 0;
+        sRenderFace.y = 0;
+        sRenderFace.w = 1920;
+        sRenderFace.h = 1080;
+
+        execCommand("setScreenShotSubFrame 128");
+
+        if (sCameraSetting.output_3d)
+            execCommand("setScreenShotImageFormat 4");
+        else
+            execCommand("setScreenShotImageFormat 0");
+
+        var size_cmd = "setScreenShotDivision %d %d".format(sCameraSetting.output_size + 1, sCameraSetting.output_size + 1);
+        execCommand(size_cmd);
+
+        switch (sCameraSetting.camera_follow)
+        {
+            case 0:
+                execCommand("setCaptureCameraFollowType false false");
+                break;
+
+            case 1:
+                execCommand("setCaptureCameraFollowType true true");
+                break;
+
+            case 2:
+                execCommand("setCaptureCameraFollowType true false");
+                break;
+        }
+
+        var xes_map = sLocationData[sLocationIndex]["xes_map_array"];
+        var photo_desc = "%s-%s".format(sLocationData[sLocationIndex]["base_name"], xes_map[sViewPointIndex]["name"]);
+        if (sIsRacePhoto)
+            photo_desc = "RacePhoto";
+
+        var course_name = "-";
+        var car_name = "-";
+        var user_name = "-";
+
+        var width, height;
+        getAspectWH(&width, &height);
+
+        if (sCameraSetting.output_size)
+        {
+            width += width;
+            height += height;
+        }
+
+        context.sync();
+
+        execCommand("enableWalkCameraControl 0");
+
+        var orientation = calculateOrientation(context);
+        sOrientation = orientation;
+
+        execCommand("takePhoto  %d %d %s %s %s %s %d".format(width, height, photo_desc, user_name, course_name, car_name, orientation));
+        
+        context.sync(0.1);
+
+        if (sCameraSetting.output_size > 0 || sCameraSetting.output_3d)
+        {
+            sPhotoProgress.value = 0.0;
+            DialogUtil::setProgress(context, sPhotoProgress);
+            DialogUtil::openProgressDialog(context, 
+                context.translate(PhotoTravelRoot, "PhotoMode", "WAIT"),
+                nil, 
+                nil,
+                check_end_encoding_progress_func,
+                nil, 
+                nil,
+                nil);
+        }
+        else
+        {
+            appearGTLogo(context);
+
+            while (isUnderPhotoRendering())
+                pdiext::ProcessUpdateIteration();
+
+            isPhotoPreview = true;
+            Alert.visible = false;
+            FramingMode.visible = false;
+            Framing.visible = false;
+
+            hideGTLogo(context);
+
+            while (isUnderPhotoEncoding())
+                pdiext::ProcessUpdateIteration();
+        }
+
+        context.filterKeyEvent();
+        
+        AfterShootingHelp::ScalarInterpolator.reverse = false;
+        AfterShootingHelp::ScalarInterpolator.restart();
+
+        AfterShootingHelp::Pane::ScalarInterpolator.reverse = false;
+        AfterShootingHelp::Pane::ScalarInterpolator.restart();
+ 
+        AfterShootingHelp.visible = true;
+
+        LeaveDetectUtil::begin(context, 3, self, self.onLeaveDetectToHideMenu, self.onActivateDetectToAppearMenu, true);
+    }
+
+    // Wat
+    function every_true_func(context)
+    {
+        return 1;
+    }
+
+    method savePhotoFile(context)
+    {
+        var data = PhotoFileUtil::Data();
+        var st = main::pdistd::GetFileStatus(main::ORG.photo_org_path);
+        var st_t = main::pdistd::GetFileStatus(main::ORG.photo_thumb_path);
+
+        if (st["result"] == 0 && st_t["result"] == 0)
+        {
+            data.filesize = st["size"];
+            data.filesize_t = st_t["size"];
+            data.id = 0;
+
+            if (sIsRacePhoto)
+            {
+                data.genre = PhotoFileUtil::GENRE::PHOTO_RACE;
+
+                var rp = main::ORG.getCurrentRaceParameter();
+                var course_code = gtengine::MSpecDB::getCourseCode(sCourseLabel);
+                if (course_code == gtengine::COURSE_CODE_GENERATED)
+                    course_code = rp.scenery_code;
+
+                var courseInfo = gtengine::MSpecDB::getCourseRow(course_code);
+                data.title = courseInfo.Name;
+            }
+            else
+            {
+                data.genre = PhotoFileUtil::GENRE::PHOTO_TRAVEL;
+                data.title = sLocationData[sLocationIndex]["base_name"];
+            }
+
+            data.subtitle = "";
+            data.description = "";
+
+            var width, height;
+            getAspectWH(&width, &height);
+
+            if (sCameraSetting.output_size)
+            {
+                width += width;
+                height += height;
+            }
+
+            data.width = width;
+            data.height = height;
+            data.orientation = sOrientation;
+
+            var cp = sTargetCP;
+
+            if (isNoGarageCarMode())
+                data.car_label = "";
+            else
+                data.car_label = cp.getCarLabel();
+
+            data.snapshot_filename = "";
+            data.favorite = 0;
+            data.online = 0;
+            data.vertical = sCameraSetting.vertical;
+            data.is_3d = sCameraSetting.output_3d;
+            data.online_id = main::Grim2.getLoginUserId();
+
+            var cam;
+            if (sIsRacePhoto)
+                cam = main::ORG.getCameraParameters();
+            else
+                cam = SceneFace.getCameraParameters();
+
+            data.position_x = cam["walk_pos_x"];
+            data.position_y = cam["walk_pos_y"];
+            data.position_z = cam["walk_pos_z"];
+
+            PhotoFileUtil::save(context, main::ORG.photo_org_path, main::ORG.photo_thumb_path, data);
+
+            DialogUtil::openConfirmExecDialog(context, nil, context.translate(PhotoTravelRoot, "PhotoMode", "SAVE_DONE"), nil, nil, every_true_func, nil, 1.0, true);
+            
+            context.filterKeyEvent();
+        }
+    }
+
+    method onLeaveDetectToHideMenu(context)
+    {
+        AfterShootingHelp::ScalarInterpolator.reverse = true;
+        AfterShootingHelp::ScalarInterpolator.start();
+
+        AfterShootingHelp::Pane::ScalarInterpolator.reverse = true;
+        AfterShootingHelp::Pane::ScalarInterpolator.start();
+    }
+
+    method onActivateDetectToAppearMenu(context)
+    {
+        AfterShootingHelp::ScalarInterpolator.reverse = false;
+        AfterShootingHelp::ScalarInterpolator.start();
+
+        AfterShootingHelp::Pane::ScalarInterpolator.reverse = false;
+        AfterShootingHelp::Pane::ScalarInterpolator.start();
+    }
+
+    method backFromPreivew(context)
+    {
+        SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+        context.pageOutRootTransition();
+        context.syncOutRootTransition();
+
+        LeaveDetectUtil::end(context);
+
+        execCommand("enableWalkCameraControl 1");
+
+        sRenderFace.x = sOrg_x;
+        sRenderFace.y = sOrg_y;
+        sRenderFace.w = sOrg_w;
+        sRenderFace.h = sOrg_h;
+
+        getCommandTarget().exitPhotoPreview();
+
+        var count = 0;
+        while (isUnderPhotoExitWait())
+            pdiext::ProcessUpdateIteration();
+
+        context.wait(0.5);
+
+        FramingMode::ShutterDown.visible = false;
+        FramingMode.visible = true;
+        Framing.visible = true;
+        AfterShootingHelp.visible = false;
+
+        isPhotoPreview = false;
+        context.pageInRootTransition();
+    }
+
+    method onActivate(context)
+    {
+        if (LeaveDetectUtil::activatedNoEvent(context))
+            return STATE_YIELD;
+
+        switch (sMode)
+        {
+            case 0:
+                main::sound.play("ok");
+                changeMode(context, 2);
+                break;
+
+            case 1: 
+                main::sound.play("ok");
+                SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+                context.pageOutRootTransition();
+                context.syncOutRootTransition(); 
+                changeMode(context, 2);
+
+                while (isUnderSetup())
+                    pdiext::ProcessUpdateIteration();
+
+                context.pageInRootTransition();
+
+                SceneFace.setSoundFader(true);
+                break;
+
+            case 2:
+                main::sound.play("ok");
+
+                if (haveViewPointMap())
+                    decideViewPoint(context);
+
+                ViewPointSelect.visible = false;
+                changeMode(context, 3);
+                break;
+
+            case 3:
+                main::sound.play("zoom2");
+                changeMode(context, 4);
+                break;
+
+            case 4:
+                if (sDisableTakePhoto)
+                {
+                    main::sound.play("disable");
+                }
+                else if (isPhotoPreview)
+                {
+                    main::sound.play("next");
+                    sStartTakePhoto = false;
+
+                    savePhotoFile(context);
+                    backFromPreivew(context);
+                }
+                else
+                {
+                    takePhoto(context);
+                }
+                break;
+
+            case 5:
+                break;
+
+            default:
+                break;
+        }
+
+        return STATE_YIELD;
+    }
+
+    method onCancel(context)
+    {
+        if (LeaveDetectUtil::activatedNoEvent(context))
+            return STATE_YIELD;
+
+        main::sound.play("cancel");
+
+        switch (sMode)
+        {
+            case 0:
+                close(context);
+                return STATE_YIELD;
+
+                break;
+
+            case 1: 
+                if (main::GetVersionBranch() != "runviewer")
+                {
+                    if (DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, context.translate(PhotoTravelRoot, "PhotoMode", "DO_YOU_EXIT")))
+                        close(context);
+
+                    return STATE_YIELD;
+                }
+                break;
+
+            case 2:
+                if (main::GetVersionBranch() != "runviewer")
+                {
+                    if (DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, context.translate(PhotoTravelRoot, "PhotoMode", "DO_YOU_EXIT")))
+                        close(context);
+
+                    return STATE_YIELD;
+                }
+                else
+                {
+                    changeMode(context, 0);
+                }
+                break;
+
+            case 3:
+                if (sIsRacePhoto)
+                {
+                    close(context);
+                    return STATE_YIELD;
+                }
+                else
+                {
+                    SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+                    context.pageOutRootTransition();
+                    context.syncOutRootTransition();
+                    changeMode(context, 2);
+
+                    while (isUnderSetup())
+                        pdiext::ProcessUpdateIteration();
+
+                    context.pageInRootTransition();
+                }
+                break;
+
+            case 4:
+                if (isPhotoPreview)
+                {
+                    main::sound.play("cancel");
+                    sStartTakePhoto = false;
+                    backFromPreivew(context);
+                }
+                else
+                {
+                    changeMode(context, 3);
+                }
+                break;
+
+            case 5:
+                changeMode(context, sPrevMode);
+                break;
+        }
+
+        return STATE_YIELD;
+    }
+
+    method calculateOrientation(context)
+    {
+        var orientation = 1;
+        var upWorld = [0.0, 1.0, 0.0, 0.0];
+
+        var modelView;
+        if (sIsRacePhoto)
+        {
+            modelView = ORG.getLatestSceneModelView(0);
+        }
+        else
+        {
+            var [invModelViewOk, invModelViewMtx] = SceneFace.getEntityParameter("CAM.walk");
+            if (!invModelViewOk)
+                return orientation;
+
+            modelView = main::pdistd::inverseMatrix(invModelViewMtx);
+        }
+
+        var upVec = main::pdistd::applyMatrixVector4(modelView, upWorld);
+        if (upVec[1] != 0.0)
+        {
+            var angle = main::pdistd::atan2(upVec[1], upVec[0]);
+            var PI = 3.1415925;
+
+            if (angle < 0.0)
+                angle += 2 * PI;
+
+            angle += 0.25 * PI;
+
+            if (angle >= 2 * PI)
+                angle -= 2 * PI;
+
+            if (angle < 0.5 * PI)
+                orientation = 8;
+            else if (angle < PI)
+                orientation = 1;
+            else if (angle < 1.5 * PI)
+                orientation = 6;
+            else
+                orientation = 3;
+        }
+
+        return orientation;
+    }
+
+    function add3(v0, v1)
+    {
+        (*v0)[0] += v1[0];
+        (*v0)[1] += v1[1];
+        (*v0)[2] += v1[2];
+    }
+
+    function sub3(v0, v1)
+    {
+        (*v0)[0] -= v1[0];
+        (*v0)[1] -= v1[1];
+        (*v0)[2] -= v1[2];
+    }
+
+    function mul3f(v, f)
+    {
+        (*v)[0] *= f;
+        (*v)[1] *= f;
+        (*v)[2] *= f;
+    }
+
+    function div3f(v, f)
+    {
+        if (f == 0)
+            return;
+
+        var m = 1.0 / f;
+        mul3f(v, m);
+    }
+
+    method unlockTrophy() 
+    {
+        
+    }
+
+    static disableTakePhotoAtFramingStart = false;
+
+    method makeViewPointSelect(context)
+    {
+        ViewPointSelect::CamSwitchingHelp_New::SBox::HBox.clearChildren(context);
+        for (var idx = 0; idx < getViewPointSize(); idx++)
+        {
+            var item = hidden::ViewPointSelectSBox.doCopy();
+            item.TextFace.text = idx + 1;
+
+            if (idx == 0)
+            {
+                item.ImageFace_selected.visible = true;
+                item.ImageFace.visible = false;
+            }
+            else
+            {
+                item.ImageFace_selected.visible = false;
+                item.ImageFace.visible = true;
+            }
+
+            ViewPointSelect::CamSwitchingHelp_New::SBox::HBox.appendChild(context, item);
+        }
+
+        ViewPointSelect::CamSwitchingHelp_New::Alert.visible = false;
+        ViewPointSelect::CamSwitchingHelp_New::TextFaceRace.visible = sIsRacePhoto;
+        ViewPointSelect::CamSwitchingHelp_New::TextFace.visible = !sIsRacePhoto;
+    }
+
+    method setViewPointSelectNumber(context, selected_idx)
+    {
+        var base = ViewPointSelect::CamSwitchingHelp_New::SBox::HBox;
+        for (var i = 0; i < base.countChild(); i++)
+        {
+            var item = base.getChild(i);
+            if (i == selected_idx)
+            {
+                item.ImageFace_selected.visible = true;
+                item.ImageFace.visible = false;
+            }
+            else
+            {
+                item.ImageFace_selected.visible = false;
+                item.ImageFace.visible = true;
+            }
+        }
+    }
+
+    method setRacePhotoWalkVisible(context)
+    {
+        setViewPointSelectNumber(context, 0);
+        WalkMode::ButtonHelp::Pane::Buttons::LS.visible = true;
+        FramingMode::ButtonHelp::Left::Buttons::LS.visible = true;
+        ViewPointSelect::CamSwitchingHelp_New::Alert.visible = false;
+    }
+
+    method setRacePhotoNoMoveVisible(context)
+    {
+        setViewPointSelectNumber(context, sSelectCameraNum);
+        ViewPointSelect::CamSwitchingHelp_New::Alert.visible = true;
+        WalkMode::ButtonHelp::Pane::Buttons::LS.visible = false;
+        FramingMode::ButtonHelp::Left::Buttons::LS.visible = false;
+        ViewPointSelect::CamSwitchingHelp_New::Alert.visible = true;
+    }
+
+    method makeViewPointSelectForPhotTravel(context)
+    {
+        makeViewPointSelect(context);
+
+        var xes_map = sLocationData[sLocationIndex]["xes_map_array"];
+        var car_num = xes_map[sViewPointIndex]["car_place_size"];
+
+        ViewPointSelect::CarAvatarHelp_new::Car::HBox::TextFace.text = car_num;
+        ViewPointSelect::CarAvatarHelp_new::Car::TextFace.text = context.translate(PhotoTravelRoot, "PhotoProject::PhotoTravelRoot", "SELECTABLE_CAR_NUM_HELP").build(car_num);
+        ViewPointSelect::ButtonHelp_new.visible = true;
+        ViewPointSelect::CarAvatarHelp_new.visible = true;
+    }
+    
+    method makeViewPointSelectForRacePhoto(context)
+    {
+        makeViewPointSelect(context);
+
+        if (sSelectCameraNum == 0)
+            setRacePhotoWalkVisible(context);
+        else
+            setRacePhotoNoMoveVisible(context);
+
+        ViewPointSelect::ButtonHelp_new.visible = false;
+        ViewPointSelect::CarAvatarHelp_new.visible = false;
+        ViewPointSelect.visible = true;
+    }
+
+    method viewObjectMoveHelp(context, to_available)
+    {
+        var base = WalkMode::CarSettingHelp;
+        base.FadeEffect.restart();
+        base.Pane.ScalarInterpolator.restart();
+
+        if (to_available)
+        {
+            base.Pane.ScalarInterpolator.reverse = false;
+            if (sPrevMode == 5)
+                base.Pane.ScalarInterpolator.start();
+            else
+                base.Pane.ScalarInterpolator.restart();
+        }
+        else
+        {
+            base.Pane.ScalarInterpolator.reverse = true;
+            base.Pane.ScalarInterpolator.start();
+        }
+
+        if (isAvatarEnable() || sLoadedCarNum > 1)
+            base.Pane::Buttons::Start.visible = true;
+        else
+            base.Pane::Buttons::Start.visible = false;
+
+        base.visible = true;
+    }
+
+    method FramingToObjectMoveAnim(context)
+    {
+        FramingMode::ButtonHelp.ScalarInterpolator.reverse = false;
+        FramingMode::ButtonHelp.ScalarInterpolator.restart();
+
+        FramingMode::HeaderInfo.ScalarInterpolator.reverse = false;
+        FramingMode::HeaderInfo.ScalarInterpolator.restart();
+
+        FramingMode::Frame.ScalarInterpolator.reverse = false;
+        FramingMode::Frame.ScalarInterpolator.restart();
+
+        FramingMode::CarSettingHelp.FadeEffect.reverse = false;
+        FramingMode::CarSettingHelp.FadeEffect.restart();
+
+        FramingMode::CarSettingHelp.visible = true;
+    }
+
+    method ObjectMoveToFramingAnim(context)
+    {
+        FramingMode::ButtonHelp.ScalarInterpolator.reverse = true;
+        FramingMode::ButtonHelp.ScalarInterpolator.restart();
+
+        FramingMode::HeaderInfo.ScalarInterpolator.reverse = true;
+        FramingMode::HeaderInfo.ScalarInterpolator.restart();
+
+        FramingMode::Frame.ScalarInterpolator.reverse = true;
+        FramingMode::Frame.ScalarInterpolator.restart();
+
+        FramingMode::CarSettingHelp.FadeEffect.reverse = true;
+        FramingMode::CarSettingHelp.FadeEffect.restart();
+    }
+
+    method changeMode(context, mode)
+    {
+        sPrevMode = sMode;
+        sMode = mode;
+
+        disableTakePhotoAtFramingStart = true;
+
+        var map_num = sLocationData[sLocationIndex]["map_num"];
+        switch (mode)
+        {
+            case 0:
+                HeaderFooter.visible = true;
+                execCommand("enableWalkCameraControl 0");
+                
+                if (loadLocation(context))
+                {
+                    execCommand("selectCurrentCamera generic");
+                    FramingMode.visible = false;
+                    FramingMode::ColorFace.visible = false;
+                    WalkMode.visible = false;
+                    ScrollText.visible = true;
+                    HeaderFooter.visible = true;
+                }
+                else
+                {
+                    close(context);
+                    break;
+                }
+
+                changeMode(context, 1);
+                break;
+
+            case 2:
+                execCommand("enableWalkCameraControl 0");
+                DemoTitle.visible = false;
+                WalkMode.visible = false;
+                ScrollText.visible = false;
+                HeaderFooter.ScalarInterpolator.reverse = false;
+                HeaderFooter.ScalarInterpolator.restart();
+
+                HeaderFooter.visible = true;
+
+                makeViewPointSelectForPhotTravel(context);
+
+                changeViewPoint(context, 0);
+
+                sMode = mode = 2;
+                execCommand("selectCurrentCamera walk");
+                execCommand("setVisible true  car0");
+                execCommand("setCurrentModel  car0");
+                break;
+                
+            case 3:
+                context.getUpdateContext().zoom_for_SD = true;
+
+                sIsAELock = false;
+
+                ViewPointSelect.visible = false;
+                if (sIsRacePhoto)
+                    WalkMode::CarSettingHelp.visible = false;
+                else
+                    WalkMode::CarSettingHelp.visible = !isNoGarageCarMode();
+
+                if (sPrevMode == 5)
+                    WalkMode::ButtonHelp::Pane::ScalarInterpolator.start();
+                else
+                    WalkMode::ButtonHelp::Pane::ScalarInterpolator.restart();
+
+                WalkMode::ButtonHelp::Pane::Buttons::SELECT.visible = !sIsRacePhoto;
+                WalkMode::ButtonHelp::Pane::Buttons::PointSelect.visible = sIsRacePhoto;
+                WalkMode::ButtonHelp::Pane::ScalarInterpolator.reverse = false;
+
+                viewObjectMoveHelp(context, false);
+
+                execCommand("startBox3dCurosrAnime box3dcursor 0");
+                execCommand("enableWalkCameraControl 1");
+
+                if (sPrevMode == 4)
+                {
+                    SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+                    context.pageOutRootTransition();
+                    FramingMode::ColorFace.visible = false;
+                    context.syncOutRootTransition();
+                    PhotoTravelRoot.resetEffects();
+
+                    if (sIsRacePhoto)
+                    {
+                        execCommand("disableFlags defocus vignetting");
+                        execCommand("enableFlags autoexposure");
+                    }
+                    else
+                        execCommand("disableFlags autoexposure defocus vignetting");
+
+                    execCommand("setExposureCorrect 0.0");
+                    execCommand("selectCurrentCamera walk");
+                    execCommand("copyEnvCenterOffset generic walk");
+                    execCommand("setWalkCameraFramingMode 0");
+
+                    if (!sIsRacePhoto)
+                    {
+                        while (isUnderSetup())
+                            pdiext::ProcessUpdateIteration();
+                    }
+
+                    context.pageInRootTransition();
+                    FramingMode.visible = false;
+                    WalkMode.visible = true;
+                    DemoTitle.visible = false;
+                    ScrollText.visible = false;
+                }
+                else
+                {
+                    PhotoTravelRoot.resetEffects();
+                    FramingMode.visible = false;
+                    WalkMode.visible = true;
+                    DemoTitle.visible = false;
+
+                    HeaderFooter.ScalarInterpolator.reverse = true;
+                    HeaderFooter.ScalarInterpolator.start();
+
+                    execCommand("selectCurrentCamera walk");
+                    execCommand("copyEnvCenterOffset generic walk");
+                    execCommand("setWalkCameraFramingMode 0");
+                }
+
+                changeAspect(context, -1, 0);
+
+                if (sIsRacePhoto)
+                {
+                    makeViewPointSelectForRacePhoto(context);
+                    if (!KeyValueUtil::getFlag_NotNil("career", "welcome_racephoto"))
+                    {
+                        KeyValueUtil::set("career", "welcome_racephoto", true);
+
+                        execCommand("enableWalkCameraControl 0");
+                        TutorialUtil::message(context, "welcome_racephoto", ["open_wait_sec" : 1.0]);
+                        execCommand("enableWalkCameraControl 1");
+                    }
+                }
+                break;
+
+            case 4:
+                context.getUpdateContext().zoom_for_SD = false;
+                ViewPointSelect.visible = false;
+
+                if (sPrevMode == 5)
+                {
+                    ObjectMoveToFramingAnim(context);
+                    execCommand("enableFlags autoexposure");
+                    execCommand("setWalkCameraFramingMode 1");
+                    execCommand("startBox3dCurosrAnime box3dcursor 0");
+                }
+                else
+                {
+                    SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+                    context.pageOutRootTransition();
+
+                    FramingMode::ColorFace.visible = false;
+                    context.syncOutRootTransition();
+
+                    execCommand("setWalkCameraFramingMode 1");
+                    changeAspect(context, sCameraSetting.aspect, sCameraSetting.vertical);
+
+                    FramingMode.visible = true;
+                    Framing.visible = true;
+                    WalkMode.visible = false;
+                    DemoTitle.visible = false;
+                    HeaderFooter.visible = false;
+                    ScrollText.visible = false;
+                    FramingMode::ColorFace.visible = true;
+
+                    FramingMode::ColorFace::ScalarInterpolator0.reverse = false;
+                    FramingMode::ColorFace::ScalarInterpolator0.restart();
+
+                    PhotoCameraSettingRoot.setFilter(PhotoTravelRoot, sCameraSetting.filter);
+                    execCommand("enableFlags autoexposure defocus vignetting");
+                    execCommand("setWalkCameraFramingMode 1");
+                    execCommand("setEffectParameter autoexposure.maxIntensity 15.0");
+                    execCommand("setEffectParameter autoexposure.minIntensity 0.01");
+
+                    refreshCameraInfo(context);
+                    context.pageInRootTransition();
+                }
+
+                if (!sIsRacePhoto && !KeyValueUtil::getFlag_NotNil("career", "photo_travel_tip"))
+                {
+                    KeyValueUtil::set("career", "photo_travel_tip", true);
+
+                    execCommand("enableWalkCameraControl 0");
+                    TutorialUtil::message(context, "photo_travel_tip", ["photo_travel_tip" : 1.0]);
+                    execCommand("enableWalkCameraControl 1");
+                }
+
+                if (sIsRacePhoto && !KeyValueUtil::getFlag_NotNil("career", "race_photo_tip"))
+                {
+                    KeyValueUtil::set("career", "race_photo_tip", true);
+
+                    execCommand("enableWalkCameraControl 0");
+                    if (!KeyValueUtil::getFlag_NotNil("career", "photo_travel_tip"))
+                    {
+                        KeyValueUtil::set("career", "photo_travel_tip", true);
+                        TutorialUtil::message(context, "race_photo_tip", ["open_wait_sec" : 1.0]);
+                    }
+                    else
+                    {
+                        TutorialUtil::message(context, "only_race_photo_tip", ["open_wait_sec" : 1.0]);
+                    }
+
+                    execCommand("enableWalkCameraControl 1");
+                }
+
+                context.wait(0.5);
+                disableTakePhotoAtFramingStart = false;
+                break;
+
+            case 1:
+                FramingMode.visible = false;
+                WalkMode.visible = false;
+                DemoTitle.visible = true;
+                HeaderFooter.visible = true;
+                ScrollText.visible = true;
+
+                DemoTitle::LocationName::LocationName.text = context.translate(PhotoTravelRoot, "PhotoMode", sLocationData[sLocationIndex]["base_name"]);
+                DemoTitle::NationName.text = context.translate(PhotoTravelRoot, "PhotoMode", sLocationData[sLocationIndex]["base_nation"]);
+
+                execCommand("resetGlobalMotionFrame");
+                execCommand("selectCurrentCamera generic");
+
+                DemoTitle::ScalarInterpolator.restart();
+                break;
+
+            case 5:
+                if (sPrevMode == 4)
+                {
+                    execCommand("disableFlags autoexposure");
+                    FramingToObjectMoveAnim(context);
+                }
+
+                WalkMode::ButtonHelp::Pane::ScalarInterpolator.reverse = true;
+                WalkMode::ButtonHelp::Pane::ScalarInterpolator.start();
+
+                viewObjectMoveHelp(context, true);
+
+                var cmd = "setWalkCameraObjectControl 1";
+                execCommand(cmd);
+                execCommand("startBox3dCurosrAnime box3dcursor 1");
+                break;
+
+            case 6:
+                var cmd = "setWalkCameraObjectControl 1";
+                execCommand(cmd);
+                execCommand("startBox3dCurosrAnime box3dcursor 1");
+                break;
+
+            case 7:
+                FramingMode.visible = false;
+                WalkMode.visible = false;
+                DemoTitle.visible = false;
+                ScrollText.visible = false;
+
+                changeAspect(context, -1, 0);
+                execCommand("setWalkCameraFramingMode 2");
+                break;
+        }
+
+        context.filterKeyEvent();
+    }
+
+    method getAspectWH(dst_w, dst_h)
+    {
+        if (sAspectMode < 0)
+            ;
+
+        var w = sAspects[sAspectMode][0];
+        var h = sAspects[sAspectMode][1];
+
+        if (sCameraSetting.vertical)
+        {
+            var org_w = w;
+            var org_h = h;
+            w = org_h;
+            h = org_w;
+        }
+
+        &dst_w = w;
+        &dst_h = h;
+    }
+
+    method adjustWidthIfVertical(w, h)
+    {
+        if (sCameraSetting.vertical)
+        {
+            if (*h > 1080)
+            {
+                var r = 1080.0 / *h;
+                &h = 1080;
+                &w *= r;
+            }
+        }
+    }
+
+    method changeAspect(context, change_mode, vertical)
+    {
+        sAspectMode = change_mode;
+
+        sRenderFace.SizeInterpolator.setStartValue(0, [sRenderFace.w, sRenderFace.h]);
+        sRenderFace.WindowInterpolator.setStartValue(0, [sRenderFace.x, sRenderFace.y]);
+
+        var w = 1920;
+        var h = 1080;
+        var base_y = 0;
+        var rate = 1.0;
+
+        if (change_mode >= 0)
+        {
+            getAspectWH(&w, &h);
+            base_y = sAspects[change_mode][2];
+            rate = sAspects[change_mode][3];
+        }
+
+        setAspect(context, w, h, base_y, rate, sIsRacePhoto, change_mode);
+
+        FramingMode::FinderGuide.ScalarInterpolator.setStartValue(0, FramingMode::FinderGuide.rotate);
+        if (sCameraSetting.vertical)
+            FramingMode::FinderGuide.ScalarInterpolator.setEndValue(0, 90);
+        else
+            FramingMode::FinderGuide.ScalarInterpolator.setEndValue(0, 0);
+
+        FramingMode::FinderGuide.ScalarInterpolator.restart();
+        sRenderFace.SizeInterpolator.restart();
+        sRenderFace.WindowInterpolator.restart();
+        Framing::ColorFaceL.ScalarInterpolator.restart();
+        Framing::ColorFaceR.ScalarInterpolator.restart();
+    }
+
+    function setAspect(context, base_w, base_h, base_y, base_rate, isRacePhoto, change_mode)
+    {
+        var h = 918;
+        var scene_w = 1920;
+        var scene_x = -offsetNow;
+
+        var rate = base_w.toFloat() / base_h;
+        var w = rate * h;
+        if (base_rate != nil)
+        {
+            rate = base_rate;
+            w = base_w * rate;
+            h = base_h * rate;
+        }
+
+        var y = 70;
+        if (base_y != nil)
+            y = base_y;
+
+        sRenderFace.SizeInterpolator.setEndValue(0, [scene_w, h]);
+        sRenderFace.WindowInterpolator.setEndValue(0, [scene_x, y]);
+
+        var framing_w = (1920 - w) / 2;
+        originalW = framing_w;
+        Framing::ColorFaceL.ScalarInterpolator.setStartValue(0, Framing::ColorFaceL.w);
+        Framing::ColorFaceR.ScalarInterpolator.setStartValue(0, Framing::ColorFaceR.w);
+        Framing::ColorFaceL.ScalarInterpolator.setEndValue(0, framing_w - offsetNow);
+        Framing::ColorFaceR.ScalarInterpolator.setEndValue(0, framing_w + offsetNow);
+    }
+
+    static lamp_command_idx = 0;
+
+    static LampCommand = [
+        "setCarLampMode auto",
+        "setCarLampMode position",
+        "setCarLampMode lowbeam",
+        "setCarLampMode highbeam",
+        "setCarTailLamp 1" // These three are combined into one string, intentional behavior?
+        "setCarTailLamp 0"
+        "setCarLampMode off"
+    ];
+
+    method changeTarget(context)
+    {
+        if (sOjectMoveMode != 4)
+        {
+            var before_car_id = sOjectMoveMode;
+            for (var i = sOjectMoveMode + 1; i < 4; i++)
+            {
+                if (sOjectMoveMode == before_car_id && sObjectSetting.garage_ids[i] != nil)
+                    sOjectMoveMode = i;
+            }
+
+            var cmd = "setLightScale car%d 1.0".format(before_car_id);
+            execCommand(cmd);
+
+            WalkMode::CarSettingHelp::Pane::Buttons::Tri.visible = true;
+            FramingMode::CarSettingHelp::Pane::Buttons::Tri.visible = true;
+
+            if (sOjectMoveMode != before_car_id)
+            {
+                setCarTarget(context, sOjectMoveMode);
+            }
+            else if (isAvatarEnable())
+            {
+                execCommand("setCurrentModel  driver0");
+                sOjectMoveMode = 4;
+                WalkMode::CarSettingHelp::Pane::Buttons::Tri.visible = false;
+                FramingMode::CarSettingHelp::Pane::Buttons::Tri.visible = false;
+            }
+            else
+            {
+                setCarTarget(context, 0);
+            }
+        }
+        else if (sOjectMoveMode == 4)
+        {
+            setCarTarget(context, 0);
+        }
+    }
+
+    method setCarTarget(context, num)
+    {
+        sOjectMoveMode = num;
+        var cmd = "setCurrentModel car%d".format(sOjectMoveMode);
+        execCommand(cmd);
+
+        cmd = "setLightScale car%d 0.0".format(sOjectMoveMode);
+        execCommand(cmd);
+
+        WalkMode::CarSettingHelp::Pane::Buttons::Tri.visible = true;
+        FramingMode::CarSettingHelp::Pane::Buttons::Tri.visible = true;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (LeaveDetectUtil::activated(context, event))
+            return STATE_YIELD;
+
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_START:
+                if (sMode == 5 && !sStartTakePhoto && !sIsRacePhoto && (isAvatarEnable() || sLoadedCarNum > 1))
+                {
+                    main::sound.play("ok");
+                    changeTarget(context);
+                }
+                break;
+
+            case CELL_PAD_CTRL_SELECT:
+                if (!sIsRacePhoto)
+                {
+                    if (!sStartTakePhoto && !isNoGarageCarMode())
+                    {
+                        if (sMode == 3 || sMode == 4)
+                        {
+                            main::sound.play("ok");
+                            changeMode(context, 5);
+                        }
+                        else if (sMode == 5)
+                        {
+                            main::sound.play("cancel");
+                            changeMode(context, sPrevMode);
+                        }
+                    }
+                }
+                break;
+
+            case CELL_PAD_CTRL_TRIANGLE:
+                if (sMode == 4 && !sStartTakePhoto)
+                {
+                    execCommand("enableWalkCameraControl 0");
+                    onCameraSetting(context, true);
+                    execCommand("enableWalkCameraControl 1");
+                }
+
+                if (sMode == 5 && !sStartTakePhoto && sOjectMoveMode != 4)
+                {
+                    execCommand("enableWalkCameraControl 0");
+
+                    var at_walk = false;
+                    if (sPrevMode == 3)
+                        at_walk = true;
+
+                    finderSliderToLeft(context, at_walk);
+                    onCarSetting(context);
+                    finderSliderToRight(context, at_walk);
+
+                    execCommand("enableWalkCameraControl 1");
+                }
+
+                if (sMode == 2 && !sStartTakePhoto)
+                    onObjectSetting(context);
+                break;
+
+            case CELL_PAD_CTRL_SQUARE:
+                if (sMode == 4 && !sStartTakePhoto)
+                {
+                    FramingMode::FocusMark::FaceColorInterpolator.restart();
+                    execCommand("reqOneShotAutoFocus");
+                }
+                break;
+
+            case CELL_PAD_CTRL_L3_UP:
+                break;
+
+            case CELL_PAD_CTRL_L3_DOWN:
+                break;
+
+            case CELL_PAD_CTRL_L3_LEFT:
+                if (sMode == 2 && haveViewPointMap())
+                {
+                    changeViewPoint(context, -1);
+                }
+                else if (sMode == 3 && sIsRacePhoto && !(event.state & 0x200))
+                {
+                    changeViewPointRacePhoto(context, -1);
+                }
+                break;
+
+            case CELL_PAD_CTRL_L3_RIGHT:
+                if (sMode == 2 && haveViewPointMap())
+                {
+                    changeViewPoint(context, 1);
+                }
+                else if (sMode == 3 && sIsRacePhoto && !(event.state & 0x200))
+                {
+                    changeViewPointRacePhoto(context, 1);
+                }
+                break;
+
+            case CELL_PAD_CTRL_L1:
+                if (sMode == 4 && !sStartTakePhoto)
+                {
+                    main::sound.play("param");
+                    sIsAELock = !sIsAELock;
+
+                    if (sIsAELock)
+                        execCommand("disableFlags autoexposure");
+                    else
+                        execCommand("enableFlags autoexposure");
+                }
+                break;
+
+            case CELL_PAD_CTRL_R2:
+                if (sMode == 4 && !sStartTakePhoto)
+                {
+                    main::sound.play("param");
+
+                    if (sCameraSetting.vertical)
+                        sCameraSetting.vertical = 0;
+                    else
+                        sCameraSetting.vertical = 1;
+
+                    main::sound.play("zoom2");
+
+                    disableTakePhotoAtFramingStart = true;
+                    changeAspect(context, sCameraSetting.aspect, sCameraSetting.vertical);
+
+                    sRenderFace.WindowInterpolator.on_effect_end = (context) =>
+                    {
+                        disableTakePhotoAtFramingStart = false;
+                        sRenderFace.WindowInterpolator.on_effect_end = nil;
+                    }
+                }
+                break;
+        }
+
+        return STATE_EXIT;
+    }
+
+    method resetEffects()
+    {
+        var command = CommandAlias::get("filter_base");
+        execCommand(command);
+
+        if (sIsRacePhoto)
+            execCommand("popPhotoEffectParameter");
+    }
+
+    method menuHideAction(context, no_change_camera_control)
+    {
+        if (no_change_camera_control == nil)
+            execCommand("enableWalkCameraControl 1");
+
+        context.cursor_visible = false;
+        PhotoTravelRoot.setFocus(PhotoTravelRoot);
+    }
+
+    method menuHideActionWithVeil(context, no_change_camera_control)
+    {
+        if (no_change_camera_control == nil)
+            execCommand("enableWalkCameraControl 1");
+
+        context.cursor_visible = false;
+        PhotoTravelRoot.setFocus(PhotoTravelRoot);
+    }
+
+    method menuAppearAction(context)
+    {
+        execCommand("enableWalkCameraControl 0");
+        context.cursor_visible = true;
+    }
+
+    method appearGTLogo(context)
+    {
+        SequenceUtil::setupTransition(context, CursorProject::GTLogoTransition);
+        context.pageOutRootTransition();
+        context.syncOutRootTransition();
+    }
+
+    method hideGTLogo(context)
+    {
+        context.pageInRootTransition();
+    }
+
+    method shutterDownEffect()
+    {
+        FramingMode::ShutterDown.visible = true;
+    }
+
+    method setDefaultDriver(dp)
+    {
+        if (main::GetVersionBranch() == "runviewer")
+        {
+            var dd = main::GAME_STATUS.branch;
+            execCommand("setDefaultDriver %d %d %d %d 1".format(
+                dd.driver_head, dd.driver_body, dd.driver_head_color, dd.driver_body_color));
+        }
+        else
+        {
+            execCommand("setDefaultDriver %d %d %d %d 1".format(
+                dp.head_code, dp.body_code, dp.head_color_code, dp.body_color_code));
+        }
+
+        var script_code = main::CommandAlias::get("PHOTO_AVATAR");
+        execCommand(script_code);
+    }
+
+    method loadLocation(context)
+    {
+        execCommand("setCarBufferInfo 2");
+
+        if (main::GetVersionBranch() != "runviewer" && sLocationBaseCode != nil)
+        {
+            for (var i = 0; i < sLocationData.size; i++)
+            {
+                if (sLocationBaseCode == sLocationData[i]["base_code"])
+                {
+                    sLocationIndex = i;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            sLocationIndex = selectLocationUI(context);
+        }
+
+        if (sLocationIndex == nil)
+            return false;
+
+        ScrollText::HDToolTip::tip.remove();
+        ScrollText::HDToolTip::tip.value = context.translate(PhotoTravelRoot, "PhotoMode", "%s_TIP".format(sLocationData[sLocationIndex]["base_name"]));
+
+        var max_car_place_size = 0;
+        foreach (var view_point_info in sLocationData[sLocationIndex]["xes_map_array"])
+        {
+            var car_num = view_point_info["car_place_size"];
+            if (car_num > max_car_place_size)
+                max_car_place_size = car_num;
+        }
+
+        sViewPointIndex = 0;
+
+        var location_code = sLocationData[sLocationIndex]["base_code"];
+        
+        sNoGarageCarMode = sLocationData[sLocationIndex]["base_nocar"];
+
+        var cp = sTargetCP;
+        var script_code = main::CommandAlias::get(location_code);
+        script_code == nil;
+
+        appearGTLogo(context);
+        if (isNoGarageCarMode())
+            SceneFaceUtil::loadSceneByCommand(SceneFace, script_code, nil, nil, false);
+        else
+        {
+            SceneFaceUtil::loadSceneByCommand(SceneFace, script_code, cp, GAME_STATUS.user_profile.residence.getPlayer(0), false);
+            execCommand("setVisible false car1");
+        }
+
+        execCommand("selectCurrentCamera generic");
+        execCommand("createWalkCamera walk");
+        
+        var map_num = sLocationData[sLocationIndex]["map_num"];
+        if (map_num > 0)
+            ;
+
+        if (!sIsRacePhoto)
+        {
+            var aspec_dp = GAME_STATUS.user_profile.residence.getPlayer(0);
+            setDefaultDriver(aspec_dp);
+        }
+
+        while (isUnderSetup())
+            pdiext::ProcessUpdateIteration();
+
+        execCommand("enableWalkCameraControl 0");
+        execCommand("setVisible false driver0");
+        execCommand("setVisible false driver0_met");
+        
+        hideGTLogo(context);
+        return true;
+    }
+
+    method selectLocationUI(context)
+    {
+        var location_list = [];
+        foreach (var location in sLocationData)
+        {
+            var code = context.translate(PhotoTravelRoot, "PhotoMode", location["base_name"]);
+            location_list.push(code);
+        }   
+
+        var data = SideSelectRoot::Data();
+        data.title_ = context.translate(PhotoTravelRoot, "PhotoMode", "SELECT LOCATION");
+        data.translate_page_ = PhotoTravelRoot;
+        data.candidates_ = location_list;
+        data.enable_multi_ = false;
+        data.frame_red_bring_ = false;
+
+        var result = SideSelectRoot.open(context, data);
+        if (result == nil)
+            return nil;
+
+        if (result.size == 0)
+            return nil;
+
+        var index = result[0];
+        return index;
+    }
+
+    method haveViewPointMap()
+    {
+        var data = sLocationData[sLocationIndex]["base_nation"];
+        if (data != nil)
+            return true;
+        else
+            return false;
+    }
+
+    method loadRunwayAndXesDevelop(context)
+    {
+        context.pageInRootTransition();
+
+        sViewPointIndex = selectRunwayAndXesUIDevelop(context);
+        if (sViewPointIndex == nil)
+            return false;
+
+        SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+        context.pageOutRootTransition();
+        context.syncOutRootTransition();
+
+        decideViewPoint(context);
+
+        while (isUnderSetup())
+            pdiext::ProcessUpdateIteration();
+
+        context.pageInRootTransition();
+        return true;
+    }
+
+    method decideViewPoint(context)
+    {
+        var xes_map = sLocationData[sLocationIndex]["xes_map_array"];
+        var runway = xes_map[sViewPointIndex]["runway"];
+        var runway_car = xes_map[sViewPointIndex]["runway_car"];
+        var xes_code = xes_map[sViewPointIndex]["code"];
+
+        setCarTarget(context, 0);
+
+        execCommand("clearEntity box3dcursor");
+        execCommand("createBox3dCursor box3dcursor");
+        execCommand("startBox3dCurosrAnime box3dcursor 0");
+    }
+
+    function pinActive(face_pair)
+    {
+        for (var i = 0; i < 2; i++)
+        {
+            var face = face_pair[i];
+            face.VectorInterpolator.reverse = false;
+            face.VectorInterpolator.start();
+
+            face.ScalarInterpolator.reverse = false;
+            face.ScalarInterpolator.start();
+        }
+    }
+
+    function pinDisActive(face_pair)
+    {
+        for (var i = 0; i < 2; i++)
+        {
+            var face = face_pair[i];
+            face.VectorInterpolator.reverse = true;
+            face.VectorInterpolator.start();
+
+            face.ScalarInterpolator.reverse = true;
+            face.ScalarInterpolator.start();
+        }
+    }
+
+    function targetToMove(face, pointer, target, mode)
+    {
+        if (target[0] != nil)
+        {
+            if (mode != nil)
+            {
+                target[0] -= face.w / 2.0;
+                target[1] -= face.h;
+            }
+            else
+            {
+                target[0] -= face.w / 2.0;
+                target[1] -= face.h / 2.0;
+            }
+
+            face.VectorInterpolator.setStartValue(0, [face.x, face.y]);
+            face.VectorInterpolator.setEndValue(0, target);
+            face.VectorInterpolator.restart();
+        }
+
+        var rot_target = target[2];
+        if (rot_target - pointer.rotate > 180)
+            rot_target = -(360 - target[2]);
+
+        pointer.ScalarInterpolator.setStartValue(0, pointer.rotate);
+        pointer.ScalarInterpolator.setEndValue(0; rot_target);
+        pointer.ScalarInterpolator.restart();
+    }
+
+    function face_sort_function(a, b)
+    {
+        return a[1] < b[1];
+    }
+
+    static sSelectFirst = false;
+
+    method selectRunwayAndXesUIDevelop(context)
+    {
+        sSelectFirst = true;
+        var xes_map = sLocationData[sLocationIndex]["xes_map_array"];
+        var xes_list = [];
+
+        foreach (var xes in xes_map)
+        {
+            var code = context.translate(PhotoTravelRoot, "PhotoMode", xes["name"]);
+            xes_list.push(code);
+        }
+
+        var data = SideSelectRoot::Data();
+        data.title_ = context.translate(PhotoTravelRoot, "PhotoMode", "SELECT XES & RUNWAY");
+        data.translate_page_ = PhotoTravelRoot;
+        data.candidates_ = xes_list;
+        data.enable_multi_ = false;
+        data.frame_red_bring_ = false;
+        data.cb_focus_enter_ = cb_focus_enter_xes;
+
+        var result = SideSelectRoot.open(context, data);
+        if (result == nil)
+            return nil;
+
+        if (result.size == 0)
+            return nil;
+
+        var index = result[0];
+        return index;
+    }
+
+    method cb_focus_enter_xes(context, selector, index)
+    {
+        if (sSelectFirst)
+            sSelectFirst = false;
+
+        startSwitchingFade(context);
+        var xes_map = sLocationData[sLocationIndex]["xes_map_array"];
+        var xes_code = xes_map[index]["code"];
+        if (xes_code != "")
+        {
+            var code = CommandAlias::get(xes_code);
+            code == nil;
+            execCommand(code);
+        }
+
+        execCommand("setVisible true car0");
+        
+        var runway = xes_map[sViewPointIndex]["runway"];
+        var runway_car = xes_map[sViewPointIndex]["runway_car"];
+
+        execCommand("clearEntity walk_base");
+        execCommand("clearEntity car_base");
+
+        if (runway != "")
+            execCommand("loadRunway %s walk_base".format(runway));
+
+        if (runway_car != nil)
+            execCommand("loadRunway %s car_base".format(runway_car));
+
+        while (isUnderSetup())
+            pdiext::ProcessUpdateIteration();
+
+        context.filterKeyEvent();
+        endSwitchingFade(context);
+    }
+
+    function getViewPointSize()
+    {
+        if (sIsRacePhoto)
+            return sSelectCameraMax;
+        else
+            return sLocationData[sLocationIndex]["xes_map_array"].size;
+    }
+
+    method changeViewPointRacePhoto(context, diff)
+    {
+        var prevPoint = sSelectCameraNum;
+        sSelectCameraNum += diff;
+
+        if (sSelectCameraNum >= getViewPointSize())
+        {
+            sSelectCameraNum = prevPoint;
+            main::sound.play("disable");
+            return;
+        }
+
+        if (sSelectCameraNum <= 0)
+        {
+            if (self.isInPit)
+            {
+                sSelectCameraNum = prevPoint;
+                main::sound.play("disable");
+                return;
+            }
+            else if (sSelectCameraNum < 0)
+            {
+                sSelectCameraNum = 0;
+                main::sound.play("disable");
+                return;
+            }
+        }
+
+        main::sound.play("ok");
+        startRaceSwitchingFade(context);
+
+        if (sSelectCameraNum == 0)
+            setRacePhotoWalkVisible(context);
+        else
+            setRacePhotoNoMoveVisible(context);
+
+        ORG.setWalkCameraMount(sSelectCameraNum);
+        endRaceSwitchingFade(context);
+    }
+
+    method changeViewPoint(context, index_add)
+    {
+        execCommand("startBox3dCurosrAnime box3dcursor 0");
+        var before = sViewPointIndex;
+        sViewPointIndex += index_add;
+
+        var xes_map = sLocationData[sLocationIndex]["xes_map_array"];
+        if (sViewPointIndex < 0)
+            sViewPointIndex = 0;
+        else if (sViewPointIndex >= getViewPointSize() - 1)
+            sViewPointIndex = getViewPointSize() - 1;
+
+        setViewPointSelectNumber(context, sViewPointIndex);
+
+        ViewPointSelect.visible = true;
+        if (sViewPointIndex != before || index_add == 0)
+        {
+            main::sound.play("cursor");
+            cb_focus_enter_xes(context, nil, sViewPointIndex);
+
+            var selectedIndex = sViewPointIndex;
+            xes_map = sLocationData[sLocationIndex]["xes_map_array"];
+            var map_base = xes_map[sViewPointIndex];
+
+            if (isAvatarAvailable())
+            {
+                if (!main::GAME_STATUS.user_profile.option.photo_avatar_visible)
+                {
+                    execCommand("setVisible false driver0");
+                    execCommand("setVisible false driver0_met");
+                    execCommand("setPhotoCollisionType none driver0");
+                }
+                else
+                {
+                    execCommand("setVisible true driver0");
+                    execCommand("setVisible true driver0_met");
+                    execCommand("setPhotoCollisionType circle driver0");
+                }
+            }
+            else
+            {
+                execCommand("setVisible false driver0");
+                execCommand("setVisible false driver0_met");
+                execCommand("setPhotoCollisionType none driver0");
+            }
+
+            execCommand("setCurrentModel  car0");
+
+            sOjectMoveMode = 0;
+
+            var cmd = "setEntityToReservePlace %d %d car0 true".format(main::gtengine::PlaceType::CAR0, selectedIndex);
+            execCommand(cmd);
+
+            cmd = "setEntityToReservePlace %d %d car1 true".format(main::gtengine::PlaceType::CAR1, selectedIndex);
+            execCommand(cmd);
+
+            cmd = "setEntityToReservePlace %d %d driver0 true".format(main::gtengine::PlaceType::AVATAR, selectedIndex);
+            execCommand(cmd);
+
+            execCommand("enableWalkCameraControl 0");
+            execCommand("selectCurrentCamera walk");
+            execCommand("copyEnvCenterOffset generic walk");
+            execCommand("setWalkCameraFramingMode 0");
+            execCommand("setWalkCameraTargetToCarrentEntity");
+            execCommand("setEntityRotationToCamera driver0");
+            execCommand("setVisible true car0");
+        }
+        else
+        {
+            main::sound.play("disable");
+        }
+    }
+
+    method debugMapPosPrint(context)
+    {
+
+    }
+
+    function setImageShape(image_shape, items, base_x, base_y)
+    {
+        var seg7_texdata = [
+            //       x,   y,   w,   h
+            "0" : [  0,   0,  20,  28],
+            "1" : [ 20,   0,  20,  28],
+            "2" : [ 40,   0,  20,  28],
+            "3" : [ 60,   0,  20,  28],
+            "4" : [ 80,   0,  20,  28],
+            "5" : [100,   0,  20,  28],
+            "6" : [  0,  28,  20,  28],
+            "7" : [ 20,  28,  20,  28],
+            "8" : [ 40,  28,  20,  28],
+            "9" : [ 60,  28,  20,  28],
+        ];
+
+        var ary_size = items.size * 4;
+        var vertex = Array(ary_size);
+        var texcode = Array(ary_size);
+
+        var i = 0;
+        var bx = base_x;
+        var by = base_y;
+        var first_num = true;
+
+        for (var j = 0; j < items.size; j++)
+        {
+            var item = items[j];
+            if (first_num && item == 0 && j < items.size - 1)
+                first_num = true;
+            else
+                first_num = false;
+
+            var data;
+            if (first_num)
+                data = [0, 0, 20, 0];
+            else
+                data = seg7_texdata[item.toString()];
+            
+            if (data == nil)
+                data = [0,0,0,0];
+
+            var [x, y, w, h] = data;
+            vertex[i] = [bx, by];
+            vertex[i + 1] = [bx + w, by];
+            vertex[i + 2] = [bx + w, by + h];
+            vertex[i + 3] = [bx, by + h];
+
+            var u1 = x / 128.0;
+            var u2 = (x + w) / 128.0;
+            var v1 = y / 128.0;
+            var v2 = (y + h) / 128.0;
+
+            texcode[i] = [u1, v1];
+            texcode[i + 1] = [u2, v1];
+            texcode[i + 2] = [u2, v2];
+            texcode[i + 3] = [u1, v2];
+
+            bx += w;
+            i += 4;
+        }
+
+        image_shape.updateVT(vertex, texcode);
+    }
+
+    function ShapeInit(shape)
+    {
+        shape.prim_mode = "quads";
+        shape.visible = true;
+    }
+
+    function ShapeShadowInit(shape, keta)
+    {
+        shape.prim_mode = "quads";
+        shape.visible = true;
+
+        var items = Array(keta);
+
+        var i = 0;
+        for (i = 0; i < keta; i++)
+            items[i] = 8;
+
+        setImageShape(shape, items, 0, 0);
+    }
+
+    function getDigit(value, keta)
+    {
+        for (var i = 0; i < keta - 1; ++i)
+            value /= 10;
+
+        return (value % 10).toInt();
+    }
+
+    function ShapeRefresh(shape, keta, value)
+    {
+        var items = Array(keta);
+        
+        var i = 0;
+        if (value.isInstanceOf(System::String))
+        {
+            var chars = value.split("").reverse();
+            for (i = 0; i < keta; i++)
+                items[i] = i < chars.size ? chars[i] : " ";
+            
+            items = items.reverse();
+        }
+        else
+        {
+            for (i = 0; i < keta; i++)
+                items[i] = getDigit(value, keta - i);
+        }
+
+        setImageShape(shape, items, 0, 0);
+    }
+
+    module FramingMode::Frame
+    {
+        method onInitialize(context)
+        {
+            ShapeInit(mm::mm::numShape);
+            ShapeRefresh(mm::mm::numShape, 3, 100);
+
+            ShapeInit(F::F::numShape);
+            ShapeRefresh(F::F::numShape, 2, 8);
+
+            ShapeInit(F::F::numShape_under);
+            ShapeRefresh(F::F::numShape_under, 1, 0);
+
+            ShapeInit(Shutter::Shutter::numShape);
+            ShapeRefresh(Shutter::Shutter::numShape, 4, 100);
+
+            ShapeInit(EV::EV::numShape);
+            ShapeRefresh(EV::EV::numShape, 1, 0);
+
+            ShapeInit(EV::EV::numShape_under);
+            ShapeRefresh(EV::EV::numShape_under, 1, 0);
+        }
+    }
+}

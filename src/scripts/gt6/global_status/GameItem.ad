@@ -1,0 +1,537 @@
+
+
+//---------------------------------------------------------------------------------------
+// GameItem.ad
+//
+// Creates the save profile entity
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module GameItem
+{
+    function clearInitializer()
+    {
+        undef CreateStructure;
+        undef Initialize;
+        undef clearInitializer;
+        undef InitializeDB;
+        undef ReinitializeDB;
+    }
+
+    function CreateStructure()
+    {
+        var st = STStructure("Impl");
+        main::GameItem.defineModule(st);
+
+        var st_racing_gear = STStructure("RacingGearImpl");
+        GameItem.defineModule(st_racing_gear);
+        st.define("racing_gear", st_racing_gear);
+
+        var st_paint = STStructure("PaintImpl");
+        GameItem.defineModule(st_paint);
+        st.define("paint", st_paint);
+
+        DefineMethod();
+
+        return st;
+    }
+
+    function Initialize(instance)
+    {
+        
+    }
+
+    function InitializeDB(instance)
+    {
+        var sqlite = GlobalStatus::getSqlite();
+        DBUtil::initializeTable(sqlite, "t_racing_gear", 5);
+        DBUtil::initializeTable(sqlite, "t_paint", 5);
+
+        var sql_list = [
+            "CREATE TABLE IF NOT EXISTS t_racing_gear (type INTEGER NOT NULL, code INTEGER NOT NULL, count INTEGER NOT NULL, invalid INTEGER NOT NULL, ColorBegin INTEGER NOT NULL, ColorEnd INTEGER NOT NULL, PRIMARY KEY(type, code))",
+            ("CREATE TABLE IF NOT EXISTS t_paint ("
+            "paint_id INTEGER NOT NULL PRIMARY KEY, category INTEGER NOT NULL, type INTEGER NOT NULL, tuner_id INTEGER NOT NULL, hue INTEGER NOT NULL, count INTEGER NOT NULL, invalid INTEGER NOT NULL,"
+            "ColorChip INTEGER NOT NULL, ColorChip2 INTEGER NOT NULL, LabelJpn TEXT NOT NULL, LabelEng TEXT NOT NULL"
+            ")"),
+        ];
+
+        foreach (var sql in sql_list)
+        {
+            var res = sqlite.execute0(sql);
+            if (!(res == 0)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+        }
+
+        if (!instance.racing_gear.hasItem("AVATAR_MET", 7))
+            instance.racing_gear.addItem("AVATAR_MET", 7);
+
+        if (!instance.racing_gear.hasItem("AVATAR_SUIT", 7))
+            instance.racing_gear.addItem("AVATAR_SUIT", 7);
+
+        InitializeDB_105(instance);
+        InitializeDB_106(instance);
+    }
+
+    function InitializeDB_105(instance)
+    {
+        var sqlite = GlobalStatus::getSqlite();
+        DBUtil::initializeTable(sqlite, "t_racing_gear2", 3);
+        var sql_list = [
+            ("CREATE TABLE IF NOT EXISTS t_racing_gear2 ("
+            "id INTEGER NOT NULL,"
+            "type INTEGER NOT NULL,"
+            "code INTEGER NOT NULL,"
+            "color_index INTEGER NOT NULL,"
+            "invalid INTEGER NOT NULL,"
+            "UNIQUE (type, code, color_index),"
+            "PRIMARY KEY (id)"
+            ")"),
+            "CREATE INDEX IF NOT EXISTS t_racing_gear2_type_idx ON t_racing_gear2 (type)",
+            "CREATE INDEX IF NOT EXISTS t_racing_gear2_code_idx ON t_racing_gear2 (code)",
+            "CREATE INDEX IF NOT EXISTS t_racing_gear2_type_code_idx ON t_racing_gear2 (type, code)",
+            "CREATE INDEX IF NOT EXISTS t_racing_gear2_invalid_idx ON t_racing_gear2 (invalid)",  
+        ];
+
+        foreach (var sql in sql_list)
+        {
+            var res = sqlite.execute0(sql);
+            if (!(res == 0)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+        }
+
+        if (GlobalStatus::isOlderEqualThan(2))
+        {
+            var solid = 0;
+            var metallic = 1;
+            sqlite.execute("UPDATE t_paint SET type=? WHERE paint_id=? AND type=?", [metallic, 1084, solid]);
+        }
+    }
+
+    function InitializeDB_106(instance)
+    {
+        var sqlite = GlobalStatus::getSqlite();
+        if (GlobalStatus::isOlderEqualThan(3))
+        {
+            var paint_list = [
+                3259,
+                3228,
+                3268,
+                3270,
+                3272,
+                3277,
+                3279,
+            ];
+
+            foreach (var paint_id in paint_list)
+            {
+                var color_info = SPECDB.query1("SELECT ColorChip, ColorChip2 FROM PAINT_COLOR_INFO WHERE ID = ?", [paint_id]);
+                var col_obj = menu::MColorObject(((color_info.ColorChip >> 16) & 0xFF) * (1f / 255f),
+                                                ((color_info.ColorChip >> 8) & 0xFF) * (1f / 255f),
+                                                ((color_info.ColorChip >> 0) & 0xFF) * (1f / 255f)); 
+                var hue = (col_obj.normalize * 10000).toInt();
+                sqlite.execute("UPDATE t_paint SET ColorChip=?, ColorChip2=?, hue=? WHERE paint_id=?", [color_info.ColorChip, color_info.ColorChip2, hue, paint_id]);  
+            }
+        }
+    }
+
+    function ReinitializeDB(instance)
+    {
+        var version = DBUtil::getTableVersion(sqlite, "t_racing_gear");
+        if (version == nil || version != 5)
+            InitializeDB(instance);
+
+        version = DBUtil::getTableVersion(sqlite, "t_racing_gear2");
+        if (version == nil || version != 3)
+            InitializeDB_105(instance);
+    }
+
+    function DefineMethod()
+    {
+        module Impl
+        {
+        }
+
+        module RacingGearImpl
+        {
+            method getTypeID(type)
+            {
+                var types = [
+                    "AVATAR_MET",
+                    "AVATAR_SUIT",
+                    "AVATAR_SET",
+                ];
+
+                return types.indexOf(type);
+            }
+
+            method hasItem(type, code)
+            {
+                var type_id = getTypeID(type);
+                var sqlite = GlobalStatus::getSqlite();
+                var item_count = sqlite.count("SELECT COUNT(code) FROM t_racing_gear WHERE type = ? AND code = ?", [type_id, code]);
+                return item_count > 0;
+            }
+
+            method hasItem2(type, code, color_index)
+            {
+                if (hasItem(type, code))
+                    return true;
+
+                var sqlite = GlobalStatus::getSqlite();
+                var type_id = getTypeID(type);
+
+                var item_count;
+                if (color_index != nil)
+                {
+                    item_count = sqlite.count("SELECT COUNT(code) FROM t_racing_gear2 WHERE type=? AND code=? AND color_index=?",
+                                                [type_id, code, color_index]);
+                }
+                else
+                {
+                    item_count = sqlite.count("SELECT COUNT(code) FROM t_racing_gear2 WHERE type=? AND code=?",
+                        [type_id, code]);
+                }
+
+                return item_count > 0;
+            }
+
+            method addItem(type, code)
+            {
+                var type_id = getTypeID(type);
+                var sqlite = GlobalStatus::getSqlite();
+
+                if (!hasItem(type, code))
+                {
+                    var avatar_info = SPECDB.query1("SELECT ColorBegin, ColorEnd FROM %{type} WHERE ID=?", [code]);
+                    sqlite.execute("INSERT INTO t_racing_gear (type, code, count, invalid, ColorBegin, ColorEnd) VALUES (?, ?, ?, ?, ?, ?)", [type_id, code, 0, 0, avatar_info.ColorBegin, avatar_info.ColorEnd]);
+                }
+
+                var item_count = sqlite.executeQuery1R1C("SELECT count FROM t_racing_gear WHERE type = ? AND code = ?", [type_id, code]);
+                sqlite.execute("UPDATE t_racing_gear SET count = ? WHERE type = ? AND code = ?", [++item_count, type_id, code]);
+                self.checkUnlockTrophy();
+                return true;
+            }
+
+            method addItem2(type, code, color_index)
+            {
+                var type_id = getTypeID(type);
+                var sqlite = GlobalStatus::getSqlite();
+
+                if (color_index != nil)
+                    sqlite.execute("INSERT INTO t_racing_gear2 (type, code, color_index, invalid) VALUES (?, ?, ?, ?)", [type_id, code, color_index, 0]);
+                else
+                {
+                    var avatar_info = SPECDB.query1("SELECT ColorBegin, ColorEnd FROM %{type} WHERE ID=?", [code]);
+                    for (var i = avatar_info.ColorBegin; i <= avatar_info.ColorEnd; i++)
+                        sqlite.execute("INSERT INTO t_racing_gear2 (type, code, color_index, invalid) VALUES (?, ?, ?, ?)", [type_id, code, i, 0]);
+                }
+
+                self.checkUnlockTrophy();
+            }
+
+            method getItemList(type)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var where_conditions = ["count > 0"];
+                var params = [];
+                if (type != nil)
+                {
+                    var type_id = getTypeID(type);
+                    where_conditions.push("type = ?");
+                    params.push(type_id);
+                }
+
+                var where_clause = "WHERE " + where_conditions.join(" AND ");
+                var item_list = sqlite.queryList("SELECT type, code, invalid, ColorBegin, ColorEnd FROM t_racing_gear %{where_clause}", params);
+                return item_list;
+            }
+
+            method getItemList2(type)
+            {
+                var list = [];
+                var sqlite = GlobalStatus::getSqlite();
+                var type_id = getTypeID(type);
+                list += sqlite.queryList("SELECT code, invalid FROM t_racing_gear WHERE type=? AND count>0", [type_id]);
+                list += sqlite.queryList("SELECT code, MAX(invalid) as invalid, MIN(id) as id FROM t_racing_gear2 WHERE type=? GROUP BY code ORDER BY id", [type_id]);
+                return list;
+            }
+
+            method getItemCodeList(type)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var type_id = getTypeID(type);
+                var where_conditions = ["count > 0"];
+                var params = [];
+                if (type != nil)
+                {
+                    var type_id = getTypeID(type);
+                    where_conditions.push("type = ?");
+                    params.push(type_id);
+                }
+
+                var where_clause = "WHERE " + where_conditions.join(" AND ");
+                var code_list = sqlite.executeQuery1C("SELECT code FROM t_racing_gear %{where_clause}", params);
+                return code_list;
+            }         
+            
+            method getItemCodeList2(type)
+            {
+                var code_list = [];
+                var sqlite = GlobalStatus::getSqlite();
+                var type_id = getTypeID(type);
+                code_list += sqlite.executeQuery1C("SELECT code FROM t_racing_gear WHERE type=? AND count>0", [type_id]);
+                code_list += sqlite.executeQuery1C("SELECT code, MIN(id) as id FROM t_racing_gear2 WHERE type=? GROUP BY code ORDER BY id", [type_id]);
+
+                return code_list;
+            }
+
+            method getItemColorList(type, code)
+            {
+                var index_list = [];
+                var sqlite = GlobalStatus::getSqlite();
+                var type_id = getTypeID(type);
+                
+                var row = sqlite.query1("SELECT ColorBegin, ColorEnd FROM t_racing_gear WHERE count>0 AND type=? AND code=?", [type_id, code]);
+                if (row != nil)
+                {
+                    for (var i = row.ColorBegin; i <= row.ColorEnd; i++)
+                        index_list.push(i);
+
+                    return index_list;
+                }
+
+                index_list = sqlite.executeQuery1C("SELECT color_index FROM t_racing_gear2 WHERE type=? AND code=? ORDER BY color_index", [type_id, code]);
+                if (index_list == nil)
+                    return [];
+
+                return index_list;
+            }
+
+            method getItemColorCount(type, code)
+            {
+                var index_list = [];
+                var sqlite = GlobalStatus::getSqlite();
+                var type_id = getTypeID(type);
+                
+                var row = sqlite.query1("SELECT ColorBegin, ColorEnd FROM t_racing_gear WHERE count>0 AND type=? AND code=?", [type_id, code]);
+                if (row != nil)
+                    return (row.ColorEnd - row.ColorBegin) + 1;
+                
+
+                var count = sqlite.count("SELECT COUNT(color_index) FROM t_racing_gear2 WHERE type=? AND code=?", [type_id, code]);
+                return count;
+            }
+
+            method setInvalid(type, code, invalid)
+            {
+                var type_id = getTypeID(type);
+                var sqlite = GlobalStatus::getSqlite();
+                sqlite.execute("UPDATE t_racing_gear SET invalid = ? WHERE type = ? AND code = ?", [invalid, type_id, code]);
+                sqlite.execute("UPDATE t_racing_gear2 SET invalid = ? WHERE type = ? AND code = ?", [invalid, type_id, code]);
+                return true;
+            }
+
+            method isInvalid(type, code)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var type_id = getTypeID(type);
+                var invalid = sqlite.executeQuery1R1C("SELECT invalid FROM t_racing_gear WHERE type=? AND code=?", [type_id, code]);
+                if (invalid != nil)
+                    return invalid;
+                
+                invalid = sqlite.executeQuery1R1C("SELECT MAX(invalid) FROM t_racing_gear2 WHERE type=? AND code=?", [type_id, code]);
+                if (invalid != nil)
+                    return invalid;
+
+                return false;
+            }
+
+            method getItemVarietyCount()
+            {
+                var sql = "SELECT COUNT(*) FROM (SELECT * FROM t_racing_gear WHERE count > 0 GROUP BY type, code)";
+                var sqlite = GlobalStatus::getSqlite();
+                var count = sqlite.executeQuery1R1C(sql);
+                var count2 = sqlite.count("SELECT COUNT(*) FROM (SELECT * FROM t_racing_gear2 GROUP BY type, code)");
+                count += count2;
+                return count;
+            }
+
+            method getItemVarietyCountWithoutDLC()
+            {
+                var sql = "SELECT COUNT(*) FROM (SELECT * FROM t_racing_gear WHERE count > 0 AND NOT ("
+                          "type = 2 AND code = 38"
+                          ") GROUP BY type, code)";
+                
+                var sqlite = GlobalStatus::getSqlite();
+                var count = sqlite.executeQuery1R1C(sql);
+                var count2 = sqlite.count("SELECT COUNT(*) FROM (SELECT * FROM t_racing_gear2 WHERE "
+                             " NOT (type = 2 AND code = 38)"
+                             " AND NOT (type = 2 AND code = 82)"
+                             " AND NOT (type = 2 AND code = 83)"
+                             " AND NOT (type = 2 AND code = 84)"
+                             " GROUP BY type, code)");
+                count += count2;
+                return count;
+            }
+
+            method checkUnlockTrophy()
+            {
+                var count = self.getItemVarietyCountWithoutDLC();
+                var array = [
+                    [count >= 5, gtengine::TrophyType::RACING_GEAR1],
+                    [count >= 20, gtengine::TrophyType::RACING_GEAR2],
+                ];
+
+                foreach (var [condition, trophyId] in array)
+                {
+                    if (condition)
+                        PDINetwork.unlockTrophyAsync(trophyId);
+                    else
+                        break;
+                }
+            }
+
+            method isItemColorCompleted(type, code)
+            {
+                if (hasItem(type, code))
+                    return true;
+
+                var sqlite = GlobalStatus::getSqlite();
+                var type_id = getTypeID(type);
+                var avatar_info = SPECDB.query1("SELECT ColorBegin, ColorEnd FROM %{type} WHERE ID=?", [code]);
+                var total_color_count = (avatar_info.ColorEnd - avatar_info.ColorBegin) + 1;
+                var color_count = sqlite.count("SELECT COUNT(*) FROM t_racing_gear2 WHERE type=? AND code=?", [type_id, code]);
+                return total_color_count <= color_count;
+            }
+        }
+
+        module PaintImpl
+        {
+            method hasItem(paint_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeQuery1R1C("SELECT COUNT(*) FROM t_paint WHERE paint_id = ?", [paint_id]);
+                if (res == nil)
+                    return false;
+
+                return res > 0;
+            }
+
+            method addItem(paint_id, category = 0)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                if (!hasItem(paint_id))
+                {
+                    var color_info = SPECDB.query1("SELECT Type, TunerID, ColorChip, ColorChip2, LabelJpn, LabelEng FROM PAINT_COLOR_INFO WHERE ID = ?", [paint_id]);
+                    var col_obj = menu::MColorObject(((color_info.ColorChip >> 16) & 0xFF) * (1f / 255f),
+                                                    ((color_info.ColorChip >> 8) & 0xFF) * (1f / 255f),
+                                                    ((color_info.ColorChip >> 0) & 0xFF) * (1f / 255f)); 
+                    var hue = (col_obj.normalize * 10000).toInt();
+                    sqlite.execute("INSERT INTO t_paint (paint_id, category, type, tuner_id, hue, count, invalid, ColorChip, ColorChip2, LabelJpn, LabelEng) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                [paint_id, category, color_info.Type, color_info.TunerID, hue, 0, 0, color_info.ColorChip, color_info.ColorChip2, color_info.LabelJpn, color_info.LabelEng]);    
+                }
+
+                var item_count = sqlite.executeQuery1R1C("SELECT count FROM t_paint WHERE paint_id = ?", [paint_id]);
+                if (item_count == nil)
+                    return false;
+
+                sqlite.execute("UPDATE t_paint SET count = ? WHERE paint_id = ?", [++item_count, paint_id]);
+                return true;
+            }
+
+            method getItemList(type)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var where_conditions = ["count > 0"];
+                var params = [];
+                if (type != nil)
+                {
+                    where_conditions.push("type = ?");
+                    params.push(type);
+                }
+
+                var where_clause = "WHERE " + where_conditions.join(" AND ");
+
+                var paintname_column = main::pdistd::MLocale::getLanguage() == "JP" ? "LabelJpn" : "LabelEng"; // Unused
+                var item_list = sqlite.queryList("SELECT * FROM t_paint %{where_clause} ORDER BY hue ASC", params);
+                return item_list;
+            }
+
+            method getItemSimple(paint_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var where_conditions = ["count > 0"];
+                var params = [];
+                if (paint_id != nil)
+                {
+                    where_conditions.push("paint_id = ?");
+                    params.push(paint_id);
+                }
+
+                var where_clause = "WHERE " + where_conditions.join(" AND ");
+
+                var paintname_column = main::pdistd::MLocale::getLanguage() == "JP" ? "LabelJpn" : "LabelEng"; // Unused
+                var item = sqlite.query1("SELECT paint_id, invalid, ColorChip, ColorChip2, %{paintname_column} as name, category FROM t_paint %{where_clause}", params);
+                return item;
+            }
+
+            method getItemListSimple(type)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var where_conditions = ["count > 0"];
+                var params = [];
+                if (type != nil)
+                {
+                    where_conditions.push("type = ?");
+                    params.push(type);
+                }
+
+                var where_clause = "WHERE " + where_conditions.join(" AND ");
+
+                var paintname_column = main::pdistd::MLocale::getLanguage() == "JP" ? "LabelJpn" : "LabelEng"; // Unused
+                var item_list = sqlite.queryList("SELECT paint_id, invalid, ColorChip, ColorChip2, %{paintname_column} as name, category FROM t_paint %{where_clause} ORDER BY hue ASC", params);
+                return item_list;
+            }
+
+            method getPaintIdList(type)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var where_conditions = ["count > 0"];
+                var params = [];
+                if (type != nil)
+                {
+                    where_conditions.push("type = ?");
+                    params.push(type);
+                }
+
+                var where_clause = "WHERE " + where_conditions.join(" AND ");
+
+                var paintid_list = sqlite.executeQuery1C("SELECT paint_id FROM t_paint %{where_clause} ORDER BY hue ASC", params);
+                return paintid_list;
+            }
+
+            method setInvalid(paint_id, invalid)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                sqlite.execute("UPDATE t_paint SET invalid = ? WHERE paint_id = ?", [invalid, paint_id]);
+                return true;
+            }
+
+            method setInvalidCategory(category, invalid)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                sqlite.execute("UPDATE t_paint SET invalid = ? WHERE category = ?", [invalid, category]);
+                return true;
+            }
+
+            method getCount(category)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var where_clause = category != nil ? "WHERE category=%{category}" : "";
+                return sqlite.count("SELECT COUNT(paint_id) FROM t_paint %{where_clause}");
+            }
+        }
+    }
+}

@@ -1,0 +1,249 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module KamishibaiRoot
+{
+    static sInfo = nil;
+    static sCheckKeyPressThread = nil;
+    static sSkipKamishibai = nil;
+
+    method setup(info)
+    {
+        sInfo = info;
+    }
+
+    function resetActor(actor, forward)
+    {
+        if (forward)
+            actor.forward();
+        else
+            actor.backward();
+
+        actor.reset();
+    }
+
+    function restartActor(actor, forward)
+    {
+        if (forward)
+            actor.forward();
+        else
+            actor.backward();
+
+        actor.restart();
+    }
+
+    function startActor(actor, forward)
+    {
+        if (forward)
+            actor.forward();
+        else
+            actor.backward();
+
+        actor.start();
+    }
+
+    function onPageOutEnd(context)
+    {
+        var title_image = sInfo["title_image"];
+        if (title_image != nil)
+            Title::Year.image_path = title_image;
+
+        var title_text = sInfo["title_text"];
+        if (title_text != nil)
+            Title::Label.text = title_text;
+
+        var bgm = sInfo["bgm"];
+        if (bgm != nil)
+            SoundUtil::MenuBGMCrossfadeGroup(bgm, 0f, 1f);
+
+        restartActor(Title::Fade, true);
+    }
+
+    function end_kamishibai()
+    {
+        if (sCheckKeyPressThread != nil)
+        {
+            sCheckKeyPressThread.terminate();
+            sCheckKeyPressThread = nil;
+        }
+
+        sSkipKamishibai = nil;
+        sInfo = nil;
+
+        startActor(cover::Fade, true);
+        Thread::Sleep(cover::Fade.ramain_time);
+        resetActor(Caption::Fade, true);
+        resetActor(Image01::Fade, true);
+        resetActor(Image02::Fade, true);
+        resetActor(Title::Fade, true);
+    }
+
+    function sync()
+    {
+        sSkipKamishibai = false;
+
+        sCheckKeyPressThread = Thread(function ()
+        {
+            while (true)
+            {
+                var state = main::ContextMain.getUpdateContext().getLastPadButtonState(0);
+                if (state & 0x20000)
+                {
+                    sound.play("cancel");
+                    sSkipKamishibai = true;
+                    break;
+                }
+
+                Thread::Sleep(0.1f);
+            }
+
+
+        });
+
+        var enable_skip = sInfo["enable_skip"];
+
+        if (enable_skip != nil && enable_skip)
+        {
+            sCheckKeyPressThread.start();
+            restartActor(Title::Skip::Fade, true);
+
+            var s = 0f;
+            var wait_sec = 3f;
+
+            while (s < wait_sec)
+            {
+                if (sSkipKamishibai)
+                {
+                    end_kamishibai();
+                    return;
+                }
+
+                Thread::Sleep(0.1f);
+                s += 0.1f;
+            }
+        }
+
+        startActor(Title::Fade, false);
+
+        while (Title::Fade.ramain_time > 0)
+        {
+            if (sSkipKamishibai)
+            {
+                end_kamishibai();
+                return;
+            }
+
+            Thread::Sleep(0.1f);
+        }
+
+        var photo_list = sInfo["list"];
+
+        var fadein_image_w = Image01;
+        var fadeout_image_w = Image02;
+
+        var display_count = 0;
+
+        for (var i = 0; i < photo_list.size; ++i)
+        {
+            var photo_info = photo_list[i];
+            if (display_count == 0)
+            {
+                if (i > 0)
+                {
+                    var tmp_fadeout_image_w = fadeout_image_w;
+                    fadeout_image_w = fadein_image_w;
+                    fadein_image_w = tmp_fadeout_image_w;
+                }
+
+                var zoom_total_time = 0;
+
+                for (var ii = i; ii < photo_list.size; ++ii)
+                {
+                    var photo_info2 = photo_list[ii];
+                    if (photo_info.image != photo_info2.image)
+                        break;
+                    
+                        zoom_total_time += photo_info2.display_time;
+                        display_count++;
+                }
+
+                var scale = 1f + (0.04f * display_count);
+                fadein_image_w.Zoom.setEndValue(0, [scale, scale]);
+                fadein_image_w.Zoom.total_time = zoom_total_time + fadeout_image_w.Fade.total_time;
+                resetActor(fadein_image_w.Fade, true);
+                fadein_image_w.image_path = "";
+                fadein_image_w.on_delay_load_complete = function()
+                {
+                    fadein_image_w.Fade.start();
+                    fadein_image_w.on_delay_load_complete = nil;
+                }
+
+                fadein_image_w.image_path = "piece/gt6/senna/%s.img".format(photo_info.image);
+                restartActor(fadein_image_w.Zoom, true);
+                restartActor(fadeout_image_w.Fade, false);
+            }
+
+            Caption.text = manager.translate(photo_info.page, photo_info.caption);
+            Caption::Fade.total_time = photo_info.display_time;
+            restartActor(Caption::Fade, true);
+
+            Copyright.text = manager.translate("Senna01", photo_info.copyright);
+
+            while (Caption::Fade.ramain_time > 0)
+            {
+                if (sSkipKamishibai)
+                    break;
+
+                Thread::Sleep(0.1f);
+            }
+
+            display_count--;
+        }
+
+        end_kamishibai();
+    }
+
+    method onInitialize(context)
+    {
+        Caption.text = "";
+        Image01.image_path = "";
+        Image02.image_path = "";
+        Copyright.text = "";
+        Title::Year.image_path = "";
+        Title::Label.text = "";
+
+        var is_cross_cancel = pdiext::MSystemConfiguration::GetEnterButtonAssign() == "circle";
+        Title::Skip::Circle.visible = !is_cross_cancel;
+        Title::Skip::Cross.visible = is_cross_cancel;
+
+        resetActor(cover::Fade, true);
+        resetActor(Caption::Fade, true);
+        resetActor(Image01::Fade, true);
+        resetActor(Image01::Zoom, true);
+        resetActor(Image02::Fade, true);
+        resetActor(Image02::Zoom, true);
+        resetActor(Title::Fade, true);
+        resetActor(Title::Skip::Fade, true);
+    }
+
+    method onFinalize(context)
+    {
+        main::cursor_project.resetBridgeRoot();
+    }
+
+    method onPageInStart(context)
+    {
+        
+    }
+}

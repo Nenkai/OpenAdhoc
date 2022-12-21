@@ -1,0 +1,267 @@
+
+
+//---------------------------------------------------------------------------------------
+// DBUtil.ad
+//
+// Utility module for Some additional SQLite operations.
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+
+module DBUtil
+{
+    function initializeTable(sqlite, table_name, current_version)
+    {
+        var table_version = getTableVersion(sqlite, table_name);
+        if (table_version == nil)
+        {
+            var success = dropTable(sqlite, table_name);
+            if (!success)
+                return true;
+
+            var sql = "CREATE TABLE IF NOT EXISTS " + table_name + "_version (version INTEGER)";
+            var res = sqlite.execute0(sql);
+
+            if (res != 0)
+                return true;
+
+            sql = "INSERT INTO " + table_name + "_version (version) VALUES (?)";
+            var params = [current_version];
+            res = sqlite.execute(sql, params);
+
+            if (res != 101)
+                return true;
+
+            return true;
+        }
+        else if (table_version != current_version)
+        {
+            dropTable(sqlite, table_name);
+            var sql = "UPDATE " + table_name + "_version SET version=?";
+            var params = [current_version];
+            var res = sqlite.execute(sql, params);
+
+            if (res != 101)
+                return true;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    function getTableVersion(sqlite, table_name)
+    {
+        var sql = "SELECT version FROM " + table_name + "_version";
+        var res = sqlite.executeQuery(sql);
+        var table_version = res.size == 0 ? nil : res[0][0];
+        return table_version;
+    }
+
+    function updateTableVersion(sqlite, table_name, version)
+    {
+        var table_version = getTableVersion(sqlite, table_name);
+        if (table_version == nil)
+        {
+            var sql = "CREATE TABLE IF NOT EXISTS " + table_name + "_version (version INTEGER)";
+            var res = sqlite.execute0(sql);
+            if (res != 0)
+                return false;
+
+            var sql = "INSERT INTO " + table_name + "_version (version) VALUES (?)";
+            var params = [version];
+            var res = sqlite.execute(sql, params);
+            if (res != 101)
+                return false;
+        }
+        else 
+        {
+            var sql = "UPDATE " + table_name + "_version SET version=?";
+            var params = [version];
+            var res = sqlite.execute(sql, params);
+            if (res != 101)
+                return false;
+        }
+
+        return true;
+    }
+
+    function dropTable(sqlite, table_name)
+    {
+        var sql = "DROP TABLE IF EXISTS " + table_name;
+        var res = sqlite.execute0(sql);
+        return res == 0;
+    }
+
+    function set_attr_value_list(data, list)
+    {
+        var idx = 0;
+        foreach (var [a, v] in data.class_id)
+        {
+            if (!v.is_attribute)
+                continue;
+
+            data{v} = list[idx];
+            idx++;
+        }
+    }
+
+    function get_attr_value_list(data, with_id)
+    {
+        if (with_id == nil)
+            with_id = false;
+
+        var list = [];
+        foreach (var [a, v] in data.class_id)
+        {
+            if (!v.is_attribute)
+                continue;
+
+            if (a == "id" && !with_id)
+                continue;
+
+            list.push(*data{v});
+        }
+
+        return list;
+    }
+
+    function get_attr_list(class_id, with_id)
+    {
+        if (with_id == nil)
+            with_id = false;
+
+        var list = [];
+        foreach (var [a, v] in class_id)
+        {
+            if (!v.is_attribute)
+                continue;
+
+            if (a == "id" && !with_id)
+                continue;
+
+            list.push(a.toString());
+        }
+        return list;
+    }
+
+    function get_query_columns(class_id, with_id)
+    {
+        var list = get_attr_list(class_id, with_id);
+        return list.join(",");
+    }
+
+    function insert(sqlite, table_name, data)
+    {
+        var list = [];
+        foreach (var [a, v] in data.class_id)
+        {
+            if (!v.is_attribute)
+                continue;
+
+            if (a == "id")
+                continue;
+
+            list.push("?");
+        }
+
+        var questions = list.join(",");
+
+        var sql = "INSERT INTO " + table_name + " (" +
+                  get_query_columns(data.class_id, false) +
+                  ") "
+                  "VALUES (" + questions + ")";
+
+        var params = get_attr_value_list(data, false);
+        var res = sqlite.execute(sql, params);
+
+        if (!(res == 101)) { ErrorUtil::warningDBFailed(res, __FILE__, __LINE__); return false };
+    }
+
+    function getSelectQuery(table_name, class_id)
+    {
+        var select_query = "SELECT " +
+                            get_query_columns(class_id, true) + 
+                            " FROM " + table_name + " ";
+        return select_query;
+    }
+
+    function getDataList(class_id, select_res)
+    {
+        var data_list = Array(select_res.size);
+        for (var i = 0; i < select_res.size; i++)
+        {
+            var data = class_id();
+            set_attr_value_list(data, select_res[i]);
+            data_list[i] = data;
+        }
+
+        return data_list;
+    }
+
+    function get_max_id(sqlite, table_name)
+    {
+        var sql = "SELECT MAX(id) FROM " + table_name;
+        var res = sqlite.executeQuery1R1C(sql);
+        if (res == nil)
+            return 0;
+        else
+            return res;
+    }
+
+    function getUniqFileName(sqlite, table_name, path_base, ext)
+    {
+        var id = get_max_id(sqlite, table_name) + 1;
+        var fname = path_base + "%04d".format(id);
+        var extension = ".dat";
+
+        if (ext != nil)
+            extension = "." + ext;
+
+        var path;
+        while (true)
+        {
+            path = fname + extension;
+            if (!pdistd::Exist(path))
+                break;
+
+            fname = fname + "D";
+        }
+
+        return path;
+    }
+
+    function deleteRow(sqlite, table_name, data)
+    {
+        var sql = "DELETE FROM " + table_name + " WHERE id = %{data.id}";
+        var res = sqlite.execute(sql);
+
+        if (!(res == 101)) { ErrorUtil::warningDBFailed(res, __FILE__, __LINE__); return false };
+    }
+
+    function deleteRowBylist(sqlite, table_name, data_list)
+    {
+        var sql = "DELETE FROM %{table_name} WHERE id = ?";
+        var sql_list = Array();
+        foreach (var data in data_list)
+        {
+            var params = [data.id];
+            sql_list.push([sql, params]);
+        }
+
+        var res = sqlite.executeTransaction(sql_list);
+        if (!(res == 101)) { ErrorUtil::warningDBFailed(res, __FILE__, __LINE__); return false };
+    }
+
+    function deleteAll(sqlite, table_name)
+    {
+        var sql = "DELETE FROM %{table_name}";
+        var res = sqlite.execute(sql);
+
+        if (!(res == 101)) { ErrorUtil::warningDBFailed(res, __FILE__, __LINE__); return false };
+    }
+}

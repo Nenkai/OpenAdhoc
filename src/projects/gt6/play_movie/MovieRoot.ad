@@ -1,0 +1,399 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module MovieRoot
+{
+    attribute movie_name;
+    attribute progress_watcher;
+    attribute progress;
+    attribute modal;
+
+    method onRealize(context)
+    {
+        if (!main.defined("CaptionUtil"))
+            PlayMovieProject.load("/scripts/gt6/util/CaptionUtil");
+    }
+
+    method onDestroy(context)
+    {
+        if (main.defined("CaptionUtil"))
+            main.removeStatic($"CaptionUtil");
+    }
+
+    method open(context, movie_name)
+    {
+        SoundUtil::BGMFadeout(0.5);
+        self.movie_name = movie_name;
+
+        SequenceUtil::startPageSimple(context, MovieRoot);
+    }
+
+    method close(context)
+    {
+        if (self.modal != nil)
+        {
+            MovieFace.unload();
+            PageUtil::visibleUnderPages(context, self);
+            self.modal.close();
+            self.modal = nil;
+        }
+        else
+        {
+            SequenceUtil::startProject(context, GameSequence::getPrevProject());
+        }
+    }
+
+    method openModal(context, movie_name)
+    {
+        SoundUtil::BGMFadeout(0.5);
+        self.movie_name = movie_name;
+
+        var cursor_visible = context.cursor_visible;
+        context.cursor_visible = false;
+        self.modal = SequenceUtil::ModalPage(context, self);
+        self.modal.open();
+
+        context.cursor_visible = cursor_visible;
+        return true;
+    }
+
+    method onInitialize(context)
+    {
+        if (self.modal != nil)
+            context.pushEvent(menu::MFunctionEvent(PageUtil::invisibleUnderPages, context, self));
+
+        self.progress_watcher = WatcherUtil::Create(context, onTickProgress, 1);
+        self.progress = pdistd::MProgress();
+
+        Menu::Bar::Progress::ProgressFace.progress = self.progress;
+        Menu::Bar::Progress::ProgressFace.raw_mode = true;
+        Menu::Bar::Progress::ProgressFace.linear_mode = true;
+        Menu::Bar::Progress::ProgressFace.decreasable = true;
+        Menu::Bar::Time::TextFaceCurrent.text = "";
+        Menu::Bar::Time::TextFaceTotal.text = "";
+
+        LeaveDetectUtil::begin(context, 
+            5, 
+            self, 
+            self.onLeaveDetectToHideMenu,
+            self.onActivateDetectToAppearMenu,
+            false);
+        
+        var circle = pdiext::MSystemConfiguration::GetEnterButtonAssign() == "circle";
+
+        Menu::Bar::Help::PlayPause::ImageFaceCircle.visible = circle;
+        Menu::Bar::Help::PlayPause::ImageFaceCross.visible = !circle;
+        Menu::Bar::Help::Close::ImageFaceCircle.visible = !circle;
+        Menu::Bar::Help::Close::ImageFaceCross.visible = circle;
+
+        Caption.initialize(context, self.movie_name);
+        MovieFace.play_movie(context);
+
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        MovieFace.stop_movie(context);
+
+        if (self.progress_watcher != nil)
+        {
+            WatcherUtil::Delete(self.progress_watcher);
+            self.progress_watcher = nil;
+        }
+
+        LeaveDetectUtil::end(context);
+        return STATE_YIELD;
+    }
+
+    method onActivate(context)
+    {
+        main::sound.play("ok");
+
+        if (MovieFace.isPause())
+            MovieFace.doPause(false);
+        else
+            MovieFace.doPause(true);
+
+        return STATE_YIELD;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        MovieFace.end_movie(context);
+        return STATE_YIELD;
+    }
+
+    method onLeaveDetectToHideMenu(context)
+    {
+        Menu::Y.reverse = true;
+        Pause::Opacity.reverse = true;
+
+        Menu::Y.start();
+        Pause::Opacity.start();
+    }
+
+    method onActivateDetectToAppearMenu(context)
+    {
+        Pause.visible = MovieFace.isPause();
+
+        Menu::Y.reverse = false;
+        Pause::Opacity.reverse = false;
+        Menu::Y.start();
+        Pause::Opacity.start();
+    }
+
+    method setPauseIcon(pause, ff, rew)
+    {
+        Pause::Pause.visible = pause;
+        Pause::FastForward.visible = ff;
+        Pause::Rewind.visible = rew;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (LeaveDetectUtil::activated(context, event))
+            ;
+
+        if (event.keysym == CELL_PAD_CTRL_L1)
+        {
+            setPauseIcon(false, false, true);
+            MovieFace.doPause(true);
+            MovieFace.state = "REW";
+            MovieFace.rewind(5);
+        }
+        else if (event.keysym == CELL_PAD_CTRL_R1)
+        {
+            setPauseIcon(false, true, false);
+            MovieFace.doPause(true);
+            MovieFace.state = "FF";
+            MovieFace.fastforward(5);
+        }
+
+        return STATE_EXIT;
+    }
+
+    method onKeyRelease(context, event)
+    {
+        if (MovieFace.state == "FF" || MovieFace.state == "REW")
+        {
+            MovieFace.doPause(false);
+            setPauseIcon(true, false, false);
+        }
+
+        return STATE_EXIT;
+    }
+
+    function pts2time(pts)
+    {
+        if (pts < 0)
+            return "";
+
+        var sec = pts / 90 / 1000;
+        var hh = sec / 3600;
+        var mm = sec % 3600 / 60;
+        var ss = sec % 60;
+        var time = "%02d:%02d".format(mm, ss);
+        if (hh > 0)
+            time = "%d:%s".format(hh, time);
+        return time;
+    }
+
+    method onTickProgress(context)
+    {
+        if (MovieFace.is_finish)
+            return;
+
+        var start = MovieFace.getStartPts();
+        var end = MovieFace.getEndPts();
+        var current = MovieFace.getCurrentPts() - start;
+        var total = end - start;
+        if (total > 0)
+        {
+            self.progress.value = current.toFloat() / total;
+            Menu::Bar::Time::TextFaceCurrent.text = pts2time(current);
+            Menu::Bar::Time::TextFaceTotal.text = pts2time(total);
+        }
+
+        Caption.update(context, current / 90);
+    }
+
+    module Caption
+    {
+        method initialize(context, movie_name)
+        {
+            self.TextFace.text = "";
+            self.TextFaceLatin.text = "";
+
+            CaptionUtil::initialize(context, movie_name);
+        }
+
+        method setText(context, text)
+        {
+            if (CaptionUtil::isLatin())
+                self.TextFaceLatin.text = text;
+            else
+                self.TextFace.text = text;
+        }
+
+        method clear(context)
+        {
+            var me = self;
+
+            self.Opacity.on_effect_end = (context) => 
+            {
+                me.setText(context, "");
+                me.Opacity.on_effect_end = nil;
+            };
+
+            self.Opacity.reverse = true;
+            self.Opacity.start();
+        }
+
+        method update(context, ms)
+        {
+            if (ms <= 0)
+                return;
+
+            if (!CaptionUtil::isNeedUpdate(ms))
+                return;
+
+            var text = CaptionUtil::getCaption(ms);
+            if (text == "")
+                clear(context);
+            else
+            {
+                setText(context, text);
+                self.Opacity.on_effect_end = nil;
+                self.Opacity.reverse = false;
+                self.Opacity.start();
+            }
+        }
+    }
+
+    module MovieFace
+    {
+        attribute is_finish = false;
+        attribute state = "";
+
+        method play_movie(context)
+        {
+            var movie = MENUDB.query1("SELECT * FROM t_movie WHERE Name = ?", [MovieRoot.movie_name]);
+            if (movie == nil)
+            {
+                end_movie(context);
+                return;
+            }
+
+            SoundUtil::BGMStop();
+            CaptionUtil::reset();
+
+            Caption.clear(context);
+            var key = Tv2.decodeContentsKey(movie.Key);
+            self.setKey(key);
+            self.setVideoSize(movie.Width, movie.Height);
+            
+            var movie_file = "/movies/%{movie.FileName}";
+            self.audio_level = SoundUtil::GetMovieVolume();
+            self.audio_track = -1;
+            self.is_finish = false;
+            self.load(context, movie_file);
+        }
+
+        method stop_movie(context)
+        {
+            self.unload();
+            self.is_finish = false;
+        }
+
+        method end_movie(context)
+        {
+            self.pause(true);
+            context.wait();
+            context.wait();
+            self.is_finish = nil;
+            MovieRoot.close(context);
+        }
+
+        method onMovieFinish(context)
+        {
+            if (MovieRoot.isClosed())
+                return;
+
+            if (self.is_finish != nil && !self.is_finish)
+            {
+                self.is_finish = true;
+                self.end_movie(context);
+            }
+        }
+
+        method doPause(paused)
+        {
+            self.pause(paused);
+            Pause.visible = paused;
+            self.state = "";
+        }
+
+        method rewind(sec)
+        {
+            var pts = self.getCurrentPts();
+            var current = pts;
+            pts -= sec * 90 * 1000;
+            
+            var start = self.getStartPts();
+            if (pts < start)
+                pts = start;
+
+            if (current != pts)
+            {
+                if (!self.setSeekPts(pts))
+                    self.state = "";
+            }
+        }
+
+        method fastforward(sec)
+        {
+            var pts = self.getCurrentPts();
+            var current = pts;
+            pts += sec * 90 * 1000;
+            
+            var end = self.getEndPts();
+            if (end < pts)
+                pts = end;
+
+            if (current != pts)
+            {
+                if (!self.setSeekPts(pts))
+                    self.state = "";
+            }
+        }
+
+        method onMovieSeeked(context)
+        {
+            if (self.is_finish)
+            {
+                self.state = "";
+                return;
+            }
+
+            if (self.state == "FF")
+                fastforward(5);
+            else if (self.state == "REW")
+                rewind(5);
+            else if (self.state == "")
+                CaptionUtil::reset();
+        }
+    }
+}

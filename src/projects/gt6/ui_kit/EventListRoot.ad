@@ -1,0 +1,1301 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module EventListRoot
+{
+    hidden.visible = false;
+
+    module Mode
+    {
+        static Edit = 0;
+        static Load = 1;
+        static Save = 2;
+        static LoadPlus = 3;
+
+        function getTitle(mode)
+        {
+            var title = "";
+            switch (mode)
+            {
+                case Edit:
+                    title = manager.translate(EventListRoot, "Title_Edit");
+                    break;
+
+                case Load:
+                case LoadPlus:
+                    title = manager.translate(EventListRoot, "Title_Load");
+                    break;
+
+                case Save:
+                    title = manager.translate(EventListRoot, "Title_Save");
+                    break;
+            }
+
+            return title;
+        }
+    }
+
+    module Category
+    {
+        static Local = 0;
+        static Club = 1;
+    }
+
+    class Params
+    {
+        attribute checkValidityFunc;
+        attribute dataProvider;
+        attribute categoryList;
+        attribute eventTemplate;
+        attribute clubId;
+
+        method __init__()
+        {
+            self.categoryList = [Category::Local];
+        }
+    }
+    
+    class StorageManager
+    {
+        static sStorageList = [];
+
+        function bind(storage)
+        {
+            sStorageList.push(storage);
+        }
+
+        function unbind(storage)
+        {
+            for (var i = 0; i < sStorageList.size; ++i)
+            {
+                if (sStorageList[i] == storage)
+                {
+                    sStorageList.erase(i);
+                    break;
+                }
+            }
+        }
+
+        function clearCacheAll()
+        {
+            foreach (var storage in sStorageList)
+            {
+                storage.clearCache();
+            }
+        }
+    }
+
+    class StorageBase
+    {
+        attribute list_;
+
+        method __init__()
+        {
+            StorageManager::bind(self);
+        }
+
+        method getData(index)
+        {
+            return self.list_[index];
+        }
+
+        method clearCache()
+        {
+            self.list_ = nil;
+        }
+
+        method isDuplicable()
+        {
+            return true;
+        }
+
+        method modified()
+        {
+            EventListRoot.sNeedSave = true;
+        }
+
+        method getIdFromIndex(index) { }
+
+        method loadList(context, extra) { }
+
+        method save(context, id, rc) { }
+
+        method delete(context, id) { }
+
+        method duplicate(context, id) { }
+
+        method markAsDefault(context, id) { }
+
+        method resetDefault(context) { }
+
+        method getDefaultId(context) { }
+
+        method isFull(context) { }
+
+        method checkFull(context) { }
+
+        method getItemTemplate() { }
+    }
+
+    class LocalStorage extends StorageBase
+    {
+        attribute idList_;
+
+        method getIdFromIndex(index)
+        {
+            return self.idList_[index];
+        }
+
+        method getStorageIndexFromId(id)
+        {
+            for (var i = 0; i < self.idList_.size; ++i)
+            {
+                if (self.idList_[i] == id)
+                    return i;
+            }
+
+            return -1;
+        }
+
+        method loadList(context, extra)
+        {
+            if (self.list_ == nil)
+            {
+                var list = extra;
+                var idList = Array(extra.size);
+
+                for (var i = 0; i < idList.size; ++i)
+                    idList[i] = nil;
+
+                var settingList = EventSettingUtil::getSettingList();
+                foreach (var [id, rc] in settingList)
+                {
+                    if (rc != nil)
+                    {
+                        list.push(rc);
+                        idList.push(id);
+                    }
+                }
+
+                self.list_ = list;
+                self.idList_ = idList;
+            }
+
+            return self.list_;
+        }
+
+        method save(context, id, rc)
+        {
+            if (id == nil)
+            {
+                var vacantIndex = EventSettingUtil::getVacantIndex();
+                if (vacantIndex < 0)
+                {
+                    checkFull(context);
+                    return false;
+                }
+
+                var id = vacantIndex;
+            }
+
+            if (!EventSettingUtil::saveSetting(id, rc))
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate(EventListRoot, "SAVE_FAILED"));
+                return false;
+            }
+
+            modified();
+            StorageManager::clearCacheAll();
+            return true;
+        }
+
+        method delete(context, id)
+        {
+            if (EventSettingUtil::deleteSetting(id))
+            {
+                modified();
+                StorageManager::clearCacheAll();    
+            }
+
+            return true;
+        }
+
+        method duplicate(context, id)
+        {
+            var storageIndex = self.getStorageIndexFromId(id);
+            if (storageIndex == nil || storageIndex < 0)
+                return false;
+
+            var rc = self.list_[storageIndex];
+            if (rc == nil)
+                return false;
+
+            return self.save(context, nil, rc);
+        }
+
+        method markAsDefault(context, id)
+        {
+            EventSettingUtil::setDefaultSettingIndex(id);
+            modified();
+        }
+
+        method resetDefault(context)
+        {
+            EventSettingUtil::setDefaultSettingIndex(-1);
+            modified();
+        }
+
+        method getDefaultId(context)
+        {
+            return EventSettingUtil::getDefaultSettingIndex();
+        }
+
+        method isFull(context)
+        {
+            return EventSettingUtil::getVacantIndex() < 0;
+        }
+
+        method checkFull(context)
+        {
+            if (!self.isFull(context))
+                return true;
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                    manager.translate(EventListRoot, "NO_MORE_SLOT").build(manager.translate("SaveData", "LOCAL_STORAGE")));
+                return false;
+        }
+
+        method getItemTemplate()
+        {
+            return hidden::EventItem;
+        }
+    }
+
+    class ClubStorage extends StorageBase
+    {
+        static sClubId;
+        static sCanSaveCached;
+        static sIsFullCached = false;
+
+        attribute idList_;
+
+        function setClubId(clubId)
+        {
+            sClubId = clubId;
+            updateCanSaveState();
+        }
+
+        function initialize()
+        {
+            sCanSaveCached = nil;
+            sIsFullCached = false;
+        }
+
+        function updateCanSaveState()
+        {
+            sCanSaveCached = sClubId != nil;
+        }
+
+        function canSave(context)
+        {
+            if (sCanSaveCached == nil)
+                setClubId(getMyClubId(context));
+
+            return sCanSaveCached;
+        }
+
+        function getMyClubIdFromResponse(req)
+        {
+            var userId = Grim2.getLoginUserId();
+            var clubList = Community.decodeClubList(req);
+            var clubId;
+
+            foreach (var club in clubList)
+            {
+                if (club["user_id_list"].indexOf(userId) != -1)
+                {
+                    clubId = club["club_id"];
+                    break;
+                }
+            }
+
+            return clubId;
+        }
+
+        function getMyClubId(context)
+        {
+            if (sClubId != nil)
+                return sClubId;
+
+            var clubId;
+            var req = Community.requestClubListByUser(Grim2.getLoginUserId(), nil);
+            if (Grim2Util::joinAwait(context, req))
+                clubId = getMyClubIdFromResponse(req);
+            else
+            {
+                var text = manager.translate("OnlineMessage", "OTHER_NETWORK_ERROR");
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+            }
+
+            return clubId;
+        }
+
+        method getIdFromIndex(index)
+        {
+            return self.idList_[index];
+        }
+
+        method isDuplicable()
+        {
+            return false;
+        }
+
+        method getDefaultId(context)
+        {
+            return nil;
+        }
+
+        method loadList(context, extra)
+        {
+            if (self.list_ != nil)
+                return self.list_;
+
+            var list = [];
+            var idList = [];
+
+            var clubId = getMyClubId(context);
+            if (clubId != nil)
+            {
+                var req = Community.requestEventTemplateList(clubId, nil);
+                if (Grim2Util::joinAwait(context, req))
+                {
+                    var templateList = Community.decodeEventTemplateList(req);
+                    foreach (var template in templateList)
+                    {
+                        var gp = EventSettingUtil::loadSettingFromXml(template["regulation"]);
+                        if (gp != nil)
+                        {
+                            list.push(gtengine::MRoomConfig(gp));
+                            idList.push(template["event_template_id"]);
+                        }
+
+                        if (list.size == 10)
+                            break;
+                    }
+                }
+                else
+                {
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate(EventListRoot, "LOAD_FAILED"));
+                }
+            }
+            else
+                ;
+                
+            setClubId(clubId);
+
+            self.list_ = extra;
+            self.list_ += list;
+            self.idList_ = Array(extra.size);
+
+            for (var i = 0; i < self.idList_.size; ++i)
+                self.idList_[i] = nil;
+
+            self.idList_ += idList;
+
+            updateIsFullState(self.list_);
+
+            return self.list_;
+        }
+
+        method save(context, id, rc)
+        {
+            if (!LoginUtil::isOnline())
+                return false;
+
+            var isOverwrite = id != nil;
+            if (!isOverwrite && !checkFull(context))
+                return false;
+
+            var desc = "";
+            var regulation = EventSettingUtil::serializeSetting(rc);
+            var req;
+            if (isOverwrite)
+            {
+                req = Community.requestUpdateEventTemplate(sClubId, id, desc, regulation, nil);
+            }
+            else
+            {
+                req = Community.requestCreateEventTemplate(sClubId, desc, regulation, nil);
+            }
+
+            if (!Grim2Util::joinAwait(context, req))
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate(EventListRoot, "UPLOAD_FAILED"));
+                return false;
+            }
+
+
+            StorageManager::clearCacheAll();
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, manager.translate(EventListRoot, "UPLOAD_DONE"));
+            return true;
+        }
+
+        method delete(context, id)
+        {
+            if (!LoginUtil::isOnline())
+                return false;
+
+            var req = Community.requestDeleteEventTemplate(sClubId, id, nil);
+            if (!Grim2Util::joinAwait(context, req))
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate(EventListRoot, "DELETE_FAILED"));
+                return false;
+            }
+
+            StorageManager::clearCacheAll();
+            return true;
+        }
+
+        function updateIsFullState(list)
+        {
+            var count = 0;
+            foreach (var rc in list)
+            {
+                if (rc != nil)
+                    ++count;
+            }
+            
+            sIsFullCached = count >= 10;
+        }
+
+        method isFull(context)
+        {
+            return sIsFullCached;
+        }
+
+        method checkFull(context)
+        {
+            if (!self.isFull(context))
+                return true;
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                manager.translate(EventListRoot, "NO_MORE_SLOT").build(manager.translate("OnlineMessage", "ClubEventSetting")));
+            return false;
+        }
+
+        method getItemTemplate()
+        {
+            return hidden::EventItem;
+        }
+    }
+
+    attribute sOpening = false;
+    attribute sAborting = false;
+    attribute sMode = Mode::Edit;
+    attribute sResult;
+    attribute sNewData;
+    attribute sActiveCategory;
+    attribute sParams;
+    attribute sButtonHelpMode;
+    attribute sNeedSave = false;
+
+    method open(context, mode, params)
+    {
+        if (self.sOpening)
+            return;
+
+        self.sOpening = true;
+        self.sNeedSave = false;
+
+        self.sParams = params != nil ? params : Params();
+        self.sResult = nil;
+        self.sMode=  mode;
+
+        SequenceUtil::pushPage(context, EventListRoot);
+        var res = self.sResult;
+        self.sResult = nil;
+        return res;
+    }
+
+    method openForLoad(context, params)
+    {
+        if (self.sOpening)
+            return;
+
+        return self.open(context, Mode::Load, params);
+    }
+
+    method openForLoadPlus(context, params)
+    {
+        if (self.sOpening)
+            return;
+
+        return self.open(context, Mode::LoadPlus, params);
+    }
+
+    method openForSave(context, rc, params)
+    {
+        if (self.sOpening)
+            return;
+
+        self.sNewData = rc;
+
+        self.open(context, Mode::Save, params);
+    }
+
+    method openForEdit(context, params)
+    {
+        if (self.sOpening)
+            return;
+
+        self.open(context, Mode::Edit, params);
+        self.executeAutoSave(context);
+    }
+
+    async method close(context)
+    {
+        self.sOpening = false;
+        self.OpenActor.stop();
+
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        pdiext::ProcessUpdateIteration(300000);
+
+        await () => { SequenceUtil::popPage(context, EventListRoot); }
+    }
+
+    method abort(context)
+    {
+        if (self.sOpening && !self.sAborting)
+        {
+            self.sAborting = true;
+
+            UIKitProject::ContextMenuPopup.abort(context);
+            EventSettingProject::EventSettingRoot.abort(context);
+            self.close(context);
+            self.sAborting = false;
+        }
+    }
+
+    method onUpdate(context)
+    {
+        if (!self.sOpening)
+            return;
+
+        if (!LoginUtil::isOnline())
+            context.pushEvent(menu::MScriptEvent(context, EventListRoot, "abort"));
+    }
+
+    method executeAutoSave(context)
+    {
+        if (!self.sNeedSave)
+            return;
+
+        SaveDataUtilGT6::saveEveryWhere(context);
+    }
+
+    method setClubIdRequest(context)
+    {
+        if (self.sParams.clubId == nil)
+        {
+            var req = Community.requestClubListByUser(Grim2.getLoginUserId(), (args) => 
+            {
+                var root = self;
+                if (root == nil)
+                    return;
+
+                var [context, request] = args;
+                if (!request.isError() && request.isDone())
+                {
+                    var clubId = ClubStorage::getMyClubIdFromResponse(request);
+                    ClubStorage::setClubId(clubId);
+                    if (clubId != nil)
+                        root.ListMenu::Categories::ScrolledWindow::clip::space::EventSetting::VBox::Club.insensitive = false;
+                }
+            });
+        }
+        else
+        {
+            ClubStorage::setClubId(self.sParams.clubId);
+            ListMenu::Categories::ScrolledWindow::clip::space::EventSetting::VBox::Club.insensitive = false;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+
+        self.CloseActor.stop();
+
+        ClubStorage::initialize();
+
+        var leftList = ListMenu::Categories::ScrolledWindow::clip::space::EventSetting::VBox;
+        leftList.Local.visible = false;
+        leftList.Club.visible = false;
+
+        var defaultTarget = nil;
+        var showClubStorage = false;
+        
+        foreach (var category in self.sParams.categoryList)
+        {
+            var target;
+            if (category == EventListRoot::Category::Local)
+            {                
+                target = leftList.Local;
+            }
+            else if (category == EventListRoot::Category::Club)
+            {
+                target = leftList.Club;
+                showClubStorage = true;
+            }
+
+            target.visible = true;
+            if (defaultTarget == nil)
+                defaultTarget = target;
+        }
+
+        if (showClubStorage)
+            self.setClubIdRequest(context);
+        
+        defaultTarget.setActiveCategory(context, true);
+        EventListRoot.setFocus(defaultTarget);
+        
+        ListMenu::Categories::ScrolledWindow::clip::space::Header::Title.text = Mode::getTitle(self.sMode);
+    }
+
+    method setButtonHelp(context, widget)
+    {
+        if (widget == nil)
+            widget = EventListRoot.getFocusWidget();
+
+        var list = [];
+        var mode;
+
+        if (widget == nil || widget == ListMenu::Categories)
+        {
+            list = [
+                [ButtonHelpGT6::getEnterButtonName(), manager.translate("Component", "Label_Select")]
+            ];
+
+            mode = 0;
+        }
+        else if (widget.defined("isEmptyButton") && widget.isEmptyButton())
+        {
+            list = [
+                ["Enter"]
+            ];
+            mode = 1;
+        }
+        else if (self.sMode == Mode::Load)
+        {
+            list = [
+                ["Enter"]
+            ];
+            mode = 1;
+        }
+        else if (self.sMode == Mode::LoadPlus)
+        {
+            list = [
+                ["Enter"], 
+                ["Triangle", manager.translate("Component", "Label_Menu")]
+            ];
+            mode = 4;
+        }
+        else if (self.sMode == Mode::Save)
+        {
+            list = [
+                [ButtonHelpGT6::getEnterButtonName(), manager.translate("Component", "Label_Save")], 
+                ["Triangle", manager.translate("Component", "Label_Menu")]
+            ];
+            mode = 2;
+        }
+        else
+        {
+            list = [
+                [ButtonHelpGT6::getEnterButtonName(), manager.translate("Component", "Label_Edit")], 
+                ["Triangle", manager.translate("Component", "Label_Menu")]
+            ];
+            mode = 3;
+        }
+
+        list.push(["Close"]);
+
+        if (self.sButtonHelpMode == nil || mode != self.sButtonHelpMode)
+        {
+            ButtonHelpGT6.set(context, list);
+            self.sButtonHelpMode = mode;
+        }
+    }
+
+    method onFinalize(context)
+    {
+        self.sButtonHelpMode = nil;
+        self.sOpening = false;
+        self.sActiveCategory = nil;
+        self.sNewData = nil;
+        self.sParams = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.close(context);
+        return STATE_YIELD;
+    }
+
+    method getListBox()
+    {
+        return ListMenu::ListWindow::clip::ListBox.getListBox();
+    }
+
+    method updateCurrentList(context)
+    {
+        if (self.sActiveCategory != nil)
+        {
+            self.sActiveCategory.updateList(context);
+        }
+    }
+
+    module ListMenu
+    {
+        method updateListItemCount(count)
+        {
+            Empty.visible = count == 0;
+        }
+
+        module Categories
+        {
+            method onFocusEnter(context)
+            {   
+                EventListRoot.setButtonHelp(context, self);
+                return STATE_YIELD;
+            }
+        }
+
+        module Categories::ScrolledWindow::clip::space
+        {
+            module EventSetting::VBox
+            {
+                method setActiveNode(context, activeNode)
+                {
+                    foreach (var node in self.getChildList())
+                        node.active = node == activeNode;
+                }
+
+                module CategoryBase
+                {
+                    attribute storage;
+                    attribute category;
+
+                    method onFinalize()
+                    {
+                        self.storage = nil;
+                        self.category = nil;
+                    }
+
+                    method updateList(context, keepFocusIndex = true)
+                    {
+                        var listbox = EventListRoot.getListBox();
+                        listbox.setup(self.category, self.storage);
+                        listbox.rebuild(context, keepFocusIndex);
+                    }
+
+                    method onActivate(context)
+                    {
+                        self.setActiveCategory(context, false);
+                        return STATE_YIELD;
+                    }
+
+                    method setActiveCategory(context, async)
+                    {
+                        if (EventListRoot.sActiveCategory == self)
+                            return;
+
+                        EventListRoot.sActiveCategory = self;
+
+                        self.parent.setActiveNode(context, self);
+
+                        if (async)
+                            context.pushEvent(menu::MScriptEvent(context, EventListRoot, "updateCurrentList"));
+                        else
+                            self.updateList(context, false);
+                    }
+                }
+
+                module Local
+                {
+                    import CategoryBase::*;
+
+                    method onInitialize()
+                    {
+                        self.category = EventListRoot::Category::Local;
+                        self.storage = LocalStorage();
+                    }
+
+                    method onDestroy()
+                    {
+                        StorageManager::unbind(self.storage);
+                    }
+                }
+
+                module Club
+                {
+                    import CategoryBase::*;
+
+                    method onInitialize()
+                    {
+                        self.insensitive = true;
+                        self.category = EventListRoot::Category::Club;
+                        self.storage = ClubStorage();
+                    }
+
+                    method onDestroy()
+                    {
+                        StorageManager::unbind(self.storage);
+                    }
+                }
+            }
+        }
+
+        module ListWindow::clip::ListBox
+        {
+            attribute storage;
+            attribute category;
+
+            method onFinalize(context)
+            {
+                self.storage = nil;
+                self.category = nil;
+            }
+
+            method setup(category, storage)
+            {
+                self.category = category;
+                self.storage = storage;
+            }
+
+            method getStorage()
+            {
+                return self.storage;
+            }
+
+            method getCategory()
+            {
+                return self.category;
+            }
+
+            method rebuild(context, keepFocusIndex = true)
+            {
+                var previousIndex = keepFocusIndex ? self.focus_index : 0;
+
+                self.visible = false;
+
+                var showPlusButton = EventListRoot.sMode == EventListRoot::Mode::Save || EventListRoot.sMode == EventListRoot::Mode::Edit;
+                var extraList = showPlusButton ? [nil] : [];
+                var list = self.storage.loadList(context, extraList);
+                self.setItemTemplate(context, self.storage.getItemTemplate());
+                self.setItemCount(list.size);
+                self.can_focus = list.size > 0;
+                self.parent.parent.updateListItemCount(list.size);
+                self.postRedraw();
+                self.visible = true;
+                
+                if (list.size > 0)
+                {
+                    if (previousIndex < list.size)
+                        self.focus_index = previousIndex;
+                    else
+                        self.focus_index = 0;
+                }
+                else
+                {
+                    EventListRoot.setFocus(EventListRoot.sActiveCategory);
+                }
+            }
+
+            method refreshItem(context, index)
+            {
+                var data = self.storage.getData(index);
+                var w = self.getItemWidget(index);
+                if (w == nil)
+                    w = self.getItemWidget(index, context);
+
+                if (w == nil)
+                    return;
+
+                var visibilityLevel = (self.category == EventListRoot::Category::Local && 
+                    EventListRoot.sMode != EventListRoot::Mode::Edit) ? 2 : 1;
+                
+                var storageItemId = self.storage.getIdFromIndex(index);
+                var defaultItemId = self.storage.getDefaultId(context);
+                var isDefault = storageItemId == defaultItemId;
+                w.setInfo(context, storageItemId, data, self, visibilityLevel, isDefault);
+            }
+
+            method onVisibleNotify(context, indices)
+            {
+                foreach (var i in indices)
+                {
+                    if (self.getItemVisible(i))
+                    {
+                        self.refreshItem(context, i);
+                        break;
+                    }
+                }
+            }
+
+            method onFocusEnter(context)
+            {
+                var w = self.getItemWidget(self.focus_index, context);
+                EventListRoot.setButtonHelp(context, w);
+                return STATE_YIELD;
+            }
+
+            method onFocusNotify(context, focus_index, prev_index)
+            {
+                var w = self.getItemWidget(focus_index);
+                EventListRoot.setButtonHelp(context, w);
+                return STATE_YIELD;
+            }
+
+            method onKeyPress(context, event)
+            {
+                if (event.keysym == CELL_PAD_CTRL_TRIANGLE && EventListRoot.sMode != EventListRoot::Mode::Load)
+                {
+                    var w = self.getItemWidget(self.focus_index, context);
+                    if (w != nil)
+                        w.openContextMenu(context, self.focus_index);
+                    return STATE_YIELD;
+                }
+                else if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+                {
+                    EventListRoot.setFocus(EventListRoot.sActiveCategory);
+                    return STATE_YIELD;
+                }
+
+                return STATE_EXIT;
+            }
+
+            method onActivate(context)
+            {
+                var w = self.getItemWidget(self.focus_index);
+                if (w == nil)
+                {
+                    main::sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                return w.onActivated(context);
+            }
+        }
+    }
+
+    module hidden
+    {
+        module EventItem
+        {
+            attribute data_;
+            attribute dataId_;
+            attribute manager_;
+
+            method onRealize()
+            {
+                Default.visible = false;
+                Info.setColor(3);
+                Info.visible = false;
+            }
+
+            method isEmptyButton()
+            {
+                return Empty.visible;
+            }
+
+            method isDefaultItem()
+            {
+                return Default.visible;
+            }
+
+            method setInfo(context, dataId, data, manager, visibilityLevel, isDefault)
+            {
+                self.dataId_ = dataId;
+                self.data_ = nil;
+                self.manager_ = manager;
+
+                if (data != nil)
+                {
+                    self.data_ = data;
+                    Info.setVisibilityLevel(visibilityLevel);
+                    Info.setInfo(context, data.createRoomInformation());
+                    Info.deactivateAllMode();
+
+                    var func = EventListRoot.sParams.checkValidityFunc;
+                    if (func != nil)
+                    {
+                        var errorMessage = "";
+                        if (!func(self.data_, &errorMessage))
+                        {
+                            Info.active0 = false;
+                            Info.setInsensitiveText(errorMessage);
+                        }
+                    }
+
+                    Empty.visible = false;
+                    Info.visible = true;
+                    Default.visible = isDefault;
+                }
+                else
+                {
+                    Empty.visible = true;
+                    Info.visible = false;
+                    Default.visible = false;
+                }
+            }
+
+            method onActivated(context)
+            {
+                if (!Info.active0)
+                {
+                    main::sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                switch (EventListRoot.sMode)
+                {
+
+
+                    case Mode::Load:
+                    case Mode::LoadPlus:
+                        EventListRoot.sResult = self.data_;
+                        EventListRoot.close(context);
+                        break;
+
+                    case Mode::Save:
+                        onSaveSetting(context);
+                        break;
+
+                    case Mode::Edit:
+                        if (isEmptyButton())
+                            onCreateSetting(context);
+                        else
+                            onEditSetting(context);
+                        break;
+
+                    default:
+                        sound.play("disable");
+                }
+
+                return STATE_YIELD;
+            }
+
+            method openContextMenu(context, index)
+            {
+                if (isEmptyButton())
+                {
+                    sound.play("disable");
+                    return; 
+                }
+
+                var storage = self.manager_.getStorage();
+                var list = [];
+
+                if (storage.isDuplicable())
+                {
+                    list.push(UIKitProject::ContextMenuPopup::Data(
+                        manager.translate("Component", "Label_Duplicate"),
+                        true,
+                        onDuplicateSetting,
+                        self.dataId_,
+                        nil
+                    ));
+                }
+
+                list.push(UIKitProject::ContextMenuPopup::Data(
+                    manager.translate("Component", "Label_Delete"),
+                    true,
+                    onDeleteSetting,
+                    self.dataId_,
+                    nil
+                ));
+
+                var category = self.manager_.getCategory();
+                if (category == EventListRoot::Category::Local)
+                {
+                    if (EventListRoot.sMode == EventListRoot::Mode::Edit)
+                    {
+                        var canSave = ClubStorage::canSave(context);
+                        list.push(UIKitProject::ContextMenuPopup::Data(
+                            manager.translate("Component", "Label_UploadTo").build(manager.translate("OnlineMessage", "ClubEventSetting")),
+                            canSave,
+                            onUploadToClubStorage,
+                            self.data_,
+                            nil
+                        ));
+                    }
+
+                    if (isDefaultItem())
+                    {
+                        list.push(UIKitProject::ContextMenuPopup::Data(
+                            manager.translate(EventListRoot, "RESET_DEFAULT"),
+                            true,
+                            onResetDefaultSetting,
+                            [self.dataId_, index],
+                            nil
+                        ));
+                    }
+                    else
+                    {
+                        list.push(UIKitProject::ContextMenuPopup::Data(
+                            manager.translate(EventListRoot, "SET_AS_DEFAULT"),
+                            true,
+                            onMarkAsDefaultSetting,
+                            self.dataId_,
+                            nil
+                        ));
+                    }
+                }
+
+                if (list.size < 1)
+                {
+                    sound.play("disable");
+                    return;
+                }
+
+                sound.play("ok");
+
+                var sx = self.sx + (self.w / 2);
+                var sy = self.sy + (self.h / 2);
+
+                UIKitProject::ContextMenuPopup.open(context, sx, sy, "", list);
+            }
+
+            method onSaveSetting(context)
+            {
+                var saved = false;
+                var storage = self.manager_.getStorage();
+                var rc = EventListRoot.sNewData;
+
+                if (isEmptyButton())
+                {
+                    if (storage.save(context, nil, rc))
+                        saved = true;
+                }
+                else if (DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, manager.translate("SaveData", "DO_YOU_OVERWRITE")))
+                {
+                    if (storage.save(context, self.dataId_, rc))
+                        saved = true;
+                }
+
+                if (saved)
+                    self.manager_.rebuild(context);
+            }
+
+            method openEventSettingRoot(context, rc)
+            {
+                var mode = EventSettingProject::EventSettingRoot::Mode::EditClubEventTemplate;
+                var rc;
+                var res = EventSettingProject::EventSettingRoot.open(context, 
+                    &rc,
+                    mode, 
+                    EventListRoot.sParams.dataProvider);
+
+                return res;
+            }
+
+            method onCreateSetting(context)
+            {
+                var storage = self.manager_.getStorage();
+                if (!storage.checkFull(context))
+                    return;
+
+                var rc = gtengine::MRoomConfig();
+                rc.deepCopy(EventListRoot.sParams.eventTemplate);
+
+                if (!openEventSettingRoot(context, rc))
+                    return;
+
+                rc.club_id = 0;
+                rc.club_event_id = 0;
+                rc.room_type = gtengine::RoomType::NONE;
+
+                if (storage.save(context, nil, rc))
+                    self.manager_.rebuild(context);
+            }
+
+            method onEditSetting(context)
+            {
+                var rc = self.data_;
+                if (!openEventSettingRoot(context, rc))
+                    return;
+
+                var storage = self.manager_.getStorage();
+                if (storage.save(context, self.dataId_, rc))
+                    self.manager_.rebuild(context);
+            }
+
+            method onDeleteSetting(context, id)
+            {
+                var storage = self.manager_.getStorage();
+                if (!DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, manager.translate("Component", "Query_Delete")))
+                    return;
+
+                if (storage.delete(context, id))
+                    self.manager_.rebuild(context);
+            }
+
+            method onDuplicateSetting(context, id)
+            {
+                var storage = self.manager_.getStorage();
+                if (storage.duplicate(context, id))
+                    self.manager_.rebuild(context);
+            }
+
+            method onResetDefaultSetting(context, args)
+            {
+                var [id, index] = args;
+                var storage = self.manager_.getStorage();
+                storage.resetDefault(context);
+                self.manager_.refreshItem(context, index);
+            }
+
+            method onMarkAsDefaultSetting(context, id)
+            {
+                var storage = self.manager_.getStorage();
+                storage.markAsDefault(context, id);
+                self.manager_.rebuild(context);
+            }
+
+            method onUploadToClubStorage(context, rc)
+            {
+                var storage = ClubStorage();
+                if (!storage.checkFull(context))
+                    return false;
+
+                if (!DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, manager.translate(EventListRoot, "DO_YOU_UPLOAD_TO_CLUB_STORAGE")))
+                    return;
+
+                if (storage.save(context, nil, rc))
+                {
+                    storage.loadList(context, []);
+                    self.manager_.rebuild(context);
+                }
+
+                StorageManager::unbind(storage);
+            }
+        }
+    }
+}

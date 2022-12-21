@@ -1,0 +1,379 @@
+
+
+//---------------------------------------------------------------------------------------
+// SpecDatabaseUtil.ad
+//
+// Utility module for grabbing common things from the car database
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module SpecDatabaseUtil
+{
+    static INVALID_STRING = "---";
+    static sSpecDBDir = "";
+
+    function open(specdb)
+    {
+        if (SPECDB != nil)
+        {
+            SPECDB.close();
+            specdb = sSpecDBDir;
+        }
+        else
+        {
+            SPECDB = pdistd::MSqlite();
+            sSpecDBDir = specdb;
+        }
+
+        var key0 = "\x1E\x74\xB1\xB3\x3C\x2B\x1F\x0F\x7C\x26\x13\x5E\x52\x0E\x63\x1F\x52\xBF\xF8\xAE\xAD\xBF\x18\xA7\xDA\x18\x7F\xE2\x21\x70\x71\xFB";
+        var k = "\x2D\x9E\xE8\x3E\x63\x12\x0E\xB2\x5D\xF4\x98\x1E\xE7\x3C\x3B\xE1\x94\xD0\xF0\x59\xDE\x50\xC8\xD4\xFC\xB6\x6C\x10\xD3\xED\xC5\x49";
+        var key1 = "\x0A\x0F\x2D\xB4\x1D\x5E\xED\x2F\xC6\x08\xF9\x87\x68\xCA\x1C\xF2\xA4\x8D\x43\xEF\xDD\x52\x82\xAF\x4C\x4C\x38\x07\x7B\x26\x9C\x7C";
+        
+        var path = "/specdb/%s/%s".format(specdb, gtengine::MSpecDB::getDBFileName());
+
+        if (AppOpt["fsroot"] != nil)
+        {
+            var path_cache = "/APP_CACHE" + path;
+            if (pdistd::Exist(path_cache))
+                pdistd::RemoveFile(path_cache);
+
+            pdistd::MakeDirectoryForFile(path_cache);
+            pdistd::CopyFile(path, path_cache);
+            path = path_cache;
+        }
+
+        var res = SPECDB.open(path, 0, 1, k);
+        SPECDB.executeQuery("PRAGMA cache_size = 20000");
+    }
+
+    function reopen()
+    {
+        open();
+    }
+
+    function getCarColorName(cp)
+    {
+        var paint_id = cp.getPaintColor(0);
+        var color_name = "";
+
+        if (paint_id >= 0)
+        {
+            if (pdistd::MLocale::getLanguage() == "JP")
+                color_name = SPECDB.executeQuery1R1C("SELECT LabelJpn FROM PAINT_COLOR_INFO WHERE ID=?", [paint_id]);
+            else
+                color_name = SPECDB.executeQuery1R1C("SELECT LabelEng FROM PAINT_COLOR_INFO WHERE ID=?", [paint_id]);
+        }
+        else
+        {
+            color_name = gtengine::MSpecDB::getCarColorName(cp.getCarCode(), cp.color);
+        }
+
+        color_name = color_name.trim() == "" ? "--" : color_name;
+        return color_name;
+    }
+
+    function getAlphabetCarName(context, car_code)
+    {
+        return SPECDB.executeQuery1R1C("SELECT Name FROM CAR_NAME_ALPHABET WHERE LabelID=?", [car_code]);
+    }
+
+    function getAlphabetCarShortName(context, car_code)
+    {
+        return SPECDB.executeQuery1R1C("SELECT ShortName FROM CAR_NAME_ALPHABET WHERE LabelID=?", [car_code]);
+    }
+
+    function getCourseFullName(context, course)
+    {
+        var info = course;
+        if (!course.isInstanceOf(STRecord))
+            info = gtengine::MSpecDB::getCourseRow(course);
+
+        var course_name = manager.translate("CourseName", info.Name);
+        if (info.Reverse)
+            course_name += " / " + manager.translate("CourseData", "direction_reverse");
+
+        if (info.ChangeWeather)
+            course_name += " / " + manager.translate("CourseData", "track_change_weather");
+
+        if (info.ChangeTime)
+            course_name += " / " + manager.translate("CourseData", "track_change_time");
+
+        return course_name;
+    }
+
+    function getCourseSpecText(context, course)
+    {
+        var info = course;
+        if (course.isInstanceOf(Long) || course.isInstanceOf(ULong))
+            info = gtengine::MSpecDB::getCourseRow(course);
+
+        var course_name = getCourseFullName(context, info);
+        var country_str = info.CountryFlag != "-" ? info.CountryFlag.upcase() : "PDI";
+        var country_txt = manager.translate("Country", country_str);
+        var length_txt = pdiext::MUnit::GetCourseLengthString(info.Length, true);
+        var straight_txt = pdiext::MUnit::GetCourseLengthString(info.Straight, true);
+        var elevation_txt = pdiext::MUnit::GetCourseLengthString(info.Elevation, true);
+        var corner_txt = info.Corner;
+        var format = manager.translate("SpecFormat", "course_spec_gt6");
+
+        var course_spec = format.build(
+            course_name,
+            country_txt,
+            length_txt,
+            elevation_txt,
+            straight_txt,
+            corner_txt
+        );
+
+        return course_spec;
+    }
+
+    function getCarSpecText(context, car_code)
+    {
+        var carname_txt = gtengine::MSpecDB::getCarName(car_code);
+        var country_flag = SPECDB.executeQuery1R1C("SELECT CountryFlag FROM CAR_VIEW WHERE ID=?", [car_code]);
+        var country_str = country_flag != "-" ? country_flag.upcase() : "PDI";
+        var country_txt = manager.translate("Country", country_str);
+        var catalog = gtengine::MSpecDB::getCatalogSpec(car_code);
+        var drivetype_txt = manager.translate("DriveTrainName", catalog.DriveTypeName);
+        var format = manager.translate("SpecFormat", "car_spec_gt6");
+
+        var car_spec = format.build(
+            carname_txt,
+            country_txt,
+            drivetype_txt,
+            catalog.power,
+            catalog.torque,
+            catalog.weight
+        );
+
+        return car_spec;
+    }
+
+    function getCarSpecTextDetail(context, car_code)
+    {
+        var format = manager.translate("SpecFormat", "car_spec_detail");
+        var carname_txt = gtengine::MSpecDB::getCarName(car_code);
+        var catalog = gtengine::MSpecDB::getCatalogSpec(car_code);
+
+        var car_spec = format.build(
+            carname_txt,
+            catalog.length,
+            catalog.width,
+            catalog.height,
+            catalog.weight,
+            catalog.DriveTypeName
+            catalog.power,
+            catalog.torque,
+            catalog.displacement
+        );
+
+        return car_spec;
+    }
+    
+    function getCarPPText(context, car_code)
+    {
+        var pp = SPECDB.executeQuery1R1C("SELECT PP FROM GENERIC_CAR WHERE ID=?", [car_code]);
+        var pp_u = manager.translate("Unit", "PERFORMANCE_POINT");
+
+        if (pp > 0)
+            return "%s %d".format(pp_u, pp);
+        else
+            return "%s ---".format(pp_u);
+    }
+
+    function getCarPowerText(context, car_code)
+    {
+        var psvalue = SPECDB.executeQuery1R1C("SELECT psvalue FROM ENGINE WHERE UseCar=?", [car_code]);
+        var ps_v = pdiext::MUnit::GetPowerForDisplay(psvalue);
+        var ps_u = pdiext::MUnit::GetUnitOfPower();
+        
+        if (ps_v > 0)
+            return "%d %s".format(ps_v, ps_u);
+        else
+            return "--- %s".format(ps_u);
+    }
+
+    function getCarMaxPowerText(context, car_code)
+    {
+        var recoard = SPECDB.query1("SELECT psvalue, psrpm FROM ENGINE WHERE UseCar=?", [car_code]);
+        var ps_v = pdiext::MUnit::GetPowerForDisplay(recoard.psvalue);
+        var psrpm_v = recoard.psrpm;
+        var ps_u = pdiext::MUnit::GetUnitOfPower();
+        var psrpm_u = pdiext::MUnit::GetUnitOfRpm();
+
+        if (ps_v > 0 && psrpm_v > 0)
+            return "%d %s/%d %s".format(ps_v, ps_u, psrpm_v, psrpm_u);
+        else
+            return "--- %s/---".format(ps_u);
+    }
+
+    function getCarTorqueText(context, car_code)
+    {
+        var torquevalue = SPECDB.executeQuery1R1C("SELECT torquevalue FROM ENGINE WHERE UseCar=?", [car_code]);
+        var tq_v = pdiext::MUnit::GetTorqueForDisplay((torquevalue - 0.5f) * 0.01f);
+        var tq_u = pdiext::MUnit::GetUnitOfTorque();
+        
+        if (tq_v > 0)
+            return "%d %s".format(tq_v, tq_u);
+        else
+            return "--- %s".format(tq_u);
+    }
+
+    function getCarMaxTorqueText(context, car_code)
+    {
+        var recoard = SPECDB.query1("SELECT torquevalue, torquerpm FROM ENGINE WHERE UseCar=?", [car_code]);
+        var tq_v = pdiext::MUnit::GetTorqueForDisplay((torquevalue - 0.5f) * 0.01f); // This is BROKEN! torquevalue is not defined
+        var tqrpm_v = recoard.torquerpm;
+        var tq_u = pdiext::MUnit::GetUnitOfTorque();
+        var tqrpm_u = pdiext::MUnit::GetUnitOfRpm();
+
+        if (tq_v > 0 && tqrpm_v > 0)
+            return "%d %s/%d %s".format(tq_v, tq_u, tqrpm_v, tqrpm_u);
+        else
+            return "--- %s/---".format(tq_u);
+    }
+
+    function changeDriveTrainTypeToString(type)
+    {
+        var drivetype = SPECDB.executeQuery1R1C("SELECT DriveTypeName FROM DRIVETRAIN WHERE drivetype=?", [type]);
+        return manager.translate("DriveTrainName", drivetype);
+    }
+
+    function getCarDrivetrainText(context, car_code)
+    {
+        var drivetype = SPECDB.executeQuery1R1C("SELECT DriveTypeName FROM DRIVETRAIN WHERE UseCar=?", [car_code]);
+        return manager.translate("DriveTrainName", drivetype);
+    }
+
+    function getCarLengthText(context, car_code, with_unit = true)
+    {
+        var dlength = SPECDB.executeQuery1R1C("SELECT dlength FROM CHASSIS WHERE UseCar=?", [car_code]);
+        var result = "";
+        if (dlength > 0)
+            result = pdiext::GetNumberString(dlength);
+        else
+            result = INVALID_STRING;
+
+        return with_unit ? result + " " + pdiext::MUnit::GetUnitOfLength() : result;
+    }
+
+    function getCarWidthText(context, car_code, with_unit = true)
+    {
+        var dwidth = SPECDB.executeQuery1R1C("SELECT dwidth FROM CHASSIS WHERE UseCar=?", [car_code]);
+        var result = "";
+        if (dwidth > 0)
+            result = pdiext::GetNumberString(dwidth);
+        else
+            result = INVALID_STRING;
+
+        return with_unit ? result + " " + pdiext::MUnit::GetUnitOfLength() : result;
+    }
+
+    function getCarHeightText(context, car_code, with_unit = true)
+    {
+        var dheight = SPECDB.executeQuery1R1C("SELECT dheight FROM CHASSIS WHERE UseCar=?", [car_code]);
+        var result = "";
+        if (dheight > 0)
+            result = pdiext::GetNumberString(dheight);
+        else
+            result = INVALID_STRING;
+
+        return with_unit ? result + " " + pdiext::MUnit::GetUnitOfLength() : result;
+    }
+
+    function getCarWeightText(context, car_code)
+    {
+        var dmass = SPECDB.executeQuery1R1C("SELECT dmass FROM CHASSIS WHERE UseCar=?", [car_code]);
+        var mass_u = pdiext::MUnit::GetUnitOfMass();
+        if (dmass > 0)
+            return "%d %s".format(dmass, mass_u);
+        else
+            return "--- %s".format(mass_u);
+    }
+
+    function getCarDisplacementText(context, car_code, with_unit = true)
+    {
+        var displacement = SPECDB.executeQuery1R1C("SELECT displacement FROM ENGINE WHERE UseCar=?", [car_code]);
+        var result = "";
+        if (displacement != "-")
+            result = pdiext::GetNumberString(displacement);
+        else
+            result = INVALID_STRING;
+
+        return with_unit ? result + " " + pdiext::MUnit::GetUnitOfDisplacement() : result;
+    }
+
+    function getCarLabelArray(src)
+    {
+        var n = src.size;
+        var dst = Array(n);
+
+        for (var i = 0; i < n; i++)
+        {
+            if (src[i].isInstanceOf(String))
+                dst[i] = src[i];
+            else
+                dst[i] = main::gtengine::MSpecDB::getCarLabel(src[i]);
+        }
+
+        return dst;
+    }
+
+    module Course
+    {
+        function getLengthText(info, withUnit = true)
+        {
+            if (info == nil)
+                return INVALID_STRING;
+
+            var length = -1;
+            if (info.Scenery)
+                length = ORG.getCourseLength();
+            else if (info.Length != nil && info.Length > -1)
+                length = info.Length;
+
+            return length > 0 ? pdiext::MUnit::GetCourseLengthString(length, withUnit) : INVALID_STRING;
+        }
+
+        function getLongestStraightText(info, withUnit = true)
+        {
+            if (info == nil)
+                return INVALID_STRING;
+
+            var straight = -1;
+            if (info.Scenery)
+                straight = ORG.getmaxStraightLength();
+            else if (info.Straight != nil && info.Straight > -1)
+                straight = info.Straight;
+
+            return straight > 0 ? pdiext::MUnit::GetCourseLengthString(straight, withUnit) : INVALID_STRING;
+        }
+
+        function getHeightText(info, withUnit = true)
+        {
+            if (info == nil)
+                return INVALID_STRING;
+
+            var elevation = -1;
+            if (info.Scenery)
+            {
+                if (ORG.getCourseLength() > 0)
+                    elevation = ORG.getVerticalInterval();
+            }
+            else if (info.Elevation != nil && info.Elevation > -1)
+                elevation = info.Elevation;
+
+            return elevation >= 0 ? pdiext::MUnit::GetCourseHeightString(elevation, withUnit) : INVALID_STRING;
+        }
+
+        function isDirtSnow(course)
+        {
+            return course.Condition == gtengine::CourseCondition::DIRT || course.Condition == gtengine::CourseCondition::SNOW;
+        }
+    }
+}

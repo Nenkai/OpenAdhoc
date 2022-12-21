@@ -1,0 +1,319 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module PhotoViewerRoot
+{
+    attribute modal_page;
+    attribute closed;
+    attribute photo_list;
+    attribute photo;
+    attribute index;
+    attribute ref_removed;
+    attribute on_favorite_list;
+
+    module PhotoFunction
+    {
+        module Impl
+        {
+            #include "PhotoFunction.ad"
+        }
+
+        method setFavorite(context, photo_list, args)
+        {
+            Impl::setFavorite(context, photo_list, args);
+        }
+
+        method export(context, photo_list, args)
+        {
+            Impl::export(context, photo_list);
+        }
+
+        method remove(context, photo_list, args)
+        {
+            return Impl::remove(context, photo_list);
+        }
+
+        method setOnline(context, photo_list, args)
+        {
+            Impl::setOnline(context, photo_list, args);
+        }
+    }
+
+    method open(context, photo_list, photo, ref_removed, on_favorite_list)
+    {
+        self.photo_list = [];
+        foreach (var photo in photo_list)
+        {
+            if (PhotoFileUtil::isExist(photo.id) && photo.genre != PhotoFileUtil::GENRE::PHOTO_PROFILE)
+                self.photo_list.push(photo);
+        }
+
+        self.photo = photo;
+        self.ref_removed = ref_removed;
+
+        self.on_favorite_list = on_favorite_list != nil ? on_favorite_list : false;
+        self.closed = false;
+
+        self.modal_page = main::SequenceUtil::ModalPage(context, PhotoViewerRoot);
+        self.modal_page.open();
+
+        return true;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        PhotoViewerRoot.setFocus(nil);
+
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        if (self.modal_page != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+        }
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        ContextMain.disableInput();
+
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+        actor.on_effect_end = (context) => 
+        {
+            actor.on_effect_end = nil;
+            ContextMain.enableInput();
+        }
+
+        self.CloseActor.stop();
+
+        LeaveDetectUtil::begin(context, 5, self, self.onLeaveDetectToHideMenu, self.onActivateDetectToAppearMenu, false);
+        var circle = pdiext::MSystemConfiguration::GetEnterButtonAssign() == "circle";
+
+        Menu::Bar::Help::Close::ImageFaceCircle.visible = !circle;
+        Menu::Bar::Help::Close::ImageFaceCross.visible = circle;
+
+        EditMenu::ScrolledWindow::clip::space::EditGroupItem::VBox::AddFavorite.setup(self.photo.favorite);
+
+        context.pushEvent(main::menu::MScriptEvent(context, self, "on_initialize"));
+        return STATE_YIELD;
+    }
+
+    method on_initialize(context)
+    {
+        var i = 0;
+        foreach (var p in self.photo_list)
+        {
+            if (p.id == self.photo.id)
+                self.index = i;
+
+            ++i;
+        }
+
+        showPhoto(context, 0);
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    /* PDI's compiler seem to allow redefining the same method in the same scope
+    /* Leaving commented for original code purposes, and bad behavior display
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        close(context);
+
+        return STATE_YIELD;
+    } */
+
+    method onLeaveDetectToHideMenu(context)
+    {
+        Menu::Y.reverse = true;
+        EditMenu::MoveActor.reverse = true;
+
+        Menu::Y.start();
+        EditMenu::MoveActor.start();
+    }
+
+    method onActivateDetectToAppearMenu(context)
+    {
+        Menu::Y.reverse = false;
+        EditMenu::MoveActor.reverse = false;
+
+        Menu::Y.start();
+        EditMenu::MoveActor.start();
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (event.keysym == CELL_PAD_CTRL_L1)
+        {
+            showPhoto(context, -1);
+            return STATE_YIELD;
+        }
+        else if (event.keysym == CELL_PAD_CTRL_R1)
+        {
+            showPhoto(context, 1);
+            return STATE_YIELD;
+        }
+        
+        if (LeaveDetectUtil::activated(context, event))
+            return STATE_YIELD;
+
+        return STATE_EXIT;
+    }
+
+    method clampIndex()
+    {
+        if (self.index < 0)
+        {
+            self.index = self.photo_list.size - 1;
+        }
+
+        if (self.index > self.photo_list.size - 1)
+            self.index = 0;
+    }
+
+    method showPhoto(context, delta)
+    {
+        self.index += delta;
+        clampIndex();
+
+        var photo = photo_list[self.index];
+        self.ImageFace.image_path = photo.filename;
+
+        EditMenu::ScrolledWindow::clip::space::EditGroupItem::VBox::AddFavorite.setup(photo.favorite);
+
+    }
+
+    module EditMenu::ScrolledWindow::clip::space::EditGroupItem::VBox
+    {
+        module AddFavorite
+        {
+            method setup(favorite)
+            {
+                self.label.text = favorite ? manager.translate("GTModeProject::ReplayListRoot", "Label_RemoveFavorite") : manager.translate("GTModeProject::ReplayDetailRoot", "Button_AddFavorite");
+                self.label_i.text = self.label.text;
+            }
+
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var photo = PhotoViewerRoot.photo_list[PhotoViewerRoot.index];
+                var fv = !photo.favorite;
+
+                PhotoFunction::setFavorite(context, [photo], fv);
+                self.setup(fv);
+
+                if (PhotoViewerRoot.on_favorite_list)
+                {
+                    &PhotoViewerRoot.ref_removed = !fv;
+                } 
+
+                return STATE_YIELD;
+            }
+        }
+
+        module EditComment
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var photo = PhotoViewerRoot.photo_list[PhotoViewerRoot.index];
+                
+                var config = ["limit_length" : 25];
+                var text = photo.description;
+                var message = OSKUtil::open(context, text, PhotoViewerRoot, config);
+
+                if (message == nil || message == text)
+                    return STATE_YIELD;
+
+                PhotoFileUtil::updateComment(photo.id, message);
+
+                photo.description = message;
+                OK(context, "Gallery", "MSG_UPDATE_COMMENT");
+
+                return STATE_YIELD;
+            }
+        }
+
+        module OnlineFile
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var photo = PhotoViewerRoot.photo_list[PhotoViewerRoot.index];
+                
+                PhotoFunction::setOnline(context, [photo], true);
+
+                return STATE_YIELD;
+            }
+        }
+
+        module ExportFile
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var photo = PhotoViewerRoot.photo_list[PhotoViewerRoot.index];
+                
+                PhotoFunction::export(context, [photo]);
+
+                return STATE_YIELD;
+            }
+        }
+
+        module RemoveFile
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var photo = PhotoViewerRoot.photo_list[PhotoViewerRoot.index];
+                
+                var res = PhotoFunction::remove(context, [photo]);
+                if (res)
+                {
+                    &PhotoViewerRoot.ref_removed = true;
+                    PhotoViewerRoot.close(context);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+    }
+}

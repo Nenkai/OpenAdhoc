@@ -1,0 +1,407 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CourseMakerLauncherRoot
+{
+    static watcher;
+    static suspender;
+
+    attribute course_id;
+    attribute modal;
+    attribute launch_callback;
+
+    method openModal(context, _launch_callback)
+    {
+        self.launch_callback = _launch_callback;
+        self.modal = SequenceUtil::ModalPage(context, self);
+        self.modal.open();
+    }
+
+    method close(context)
+    {
+        self.delete_watcher();
+
+        if (self.modal != nil)
+        {
+            PageUtil::visibleUnderPages(context, self);
+
+            var actor = self.CloseActor;
+            actor.forward();
+            actor.restart();
+
+            var delay_time = actor.Fade.total_time;
+            self.modal.close(delay_time);
+            self.modal = nil;
+        }
+
+        return false;
+    }
+
+    method loadTrackDataFileAppHome(context)
+    {
+        var dir = "/app_home/preview/ps3/coursemaker/test";
+        var entries = main::pdistd::GetFileEntries(dir);
+
+        if (entries == nil || entries.empty())
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, "トラックパスデータがありません。");
+            self.close(context);
+            return false;
+        }
+
+        var ted_list = [];
+        foreach (var entry in entries)
+        {
+            var fname = entry["name"];
+            if (fname.endsWith(".ted"))
+            {
+                var fst = pdistd::GetFileStatus(dir + "/" + fname);
+                ted_list.push([fname, fst]);
+            }
+            else
+                continue;
+        }
+
+        ted_list.sort((e1, e2) => e1[1]["_time"] > e2[1]["_time"]);
+        var fname = ted_list[0][0];
+        var path = dir + "/" + fname;
+        var fst = pdistd::ReadFile(path);
+        
+        sTrackData = fst["buffer"];
+        return true;
+    }
+
+    method requestUpdatedCourse(context)
+    {
+        if (!LoginUtil::isOnline())
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                manager.translate("OnlineMessage", "DISCONNECTED"));
+
+            self.close(context);
+            return nil;
+        }
+
+        var user_id = Grim2.getLoginUserId();
+        var course_list = [];
+
+        var request = main::Course.requestList(user_id, (args) => {});
+        if (Grim2Util::join(context, request))
+            course_list = main::Course.decodeCourseList(request);
+        else
+            Grim2.setInitialize(false);
+
+        var updated_course = nil;
+        foreach (var course in course_list)
+        {
+            if (course["status"] == 0)
+            {
+                updated_course = course;
+                break;
+            }
+        }
+
+        if (updated_course == nil)
+            updated_course = ["course_id" : 0];
+
+        return updated_course;
+    }
+
+    method downloadTed(context, course_id)
+    {
+        var ted = nil;
+        var ted_path = main::Course.getTedPath(course_id);
+        var request = main::Course.requestTed(course_id, (args) => {});
+        if (Grim2Util::join(context, request))
+        {
+            var fst = pdistd::ReadFile(ted_path);
+            ted = fst["buffer"];
+        }
+
+        return ted;
+    }
+
+    method loadTed(context, course_id)
+    {
+        var ted = downloadTed(context, course_id);
+        if (ted != nil)
+        {
+            var res = launch(context, ted, course_id);
+            if (res != false)
+            {
+                delete_watcher();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    method launch(context, track_data_raw, course_id0)
+    {
+        var track_data = CourseMakerUtil::decrypt(track_data_raw);
+        if (self.launch_callback != nil)
+        {
+            return self.launch_callback(context, track_data, course_id0);
+        }
+        else
+        {
+            var course_code = gtengine::MSpecDB::getCourseCode("coursemaker");
+            var gp = GameParameterUtil::createCourseEdit();
+            var event = gp.events[0];
+            var rp = event.race_parameter;
+            rp.course_maker_source_type = gtengine::CourseMakerSourceType::TED;
+            event.race_parameter = rp;
+
+            var track = event.track;
+            track.course_code = course_code;
+            track.edit_data = track_data;
+            track.generated_course_id = course_id0;
+
+            var gd = ORG.setGenerateData(track_data);
+            rp.course_code = gd;
+
+            LaunchRaceUtil::setupWeatherFix(rp);
+            GameParameterUtil::executeEvent(context, gp, GAME_STATUS);
+            return true;
+        }
+    }
+
+    method suspend_watcher()
+    {
+        if (self.suspender != nil)
+            self.suspender.Suspend();
+    }
+
+    method resume_watcher()
+    {
+        if (self.suspender != nil)
+            self.suspender.Resume();
+    }
+
+    method is_suspend()
+    {
+        if (self.suspender != nil)
+            return self.suspender.isSuspend();
+
+        return false;
+    }
+
+    method create_watcher(context, func)
+    {
+        delete_watcher();
+        self.watcher = WatcherUtil::Create(context, func, 60 * 5);
+        self.suspender = WatcherUtil::Suspender();
+    }
+
+    method delete_watcher(context)
+    {
+        if (self.watcher != nil)
+        {
+            WatcherUtil::Delete(self.watcher);
+            self.watcher = nil;
+            self.suspender = nil;
+        }
+    }
+
+    method begin_auto_launch(context)
+    {
+        suspend_watcher();
+
+        self.create_watcher(context, (context) => 
+        {
+            if (is_suspend())
+                return;
+
+            suspend_watcher();
+            
+            var updated_course = self.requestUpdatedCourse(context);
+            if (updated_course != nil)
+            {
+                var course_id = updated_course["course_id"];
+                if (course_id > 0 && self.course_id != course_id)
+                {
+                    if (loadTed(context, course_id))
+                        GAME_STATUS.user_profile.context.coursemaker_course_id = course_id;
+                }
+            }
+
+            resume_watcher();
+        });
+    }
+
+    method onInitialize(context)
+    {
+        context.cursor_visible = false;
+
+        CourseMakerLauncherRoot.setFocus(nil);
+
+        self.course_id = GAME_STATUS.user_profile.context.coursemaker_course_id;
+        if (self.modal != nil)
+        {
+            ContextMain.disableInput();
+            var actor = self.OpenActor;
+            actor.forward();
+            actor.restart();
+            actor.on_effect_end = (context) => 
+            {
+                actor.on_effect_end = nil;
+                PageUtil::invisibleUnderPages(context, self);
+                ContextMain.enableInput();
+            };
+
+            self.CloseActor.stop();
+        }
+
+        ButtonHelpGT6.set(context, [
+            ["Cancel"]
+        ]);
+
+        var updated_course = self.requestUpdatedCourse(context);
+        var course_id = updated_course["course_id"];
+        if (course_id == 0)
+            begin_auto_launch(context);
+
+        if (self.course_id != course_id)
+        {
+            context.pushEvent(menu::MFunctionEvent((context) => 
+            {
+                var res;
+                if (self.course_id == 0)
+                    res = alias_Dialog.open(context, nil, updated_course["title"], updated_course["update_time"].toLocal());
+                else
+                    res = alias_Dialog.open(context, nil, updated_course["title"], updated_course["update_time"].toLocal());
+
+                if (res)
+                {
+                    if (loadTed(context, course_id))
+                    {
+                        GAME_STATUS.user_profile.context.coursemaker_course_id = course_id;
+                        return;
+                    }
+                }
+
+                self.course_id = course_id;
+                begin_auto_launch(context);
+            }, context));
+        }
+        else
+        {
+            begin_auto_launch(context);
+        }
+    }
+
+    method onFinalize(context)
+    {
+        self.delete_watcher();
+
+        if (self.modal != nil)
+        {
+            PageUtil::visibleUnderPages(context, self);
+            self.modal.close();
+            self.modal = nil;
+        }
+    }
+
+    method onCancel(context)
+    {
+        if (is_suspend())
+            return STATE_YIELD;
+
+        main::sound.play("cancel");
+        CourseMakerLauncherRoot.close(context);
+        return STATE_YIELD;
+    }
+
+    module alias_Dialog
+    {
+        attribute event;
+        attribute result;
+
+        method open(context, message, course_name, update_time)
+        {
+            if (message != nil)
+                self.alias_TextMessage.text = message;
+
+            self.alias_TextCourseName.text = course_name;
+            self.alias_TextUpdateDate.text = manager.translate("DateTime", "FORMAT_DATE_TIME").build(
+                update_time.year,
+                "%02d".format(update_time.month),
+                "%02d".format(update_time.day),
+                "%02d".format(update_time.hour),
+                "%02d".format(update_time.minute),
+            );
+
+            self.result = nil;
+            self.appear();
+
+            context.cursor_visible = true;
+            self.insensitive = false;
+
+            CourseMakerLauncherRoot.setFocus(alias_ButtonOK);
+            self.event = main::menu::EventLoop(context);
+            self.event.enter();
+            return self.result;
+        }
+
+        method close(context)
+        {
+            if (self.event != nil)
+            {
+                var delay_time = self.hide();
+                self.event.leave(delay_time);
+                self.event = nil;
+                self.insensitive = true;
+
+                CourseMakerLauncherRoot.setFocus(nil);
+                context.cursor_visible = false;
+            }
+        }
+
+        method onInitialize(context)
+        {
+            self.hide(true);
+            self.insensitive = true;
+        }
+
+        method onCancel(context)
+        {
+            main::sound.play("cancel");
+            CourseMakerLauncherRoot.setFocus(alias_ButtonCancel);
+            return STATE_YIELD;
+        }
+
+        module alias_ButtonOK
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                self.alias_Dialog.result = true;
+                self.alias_Dialog.close(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module alias_ButtonCancel
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                self.alias_Dialog.result = false;
+                self.alias_Dialog.close(context);
+                return STATE_YIELD;
+            }
+        }
+    }
+}

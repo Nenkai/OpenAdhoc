@@ -1,0 +1,553 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function setFavoriteImpl(replay, value)
+{
+    ReplayFileUtil::setFavorite(replay.id, value);
+    replay.favorite = value;
+}
+
+function beginTint(context)
+{
+    DialogUtil::openDimmerDialog(context);
+    context.cursor_visible = false;
+}
+
+function endTint(context)
+{
+    context.cursor_visible = true;
+    DialogUtil::closeDimmerDialog(context);
+}
+
+function setFavorite(context, replay_list, flag)
+{
+    foreach (var replay in replay_list)
+    {
+        if (flag)
+        {
+            if (ReplayFileUtil::getFavoriteCount() < ReplayFileUtil::getFavoriteMax())
+                setFavoriteImpl(replay, true);
+            else
+            {
+                ERROR(context, "Gallery", "ERROR_FAVORITE_IS_FULL");
+                break;
+            }
+        }
+        else
+        {
+            setFavoriteImpl(replay, false);
+        }
+    }
+
+    OK(context, "Gallery", flag ? "MSG_ADD_FAVORITE" : "MSG_REMOVE_FAVORITE");
+}
+
+function export(context, replay_list, args, callback, item_w)
+{
+    var res = QUERY(context, "Gallery", "QUERY_REPLAY_EXPORT_TO_SAVEDATA");
+    if (!res)
+        return false;
+
+    beginTint(context);
+
+    foreach (var replay in replay_list)
+    {
+        if (!pdistd::Exist(replay.filename))
+        {
+            res = QUERY(context, "Gallery", "QUERY_REPLAY_CORRUPTED_REMOVE");
+            if (res)
+            {
+                ReplayFileUtil::remove(replay);
+                OK(context, "Gallery", "MSG_REMOVE");
+                endTint(context);
+                return false;
+            }
+        }
+
+        var data = SaveDataUtilGT6::getGT6ReplayForSave(context, replay);
+        if (data == nil)
+        {
+            ERROR(context, "Gallery", "ERROR_OVER_FILE_SIZE_LIMIT");
+            endTint(context);
+            return false;
+        }
+
+        SaveDataUtil::save(context, data);
+    }
+
+    if (!SaveDataUtilGT6::isExistMainSaveData(context))
+        SaveDataUtilGT6::saveAutoForGame(context);
+
+    endTint(context);
+    return true;
+}
+
+function remove(context, replay_list)
+{
+    if (!QUERY_D_NO(context, "Gallery", "QUERY_REMOVE_FILE"))
+        return false;
+
+    ReplayFileUtil::removeByList(replay_list);
+    OK(context, "Gallery", "MSG_DELETE");
+    return true;
+}
+
+function importFrom(context)
+{
+    var size = pdistd::GetDiskFreeSize("/APP_DATA");
+    size = size.toLong() - (32 * 1024 * 1024);
+    if (size < 0)
+    {
+        ERROR(context, "Gallery", "ERROR_IMPORT_REPLAY", 32);
+        return false;
+    }
+
+    main::sound.play("ok");
+    var res = false;
+    beginTint(context);
+    
+    var dir = nil;
+    var tmp_path = ORG.replay_org_path + "_tmp";
+    var sdata = SaveDataUtilGT6::getGT6ReplayForLoad(context, dir, tmp_path);
+
+    pdistd::MakeDirectoryForFile(tmp_path, false);
+    
+    var [result, buf] = SaveDataUtil::load(context, sdata);
+    if (result == pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS)
+    {
+        var data = ReplayFileUtil::Data();
+        var header_buf = ORG.getReplayHeaderFromPath(tmp_path);
+        if (header_buf == nil)
+            ERROR(context, "Gallery", "ERROR_IMPORT_REPLAY_CORRUPT_DATA");
+        else
+        {
+            var download_user = NP.getOnlineId();
+            data.create(header_buf, tmp_path, download_user);
+            var onelap = data.onelap;
+            ReplayFileUtil::exec_save(data, onelap, tmp_path);
+            ORG.replay_work_path = ORG.replay_org_path;
+            res = true;
+        }
+    }
+    else if (result == pdiext::SaveDataUtilError::SAVEDATAUTIL_CORRUPT_DATA)
+    {
+        ERROR(context, "Gallery", "ERROR_IMPORT_REPLAY_CORRUPT_DATA", result);
+    }
+    else if (result != pdiext::SaveDataUtilError::SAVEDATAUTIL_CANCEL_BY_USER)
+    {
+        ERROR(context, "Gallery", "ERROR_IMPORT_REPLAY_CORRUPT_DATA", result);
+    }
+
+    endTint(context);
+    return res;
+}
+
+function _exportFileToUSB(context, gamecontentutil_storage, file_name, mount_point, export_file_name, ldx_file_name)
+{
+    DialogUtil::setProgress(context, gamecontentutil_storage.progress);
+    var success = gamecontentutil_storage.copyFileToStorage(file_name, mount_point, export_file_name);
+
+    if (success)
+    {
+        success = gamecontentutil_storage.copyFileToStorage(file_name + "x", mount_point, ldx_file_name);
+    }
+
+    return success;
+}
+
+function _exportFileToUSBCallback(context, success)
+{
+    var skip = false;
+    if (success)
+    {
+        main::sound.play("ok");
+        context.wait(0.5);
+        skip = true;
+    }
+
+    return skip;
+}
+
+function exportFileToUSB(context, args)
+{
+    var [gamecontentutil_storage, file_name, mount_point, export_file_name, ldx_file_name] = args;
+    var success = _exportFileToUSB(context, gamecontentutil_storage, file_name, mount_point, export_file_name, ldx_file_name);
+    return [success, _exportFileToUSBCallback];
+}
+
+function buildCourse(export, replay_file)
+{
+    RaceOperator.clear();
+    RaceOperator.data_logger = true;
+
+    var gp = gtengine::MGameParameter();
+    var rp = gp.event.race_parameter;
+    rp.race_type = gtengine::RaceType::DARALOGGER;
+    rp.course_code = export.getCourseCode();
+    if (rp.course_code == gtengine::MSpecDB::getCourseCode("coursemaker"))
+    {
+        ORG.replay_work_path = replay_file;
+        ORG.prepareReplayPath(replay_file);
+
+        var buf = ORG.getReplayHeaderFromWorkPath();
+        var info = gtengine::MReplayInfo();
+        var success = info.initialize(buf);
+        var track = info.getGameParameter().event.track;
+        var gd = ORG.setGenerateData(track.edit_data);
+        gd.maker_id = track.generated_course_id;
+        gp.event.track.course_code = gtengine::COURSE_CODE_GENERATED;
+        rp.course_maker_source_type = gtengine::CourseMakerSourceType::TED;
+        rp.course_code = gd;
+    }
+
+    gp.event.race_parameter = rp;
+    RaceOperator.game_parameter = gp;
+    RaceOperator.buildRace();
+    RaceOperator.allocateResource(0);
+    ORG.requestLoadingCourse();
+
+    var i = 0;
+    while (!ORG.isCourseLoadForDataLogger())
+    {
+        ++i;
+        Thread::Sleep(1);
+    }
+}
+
+function destroyCourse()
+{
+    RaceOperator.destroyRace();
+
+    do
+    {
+        pdiext::ProcessUpdateIteration(16000);
+    }
+    while (ORG.isBuildComplete() || ORG.isDestroySequence())
+
+    LaunchRaceUtil::clearResource();
+    RaceOperator.clear();
+}
+
+function _exportMoTeCData(context, replay, local_time, slot_id, drive_train, logger_file, ldx_file, temp_path)
+{
+    var export = main::gtengine::MReplayExportMoTeC();
+    DialogUtil::setProgress(context, export.exportProgress);
+
+    export.initialize(slot_id, replay.filename, logger_file, ldx_file, temp_path);
+    buildCourse(export, replay.filename);
+    export.setOrganizer(ORG);
+    foreach (var gps_info in MENUDB.query("SELECT * FROM t_real_course"))
+    {
+        var course_code = gtengine::MSpecDB::getCourseCode(gps_info.label);
+        if (export.getCourseCode() == course_code)
+        {
+            export.setCircuitInfo(gps_info.latitude,
+                gps_info.longitude,
+                gps_info.height,
+                gps_info.rotate_y,
+                gps_info.translate_x,
+                gps_info.translate_y,
+                gps_info.translate_z);
+        }
+        else
+            ;
+    }
+
+    var driver_name = "";
+    if (replay.title == "ONLINE_TIME_ATTACK" ||
+        replay.title == "ONLINE_SINGLE_RACE" ||
+        replay.title == "ONLINE_DRIFT_ATTACK")
+    {
+        driver_name = replay.online_id != "" ? replay.online_id : "---";
+    }
+    else
+    {
+        driver_name = replay.target_name != "" ? replay.target_name : "---";
+    }
+
+    var course_info = SPECDB.query1("SELECT Logo, LoadingBg, Name, Reverse FROM COURSE WHERE ID=?", [replay.course_code]);
+    export.setHeaderInformation(main::GAME_STATUS.user_profile.option.unit_velocity,
+        local_time.year,
+        local_time.month,
+        local_time.day,
+        local_time.hour,
+        local_time.minute,
+        local_time.second,
+        driver_name,
+        gtengine::MSpecDB::getCarShortName(replay.target_car_code),
+        manager.translate("CourseName", course_info.Name),
+        manager.translate("GameModeName", replay.title)
+    );
+
+    export.setDriveTrainType(drive_train);
+    var success = export.exportReplayData(slot_id);
+
+    !success; // normal
+
+    export.finalize();
+    destroyCourse();
+
+    return success;
+}
+
+function _exportMoTeCDataCallback(context, success)
+{
+    var skip = false;
+    if (success)
+    {
+        context.wait(0.5);
+        skip = true;
+    }
+
+    return skip;
+}
+
+function exportMoTecDataDialogCallback(context, args)
+{
+    var [replay, local_time, slot_id, drive_train, logger, ldx_file, temp_path] = args;
+    var success = _exportMoTeCData(context, replay, local_time, slot_id, drive_train, logger, ldx_file, temp_path);
+    return [success, _exportMoTeCDataCallback];
+}
+
+function exportMoTeCData(context, replay)
+{
+    var res = QUERY(context, "Gallery", "QUERY_REPLAY_EXPORT_TO_MOTEC");
+    if (!res)
+    {
+        if (!res)
+            return false;
+    }
+
+    if (!pdistd::Exist(replay.filename))
+    {
+        res = QUERY(context, "Gallery", "QUERY_REPLAY_CORRUPTED_REMOVE");
+        if (res)
+        {
+            ReplayFileUtil::remove(replay);
+            OK(context, "Gallery", "MSG_REMOVE");
+            return false;
+        }
+    }
+
+    var buf = ORG.getReplayHeaderFromPath(replay.filename);
+    var info = gtengine::MReplayInfo();
+    if (buf == nil || !info.initialize(buf))
+        return false;
+
+    var slot_id = info.representative_slot_id;
+    var cp = info.getCarParameter();
+    var drive_train = cp.getDriveTrainType();
+    var date_time = main::pdistd::MTime();
+    date_time.setBySecond(replay.datetime);
+    var local_time = date_time.toLocal();
+
+    var export_file = "%04d".format(local_time.year) +
+                      "%02d".format(local_time.month) + 
+                      "%02d".format(local_time.day) + 
+                      "_" +
+                      "%02d".format(local_time.hour) + 
+                      "%02d".format(local_time.minute) + 
+                      ".ld";
+    var logger_file = "/APP_CACHE/" + export_file;
+    var ldx_file = logger_file + "x";
+    var export_ldx_file = export_file + "x";
+
+    res = DialogUtil::openProgressDialog(context, 
+        manager.translate("Gallery", "NOW_CONVERTING"),
+        manager.translate("Gallery", "CONVERT_DONE"),
+        manager.translate("Gallery", "CONVERT_NOT_DONE"),
+        exportMoTecDataDialogCallback,
+        [replay, local_time, slot_id, drive_train, logger_file, ldx_file, "/APP_CACHE"]);
+
+    var gamecontentutil_storage = main::pdiext::MGameContentUtilStorage();
+    var success = gamecontentutil_storage.startGameContentUtilStorage();
+    if (success == true)
+        ;
+
+    var [mount_point, product_str, space_kb] = gamecontentutil_storage.getUSBDeviceList();
+    var deviceNum = mount_point.size;
+    var deviceNo = -1;
+    var part = 0;
+    
+    while (part != -1)
+    {
+        if (part == 0)
+        {
+            while (deviceNum == 0)
+            {
+                var res = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY, 
+                    manager.translate("Gallery", "NO_USB_DEVICE"));
+
+                if (!res)
+                {
+                    pdistd::RemoveFile(logger_file);
+                    pdistd::RemoveFile(ldx_file);
+
+                    return false;
+                }
+
+                gamecontentutil_storage.stopGameContentUtilStorage();
+                gamecontentutil_storage.startGameContentUtilStorage();
+                [mount_point, product_str, space_kb] = gamecontentutil_storage.getUSBDeviceList();
+                deviceNum = mount_point.size;
+            }
+
+            deviceNo = -1;
+
+            var data = USBFileSelectRoot::Data();
+            data.title_ = manager.translate("Gallery", "SELECT_USB_DEVICE");
+            data.translate_page_ = "Gallery";
+            data.file_name_ = [];
+            data.course_code_ = [];
+            data.course_name_ = [];
+            data.date_time_ = [];
+            data.enable_multi_ = false;
+
+            for (var i = 0; i < deviceNum; ++i)
+            {
+                var device_no = manager.translate("Gallery", "USB_DEVICE_NO").build(i + 1);
+                data.file_name_.push(device_no);
+                data.course_code_.push(nil);
+                data.course_name_.push(product_str[i]);
+                data.date_time_.push(nil);
+            }
+
+            if (deviceNum == 1)
+                deviceNo = 0;
+            else
+            {
+                var result = USBFileSelectRoot.open(context, data);
+                if (deviceNum != 0 && result != nil && result.size != 0)
+                    deviceNo = result[0];
+            }
+
+            if (deviceNo == -1)
+            {
+                pdistd::RemoveFile(logger_file);
+                pdistd::RemoveFile(ldx_file);
+
+                return false;
+            }
+            else
+            {
+                part++;
+            }
+        }
+        else if (part == 1)
+        {
+            var st = pdistd::GetFileStatus(logger_file);
+            var from_size = (st["size"] / 1024) + 1;
+            if (from_size > space_kb[deviceNo])
+            {
+                res = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY,
+                    manager.translate("Gallery", "ERROR_NO_ENOUGH_SPACE").build(from_size));
+
+                if (!res)
+                {
+                    pdistd::RemoveFile(logger_file);
+                    pdistd::RemoveFile(ldx_file);
+
+                    return false;
+                }
+
+                part--;
+
+                gamecontentutil_storage.stopGameContentUtilStorage();
+                gamecontentutil_storage.startGameContentUtilStorage();
+                [mount_point, product_str, space_kb] = gamecontentutil_storage.getUSBDeviceList();
+                deviceNum = mount_point.size;
+            }
+            else
+            {
+                var file_list = gamecontentutil_storage.getFileList(mount_point[deviceNo]);
+                var success = true;
+
+                foreach (var name in file_list)
+                {
+                    if (name == export_file)
+                    {
+                        res = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY,
+                            manager.translate("Gallery", "ERROR_EXIST_SAME_FILE").build(export_file));
+        
+                        if (!res)
+                        {
+                            pdistd::RemoveFile(logger_file);
+                            pdistd::RemoveFile(ldx_file);
+            
+                            return false;
+                        }
+
+                        success = false;
+                        break;
+                    }
+
+                    if (name == export_ldx_file)
+                    {
+                        res = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY,
+                            manager.translate("Gallery", "ERROR_EXIST_SAME_FILE").build(export_ldx_file));
+        
+                        if (!res)
+                        {
+                            pdistd::RemoveFile(logger_file);
+                            pdistd::RemoveFile(ldx_file);
+            
+                            return false;
+                        }
+
+                        success = false;
+                        break;
+                    }
+                }
+
+                if (!success)
+                {
+                    gamecontentutil_storage.stopGameContentUtilStorage();
+                    gamecontentutil_storage.startGameContentUtilStorage();
+                    [mount_point, product_str, space_kb] = gamecontentutil_storage.getUSBDeviceList();
+                    deviceNum = mount_point.size;
+                    
+                    part--;
+                }
+                else
+                    part++;
+            }
+        }
+        else
+        {
+            break;
+        }        
+    }
+
+    var success = DialogUtil::openProgressDialog(context, 
+        manager.translate("Gallery", "NOW_EXPORT_FILE").build(export_file),
+        manager.translate("Gallery", "EXPORT_FILE_DONE"),
+        manager.translate("Gallery", "EXPORT_FILE_NOT_DONE"),
+        exportFileToUSB,
+        [gamecontentutil_storage, logger_file, mount_point[deviceNo],  "/" + export_file, "/" + export_ldx_file]);
+
+    gamecontentutil_storage.stopGameContentUtilStorage();
+    pdistd::RemoveFile(logger_file);
+    pdistd::RemoveFile(ldx_file);
+
+    if (!success)
+    {
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+            manager.translate("Gallery", "ERROR_COPY_FILE"));
+        return false;
+    }
+
+    return true;
+}

@@ -1,0 +1,308 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CourseVote
+{
+    static sIsNowVoting = false;
+    static sCurrentVoteId;
+    static sVoteTable = [:];
+    static sRandomList = [
+        10000 + 1 : "all",
+        10000 + 2 : "circuit",
+        10000 + 3 : "city",
+        10000 + 5 : "original",
+        10000 + 6 : "snow_dirt",
+        10000 + 4 : "template",
+    ];
+
+    function startVote(context)
+    {
+        sCancelableDialogOpening = true;
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, manager.translate("OnlineMessage", "DO_YOU_START_TO_VOTE_TO_CHANGE_COURSE"));
+        sCancelableDialogOpening = false;
+
+        if (!res)
+            return false;
+
+        if (!OnlineSession.startNetworkVote(gtengine::VoteType::ChangeCourse, 0, 40 * 1000)) // 40 seconds
+        {
+            ErrorUtil::openDialog(context, __LINE__, "startNetworkVote() failed.");
+            return false;
+        }
+
+        return true;
+    }
+
+    function getCourseNameForVote(course)
+    {
+        foreach (var [v, s] in sRandomList)
+        {
+            if (course == v)
+            {
+                var str = manager.translate("OnlineMessage", "RANDOM");
+                if (v != 10000 + 1)
+                {
+                    var key = v == 10000 + 4 ? "CATEGORY_course_maker" : "CATEGORY_%{s}";
+                    str += " (%s)".format(manager.translate("CourseData", key));
+                }
+
+                return str;
+            }
+        }
+
+        return CourseList::getCourseName(course);
+    }
+
+    function checkState(context, root, communicatorIndex, voteId, limit_msec)
+    {
+        if (sCurrentVoteId == nil || sCurrentVoteId != voteId)
+        {
+            sCurrentVoteId = voteId;
+
+            var member = Lobby.getSpecifiedRoomMemberByCommunicatorIndex(communicatorIndex);
+            if (member != nil)
+            {
+                var message = manager.translate("OnlineMessage", "MESSAGE_START_COURSE_VOTING")
+                    .build(member["displayName"]);
+
+                putSystemChatMessage(context, gtengine::NoticeType::CourseVoteBegin, message, 60);
+            }
+
+            context.pushEvent(main::menu::MScriptEvent(context, root, 
+                "onStartVoteChangeCourse", [
+                    communicatorIndex,
+                    voteId,
+                    limit_msec,
+                    gtengine::RoomState::VoteCourseCountDown,
+                ]));
+        }
+    }
+
+    function totalVotes(context)
+    {
+        var rc = OnlineSession.getRoomConfig();
+        var max_val = -1;
+        var max_key = nil;
+
+        foreach (var [key, val] in sVoteTable)
+        {
+            var course = CourseList::getCourse(key);
+            if (max_val < val || key != rc.course_code && 
+                (max_val == val && (max_key == rc.course_code ||
+                pdistd::MRandom::GetValue(0, 10) % 2 == 0)))
+            {
+                max_key = key;
+                max_val = val;
+            }
+        }
+
+        if (max_val < 0 || max_key == rc.course_code)
+            return nil;
+
+        foreach (var [v, category] in sRandomList)
+        {
+            if (max_key == v)
+            {
+                var randomList = [];
+                if (max_key == 10000 + 1)
+                {
+                    foreach (var course in CourseList::sAvailableCourseList)
+                    {
+                        if (course.ID != rc.course_code)
+                            randomList.push(course);
+                    }
+                }
+                else
+                {
+                    foreach (var course in CourseList::sAvailableCourseList)
+                    {
+                        if (course.CourseCategory == category && course.ID != rc.course_code)
+                        {
+                            randomList.push(course);
+                        }
+                    }
+                }
+
+                if (randomList.size > 0)
+                {
+                    randomList.randomShuffle();
+                    max_key = randomList[0].ID;
+                }
+
+                break;
+            }
+        }
+
+        var course = CourseList::getCourse(max_key);
+        rc.course_code = course.ID;
+        var param = nil;
+
+        RoomConfigUtil::setAppropriateCourseParameter(rc);
+        return rc;
+    }
+
+    function onTimeout(context)
+    {
+        if (sIsNowVoting)
+        {
+            DialogUtil::cancelConfirmDialog(context);
+            UIKitProject::CourseSelectRoot.abort(context);
+        }
+
+        if (Lobby.isRoomOwner())
+        {
+            var rc = totalVotes(context);
+            if (rc != nil)
+            {
+                
+                if (!OnlineSession.changeEventSettingRequest(rc.pack(), true))
+                    ;
+            }
+            else
+            {
+                broadcastSystemMessage(gtengine::NoticeType::CourseNotChanged);
+            }
+
+            OnlineSession.setRoomState(gtengine::RoomState::Idle);
+        }
+    }
+
+    function cb_init_item_for_course_select(context, item, course)
+    {
+        item.label.text = getCourseNameForVote(course);
+    }
+
+    function openCourseSelectDialog(context)
+    {
+        if (CourseList::sAvailableCourseList.size < 1)
+            return nil;
+
+        var rc = OnlineSession.getRoomConfig();
+        var isKartRegulation = OnlineUtil::isKartOnlyRegulation(rc, RaceOnlineRoomProject::sDataProvider.getKartTagId());
+        var isDirtRegulation = OnlineUtil::isDirtCarTag(rc.car_tag_id);
+        var isDriftTrial = rc.room_game_mode == gtengine::RoomGameMode::DRIFT_TRIAL;
+
+        var courseList = [];
+        foreach (var course in CourseList::sAvailableCourseList) 
+        {
+            var isDirtSnow = SpecDatabaseUtil::Course::isDirtSnow(course);
+            if (isDirtRegulation && !isDirtSnow)
+                continue;
+
+            if (isKartRegulation && course.Kart != 1)
+                continue;
+
+            if (!isKartRegulation && course.KartOnly)
+                continue;
+
+            if (isDriftTrial && course.DriftOk != 1)
+                continue;
+
+            courseList.push(course);
+        }
+
+        var result = UIKitProject::CourseSelectRoot.open(context,
+            UIKitProject::CourseSelectRoot::MODE::PASS_COURSE_LIST,
+            courseList);
+
+        return result != nil ? result.ID : nil;
+    }
+
+    function doVote(context, voteId)
+    {
+        sIsNowVoting = true;
+
+        finally () => { sIsNowVoting = false; }
+
+        var course = openCourseSelectDialog(context);
+        if (course == nil)
+            return;
+
+        OnlineSession.castNetworkVote(gtengine::VoteType::ChangeCourse, voteId, course);
+    }
+
+    function onReceiveVoteResultChangeCourse(context, senderName, communicatorIndex, voteId, value)
+    {
+        if (sVoteTable == nil)
+            return;
+
+        if (sCurrentVoteId == nil)
+            return;
+
+        if (sCurrentVoteId != voteId)
+            return;
+
+        if (sVoteTable.find(value) == nil)
+            sVoteTable[value] = 1;
+        else
+            sVoteTable[value] = sVoteTable[value] + 1;
+        
+        if (CourseList::sCourseList != nil)
+        {
+            var message = manager.translate("OnlineMessage", "MESSAGE_COURSE_VOTED")
+                .build(senderName, getCourseNameForVote(value));
+
+            putSystemChatMessage(context, gtengine::NoticeType::SomeoneVotedCourse, message, 60);
+        }
+    }
+
+    function askVoteOrNot(context, communicatorIndex, voteId, limit_msec, state, sTimeoutStateRef, doVoteFunc, abortDialogs)
+    {
+        if (OnlineSession.hasTimeoutLimit())
+        {
+            ErrorUtil::openDialog(context, __LINE__, "multiple timeout.");
+            return false;
+        }
+
+        sVoteTable = [:];
+        OnlineSession.setTimeoutLimit(limit_msec.toFloat() / 1000.0);
+
+        *sTimeoutStateRef = state;
+
+        var func = (context, communicatorIndex, voteId, limit_msec, start_vote, withDialog = false) => 
+        {
+            if (withDialog)
+            {
+                sIsNowVoting = true;
+                finally() => { sIsNowVoting = false; }
+
+                var member = Lobby.getSpecifiedRoomMemberByCommunicatorIndex(communicatorIndex);
+                var name = member != nil ? member["displayName"] : " ? ";
+                var message = manager.translate("OnlineMessage", "DO_YOU_VOTE_COURSE").build(name);
+
+                sCancelableDialogOpening = true;
+                var start_vote = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, message);
+                sCancelableDialogOpening = false;
+            }
+
+            if (start_vote)
+            {
+                if (OnlineSession.hasTimeoutLimit())
+                {
+                    if (OnlineSession.getRemainUntilTimeoutLimit() > 1)
+                        doVoteFunc(context, communicatorIndex, voteId, limit_msec);
+                    else
+                        ;
+                }
+            }
+        };
+
+        var start_vote = false;
+        if (PDINetwork.getCommunicatorIndex() == communicatorIndex)
+            func(context, communicatorIndex, voteId, limit_msec, true, false);
+        else
+            abortDialogs(context, menu::MFunctionEvent(func, context, communicatorIndex, 
+                voteId, limit_msec, nil, true));
+    }
+}

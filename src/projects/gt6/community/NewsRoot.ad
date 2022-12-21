@@ -1,0 +1,549 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module NewsRoot
+{
+    function getDate(news_time)
+    {
+        var format = manager.translate("DateTime", "FORMAT_DATE");
+        return format.build(
+            "%04d".format(news_time.year),
+            "%02d".format(news_time.month),
+            "%02d".format(news_time.day)
+        );
+    }
+
+    function updateToLatest(context)
+    {
+        var category_id1 = 1;
+        foreach (var category_id2 in [1, 2])
+        {
+            var request = News2.requestNewsIdList(category_id1, category_id2, (args) => {});
+            if (!Grim2Util::joinAwait(context, request))
+                ;
+            else
+            {
+                var news_id_list = News2.decodeNewsIdList(request);
+                NewsFileUtil::updateNewsIdList(category_id1, category_id2, news_id_list);
+            };
+        }
+    }
+
+    attribute modal_page;
+    attribute closed;
+    attribute news_cache;
+    attribute specified_news;
+
+    hidden.visible = false;
+
+    method open(context, news)
+    {
+        self.specified_news = news;
+        self.news_cache = Map();
+        self.closed = true;
+        self.modal_page = main::SequenceUtil::ModalPage(context, NewsRoot);
+        self.modal_page.open();
+        return true;
+    }
+
+    method close(context)
+    {
+        News2.clearCallback();
+
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        PageUtil::visibleUnderPages(context, self);
+        NewsRoot.setFocus(nil);
+
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        if (self.modal_page != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+        }
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        ContextMain.disableInput();
+
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+
+        actor.on_effect_end = (context) =>
+        {
+            actor.on_effect_end = nil;
+            PageUtil::invisibleUnderPages(context, self);
+            ContextMain.enableInput();
+            NewsRoot.closed = false;
+        };
+
+        self.CloseActor.stop();
+
+        Pane::Main::Mode::Detail.insensitive = true;
+
+        var sw = Pane::Main::Mode::Detail::SBox::ScrolledWindow;
+        sw.clip.scroll_mode = SCROLL_MODE_MANUAL;
+        sw.VScrollbar.adjustment = sw.clip.v_adjustment;
+        sw.clip.space.y = 0.0;
+        sw.clip.manual_target_y = 0.0;
+
+        updateToLatest(context);
+
+        Pane::Menu::Mode.setNotYetRead(context);
+        Pane::Main::Title.setText(context, manager.translate("Community", "NEWS_LIST"));
+
+        var category_id2 = 1;
+        if (self.specified_news != nil)
+        {
+            category_id2 = self.specified_news;
+        }
+
+        Pane::Menu::Mode.changeMode(context, Pane::Menu::Mode::List::VBox, category_id2 == 1 ? "Update" : "New");
+        Pane::SubMenu::Mode.changeMode(context, Pane::SubMenu::Mode::List::VBox);
+        Pane::Main::Mode.changeMode(context, Pane::Main::Mode::List, category_id2);
+
+        context.pushEvent(menu::MFunctionEvent(postInitialize, context));
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        self.news_cache = nil;
+        return STATE_YIELD;
+    }
+
+    method postInitialize(context)
+    {
+        openDetail(context, self.specified_news);
+        self.specified_news = nil;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    method openDetail(context, news)
+    {
+        if (news == nil)
+            return;
+
+        NewsFileUtil::readNews(news["news_id"]);
+
+        var keyword = news["category_id2"] == 1 ? "Label_Update" : "Label_Announce";
+        Pane::Main::Title.setText(context, manager.translate("News", keyword));
+        Pane::Menu::Mode.changeMode(context, Pane::Menu::Mode::Detail::VBox);
+        Pane::SubMenu::Mode.changeMode(context, Pane::SubMenu::Mode::Detail::VBox);
+        Pane::Main::Mode.changeMode(context, Pane::Main::Mode::Detail, news);
+    }
+
+    module Pane
+    {
+        module Menu::Mode
+        {
+            attribute active_menu;
+
+            method initialize(context, widget, args)
+            {
+                var target = widget;
+                for (var w = target.first; w != nil; w = w.next)
+                    w.active = false;
+
+                if (args != nil)
+                {
+                    var w = target[args];
+                    if (w != nil)
+                        w.active = true;
+                }
+            }
+
+            method changeMode(context, widget, args)
+            {
+                var reverse = self.active_menu == nil ? true : (self.active_menu.sx - widget.sx) >= 0;
+                Pane::Menu::Mode::X.reverse = reverse;
+                Pane::Menu::Mode::X.start();
+
+                if (self.active_menu != nil)
+                    self.active_menu.insensitive = true;
+
+                self.active_menu = widget;
+                widget.insensitive = false;
+                initialize(context, widget, args);
+
+                NewsRoot.setFocus(widget.first.Button);
+            }
+
+            method setNotYetRead(context)
+            {
+                var category_id1 = 1;
+                var u1 = NewsFileUtil::getNewsIdListCount(category_id1, 1);
+                var n1 = NewsFileUtil::getNewsIdListCount(category_id1, 2);
+                var u2 = NewsFileUtil::getReadNewsCount(category_id1, 1);
+                var n2 = NewsFileUtil::getReadNewsCount(category_id1, 2);
+
+                var u_count = u1 - u2;
+                var n_count = n1 - n2;
+
+                self.List::VBox::Update::Count::Label.text = u_count;
+                self.List::VBox::New::Count::Label.text = n_count;
+                self.List::VBox::Update::Count.visible = u_count > 0;
+                self.List::VBox::New::Count.visible = n_count > 0;
+            }
+
+            module List::VBox
+            {
+                module Update
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+                        var category_id2 = 1;
+                        Pane::Menu::Mode.initialize(context, Pane::Menu::Mode::List::VBox, self.name);
+                        Main::Mode::List.initialize(context, category_id2);
+                        return STATE_YIELD;
+                    }
+                }
+
+                module New
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+                        var category_id2 = 2;
+                        Pane::Menu::Mode.initialize(context, Pane::Menu::Mode::List::VBox, self.name);
+                        Main::Mode::List.initialize(context, category_id2);
+                        return STATE_YIELD;
+                    }
+                }
+            }
+
+            module Detail::VBox
+            {
+                module Back
+                {
+                    method backImpl(context)
+                    {
+                        Pane::Main::Title.setText(context, manager.translate("Community", "NEWS_LIST"));
+
+                        var target = Pane::Menu::Mode::List::VBox::Update.active ? "Update" : "New";
+                        Pane::Menu::Mode.changeMode(context, Pane::Menu::Mode::List::VBox, target);
+                        Pane::SubMenu::Mode.changeMode(context, Pane::SubMenu::Mode::List::VBox);
+                        Pane::Main::Mode.changeMode(context, Pane::Main::Mode::List);
+                        Pane::Menu::Mode.setNotYetRead(context);
+                    }
+
+                    method onCancel(context)
+                    {
+                        sound.play("cancel");
+                        backImpl(context);
+                        return STATE_YIELD;
+                    }
+
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+                        backImpl(context);
+                        return STATE_YIELD;
+                    }
+                }
+            }
+        }
+
+        module Main::Title
+        {
+            method setText(context, text)
+            {
+                self.TextFace.text = text;
+            }
+        }
+
+        module Main::Mode
+        {
+            attribute active_main;
+
+            method onInitialize(context)
+            {
+                var adj = menu::MAdjustment();
+                self.List::VScrollArrow.adjustment = adj;
+                self.List::ListBox.v_adjustment = adj;
+            }
+
+            method changeMode(context, widget, args)
+            {
+                if (self.active_main != nil)
+                {
+                    self.active_main.insensitive = true;
+                    self.active_main.Opacity.reverse = true;
+                    self.active_main.Opacity.start();
+                }
+
+                self.active_main = widget;
+                widget.Opacity.reverse = false;
+                widget.Opacity.start();
+                widget.initialize(context, args);
+                widget.insensitive = false;
+            }
+
+            module List
+            {
+                method initialize(context, args)
+                {
+                    var listbox = self.ListBox;
+                    if (args == nil)
+                    {
+                        listbox.reinitialize(context);
+                    }
+                    else
+                    {
+                        listbox.setItemCount(0);
+                        listbox.setItemTemplate(context, hidden::ListItem);
+
+                        var category_id1 = 1;
+                        var category_id2 = args;
+                        var news_id_list = NewsFileUtil::getNewsIdList(category_id1, category_id2);
+                        listbox.data_list = news_id_list;
+                        listbox.setItemCount(news_id_list.size);
+
+                        var focus_index = 0;
+                        if (NewsRoot.specified_news != nil)
+                        {
+                            var news_id0 = NewsRoot.specified_news["news_id"];
+                            for (var i = 0; i < news_id_list.size; ++i)
+                            {
+                                if (news_id_list[i] == news_id0)
+                                {
+                                    focus_index = i;
+                                    break;
+                                }
+                            }
+                        }
+
+                        listbox.focus_index = focus_index;
+                    }
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("cancel");
+
+                    if (Pane::Menu::Mode::List::VBox::Update.active)
+                        NewsRoot.setFocus(Pane::Menu::Mode::List::VBox::Update::Button);
+                    else
+                        NewsRoot.setFocus(Pane::Menu::Mode::List::VBox::New::Button);
+
+                    return STATE_YIELD;
+                }
+            }
+            
+            module Detail
+            {
+                attribute news;
+
+                method on_initialize(context)
+                {
+                    context.wait();
+
+                    var clip = self.SBox::ScrolledWindow::clip;
+                    self.SBox::ScrolledWindow.can_focus = clip.h < clip.space.h;
+                }
+
+                method initialize(context, args)
+                {
+                    var news = args;
+                    self.news = news;
+
+                    var sw = self.SBox::ScrolledWindow;
+                    sw.can_focus = false;
+                    sw.clip.space.y = 0.0;
+                    sw.clip.manual_target_y = 0.0;
+
+                    var target = self.SBox::ScrolledWindow::clip::space;
+                    target.Head::TextFaceTitle.text = news["title"];
+                    target.Head::TextFaceDate.text = getDate(news["news_time"]);
+                    target.VBox::TextFace.text = news["comment"];
+
+                    var images = news["images"];
+                    SubMenu::Mode::Detail::VBox::Photo.visible = images.size > 0;
+                    context.pushEvent(menu::MScriptEvent(context, self, "on_initialize"));
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("cancel");
+
+                    NewsRoot.setFocus(Pane::Menu::Mode::Detail::VBox::Back::Button);
+                    return STATE_YIELD;
+                }
+
+                module SBox::ScrolledWindow
+                {
+                    method onFocusEnter(context)
+                    {
+                        context.target_widget = self.VScrollbar::pinch::pointer;
+                        return STATE_YIELD;
+                    }
+
+                    method onKeyPress(context, event)
+                    {
+                        var scrollclip = self.clip;
+                        var line_height = scrollclip.space::VBox::TextFace.line_height;
+                        var status = 0;
+
+                        if (event.keysym == CELL_PAD_CTRL_L3_UP)
+                        {
+                            if (scrollclip.manualTargetIncY(line_height))
+                                status = 1;
+                        }
+                        
+                        if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+                        {
+                            if (scrollclip.manualTargetIncY(-line_height))
+                                status = 1;
+                        }
+
+                        return 0;
+                    }
+                }
+            }
+        }
+
+        module SubMenu::Mode
+        {
+            attribute active_sub_menu;
+
+            method changeMode(context, widget, args)
+            {
+                var reverse = self.active_sub_menu == nil ? true : (self.active_sub_menu.sx - widget.sx) >= 0;
+                Pane::SubMenu::Mode::X.reverse = reverse;
+                Pane::SubMenu::Mode::X.start();
+
+                if (self.active_sub_menu != nil)
+                    self.active_sub_menu.insensitive = true;
+
+                self.active_sub_menu = widget;
+                widget.insensitive = false;
+            }
+
+            module List::VBox 
+            {
+
+            }
+
+            module Detail::VBox
+            {
+                method onCancel(context)
+                {
+                    sound.play("cancel");
+                    NewsRoot.setFocus(Pane::Menu::Mode::Detail::VBox::Back::Button);
+                    return STATE_YIELD;
+                }
+
+                module Photo
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+                        PhotoViewerRoot.openViewNews(context, Pane::Main::Mode::Detail.news);
+                        return STATE_YIELD;
+                    }
+                }
+            }
+        }
+    }
+
+    module hidden
+    {
+        module ListItem
+        {
+            attribute initialized_ = false;
+            attribute news;
+
+            method onRealize(context)
+            {
+                self.Head::TextFaceTitle.text = "";
+                self.Head::TextFaceDate.text = "";
+                self.Body::TextFace.text = "";
+            }
+
+            method initialize(context, news_id)
+            {
+                var news = NewsRoot.news_cache[news_id];
+                if (news != nil)
+                    initialize2(context, news);
+                else
+                {
+                    var me = self;
+                    News2.requestNews(news_id, (args) => 
+                    {
+                        var [context, request] = args;
+                        if (context == nil || !request.isDone())
+                            return;
+
+                        if (NewsRoot.news_cache == nil)
+                            return;
+
+                        if (me.parent == nil)
+                            return;
+
+                        var news = News2.decodeNews(request);
+                        NewsRoot.news_cache[news_id] = news;
+                        me.initialize2(context, news);
+                    })
+                }
+            }
+
+            method initialize2(context, news)
+            {
+                self.news = news;
+
+                var is_read = NewsFileUtil::isReadNews(news["news_id"]);
+                self.New.visible = !is_read;
+                self.Head::TextFaceTitle.text = news["title"];
+                self.Head::TextFaceDate.text = getDate(news["news_time"]);
+
+                var comment = news["comment"];
+                comment = comment.split("\r\n").join("");
+                comment = comment.split("\n").join("");
+                self.Body::TextFace.text = comment;
+                self.initialized_ = true;
+            }
+
+            method on_activate(context)
+            {
+                NewsRoot.openDetail(context, self.news);
+            }
+        }
+    }
+}

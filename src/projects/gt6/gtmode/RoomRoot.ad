@@ -1,0 +1,1389 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module RoomRoot
+{
+    attribute sWatcher;
+    attribute sResult;
+    attribute sWaitSearchResultCount = 0;
+    attribute sRoomList;
+    attribute sSearchParam;
+    attribute sFriendList;
+    attribute ignore_update = true;
+    attribute room_game_mode_index = 0;
+    attribute course_index = 0;
+    attribute policy_index = 0;
+    attribute simulation_index = 0;
+    attribute region_index = 1;
+    attribute show_full = false;
+    attribute showFriendSession = false;
+    attribute sShowClubRoom = true;
+    attribute sCourseFilterList;
+    attribute sOnFirstRefresh;
+    attribute sButtonHelpType;
+    attribute sLobbyEventHandler;
+    attribute sALL;
+    attribute sRoomGameModeList;
+    attribute sEnterRoomCalled;
+    attribute sCourseIdList;
+    attribute sDataProvider;
+
+    hidden.visible = false;
+
+    function getCourseIdList(context)
+    {
+        var courseIdList = [];
+        var sql = "SELECT ID, Label, Name, ChangeWeather, ChangeTime, Reverse, Logo FROM COURSE WHERE Online = 1 AND CourseCategory <> 'template'";
+        sql += OnlineUtil::getCourseListAdditionalCondition();
+        sql += "ORDER BY Length ASC, Reverse, ChangeTime, ChangeWeather";
+
+        foreach (var it in SPECDB.query(sql))
+        {
+            var value = KeyValueUtil::getFlag("COURSE_AVAILABLE", it.Label);
+            if (value != nil && !value)
+                continue;
+
+            courseIdList.push(it.ID);
+        }
+
+        courseIdList.push(gtengine::COURSE_CODE_GENERATED);
+        return courseIdList;
+    }
+
+    method goToRaceProject(context, room)
+    {
+        if (self.sWatcher != nil)
+        {
+            WatcherUtil::Delete(self.sWatcher);
+            self.sWatcher = nil;
+        }
+
+        CursorProject::SceneFaceRoot.requestStop();
+        context.closePage(CursorProject::SceneFaceRoot);
+
+        OnlineUtil::goToRaceProject(context, room);
+
+        self.sResult = true;
+        self.close(context, false);
+    }
+
+    method open(context)
+    {
+        SequenceUtil::enableSceneFaceRoot();
+        SequenceUtil::startPageSimple(context, self);
+        menu::FrameInterval = 1;
+    }
+
+    method close(context, go_back)
+    {
+        finally () => { CursorUtil::setCursor(context, "cursor_chrome") };
+
+        if (self.sWatcher != nil)
+        {
+            WatcherUtil::Delete(self.sWatcher);
+            self.sWatcher = nil;
+        }
+
+        if (go_back)
+        {
+            OnlineUtility.endSession();
+            ServerUtil::ResidentLobby::leave(context);
+            RaceOperator.clear();
+            GTModeRoot.open(context);
+        }
+        else
+        {
+            GTModeProject.history[$"LastPageName"] = RoomRoot.name;
+        }
+
+        self.Fade.backward();
+        self.Fade.start();
+    }
+
+    method onTick(context)
+    {
+        if (RoomRoot.sWatcher == nil)
+            return;
+
+        if (!Lobby.isInitialized() && !RoomRoot.sEnterRoomCalled)
+        {
+            OnlineUtil::finalizeEveryComponent(context);
+            DialogUtil::cancelConfirmDialog(context);
+            RoomDetailDialog.abort(context);
+            DirectJoinDialog.abort(context);
+
+            EventSettingProject::EventSettingRoot.abort(context);
+
+            if (RoomRoot.sWatcher != nil)
+            {
+                WatcherUtil::Delete(RoomRoot.sWatcher);
+                RoomRoot.sWatcher = nil;
+            }
+
+            context.pushEvent(menu::MScriptEvent(context, RoomRoot, "close", [true]));
+
+            var msg = context.translate(RoomRoot, "OnlineMessage", "DISCONNECTED_FROM_LOBBY_SERVER");
+            pdistd::MSystemDialog::open("EN", msg);
+        }
+    }
+
+    method onSearchRoomResult(context, type, error, requestId, arg)
+    {
+        if (self.sWaitSearchResultCount > 0)
+            self.sWaitSearchResultCount--;
+
+        if (error == pdistd::LobbyError::None)
+        {
+            var roomList;
+
+            if (type == pdistd::LobbyEventType::SearchResult)
+            {
+                roomList = Lobby.getRoomList(requestId);
+            }
+            else if (type == pdistd::LobbyEventType::GetExternalRoomInfoResult)
+            {
+                roomList = Lobby.getExternalRoomInfo(requestId);
+                if (roomList != nil && roomList.isInstanceOf(Int))
+                    roomList = nil;
+            }
+
+            if (roomList == nil || roomList.size < 1)
+                return;
+
+            var roomVersion = OnlineUtility.getRoomVersion();
+            var roomListTmp = [];
+            foreach (var room in roomList)
+            {
+                if (room["version"] != roomVersion)
+                    continue;
+
+                var roomType = room["roomType"];
+                if (roomType != gtengine::RoomType::OPEN_MATCH &&
+                    (!self.sShowClubRoom && roomType == gtengine::RoomType::CLUB_LOBBY))
+                    continue;
+
+                var scope = room["scope"];
+                if (scope == gtengine::Scope::PUBLIC)
+                {
+                    roomListTmp.push(room);
+                }
+                else if (scope == gtengine::Scope::FRIEND)
+                {
+                    var creator = room["roomCreator"];
+                    if (RoomRoot.sFriendList.find_all((a) => a != "" && a == creator).size != 0)
+                    {
+                        roomListTmp.push(room);
+                    }
+                    else
+                        ;
+                }
+                else
+                    ;
+            }
+
+            roomList = roomListTmp;
+            if (roomList.size >= 1)
+                self.sRoomList = LobbyUtil::mergeRoomList(self.sRoomList, roomList, 100);
+        }
+
+        if (self.sWaitSearchResultCount == 0 || OnlineUtility.isLanMode())
+            self.refreshList(context);
+    }
+
+    method onGetRTTResult(context, type, error, requestId, arg, args)
+    {
+        if (error != pdistd::LobbyError::None)
+            return;
+
+        var [roomId, rtt] = args;
+
+        foreach (var room in self.sRoomList)
+        {
+            if (room["roomId"] == roomId)
+            {
+                room["rtt"] = rtt;
+
+                var finder = Popup::Pane::Body::List.finder;
+                if (finder == nil)
+                    return;
+
+                var count = finder.getItemCount(context);
+                for (var i = 0; i < count; i++)
+                {
+                    var item_w = finder.getItemWidget(i);
+                    if (item_w == nil)
+                        continue;
+
+                    var candidate_data = finder.getItemData(context, i);
+                    var r = candidate_data.value_;
+
+                    if (r["roomId"] == roomId)
+                    {
+                        r["rtt"] = rtt;
+                        item_w.setInfo(context, r);
+                        return;
+                    }
+                }
+
+                return;
+            }
+        }
+    }
+
+    method isSearchOngoing()
+    {
+        return self.sWaitSearchResultCount > 0 && !OnlineUtility.isLanMode();
+    }
+
+    method searchFriendSessionRequest(context)
+    {
+        if (self.isSearchOngoing())
+            return false;
+
+        self.sRoomList = [];
+        self.refreshList(context);
+
+        var friendList = OnlineUtility.getFriendPresenceList();
+        var roomIdList = [];
+
+        foreach (var friend in friendList)
+        {
+            if (friend["presenceState"] != pdistd::PresenceState::SameContext)
+                continue;
+
+            var friendRoomId = friend["roomId"];
+            if (friendRoomId > 0 && roomIdList.find_all((id) => id == friendRoomId).size == 0)
+                roomIdList.push(friend["roomId"]);
+        }
+
+        if (roomIdList.size < 1)
+            return false;
+
+        foreach (var roomId in roomIdList)
+        {
+            var ret = Lobby.getExternalRoomInfoAsync(roomId);
+            var succeeded = ret >= 0;
+            if (succeeded)
+                ++self.sWaitSearchResultCount;
+        }
+
+        return true;
+    }
+
+    method searchRoomAsync(context)
+    {
+        if (self.isSearchOngoing())
+            return false;
+
+        self.sRoomList = [];
+        self.refreshList(context);
+
+        var param = Map();
+        self.resetSearchParam();
+        param["conditional"] = Lobby.createRoomConditional(self.sSearchParam);
+
+        var maxRoomCountPerRequest = Lobby.getRoomResultMax();
+        var searchRequestCountPerWorld = 1;
+
+        var wholeRoomCount = Lobby.getWholeRoomCount();
+        var serverCount = Lobby.getAvailableServerCount();
+        var maxSearchableCount = maxRoomCountPerRequest * serverCount;
+        if (wholeRoomCount > maxSearchableCount)
+        {
+            var estimatedRoomCountPerRequest = (maxRoomCountPerRequest.toFloat() * 0.5 * 0.9).toInt();
+            var searchRequestCountPerWorld = Math::ceil((100).toFloat() / estimatedRoomCountPerRequest / serverCount).toInt();
+            if (searchRequestCountPerWorld < 1)
+                searchRequestCountPerWorld = 1;
+        }
+
+        var serverId = gtengine::MLobby::ServerIdThrough;
+        param["serverId"] = serverId;
+        param["worldNumber"] = OnlineUtil::MatchingWorld::OpenLobbyPublic;
+        param["natFilter"] = true;
+        param["random"] = true;
+        param["excludeFull"] = !RoomRoot.show_full;
+        param["excludeClosed"] = false;
+        param["max"] = maxRoomCountPerRequest;
+
+        for (var i = 0; i < searchRequestCountPerWorld; ++i)
+        {
+            if (!self.callSearchRoomAsync(param))
+                break;
+
+            if (self.sShowClubRoom)
+            {
+                param["worldNumber"] = OnlineUtil::MatchingWorld::ClubLobby;
+                self.resetSearchParam(gtengine::RoomType::CLUB_LOBBY);
+                param["conditional"] = Lobby.createRoomConditional(self.sSearchParam);
+                if (!self.callSearchRoomAsync(param))
+                    break;
+
+                param["worldNumber"] = OnlineUtil::MatchingWorld::OpenLobbyPublic;
+                self.resetSearchParam(gtengine::RoomType::OPEN_MATCH);
+                param["conditional"] = Lobby.createRoomConditional(self.sSearchParam);
+
+            }
+        }
+
+        return true;
+    }
+
+    method callSearchRoomAsync(param)
+    {
+        var ret = Lobby.searchRoomAsync(param);
+        if (ret > 0)
+        {
+            if (param["serverId"] == gtengine::MLobby::ServerIdThrough)
+                self.sWaitSearchResultCount += ret;
+            else
+                ++self.sWaitSearchResultCount;
+        }
+        else
+            return false;
+            
+        return true;
+    }
+
+    method resetSearchParam(roomType = gtengine::RoomType::OPEN_MATCH)
+    {
+        if (self.sSearchParam != nil)
+            self.sSearchParam = nil;
+
+        var param = Map();
+        param["roomType"] = [roomType];
+
+        if (self.room_game_mode_index != 0)
+        {
+            param["roomGameMode"] = [RoomRoot.sRoomGameModeList[self.room_game_mode_index - 1][0]];
+        }
+
+        if (self.course_index != 0)
+        {
+            param["courseCode"] = [RoomRoot.sCourseFilterList[self.course_index - 1]];
+        }
+
+        if (self.policy_index != 0 && roomType != gtengine::RoomType::CLUB_LOBBY)
+        {
+            param["roomPolicy"] = [OnlineUtil::Define::sRoomPolicyList[self.policy_index - 1][0]];
+        } 
+
+        if (self.simulation_index != 0)
+        {
+            param["isProfessionalMode"] = [self.sSimulationList[self.simulation_index]];
+        }
+
+        if (self.region_index != 0)
+        {
+            param["region"] = ["OWN"];
+        }
+
+        self.sSearchParam = param;
+    }
+
+    method onInitialize(context)
+    {
+        Connecting.visible = false;
+        Popup.visible = false;
+        ButtonHelpGT6.visible = false;
+
+        self.sDataProvider = OnlineUtil::OnlineDataProvider();
+        self.sCourseIdList = getCourseIdList();
+        self.sOnFirstRefresh = true;
+        self.sRoomList = [];
+        self.sFriendList = [];
+        self.sRoomGameModeList = OnlineUtil::Define::sRoomGameModeList;
+        self.sLobbyEventHandler = LobbyUtil::EventHandler();
+
+        self.initializeCommon(context);
+
+        self.sALL = context.translate(RoomRoot, "ALL");
+        self.sEnterRoomCalled = false;
+        
+        self.initializeSearchList(context);
+        
+        self.Fade.forward();
+        self.Fade.restart();
+
+        context.pushEvent(menu::MScriptEvent(context, RoomRoot, "on_initialize"));
+    }
+
+    method initializeLobby(context)
+    {
+        context.enableInput();
+
+        ServerUtil::ResidentLobby::stay(context);
+
+        if (!Lobby.isInitialized())
+        {
+            if (!OnlineUtility.isLanMode() && !OnlineUtil::canSkipCheckingEnvironment(context))
+            {
+                Connecting.State.text = manager.translate("OnlineMessage", "PROGRESS_CHECKING_NETWORK");
+                Connecting.visible = true;
+                OnlineUtil::checkEnvironment(context, OnlineUtil::DefaultProbedBandwidthCacheLifeTime, false);
+            }
+
+            Connecting.State.text = manager.translate("OnlineMessage", "PROGRESS_CONNECTING_TO_SERVER");
+            Connecting.visible = true;
+
+            if (!self.initializeLobbyEntry(context))
+                return false;
+
+            Connecting.visible = false;
+        }
+
+        RoomRoot.sFriendList = NP.getFriendList();
+        if (Lobby.getAvailableServerCount() < 1)
+        {
+            var msg = "%{context.translate(RoomRoot, "OnlineMessage", "ERROR_203")}\n[%{591u}]";
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+            return false;
+        }
+
+        self.Fade.forward();
+        self.Fade.restart();
+
+        Popup.visible = true;
+        ButtonHelpGT6.visible = true;
+
+        return true;
+    }
+
+    method initializeLobbyEntry(context)
+    {
+        if (!Lobby.isInitialized())
+        {
+            return OnlineUtil::initializeLobby2(context, gtengine::MLobby::ServerIdJoining,
+                OnlineUtil::MatchingWorld::OpenLobbyPublic);
+        }
+
+        return true;
+    }
+
+    method on_initialize(context)
+    {
+        context.cursor_visible = false;
+
+        finally () => { context.cursor_visible = true };
+
+        ServerUtil::ResidentLobby::stay(context);
+
+        self.sWaitSearchResultCount = 0;
+
+        SaveDataUtilGT6::syncBackgroundSave();
+
+        if (!RoomRoot.initializeLobby(context))
+        {
+            self.close(context, true);
+            return;
+        }
+
+        Lobby.setLobbyHandler(context, GTModeProject, self.sLobbyEventHandler.onLobbyEvent);
+
+        PDINetwork.clearRoomParameter();
+
+        self.sLobbyEventHandler.setCallback(context, pdistd::LobbyEventType::SearchResult, onSearchRoomResult, self);
+        // intentional empty line here
+        self.sLobbyEventHandler.setCallback(context, pdistd::LobbyEventType::GetExternalRoomInfoResult, onSearchRoomResult, self);
+        self.sLobbyEventHandler.setCallback(context, pdistd::LobbyEventType::GetRTTResult, onGetRTTResult, self);
+
+        self.sWatcher = WatcherUtil::Create(context, onTick, 120);
+        self.resetSearchParam();
+        self.sOnFirstRefresh = true;
+        self.refreshListRequest(context);
+
+        if (GAME_STATUS.user_profile.option.bot_on)
+            BotUtil::begin(context);
+    }
+
+    attribute sCourseNameList = [];
+
+    method createCourseList(context, courseInfoList, uniqueList)
+    {
+        foreach (var course in courseInfoList)
+        {
+            var found = false;
+            foreach (var value in uniqueList)
+            {
+                if (value == course.BaseName)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+            {
+                var name;
+                self.sCourseFilterList.push(course.ID);
+                if (course.BaseName == "coursemaker")
+                    name = manager.translate("CourseData", "CATEGORY_course_maker");
+                else
+                    name = manager.translate("CourseBaseName", course.BaseName);
+
+                self.sCourseNameList.push(name);
+                uniqueList.push(course.BaseName);
+            }
+        }
+    }
+
+    method initializeSearchList(context)
+    {
+        self.sCourseFilterList = [];
+        self.sCourseNameList = [];
+        
+        var courseInfoList = [];
+
+        var sql = ("SELECT ID, BaseName FROM COURSE WHERE ID IN (%s) AND CourseCategory <> 'template'"
+            " ORDER BY Length DESC, Reverse, ChangeTime, ChangeWeather").format(self.sCourseIdList.join(","));
+
+        foreach (var it in SPECDB.query(sql))
+            courseInfoList.push(it);
+
+        var uniqueList = [];
+        createCourseList(context, courseInfoList, uniqueList);
+
+        self.sCourseFilterList = self.sCourseFilterList.reverse();
+        self.sCourseNameList = self.sCourseNameList.reverse();
+
+        sql = ("SELECT ID, BaseName FROM COURSE WHERE CourseCategory = 'template' AND Online = 1"
+               " AND ID IN (%s)"
+               " ORDER BY Name").format(self.sCourseIdList.join(","));
+
+        
+        foreach (var it in SPECDB.query(sql))
+            courseInfoList.push(it);
+
+        createCourseList(context, courseInfoList, uniqueList);
+
+        self.ignore_update = true;
+        self.initializeRoomGameModeList(context);
+        self.initializeCourseList(context);
+        self.initializePolicyList(context);
+        self.initializeSimulationList(context);
+        self.initializeRegionList(context);
+        
+        if (GTModeProject.history[$"SearchFilterShowFull"] != nil)
+            self.show_full = GTModeProject.history[$"SearchFilterShowFull"];
+
+        Popup::Filter::VBox::Search::ShowFull.active = self.show_full;
+        Popup::Filter::VBox::Search::ShowFull.onValueChanged(context);
+
+        if (GTModeProject.history[$"SearchFilterShowClubRoom"] != nil)
+        {
+            self.sShowClubRoom = GTModeProject.history[$"SearchFilterShowClubRoom"].toBool();
+        }
+        else
+        {
+            self.sShowClubRoom = true;
+        }
+
+        Popup::Filter::VBox::Search::ShowClubRoom.active = self.sShowClubRoom;
+        Popup::Filter::VBox::Search::ShowClubRoom.onValueChanged(context);
+
+        self.ignore_update = false;
+    }
+
+    method getOptionMenuItem(option_menu, index)
+    {
+        return option_menu["popup"]["vbox"].getChild(index);
+    }
+
+    method getSelectedCourseLabel()
+    {
+        if (self.course_index != 0)
+        {
+            var item = getOptionMenuItem(Popup::Filter::VBox::Search::Course::OptionMenu, self.course_index);
+            return item.name;
+        }
+
+        return nil;
+    }
+
+    method initializeRoomGameModeList(context)
+    {
+        var option_menu = Popup::Filter::VBox::Search::RoomGameMode::OptionMenu;
+        OptionMenuUtil::finalize(context, option_menu);
+
+        var list = [RoomRoot.sALL];
+        foreach (var [k, v] in self.sRoomGameModeList)
+        {
+            list.push(v);
+        }
+
+        OptionMenuUtil::initialize(context, RoomRoot, option_menu, hidden::PulldownItem,
+            list, "OnlineMessage");
+
+        self.room_game_mode_index = 0;
+
+        var historyRoomGameMode = GTModeProject.history[$"SearchFilterRoomGameMode"];
+        if (historyRoomGameMode != nil)
+        {
+            var i = 0;
+            foreach (var mode in self.sRoomGameModeList)
+            {
+                if (mode == historyRoomGameMode)
+                {
+                    self.room_game_mode_index = i + 1;
+                    break;
+                }
+
+                ++i;
+            }
+        }
+
+        option_menu.setIndex(context, self.room_game_mode_index);
+    }
+
+    method initializeCourseList(context)
+    {
+        var option_menu = Popup::Filter::VBox::Search::Course::OptionMenu;
+        OptionMenuUtil::finalize(context, option_menu);
+
+        var course_list = self.sCourseNameList;
+        course_list.unshift(RoomRoot.sALL);
+
+        OptionMenuUtil::initialize(context, RoomRoot, option_menu, hidden::PulldownItem,
+            course_list, "CourseNameLong");
+
+        self.course_index = 0;
+
+        var historyCourse = GTModeProject.history[$"SearchFilterCourse"];
+        if (historyCourse != nil)
+        {
+            var i = 0;
+            foreach (var course in self.sCourseFilterList)
+            {
+                if (course == historyCourse)
+                {
+                    self.course_index = i + 1;
+                    break;
+                }
+
+                ++i;
+            }
+        }
+
+        option_menu.setIndex(context, self.course_index);
+    }
+
+    method initializePolicyList(context)
+    {
+        var option_menu = Popup::Filter::VBox::Search::Policy::OptionMenu;
+        OptionMenuUtil::finalize(context, option_menu);
+
+        var list = [RoomRoot.sALL];
+        foreach (var [k, v] in OnlineUtil::Define::sRoomPolicyList)
+        {
+            list.push(v);
+        }
+
+        OptionMenuUtil::initialize(context, RoomRoot, option_menu, hidden::PulldownItem,
+            list, "OnlineMessage");
+
+        self.policy_index = 0;
+
+        var historyPolicy = GTModeProject.history[$"SearchFilterPolicy"];
+        if (historyPolicy != nil)
+        {
+            self.policy_index = historyPolicy;
+        }
+
+        option_menu.setIndex(context, self.policy_index);
+    }
+
+    attribute sSimulationList = [-1, 1];
+    attribute sSimulationLabelList = [nil, "OFF"];
+
+    method initializeSimulationList(context)
+    {
+        var option_menu = Popup::Filter::VBox::Search::Simulation::OptionMenu;
+        OptionMenuUtil::finalize(context, option_menu);
+
+        self.sSimulationLabelList[0] = RoomRoot.sALL;
+
+        OptionMenuUtil::initialize(context, RoomRoot, option_menu, hidden::PulldownItem,
+            self.sSimulationLabelList, "TrialSetting");
+
+        self.simulation_index = 0;
+
+        var historySimulation = GTModeProject.history[$"SearchFilterSimulation"];
+        if (historySimulation != nil && historySimulation == 1)
+        {
+            self.simulation_index = 1;
+        }
+
+        option_menu.setIndex(context, self.simulation_index);
+    }
+
+    method initializeRegionList(context)
+    {
+        var option_menu = Popup::Filter::VBox::Search::Region::OptionMenu;
+        OptionMenuUtil::finalize(context, option_menu);
+
+        var region_code = pdiext::MProductInformation::GetGameRegionCode();
+        var region_name = context.translate(RoomRoot, "RESTRICT_" + region_code);
+        var region_list = [region_name];
+        region_list.unshift(RoomRoot.sALL);
+
+        OptionMenuUtil::initialize(context, RoomRoot, option_menu, hidden::PulldownItem,
+            region_list, "");
+
+        self.region_index = 1;
+
+        var historyRegion = GTModeProject.history[$"SearchFilterRegion"];
+        if (historyRegion != nil && historyRegion == 0)
+        {
+            self.region_index = 0;
+        }
+
+        option_menu.setIndex(context, self.region_index);
+    }
+
+    method setButtonHelp(context, type)
+    {
+        if (self.sButtonHelpType != nil && self.sButtonHelpType == type)
+            return;
+
+        switch (type)
+        {
+            case 1:
+                ButtonHelpGT6.set(context, [
+                    [ButtonHelpGT6.getEnterButtonName(), context.translate(RoomRoot, "BALLOON_Select")],
+                    ["Triangle", context.translate(RoomRoot, "BALLOON_UpdateList")],
+                    [ButtonHelpGT6.getCancelButtonName(), context.translate(RoomRoot, "BALLOON_Exit")],
+                ]);
+                break;
+
+            case 2:
+                ButtonHelpGT6.set(context, [
+                    [ButtonHelpGT6.getEnterButtonName(), context.translate(RoomRoot, "BALLOON_Select")],
+                    ["Triangle", context.translate(RoomRoot, "BALLOON_UpdateList")],
+                    ["Square", context.translate(RoomRoot, "BUTTON_ROOM_MEMBER")],
+                    [ButtonHelpGT6.getCancelButtonName(), context.translate(RoomRoot, "BALLOON_Exit")]
+                ]);
+                break;
+
+        }
+
+        self.sButtonHelpType = type;
+    }
+    
+    method initializeCommon(context)
+    {
+        RoomRoot.setFocus(Popup::Filter::Buttons::Create);
+    }
+
+    method refreshListRequest(context)
+    {
+        if (self.showFriendSession)
+            self.searchFriendSessionRequest(context);
+        else
+            self.searchRoomAsync(context);
+    }
+
+    method refreshList(context)
+    {
+        var List = Popup::Pane::Body::List;
+        var isFinderExist = List.finalizeFinder(context);
+        List.initializeFinder(context);
+
+        if (isFinderExist && self.sOnFirstRefresh)
+        {
+            if (List.finder.getItemCount(context) > 0)
+                List.finder.onFocus(context, RoomRoot);
+
+            self.sOnFirstRefresh = false;
+        }
+    }
+
+    method onFinalize(context)
+    {
+        Community.clearCallback();
+        Popup::Pane::Body::List.finalizeFinder(context);
+        OptionMenuUtil::finalize(context, Popup::Filter::VBox::Search::Course::OptionMenu);
+        OptionMenuUtil::finalize(context, Popup::Filter::VBox::Search::Policy::OptionMenu);
+        OptionMenuUtil::finalize(context, Popup::Filter::VBox::Search::Simulation::OptionMenu);
+        OptionMenuUtil::finalize(context, Popup::Filter::VBox::Search::Region::OptionMenu);
+        OptionMenuUtil::finalize(context, Popup::Filter::VBox::Search::RoomGameMode::OptionMenu);
+
+        if (GAME_STATUS.user_profile.option.bot_on)
+            BotUtil::end();
+
+        if (self.sWatcher != nil)
+        {
+            WatcherUtil::Delete(self.sWatcher);
+            self.sWatcher = nil;
+        }
+
+        self.sButtonHelpType = nil;
+        self.sRoomList = nil;
+        self.sSearchParam = nil;
+        self.sFriendList = nil;
+        self.sCourseFilterList = nil;
+
+        self.sLobbyEventHandler.unsetCallback(context, pdistd::LobbyEventType::SearchResult, onSearchRoomResult);
+        self.sLobbyEventHandler.unsetCallback(context, pdistd::LobbyEventType::GetExternalRoomInfoResult, onSearchRoomResult);
+        self.sLobbyEventHandler.unsetCallback(context, pdistd::LobbyEventType::GetRTTResult, onGetRTTResult);
+        
+        Lobby.unsetLobbyHandler(GTModeProject, self.sLobbyEventHandler.onLobbyEvent);
+        self.sLobbyEventHandler.finalize();
+        self.sLobbyEventHandler = nil;
+        self.sRoomGameModeList = nil;
+        self.sCourseIdList = nil;
+        self.sDataProvider = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        
+        if (GAME_STATUS.user_profile.option.bot_on)
+            BotUtil::disableBot();
+
+        if (RoomRoot.sWatcher != nil)
+        {
+            WatcherUtil::Delete(RoomRoot.sWatcher);
+            RoomRoot.sWatcher = nil;
+        }
+
+        RoomRoot.close(context, true);
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
+        {
+            if (!self.isSearchOngoing())
+            {
+                main::sound.play("ok");
+                RoomRoot.refreshListRequest(context);
+            }
+
+            return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    module Popup
+    {
+        module Pane
+        {
+            module Body
+            {
+                module List
+                {
+                    attribute finder;
+
+                    function updateStatus(context, room, dummy, item_w)
+                    {
+                        item_w.setInfo(context, room);
+                    }
+
+                    function onInitItem(context, candidate_data, item_w, arg)
+                    {
+                        var room = candidate_data.value_;
+                        var roomId = room["roomId"];
+
+                        foreach (var r in RoomRoot.sRoomList)
+                        {
+                            if (r["roomId"] == roomId)
+                            {
+                                if (r["rttMeasured"] == nil)
+                                {
+                                    Lobby.getRTTRequest(roomId);
+                                    r["rttMeasured"] = true;
+                                }
+
+                                if (r["clubId"] != nil && r["clubId"] > 0)
+                                {
+                                    if (r["clubName"] == nil)
+                                    {
+                                        Community.requestClub(r["clubId"], (args) => 
+                                        {
+                                            var [context, request] = args;
+                                            if (request.isDone())
+                                            {
+                                                var club = Community.decodeClub(request);
+                                                r["clubName"] = club["title"];
+                                                room["clubName"] = club["title"];
+                                                item_w.setClubName(club["title"]);
+                                            }
+                                        });
+                                    }
+                                }
+
+                                break;
+                            }
+                        }
+
+                        updateStatus(context, room, nil, item_w);
+                    }
+
+                    function onActivateItem(context, folder_data, func_close, arg)
+                    {
+                        if (!Lobby.isInitialized())
+                            return STATE_YIELD;
+
+                        if (Lobby.isJoinedRoom())
+                        {
+                            main::sound.play("disable");
+                            ErrorUtil::openDialog(context, 1108u, "You've alredy joined another room."); // Original typo
+                            return STATE_YIELD;
+                        }
+
+                        var candidate_data = folder_data.getItemData();
+                        var room = candidate_data.value_;
+
+                        var result = EnterRoomDialog.open(context, room);
+                        if (result == nil || !result)
+                            return STATE_YIELD;
+
+                        RoomRoot.sEnterRoomCalled = true;
+
+                        var res = OnlineUtil::enterRoomWithProgressDialog(context, [room, nil]);
+                        if (res)
+                        {
+                            RoomRoot.goToRaceProject(context, room);
+                        }
+                        else if (!Lobby.isInitialized())
+                        {
+                            OnlineUtil::finalizeEveryComponent(context);
+                            RoomRoot.close(context, true);
+                        }
+
+                        RoomRoot.sEnterRoomCalled = false;
+                        return STATE_YIELD;
+                    }
+
+                    function onFocusEnter(context, candidate_data, item_w, arg)
+                    {
+                        RoomRoot.setButtonHelp(context, 2);
+                        return STATE_YIELD;
+                    }
+
+                    function onFocusLeave(context, candidate_data, item_w, arg)
+                    {
+                        BalloonTip.reset_value();
+                        return STATE_YIELD;
+                    }
+
+                    method onKeyPressCallBack(context, event, item_w, candidate_data)
+                    {
+                        if (event.keysym == CELL_PAD_CTRL_SQUARE)
+                        {
+                            main::sound.play("ok");
+                            var room = candidate_data.value_;
+                            RoomDetailDialog.open(context, room, RoomRoot.sLobbyEventHandler);
+                            return STATE_YIELD;
+                        }
+
+                        return STATE_EXIT;
+                    }
+
+                    method makeInitialDataRoomList(context)
+                    {
+                        var Finder = FinderRoot;
+                        var candidates = Finder.makeCandidates(Array(0));
+                        var initial_data = Finder.InitialData(candidates);
+                        initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+                        initial_data.extended_item_ = hidden::Info;
+                        initial_data.cb_init_item_ = onInitItem;
+                        initial_data.cb_on_activate_ = onActivateItem;
+                        initial_data.v_scrollbar_ = Scrollbar;
+                        initial_data.cb_focus_enter_ = onFocusEnter;
+                        initial_data.cb_focus_leave_ = onFocusLeave;
+                        initial_data.import_iconbox_parameter_ = self.IconBox;
+                        initial_data.cb_on_key_press_ = onKeyPressCallBack;
+                        initial_data.item_cache_ = false;
+                        return initial_data;
+                    }  
+
+                    method initializeFinder(context)
+                    {
+                        var initial_data = makeInitialDataRoomList(context);
+                        self.finder = FinderRoot.setCopy(context, self, initial_data, false);
+
+                        var Finder = FinderRoot;
+                        var room_list = RoomRoot.sRoomList;
+                        var candidates = Array(room_list.size);
+                    
+                        for (var i = 0; i < room_list.size; ++i)
+                        {
+                            var room = room_list[i];
+                            var candidate_data = Finder.CandidateData();
+                            candidate_data.label_ = room["roomId"];
+                            candidate_data.value_ = room;
+                            candidates[i] = candidate_data;
+                        }
+
+                        self.finder.replaceCurrentFolderCandidates(context, candidates, 0);
+                        if (RoomRoot.focus_widget != nil && RoomRoot.focus_widget.name == "List" &&
+                            Popup.Pane.Body.List.IconBox.focus_index == -1)
+                            self.finder.onFocus(context, RoomRoot);
+                    }
+
+                    method finalizeFinder(context)
+                    {
+                        var result = false;
+                        if (self.finder != nil)
+                        {
+                            self.removeChild(context, self.finder);
+                            self.finder = nil;
+                            result = true;
+                        }
+
+                        BalloonTip.reset_value();
+                        return result;
+                    }
+
+                    method changeViewMode(context, _view_mode) { }
+
+                    function onFunctionCallback(context, data) { }
+
+                    function onNullCallback(context, data) { }
+
+                    method showContextMenu(context) { }
+                }
+            }
+        }
+
+        module Filter
+        {
+            method onFocusEnter(context)
+            {
+                RoomRoot.setButtonHelp(context, 1);
+                return STATE_YIELD;
+            }
+
+            module VBox::Search
+            {
+                method updateState()
+                {
+                    RoomGameMode.OptionMenu.insensitive = false;
+                    Course.OptionMenu.insensitive = false;
+                    Policy.OptionMenu.insensitive = false;
+                    Simulation.OptionMenu.insensitive = false;
+                    Region.OptionMenu.insensitive = false;
+                    ShowFull.insensitive = false;
+                    ShowFriendSession.insensitive = false;
+                    ShowClubRoom.insensitive = false;
+                    
+                    if (ShowFriendSession.active)
+                    {
+                        RoomGameMode.OptionMenu.insensitive = true;
+                        Course.OptionMenu.insensitive = true;
+                        Policy.OptionMenu.insensitive = true;
+                        Simulation.OptionMenu.insensitive = true;
+                        Region.OptionMenu.insensitive = true;
+                        ShowFull.insensitive = true;
+                        ShowClubRoom.insensitive = true;
+                    }
+                    else if (ShowClubRoom.active)
+                    {
+                        Policy.OptionMenu.insensitive = true;
+                        ShowFriendSession.insensitive = true;
+                    }
+
+                }
+
+                module RoomGameMode::OptionMenu
+                {
+                    method onValueChanged(context)
+                    {
+                        self.pulldownValueChanged(context);
+
+                        if (RoomRoot.room_game_mode_index != self.index)
+                        {
+                            RoomRoot.room_game_mode_index = self.index;
+                            if (!RoomRoot.ignore_update)
+                            {
+                                RoomRoot.searchRoomAsync(context);
+                                GTModeProject.history[$"SearchFilterRoomGameMode"] = self.index == 0 ? 
+                                                                                        nil : 
+                                                                                        RoomRoot.sRoomGameModeList[self.index - 1];                                                      
+                            }
+                        }
+
+                        return STATE_YIELD;
+                    }
+                }
+
+                module Course::OptionMenu
+                {
+                    method onValueChanged(context)
+                    {
+                        self.pulldownValueChanged(context);
+
+                        if (RoomRoot.course_index != self.index)
+                        {
+                            RoomRoot.course_index = self.index;
+                            if (!RoomRoot.ignore_update)
+                            {
+                                RoomRoot.searchRoomAsync(context);
+                                GTModeProject.history[$"SearchFilterCourse"] = self.index == 0 ? 
+                                                                                        nil : 
+                                                                                        RoomRoot.sCourseFilterList[self.index - 1];                                                      
+                            }
+                        }
+
+                        return STATE_YIELD;
+                    }
+                }
+
+                module Policy::OptionMenu
+                {
+                    method onValueChanged(context)
+                    {
+                        self.pulldownValueChanged(context);
+
+                        if (RoomRoot.policy_index != self.index)
+                        {
+                            RoomRoot.policy_index = self.index;
+                            if (!RoomRoot.ignore_update)
+                            {
+                                RoomRoot.searchRoomAsync(context);
+                                GTModeProject.history[$"SearchFilterPolicy"] = self.index;
+                            }
+                        }
+
+                        return STATE_YIELD;
+                    }
+                }
+
+                module Simulation::OptionMenu
+                {
+                    method onValueChanged(context)
+                    {
+                        self.pulldownValueChanged(context);
+
+                        if (RoomRoot.simulation_index != self.index)
+                        {
+                            RoomRoot.simulation_index = self.index;
+                            if (!RoomRoot.ignore_update)
+                            {
+                                RoomRoot.searchRoomAsync(context);
+                                GTModeProject.history[$"SearchFilterSimulation"] = self.index;
+                            }
+                        }
+
+                        return STATE_YIELD;
+                    }
+                }
+
+                module Region::OptionMenu
+                {
+                    method onValueChanged(context)
+                    {
+                        self.pulldownValueChanged(context);
+
+                        if (RoomRoot.region_index != self.index)
+                        {
+                            RoomRoot.region_index = self.index;
+                            if (!RoomRoot.ignore_update)
+                            {
+                                RoomRoot.searchRoomAsync(context);
+                                GTModeProject.history[$"SearchFilterRegion"] = self.index;
+                            }
+                        }
+
+                        return STATE_YIELD;
+                    }
+                }
+
+                module ShowFull
+                {
+                    method onValueChanged(context)
+                    {
+                        if (RoomRoot.show_full != self.active)
+                        {
+                            RoomRoot.show_full = self.active;
+                            if (!RoomRoot.ignore_update)
+                            {
+                                RoomRoot.searchRoomAsync(context);
+                                GTModeProject.history[$"SearchFilterShowFull"] = self.active;
+                            }
+                        }
+
+                        return STATE_YIELD;
+                    }
+                }
+
+                module ShowFriendSession
+                {
+                    method onValueChanged(context)
+                    {
+                        self.parent.updateState();
+                        if (RoomRoot.showFriendSession == self.active)
+                            return STATE_YIELD;
+
+                        RoomRoot.showFriendSession = self.active;
+
+                        if (RoomRoot.ignore_update)
+                            return STATE_YIELD;
+
+                        GTModeProject.history[$"SearchFilterShowFriend"] = self.active;
+
+                        RoomRoot.refreshListRequest(context);
+                        return STATE_YIELD;
+                    }
+                }
+
+                module ShowClubRoom
+                {
+                    method onRealize()
+                    {
+                        self.active = true;
+                    }
+
+                    method onValueChanged(context)
+                    {
+                        self.parent.updateState();
+                        if (RoomRoot.sShowClubRoom == self.active)
+                            return STATE_YIELD;
+
+                        RoomRoot.sShowClubRoom = self.active;
+
+                        if (RoomRoot.ignore_update)
+                            return STATE_YIELD;
+
+                        GTModeProject.history[$"SearchFilterShowClubRoom"] = self.active;
+
+                        RoomRoot.refreshListRequest(context);
+                        return STATE_YIELD;
+                    }
+                }
+            }
+
+            module Buttons
+            {
+                module Create
+                {
+                    attribute flag = false;
+
+                    method onActivate(context)
+                    {
+                        if (!Lobby.isInitialized())
+                            return STATE_YIELD;
+
+                        main::sound.play("ok");
+                        CursorUtil::setCursor(context, "wait");
+
+                        var gp;
+
+                        var rc = EventSettingUtil::getDefaultSetting(context);
+                        if (rc != nil)
+                        {
+                            rc.room_type = gtengine::RoomType::OPEN_MATCH;
+                            rc.scope = gtengine::Scope::PUBLIC;
+                            if (rc.room_policy == gtengine::RoomPolicy::NONE)
+                                rc.room_policy = gtengine::RoomPolicy::ENJOY_RACE;
+
+                            var course = RoomRoot.sDataProvider.getCourse(rc.course_code);
+                            if (course != nil)
+                            {
+                                RoomRoot.sDataProvider.resolveRoomConfigInconsistency(rc, course);
+                                OnlineUtil::setAppropriateNetworkParameter(rc);
+                                OnlineUtil::setSuitableQualityControlParameter(rc);
+
+                                var gp = gtengine::MGameParameter();
+                                gp.deepCopy(rc.getGameParameter());
+                            }
+                        }
+
+                        if (gp == nil)
+                        {
+                            gp = GameParameterUtil::createOnlineBattle(OnlineUtil::getDefaultCourseCode(),
+                                gtengine::RoomType::OPEN_MATCH);
+
+                            var rc = gtengine::MRoomConfig(gp);
+                            OnlineUtil::setAppropriateNetworkParameter(rc);
+                            OnlineUtil::setSuitableQualityControlParameter(rc);
+                            gp.deepCopy(rc.getGameParameter());
+                        }
+
+                        var keyState = context.getUpdateContext().getPadButtonState(0);
+                        var mode = EventSettingProject::EventSettingRoot::Mode::CreateRoom;
+                        var rc = gtengine::MRoomConfig(gp);
+
+                        var res = EventSettingProject::EventSettingRoot.open(context, &rc, mode, RoomRoot.sDataProvider);
+                        if (!res)
+                            RaceOperator.game_parameter = rc.createGameParameter();
+
+                        RoomRoot.sResult = res;
+                        if (res)
+                            RoomRoot.close(context, false);
+
+                        return STATE_YIELD;
+                    }
+                }
+
+                module DirectJoin
+                {
+                    method onActivate(context)
+                    {
+                        if (!Lobby.isInitialized())
+                            return STATE_YIELD;
+
+                        if (OnlineUtility.isInsideOfControversialNetwork())
+                        {
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                                context.translate(RoomRoot, "OnlineMessage", "YOU_CANNOT_DO_THIS_DUE_TO_NAT_TYPE")
+                                    .build(context.translate(RoomRoot, "BALLOON_DirectJoin"), OnlineUtil::getNatTypeString()));
+                            return STATE_YIELD;
+                        }
+
+                        main::sound.play("ok");
+                        var result = DirectJoinDialog.open(context);
+                        if (result)
+                            RoomRoot.goToRaceProject(context);
+
+                        return STATE_YIELD;
+                    }
+
+                    method onFocusEnter(context, event)
+                    {
+                        var w = event.widget;
+                        var localized_text = context.translate(RoomRoot, "BALLOON_" + w.name);
+                        BalloonTip.set_value(context, w, localized_text, "U", 40);
+                        return STATE_YIELD;
+                    }
+
+                    method onFocusLeave(context)
+                    {
+                        BalloonTip.reset_value();
+                        return STATE_YIELD;
+                    }
+                }
+            }
+        }
+    }
+
+    module hidden
+    {
+        module Info
+        {
+            function getCourseFunction(courseCode)
+            {
+                return RoomRoot.sDataProvider.getCourse(courseCode);
+            }
+
+            method onRealize(manager)
+            {
+                self.setGetCourseCallback(getCourseFunction);
+            }
+        }
+    }
+}

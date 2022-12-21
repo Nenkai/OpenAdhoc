@@ -1,0 +1,660 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module RacingGearRoot
+{
+    attribute modal_page;
+    attribute need_save = false;
+    
+    hidden.visible = false;
+
+    method open(context)
+    {
+        self.modal_page = main::SequenceUtil::ModalPage(context, RacingGearRoot);
+        self.modal_page.open();
+    }
+
+    method close(context)
+    {
+        if (self.modal_page != nil)
+        {
+            ContextMain.disableInput();
+
+            if (self.need_save)
+            {
+                SaveDataUtilGT6::saveEveryWhere(context);
+                self.need_save = false;
+            }
+
+            GTAutoMenu::ListWindow::DriverView.finalize(context);
+            PageUtil::visibleUnderPages(context, self);
+
+            var actor = self.Fade;
+            actor.backward();
+            actor.start();
+
+            var delay_time = actor.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+
+            ContextMain.enableInput();
+        }
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        var preview_dp = gtengine::MCarDriverParameter();
+        preview_dp.head_code = 7;
+        preview_dp.head_color_code = 0;
+        preview_dp.body_code = 7;
+        preview_dp.body_color_code = 0;
+
+        GTAutoMenu::ListWindow::DriverView.initialize(context);
+        GTAutoMenu::ListWindow::DriverView.setDriver(preview_dp);
+        ContextMain.disableInput();
+
+        var actor = self.Fade;
+        actor.forward();
+        actor.restart();
+        actor.on_effect_end = function(context)
+        {
+            actor.on_effect_end = nil;
+            PageUtil::invisibleUnderPages(context, self);
+            ContextMain.enableInput();
+            GTAutoRoot::showTutorial(context);
+        };
+
+        GTAutoMenu.initialize(context);
+        self.Fade.forward();
+        self.Fade.restart();
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+            return STATE_YIELD;
+
+        
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_L1:
+                if (GTAutoMenu::ListWindow::DriverView.shiftPrevColor())
+                    sound.play("cursor");
+
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_R1:
+                if (GTAutoMenu::ListWindow::DriverView.shiftNextColor())
+                    sound.play("cursor");
+
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    module GTAutoMenu
+    {
+        attribute active_w;
+
+        method initialize(context)
+        {
+            var focus_w = nil;
+
+            var category_w = hidden::Category.doCopy();
+            category_w.setText(manager.translate("GTAuto", "Category_RacingGear"));
+
+            foreach (var type in ["AVATAR_MET", "AVATAR_SUIT", "AVATAR_SET"])
+            {
+                var category_item_w = hidden::CategoryItem.doCopy();
+                category_item_w.value = type;
+                category_item_w.setText(manager.translate("GTAuto", "Type_%{type}"));
+
+                if (focus_w == nil)
+                    focus_w = category_item_w;
+
+                category_w.setCategoryItemComponent(context, category_item_w);
+            }
+
+            self.setCategoryComponent(context, category_w);
+
+            self.setActive(context, focus_w);
+
+            RacingGearRoot.setFocus(focus_w);
+        }
+
+        method onFinalize(context)
+        {
+            if (self.active_w != nil)
+            {
+                self.active_w.active = false;
+                self.active_w = nil;
+            }
+
+            self.clearCategoryComponent(context);
+        }
+
+        method setActive(context, active_item)
+        {
+            if (self.active_w != nil)
+            {
+                self.active_w.active = false;
+                self.active_w = nil;
+            }
+
+            active_item.active = true;
+            self.active_w = active_item;
+
+            self.updateList(context, active_item);
+        }
+
+        method updateList(context, item)
+        {
+            if (item == nil)
+                item = self.active_w;
+
+            var item_type = item.value;
+            
+            var orderby_clause = "ORDER BY Price";
+            if (item_type == "AVATAR_SET")
+                orderby_clause += ", ID DESC";
+
+            var item_list = SPECDB.queryList("SELECT Price, ID, ColorBegin, ColorEnd FROM %{item_type} WHERE Price > 0 %{orderby_clause}");
+            GTAutoMenu::ListWindow::clip::ListBox.setItemList(context, item_type, item_list);
+        }
+    }
+
+    module GTAutoMenu::ListWindow::clip::ListBox
+    {
+        attribute type;
+        attribute item_list;
+        attribute prev_focus_w;
+        attribute active_w_index = -1;
+
+        method setItemList(context, type, item_list)
+        {
+            self.active_w_index = -1;
+            self.setItemTemplate(context, hidden::ListItem);
+            self.setItemCount(0);
+            self.postRedraw();
+
+            context.wait();
+
+            self.setItemTemplate(context, hidden::ListItem);
+            self.setItemCount(item_list.size);
+            self.type = type;
+            self.item_list = item_list;
+            self.focus_index = 0;
+
+            var empty = item_list.size > 0;
+            self.insensitive = !empty;
+
+            ListWindow::Empty.visible = !empty;
+        }
+
+        method inFocus(context)
+        {
+            if (self.insensitive)
+                return;
+
+            var focus_w = RacingGearRoot.getFocusWidget();
+            if (focus_w == nil)
+                return;
+
+            self.prev_focus_w = focus_w;
+            RacingGearRoot.setFocus(GTAutoMenu.getListBox());
+        }
+
+        method outFocus(context)
+        {
+            if (self.prev_focus_w != nil)
+            {
+                RacingGearRoot.setFocus(self.prev_focus_w);
+                self.prev_focus_w = nil;
+            }
+        }
+
+        method onActivate(context)
+        {
+            var w = self.getInitializedWidget(context, self.focus_index);
+            if (w == nil || self.focus_index == self.active_w_index)
+                return STATE_YIELD;
+
+            var prev_active_w = self.getItemWidget(self.active_w_index);
+            if (prev_active_w != nil)
+                prev_active_w.set_active(false);
+
+            self.active_w_index = self.focus_index;
+            w.set_active(true);
+            w.on_activate(context);
+
+            return STATE_YIELD;
+        }
+
+        method getInitializedWidget(context, i)
+        {
+            if (i < 0)
+                return nil;
+
+            var w = self.getItemWidget(i);
+            if (w == nil)
+            {
+                w = self.getItemWidget(i, context);
+            }
+
+            if (w.value == nil)
+            {
+                w.initialize(context, self.type, self.item_list[i]);
+            }
+
+            return w;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+            {
+                sound.play("cursor");
+                GTAutoMenu::ListWindow::clip::ListBox.outFocus(context);
+                return STATE_YIELD;
+            }
+
+            return STATE_EXIT;
+        }
+
+        method onFocusNotify(context, new_index, old_index)
+        {
+            if (new_index != nil)
+            {
+                var w = self.getItemWidget(new_index, context);
+                if (w != nil && w.defined("on_focus_enter"))
+                    w["on_focus_enter"](context);
+            }
+
+            if (old_index != nil)
+            {
+                var w = self.getItemWidget(old_index, context);
+                if (w != nil && w.defined("on_focus_leave"))
+                    w["on_focus_leave"](context);
+            }
+
+            return 1;
+        }
+
+        method onVisibleNotify(context, indices)
+        {
+            foreach (var i in indices)
+            {
+                if (self.getItemVisible(i))
+                {
+                    var w = self.getInitializedWidget(context, i);
+                    if (i == self.active_w_index)
+                        w.set_active(true);
+                }
+                else
+                    self.setItemWidget(i, context, nil);
+            }
+
+            return 1;
+        }
+    }
+
+    module GTAutoMenu::ListWindow::DriverView
+    {
+        attribute base_dp;
+        attribute preview_dp;
+        attribute is_preview = false;
+        attribute type;
+        attribute info;
+        attribute color_max;
+        attribute color_idx;
+        attribute item_w;
+        attribute current_camera;
+
+        method initialize(context)
+        {
+            self.insensitive = true;
+            
+            var sbox = self.SBox;
+            sbox.Name.text = "";
+            sbox.CrPrice::Price.text = "---";
+            sbox.OwnFlag.visible = false;
+            sbox.Colors.text = "";
+            sbox.Buy.insensitive = true;
+
+            self.SceneFace.visible = false;
+        }
+
+        method finalize(context)
+        {
+            self.base_dp = nil;
+            self.preview_dp = nil;
+            self.type = nil;
+            self.info = nil;
+            self.color_idx = nil;
+            self.color_max = nil;
+            self.item_w = nil;
+            self.SceneFace.visible = false;
+        }
+
+        method onFinalize(context)
+        {
+            self.finalize(context);
+        }
+
+        method setDriver(dp)
+        {
+            self.base_dp = dp;
+            self.preview_dp = gtengine::MCarDriverParameter();
+            self.preview_dp.deepCopy(dp);
+            setDefaultDriver(self.preview_dp);
+
+            SceneFaceUtil::loadScene(self.SceneFace, "GTAUTO_gear");
+
+            SceneFace.saveCommandQueue();
+            
+            self.current_camera = "GTAUTO_gear_top";
+            self.SceneFace.visible = true;
+        }
+
+        method startPreview(type, info, item_w)
+        {
+            if (type == "AVATAR_MET")
+            {
+                self.preview_dp.head_code = info.ID;
+                self.preview_dp.head_color_code = info.ColorBegin;
+            }
+            else if (type == "AVATAR_SUIT")
+            {
+                self.preview_dp.body_code = info.ID;
+                self.preview_dp.body_color_code = info.ColorBegin;
+            }
+            else if (type == "AVATAR_SET")
+            {
+                self.preview_dp.head_code = info.ID;
+                self.preview_dp.head_color_code = info.ColorBegin;
+                self.preview_dp.body_code = info.ID;
+                self.preview_dp.body_color_code = info.ColorBegin;
+            }
+
+            self.is_preview = true;
+            self.type = type;
+            self.info = info;
+
+            self.color_max = info.ColorEnd == info.ColorBegin ? 1 : (info.ColorEnd - info.ColorBegin + 1);
+            self.color_idx = 1;
+            self.item_w = item_w;
+            self.ColorIndex::R.text = self.color_max;
+            self.ColorIndex::L.text = self.color_idx;
+
+            var sbox = self.SBox;
+            sbox.Name.text = item_w.Name.text;
+            sbox.CrPrice::Price.text = item_w.CrPrice::Price.text;
+            sbox.OwnFlag.visible = item_w.OwnFlag.visible;
+            sbox.Colors.text = item_w.Colors.text;
+            sbox.Buy.insensitive = item_w.OwnFlag.visible;
+            
+            self.reloadPreviewDriver();
+            
+            SceneFace.saveCommandQueue();
+
+            var camera_script = type == "AVATAR_MET" ? "GTAUTO_gear_zoom" : "GTAUTO_gear_top";
+            if (self.current_camera != camera_script)
+            {
+                SceneFaceUtil::loadScene(self.SceneFace, camera_script);
+                SceneFace.saveCommandQueue();
+                self.current_camera = camera_script;
+            }
+
+            self.insensitive = false;
+        }
+
+        method endPreview()
+        {
+            if (!self.is_preview)
+                return;
+
+            self.SBox.Buy.insensitive = true;
+
+            self.preview_dp.head_code = base_dp.head_code;
+            self.preview_dp.head_color_code = base_dp.head_color_code;
+            self.preview_dp.body_code = base_dp.body_code;
+            self.preview_dp.body_color_code = base_dp.body_color_code;
+
+            self.is_preview = false;
+            self.type = nil;
+            self.info = nil;
+
+            self.color_max = nil;
+            self.color_idx = nil;
+            self.item_w = nil;
+           
+            self.insensitive = true;
+            self.reloadPreviewDriver();
+
+            SceneFace.saveCommandQueue();
+
+            if (self.current_camera == "GTAUTO_gear_zoom")
+            {
+                SceneFaceUtil::loadScene(self.SceneFace, "GTAUTO_gear_top");
+                SceneFace.saveCommandQueue();
+                self.current_camera = "GTAUTO_gear_top";
+            }
+        }
+
+        method setColor(color_idx)
+        {
+            if (self.type == "AVATAR_MET")
+            {
+                self.preview_dp.head_color_code = color_idx;
+            }
+            else if (self.type == "AVATAR_SUIT")
+            {
+                self.preview_dp.body_color_code = color_idx;
+            }
+            else if (self.type == "AVATAR_SET")
+            {
+                self.preview_dp.head_color_code = color_idx;
+                self.preview_dp.body_color_code = color_idx;
+            }
+
+            self.ColorIndex::L.text = (color_idx - self.info.ColorBegin) + 1;
+            self.reloadPreviewDriver();
+        }
+
+        method shiftNextColor()
+        {
+            if (!self.is_preview)
+                return false;
+
+            if (self.info.ColorEnd > self.color_idx)
+            {
+                self.color_idx++;
+                self.setColor(self.color_idx);
+                self.reloadPreviewDriver();
+                return true;
+            }
+            else
+                return false;
+        }
+
+        method shiftPrevColor()
+        {
+            if (!self.is_preview)
+                return false;
+
+            if (self.info.ColorBegin < self.color_idx)
+            {
+                self.color_idx--;
+                self.setColor(self.color_idx);
+                self.reloadPreviewDriver();
+                return true;
+            }
+            else
+                return false;
+        }
+
+        method setDefaultDriver(dp)
+        {
+            SceneFace.execCommand("setDefaultDriver %s %s %s %s 1".format(
+                dp.head_code, dp.body_code, dp.head_color_code, dp.body_color_code));
+        }
+
+        method reloadPreviewDriver()
+        {
+            SceneFace.resetCommandQueue();
+            self.setDefaultDriver(self.preview_dp);
+
+            SceneFace.execCommand("reloadDefaultDriverModel    1      -1       driver1    true   false     .      driver2    .          %FACEHANS");
+        }
+
+        method onActivate(context, event)
+        {
+            if (event.widget.name == "Buy")
+            {
+                sound.play("ok");
+
+                var res = QUERY(context, "GTAuto", "Query_BuyRacingGear");
+                if (!res)
+                    return STATE_YIELD;
+
+                var price = self.info.Price;
+                if (!main::GAME_STATUS.user_profile.payCash(price))
+                {
+                    sound.play("disable");
+                    ERROR(context, "CommonGTMode", "Message_EnoughMoney");
+                    return STATE_YIELD;
+                }
+
+                Grim2Util::PUTLOG::CREDIT::withdraw("racing_gear", price, self.type, self.info.ID);
+                
+                CursorProject::StartMenuRoot::StartMenu.reflectCurrentStatus(context);
+
+                GAME_STATUS.user_profile.item.racing_gear.addItem(self.type, self.info.ID);
+
+                RacingGearRoot.need_save = true;
+
+                self.item_w.OwnFlag.visible = true;
+                self.SBox::OwnFlag.visible = true;
+                self.SBox::Buy.insensitive = true;
+            }
+
+            return STATE_YIELD;
+        }
+    }
+
+    module hidden::CategoryItem
+    {
+        method onActivate(context, event)
+        {
+            if (self == GTAutoMenu.active_w)
+                return STATE_YIELD;
+
+            sound.play("ok");
+
+            GTAutoMenu::ListWindow::DriverView.endPreview();
+            GTAutoMenu.setActive(context, event.widget);
+
+            return STATE_YIELD;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_RIGHT)
+            {
+                sound.play("cursor");
+
+                GTAutoMenu::ListWindow::clip::ListBox.inFocus(context);
+                return STATE_YIELD;
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module hidden::ListItem
+    {
+        attribute type;
+        attribute value;
+
+        method onInitialize(context)
+        {
+            self.Name.text = "";
+            self.Colors.text = "";
+            self.CrPrice::Price.text = "";
+            self.Checkbox.active = false;
+            self.OwnFlag.visible = false;
+            self.Opacity.reset();
+        }
+
+        method initialize(context, type, info)
+        {
+            if (type == "AVATAR_MET")
+            {
+                self.Name.text = manager.translate("RacingGear", "met_%02d".format(info.ID));
+                self.Thumbnail.image_path = ThumbnailUtil::Avatar::getImagePathGT6(ThumbnailUtil::Avatar::Genre::SIMPLE,
+                    ThumbnailUtil::Avatar::Type::MET,
+                    info.ID, info.ColorBegin, 0, 0);
+            }
+            else if (type == "AVATAR_SUIT")
+            {
+                self.Name.text = manager.translate("RacingGear", "suit_%02d".format(info.ID));
+                self.Thumbnail.image_path = ThumbnailUtil::Avatar::getImagePathGT6(ThumbnailUtil::Avatar::Genre::SIMPLE,
+                    ThumbnailUtil::Avatar::Type::SUITS,
+                    0, 0, info.ID, info.ColorBegin);
+            }
+            else if (type == "AVATAR_SET")
+            {
+                self.Name.text = manager.translate("RacingGear", "met_%02d".format(info.ID));
+                self.Thumbnail.image_path = ThumbnailUtil::Avatar::getImagePathGT6(ThumbnailUtil::Avatar::Genre::SETUP,
+                    ThumbnailUtil::Avatar::Type::MET_SUITS,
+                    info.ID, info.ColorBegin, info.ID, info.ColorBegin);
+            }
+
+            var colors = (info.ColorEnd - info.ColorBegin) + 1;
+            if (colors == 1)
+                self.Colors.text = manager.translate("GTAuto", "Label_Color");
+            else
+                self.Colors.text = manager.translate("GTAuto", "Label_Colors").build(colors);
+
+            self.CrPrice::Price.text = pdiext::MMisc::GetMoneyString(info.Price);
+            self.OwnFlag.visible = GAME_STATUS.user_profile.item.racing_gear.hasItem(type, info.ID);
+            self.type = type;
+            self.value = info;
+            self.Opacity.start();
+        }
+
+        method on_activate(context)
+        {
+            sound.play("ok");
+            
+            var info = self.value;
+            GTAutoMenu::ListWindow::DriverView.startPreview(self.type, info, self);
+
+            return STATE_YIELD;
+        }
+
+        method set_active(active)
+        {
+            self.Checkbox.active = active;
+        }
+    }
+}

@@ -1,0 +1,710 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module RaceEventRoot
+{
+    hidden.visible = false;
+
+    attribute category;
+    attribute event_folder;
+    attribute event_folder_type;
+
+    method open(context, category, event_folder)
+    {
+        GTModeProject.history[$"LastPageName"] = RaceEventRoot.name;
+        GTModeProject.history[$"LastPageArg1"] = category;
+        GTModeProject.history[$"LastPageArg2"] = event_folder;
+
+        if (GTModeProject.history[$"RaceEventRoot::PrevPage"] == nil)
+        {
+            var root = context.getRootWindow();
+            GTModeProject.history[$"RaceEventRoot::PrevPage"] = root != nil ? root.name : "GTModeRoot";
+        }
+
+        self.category = category;
+        self.event_folder = event_folder;
+
+        var type = MENUDB.executeQuery1R1C("SELECT Type FROM t_event_folder WHERE Name=?", [event_folder]);
+        if (type != nil)
+            self.event_folder_type = ((type % 1000) / 100).toInt();
+        else
+            self.event_folder_type = 0;
+
+        SequenceUtil::enableStartMenuRoot();
+        SequenceUtil::startPageSimple(context, self);
+    }
+
+    method close(context, goto_race)
+    {
+        if (!goto_race)
+        {
+            var next_page = GTModeProject.history[$"RaceEventRoot::PrevPage"];
+            GTModeProject.history[$"RaceEventRoot::PrevPage"] = nil;
+            GTModeProject.history[$"LastPageName"] = nil;
+            GTModeProject.history[$"LastPageArg1"] = nil;
+            GTModeProject.history[$"LastPageArg2"] = nil;
+
+            GTModeProject[next_page].open(context);
+        }
+    }
+
+    method sequence_loop(context)
+    {
+        var goto_race = false;
+
+        while (true)
+        {
+            var gp = EventSelect.open(context, event_folder);
+            if (gp == nil)
+                break;
+
+            goto_race = RaceEntryRoot.modal_open(context, gp, nil, self.category, false);
+            if (goto_race)
+                break;
+        }
+
+        self.close(context, goto_race);
+    }
+
+    method onLoad(context)
+    {
+        if (!GTModeProject.defined("CareerModeUtil"))
+            GTModeProject.load("/scripts/gt6/util/CareerModeUtil");
+    }
+
+    method onInitialize(context)
+    {
+        var is_career_mode = self.category >= CareerModeUtil::CATEGORY::N && self.category <= CareerModeUtil::CATEGORY::S;
+
+        var title = EventSelect::Title::CareerMode;
+        title.visible = is_career_mode;
+
+        if (title.visible)
+        {
+            var category_str = CareerModeUtil::GetCategoryString(self.category);
+            title.label.text = CareerModeUtil::GetCategoryText(self.category);
+            title.logo.image_path = "/image/gt6/event/mark_%{category_str.downcase()}.dds";
+        }
+
+        var bg = BG::CareerMode;
+        bg.visible = is_career_mode;
+        
+        var is_goodwood = self.category == CareerModeUtil::CATEGORY::GOODWOOD;
+        EventSelect::Title::SpecialEvents.visible = is_goodwood;
+
+        bg = BG::SpecialEvents;
+        bg.visible = is_goodwood;
+        if (bg.visible)
+        {
+            var end_load_img = method (context)
+            {
+                bg.FadeActor.restart();
+                bg.on_delay_load_complete = nil;
+            }
+
+            bg.on_delay_load_complete = *self{end_load_img};
+            bg.image_path = "/piece/gt6/bridge/GOODWOOD2015.img";
+        }
+
+        GTModeProject.PlayMenuBGM(context, RaceEventRoot);
+        context.pushEvent(main::menu::MFunctionEvent(sequence_loop, context));
+        return 2;
+    }
+
+    method checkTrophyUnlock(folder_info)
+    {
+        if (self.category == CareerModeUtil::CATEGORY::GOODWOOD)
+        {
+            var folder_id = folder_info["id"];
+            if (GAME_STATUS.user_profile.record.event_record.isFolderCleared(folder_id, nil))
+                PDINetwork.unlockTrophyAsync(gtengine::TrophyType::SPECIAL_GOODWOOD);
+        }
+    }
+
+    module EventSelect
+    {
+        attribute current_star;
+        attribute result;
+        attribute event_loop;
+        attribute folder_info;
+        attribute gp;
+
+        method open(context, event_folder)
+        {
+            RaceEventRoot.setFocus(nil);
+            
+            var success = self.initialize(context, event_folder);
+            if (!success)
+                return nil;
+
+            self.result = nil;
+            self.Fade.forward();
+            self.Fade.start();
+
+            self.insensitive = false;
+
+            self.event_loop = main::menu::EventLoop(context);
+            self.event_loop.enter();
+
+            self.insensitive = true;
+            var res = self.result;
+            self.result = nil;
+
+            self.finalize(context);
+            return res;
+        }
+
+        method close(context)
+        {
+            if (self.event_loop != nil)
+            {
+                self.Fade.backward();
+                self.Fade.start();
+                context.wait(self.Fade.ramain_time);
+                self.event_loop.leave();
+                self.event_loop = nil;
+            }
+        }
+
+        method initializeGameRecord(folder_info)
+        {
+            var event_id_list = folder_info["event_id_list"];
+            var event_type = folder_info["event_type"];
+            var folder_id = folder_info["id"];
+            var category = 0;
+            var is_online = false;
+
+            if (folder_info["championship"])
+            {
+                var championship_event_id = folder_id;
+                event_id_list.push(championship_event_id);
+            }
+
+            GAME_STATUS.user_profile.record.event_record.initializeRecord(event_id_list, event_type, folder_id, category, is_online);
+        }
+
+        method getFolderInfo(context, event_name)
+        {
+            var xml = "/game_parameter/gt6/event/%s.xml".format(event_name);
+            var folder_info_list = EventRace2.decodeOfflineEventList(xml);
+
+            if (folder_info_list.size == 0)
+                return nil;
+
+            return folder_info_list[0];
+        }
+
+        method getGP(context, folder_id)
+        {
+            var xml = "/game_parameter/gt6/event/r%03d.xml".format(folder_id);
+            return GameParameterUtil::createFromFile(xml);
+        }
+
+        method updateRegulations(context)
+        {
+            var listbox = EventList::ListBox;
+
+            for (var i = 0; i < listbox.getItemCount(); ++i)
+            {
+                var w = listbox.getInitializedWidget(context, i);
+                if (w != nil)
+                    w.updateRegulation(self.gp);
+            }
+        }
+
+        method initialize(context, event_folder)
+        {
+            var folder_info = self.getFolderInfo(context, event_folder);
+            if (folder_info == nil)
+            {
+                self.close(context);
+                return false;
+            }
+
+            var gp = self.getGP(context, folder_info["id"]);
+            if (gp == nil)
+            {
+                self.close(context);
+                return false;
+            }
+
+            self.folder_info = folder_info;
+            self.gp = gp;
+
+            initializeGameRecord(folder_info);
+
+            var event_size = gp.events.size;
+            if (gp.championship)
+                ++event_size;
+
+            var is_goodwood = event_folder == "gw_fos";
+            var good_wood_present_idx = 0;
+
+            if (is_goodwood)
+            {
+                var array = [
+                    ["open_goodwood_0", 3],
+                    ["open_goodwood_1", 6],
+                    ["open_goodwood_2", 9],
+                    ["open_goodwood_3", 12],
+                    ["open_goodwood_4", 15],
+                ];
+
+                foreach (var [key, num] in array)
+                {
+                    if (TutorialUtil::isProgressOrDone("gttop", key))
+                        event_size = num;
+                }
+            }
+
+            EventFolderNameB.visible = is_goodwood;
+            EventFolderNameW.visible = !is_goodwood;
+
+            var tmp_eventitem = is_goodwood ? hidden::EventItemW : hidden::EventItemB;
+            var listbox = EventList::ListBox;
+            listbox.setItemTemplate(context, tmp_eventitem);
+            listbox.setItemCount(event_size);
+
+            listbox.focus_index = GTModeProject.history[$"CareerModeRoot::FocusEvent"] != nil ? GTModeProject.history[$"CareerModeRoot::FocusEvent"] : 0;
+            GTModeProject.history[$"CareerModeRoot::FocusEvent"] = nil;
+
+            RaceEventRoot.setFocus(listbox);
+            var adj = main::menu::MAdjustment();
+            EventList::HScrollArrow.adjustment = adj;
+            listbox.h_adjustment = adj;
+
+            var title = RaceEventUtil::getFolderTitleText(folder_info);
+            EventFolderNameB::Label.text = title;
+            EventFolderNameW::Label.text = title;
+            updateRegulations(context);
+
+            if (is_goodwood)
+                CareerModeRoot.checkPresentCarsAtGoodWood(context, event_folder, gp);
+            else
+                CareerModeRoot.checkClearLicenseAndMission(context, event_folder, folder_info);
+            
+            RaceEventRoot.checkTrophyUnlock(folder_info);
+            return true;
+        }
+
+        method finalize(context)
+        {
+            EventList::ListBox.setItemCount(0);
+            self.folder_info = nil;
+        }
+
+        method onInitialize(context)
+        {
+            self.Fade.forward();
+            self.Fade.reset();
+            self.insensitive = true;
+
+            EventFolderNameW::Label.text = "";
+            EventFolderNameW::Course.text = "";
+            EventFolderNameB::Label.text = "";
+            EventFolderNameB::Course.text = "";
+
+            ToolTip.tip.remove();
+        }
+
+        method onActivate(context)
+        {
+            var listbox = EventList::ListBox;
+            var w = listbox.getItemWidget(listbox.focus_index);
+
+            if (w == nil)
+            {
+                sound.play("disable");
+                return 2;
+            }
+
+            sound.play("ok");
+            var gp = self.gp;
+            gp.event_index = w.event_index;
+            gp.championship = w.is_championship_item;
+
+            if (gp.event.track.course_code == gtengine::MSpecDB::getCourseCode("goodwood_fos"))
+                gp.event.track.course_code = gtengine::MSpecDB::getCourseCode("goodwood_fos_2015");
+            
+            GTModeProject.history[$"CareerModeRoot::FocusEvent"] = listbox.focus_index;
+            self.result = gp;
+            
+            self.close(context);
+            return 2;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            self.close(context);
+            return 2;
+        }
+
+        method onKeyPress(context, event)
+        {
+            var preopen_garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+            if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+            {
+                if (preopen_garage_id != GAME_STATUS.user_profile.garage.getRidingGarageId())
+                    updateRegulations(context);
+                return 2;
+            }
+
+            return 0;
+        }
+
+        module EventList::ListBox
+        {
+            method getInitializedWidget(context, i)
+            {
+                if (i < 0)
+                    return nil;
+
+                var w = self.getItemWidget(i);
+                if (w == nil)
+                {
+                    w = self.getItemWidget(i, context);
+                    var gp = EventSelect.gp;
+
+                    if (gp.championship)
+                    {
+                        if (i == 0)
+                        {
+                            w.init(context, gp, 0, true);
+                        }
+                        else if (i - 1 < gp.events.size)
+                        {
+                            w.init(context, gp, i - 1, false);
+                        }
+                        else
+                            return nil;
+                    }
+                    else if (i < gp.events.size)
+                    {
+                        w.init(context, gp, i, false);
+                    }
+                    else
+                        return nil;
+                }
+
+                return w;
+            }
+
+            method onFocusNotify(context, new_index, old_index)
+            {
+                if (new_index != nil)
+                {
+                    var w = self.getInitializedWidget(context, new_index);
+                    if (w != nil && w.defined("focus_enter"))
+                        w["focus_enter"](context);
+                }
+
+                if (old_index != nil)
+                {
+                    var w = self.getInitializedWidget(context, old_index);
+                    if (w != nil && w.defined("focus_leave"))
+                        w["focus_leave"](context);
+                }
+
+                return 1;
+            }
+
+            method onVisibleNotify(context, indexes)
+            {
+                foreach (var i in indexes)
+                {
+                    self.getInitializedWidget(context, i);
+                }
+
+                return 1;
+            }
+
+            method onKeyPress(context, key_event)
+            {
+                switch (key_event.keysym)
+                {
+                    case 0xFF63:
+                        if (GTModeProject::IsDevelop(context))
+                        {
+                            var state = context.getUpdateContext().getPadButtonState(0);
+
+                            // License get root debug test
+                            if (state & 0x800)
+                            {
+                                if (RaceEventRoot.category < CareerModeUtil::CATEGORY::S)
+                                {
+                                    PageUtil::invisibleUnderPages(context, self);
+                                    LicenseGetRoot.open(context, RaceEventRoot.category - 1);
+                                    PageUtil::visibleUnderPages(context, self);
+                                }
+                            }
+                            else
+                            {
+                                var event_record = GAME_STATUS.user_profile.record.event_record;
+                                var w = self.getItemWidget(self.focus_index);
+                                var gp = EventSelect.gp;
+                                var event = gp.events[w.event_index];
+                                var event_id = event.event_id;
+                                var star_max = event.reward.star_table.size;
+                                var start_count = event_record.getStars(nil, nil, event_id);
+
+                                if (start_count < star_max)
+                                {
+                                    event_record.updateStars(event_id, star_max);
+                                    w.init(context, gp, w.event_index, w.is_championship_item);
+                                }
+                                else
+                                {
+                                    var result = event_record.getEventResult(event_id);
+                                    if (--result < 0)
+                                        result = 2;
+                                    event_record.updateResultOnly(event_id, result);
+                                    w.init(context, gp, w.event_index, w.is_championship_item);
+                                }
+                            }
+
+                            return 2;
+                        }
+
+                        break;
+                }
+
+                return 0;
+            }
+        }
+    }
+
+    module hidden
+    {
+        module EventItemW
+        {
+            attribute course_info;
+            attribute event_index;
+            attribute is_championship_item = false;
+            attribute by_section;
+
+            method onInitialize(context)
+            {
+                self.RaceType.text = "";
+                self.Title.text = "";
+                self.Arrow.visible = false;
+                self.PassedRegulation.active = false;
+            }
+
+            method init(context, gp, event_index, is_championship_item)
+            {
+                var event = gp.events[event_index];
+                var generate_type = event.entry_set.entry_generate.generate_type;
+                var rp = event.race_parameter;
+                var course_code = event.track.course_code;
+                if (course_code == gtengine::MSpecDB::getCourseCode("goodwood_fos"))
+                    course_code = gtengine::MSpecDB::getCourseCode("goodwood_fos_2015");
+                
+                var course_info = main::SPECDB.query1("SELECT Map, Name, Logo, Loop FROM COURSE WHERE ID=?", [course_code]);
+
+                var by_section = rp.complete_type == gtengine::CompleteType::BYSECTION ||
+                    rp.complete_type == gtengine::CompleteType::BYSTOP;
+
+				var rentacar_label;
+                var is_rentacar = RaceEventUtil::isRentACarEvent(event, &rentacar_label);
+                var event_num = event_index + 1;
+
+                self.Title.text = RaceEventUtil::getTitleText(event);
+
+                var flyer_template = hidden::EventFlyerTemplate::Mission;
+
+                if (RaceEventRoot.category == CareerModeUtil::CATEGORY::GOODWOOD)
+                    flyer_template = hidden::EventFlyerTemplate::Goodwood2015;
+                else if (RaceEventRoot.event_folder_type == CareerModeUtil::CATEGORY::LICENSE)
+                    flyer_template = hidden::EventFlyerTemplate::License;
+                else if (RaceEventRoot.event_folder_type == CareerModeUtil::CATEGORY::COFFEE_BREAK)
+                    flyer_template = hidden::EventFlyerTemplate::Coffee;
+                else if (RaceEventRoot.event_folder_type == CareerModeUtil::CATEGORY::ONE_MAKE)
+                    flyer_template = hidden::EventFlyerTemplate::Onemake;       
+                    
+                var Flyer = flyer_template.doCopy();
+                Flyer.name = "Flyer";
+                self.FlyerBase.appendChild(context, Flyer);
+
+                if (Flyer.defined("FlyerImage"))
+                {
+                    var image_face = Flyer.FlyerImage;
+
+                    var end_load_img = method (context)
+                    {
+                        if (image_face != nil)
+                        {
+                            image_face.FadeActor.restart();
+                            image_face.on_delay_load_complete = nil;
+                        }
+                    }
+
+                    image_face.on_delay_load_complete = *self{end_load_img};
+                    image_face.image_path = "/piece/gt6/event_img/%s_%02d.img".format(RaceEventRoot.event_folder, event_num);
+                }
+
+                if (is_rentacar && Flyer.defined("Rentacar"))
+                {
+                    var color = gtengine::MSpecDB::getCarVariationFlag(rentacar_label, 0x01);
+                    Flyer.Rentacar.image_path = "car/thumbnail_L/%s_%02d".format(rentacar_label, color);
+                }
+
+                if (Flyer.defined("OnemakeCar"))
+                {
+                    Flyer.OnemakeCar.image_path = "piece/gt6/event_img/%s_%02d.img".format(RaceEventRoot.event_folder, event_num);
+                }
+
+                if (Flyer.defined("Map"))
+                {
+                    Flyer.Map.image_path = "piece/course_map_M/%s.img".format(course_info.Map);
+                }
+
+                if (Flyer.defined("CourseLogo"))
+                {
+                    Flyer.CourseLogo.image_path = "piece/gt6/course_logo_M/%s.img".format(course_info.Logo);
+                }
+
+                if (Flyer.defined("Trophy"))
+                {
+                    var result = RaceEventUtil::getResult(event.event_id);
+                    var order = result + 1;
+
+                    if (order >= 1 && order <= 3)
+                    {
+                        var rank = ["gold", "silver", "bronze"][result];
+                        Flyer.Trophy.image_path = "/image/gt6/event/trophy_%{rank}.dds";
+                        Flyer.Result.text = "";
+                    }
+                    else if (order >= 4)
+                    {
+                        Flyer.Trophy.image_path = "";
+                        Flyer.Result.text = result + 1;
+                    }
+                    else
+                    {
+                        Flyer.Trophy.image_path = "";
+                        Flyer.Result.text = "";
+                    }
+                }
+
+                if (Flyer.defined("number"))
+                {
+                    if (RaceEventRoot.event_folder_type == CareerModeUtil::TYPE::LICENSE)
+                    {
+                        var next_category = CareerModeUtil::GetNextCategory(RaceEventRoot.category);
+                        var category_str = CareerModeUtil::GetCategoryString(next_category);
+                        Flyer.number.text = "%s-%d".format(category_str, event_num);
+                    }
+                    else if (RaceEventRoot.category >= CareerModeUtil::CATEGORY::N 
+                        && RaceEventRoot.category <= CareerModeUtil::CATEGORY::S)
+                    {
+                        var category_str = CareerModeUtil::GetCategoryString(RaceEventRoot.category);
+                        Flyer.number.text = "%s-%d".format(category_str, event_num);
+                    }
+                    else if (RaceEventRoot.category == CareerModeUtil::CATEGORY::GOODWOOD)
+                    {
+                        var cat = (event_index / 3) + 1;
+                        var num = (event_index % 3) + 1;
+                        var key = "goodwood_%d_%d".format(cat, num);
+
+                        Flyer.New.visible = !KeyValueUtil::getFlag_NotNil("new_flag", key);
+                        KeyValueUtil::set("new_flag", key, true);
+                        Flyer.number.text = "%d-%d".format(cat, num);
+                    }
+                    else
+                    {
+                        Flyer.number.text = "%d".format(event_num);
+                    }
+                }
+
+                if (gp.championship)
+                {
+                    if (is_championship_item)
+                        self.Spot.text = "Championship";
+                    else
+                    {
+                        self.Spot.text = "Race : %d".format(event_index + 1);
+                        self.Arrow.visible = true;
+                    }
+                }
+
+                if (is_championship_item)
+                {
+                    self.RaceType.text = manager.translate("RaceEvent", "CHAMPIONSHIP");
+                }
+                else
+                {
+                    self.RaceType.text = RaceEventUtil::getGameModeText(context, event);
+                    var is_oneway = !course_info.Loop;
+                    var complete_type_txt = RaceEventUtil::getCompleteTypeText(context, event, is_oneway);
+                    if (complete_type_txt != "")
+                        self.RaceType.text += " / " + complete_type_txt;
+                }
+
+                self.course_info = course_info;
+                self.event_index = event_index;
+                self.is_championship_item = is_championship_item;
+                self.by_section = by_section;
+
+                self.updateRegulation(gp);
+            }
+
+            method updateRegulation(gp)
+            {
+                gp.event_index = self.event_index;
+
+                var is_rentacar = RaceEventUtil::isRentACarEvent(gp.event);
+				var dummy_text;
+                if (!is_rentacar)
+                    self.PassedRegulation.active = RaceEventUtil::checkRegulation(gp, &dummy_text);
+                self.PassedRegulation.active2 = is_rentacar;
+            }
+
+            method focus_enter(context)
+            {
+                if (self.course_info == nil)
+                    return;
+
+                var course_name = manager.translate("CourseName", self.course_info.Name);
+                var course_name_txt = " : %{course_name}";
+                EventSelect::EventFolderNameB::Course.text = course_name_txt;
+                EventSelect::EventFolderNameW::Course.text = course_name_txt;
+                EventSelect::ToolTip.tip.value = RaceEventUtil::getOneLineTitleText(EventSelect.gp.events[self.event_index]);
+                
+                self.FlyerBase::ScaleXY.forward();
+                self.FlyerBase::ScaleXY.start();
+            }
+
+            method focus_leave(context)
+            {
+                self.FlyerBase::ScaleXY.backward();
+                self.FlyerBase::ScaleXY.start();
+            }
+        }
+
+        module EventItemB
+        {
+            attribute course_info;
+            attribute event_index;
+            attribute is_championship_item = false;
+            attribute by_section;
+
+            import EventItemW::onInitialize;
+            import EventItemW::init;
+            import EventItemW::updateRegulation;
+            import EventItemW::focus_enter;
+            import EventItemW::focus_leave;
+        }
+    }
+}

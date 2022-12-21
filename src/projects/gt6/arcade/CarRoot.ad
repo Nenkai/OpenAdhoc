@@ -1,0 +1,560 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CarRoot
+{
+    hidden.visible = false;
+
+    attribute modal_;
+    attribute result_;
+    attribute car_category_;
+    attribute cars_;
+    attribute focus_index_ = 0;
+
+    method open(context, car_category)
+    {
+        var courses;
+        if (GAME_STATUS.user_profile.option.kiosk_limit_car &&
+            GAME_STATUS.user_profile.option.hasLimitedCar())
+        {
+            var cars = GAME_STATUS.user_profile.option.getLimitedCars();
+            var limit_tuner = GAME_STATUS.user_profile.option.kiosk_limit_tuner;
+            if (limit_tuner != gtengine::MSpecDB::NO_CODE)
+            {
+                var cars2 = [];
+                foreach (var car_code in cars)
+                {
+                    var tuner = SPECDB.executeQuery1R1C("SELECT Tuner FROM GENERIC_CAR WHERE ID=?", [car_code]);
+                    if (tuner == limit_tuner)
+                        cars2.push(car_code);
+                }
+
+                cars = cars2;
+            }
+
+            var where_clause = "WHERE ID IN (%s)".format(cars.join(","));
+            var orderby_clause = " ORDER BY PP, Year DESC";
+            self.cars_ = SPECDB.executeQuery1C("SELECT ID FROM GENERIC_CAR %{where_clause} %{orderby_clause}");
+
+        }
+        else if (car_category == CAR_CATEGORY::GARAGE)
+        {
+            self.cars_ = GAME_STATUS.user_profile.garage.getCarList(["favorite": true]);
+            if (self.cars_.size == 0)
+            {
+                sound.play("disable");
+                ERROR(context, "CommonArcadeMode", "NotFound_FavoriteCars");
+                return nil;
+            }
+        }
+        else
+        {
+            var where_clause = "";
+            var limit_tuner = GAME_STATUS.user_profile.option.kiosk_limit_tuner;
+            if (limit_tuner != gtengine::MSpecDB::NO_CODE)
+                where_clause = "WHERE InDealer=1 AND SpecifyFlags1&%d AND Tuner=%d".format(gtengine::GenericFlag::USE_PREMIUM_MODEL, limit_tuner);
+            else if (gSequenceCondition.selected_kartonly_course)
+                where_clause = "WHERE Arcade=1 AND SpecifyFlags1&%d".format(gtengine::GenericFlag::IS_RACING_KART);
+            else
+                where_clause = "WHERE Arcade=1 AND (SpecifyFlags1&%d)=0".format(gtengine::GenericFlag::IS_RACING_KART);
+
+            var orderby_clause = " ORDER BY PP, Year DESC";
+            self.cars_ = SPECDB.executeQuery1C("SELECT ID FROM GENERIC_CAR %{where_clause} %{orderby_clause}");
+        }
+
+        if (self.cars_.size == 0)
+        {
+            sound.play("disable");
+            return nil;
+        }
+
+        if (car_category != CAR_CATEGORY::GARAGE && self.cars_.size == 1)
+        {
+            if (gSequenceCondition.progression)
+            {
+                var cp = gtengine::MCarParameter(self.cars_[0]);
+                if (cp.rentacar)
+                    cp.ownArcadePartsAll();
+
+                return cp;
+            }
+            else
+                return nil;
+        }
+
+        self.result_ = nil;
+        self.car_category_ = car_category;
+        self.modal_ = main::SequenceUtil::ModalPage(context, self);
+        self.modal_.open();
+        return self.result_;
+    }
+
+    method close(context)
+    {
+        if (self.modal_ != nil)
+        {
+            self.Fade.backward();
+            self.Fade.start();
+            self.modal_.close(self.Fade.total_time);
+            self.modal_ = nil;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        self.Fade.forward();
+        self.Fade.restart();
+
+        var page_count = (self.cars_.size + ((5 * 2) - 1)) / (5 * 2);
+        var x = page_count * 5;
+        var y = 2;
+
+        IconBox.setItemTemplate(context, hidden::Item);
+        IconBox.setItemCount(x, y);
+        IconBox.setPageItemCount(5, 2);
+        IconBox.focus_index = self.focus_index_;
+
+        var adj = main::menu::MAdjustment();        
+        HScrollArrow.adjustment = adj;
+        IconBox.h_adjustment = adj;
+
+        HScrollPointer.setItemCount(context, page_count);
+        HScrollPointer.setPointer(IconBox.getCurrentPageIndex());
+
+        CarRoot.setFocus(IconBox);
+    }
+
+    method onFinalize(context)
+    {
+        context.removeTimeOut("display_tooltip");
+    }
+
+    module IconBox
+    {
+        method getCurrentPageIndex()
+        {
+            return self.focus_index / (5 * 2);
+        }
+
+        method getInitializedWidget(context, i)
+        {
+            if (i < 0)
+                return nil;
+
+            var w = self.getItemWidget(i);
+            if (w == nil)
+            {
+                w = self.getItemWidget(i, context);
+
+                if (i < CarRoot.cars_.size)
+                {
+                    if (CarRoot.car_category_ == CAR_CATEGORY::GARAGE)
+                    {
+                        w.initGarageCar(context, CarRoot.cars_[i], i);
+                    }
+                    else
+                    {
+                        w.init(context, CarRoot.cars_[i], i);
+                    }
+                }
+                else
+                {
+                    w.initBlank(context, i);
+                }
+            }
+
+            return w;
+        }
+
+        method onActivate(context, event)
+        {
+            var w = getInitializedWidget(context, self.focus_index);
+            var cp = w.activate(context);
+
+            if (cp != nil)
+            {
+                CarRoot.focus_index_ = self.focus_index;
+                CarRoot.result_ = cp;
+                CarRoot.close(context);
+            }
+
+            return 2;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            CarRoot.focus_index_ = 0;
+            CarRoot.result_ = nil;
+            CarRoot.close(context);
+            return 2;
+        }
+
+        method onFocusNotify(context, new_index, old_index)
+        {
+            if (new_index != nil)
+            {
+                var w = self.getInitializedWidget(context, new_index);
+                if (w != nil)
+                    w.focus_enter(context);
+
+                HScrollPointer.setPointer(new_index / (5 * 2));
+            }
+
+            if (old_index != nil)
+            {
+                var w = self.getInitializedWidget(context, old_index);
+                if (w != nil)
+                    w.focus_leave(context);
+            }
+
+            return 1;
+        }
+
+        method onVisibleNotify(context, indexes)
+        {
+            foreach (var i in indexes)
+            {
+                if (self.getItemVisible(i))
+                    self.getInitializedWidget(context, i);
+                else
+                    self.setItemWidget(i, context, nil);
+            }
+        }
+
+        method onKeyPress(context, event)
+        {
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L1: // Go left one page
+                    var index = self.focus_index - (5 * 2);
+                    if (index < 0)
+                        return 2;
+
+                    sound.play("cursor");
+                    self.focus_index = index;
+                    return 2;
+                   
+                case CELL_PAD_CTRL_R1: // Go right one page
+                    var index = self.focus_index + (5 * 2);
+                    var index_max = self.getItemCount() - 1;
+                    if (index > index_max)
+                        return 2;
+
+                    sound.play("cursor");
+                    self.focus_index = index;
+                    return 2;
+            }
+
+            return 0;
+        }
+    }
+
+    module hidden::Item
+    {
+        attribute car_code_;
+        attribute garage_car_;
+        attribute is_blank_ = false;
+        attribute is_initialized_ = false;
+        attribute cannot_select_ = false;
+
+        method getCarParameter(context)
+        {
+            if (self.is_blank_)
+            {
+                return nil;
+            }
+            else if (self.garage_car_ != nil)
+            {
+                var cp = GAME_STATUS.user_profile.garage.getCar(self.garage_car_.garage_id);
+                return cp;
+            }
+            else
+            {
+                var cp = gtengine::MCarParameter(self.car_code_);
+                if (cp.rentacar)
+                    cp.ownArcadePartsAll();
+
+                return cp;
+            }
+        }
+
+        method focus_enter(context)
+        {
+            if (!self.is_initialized_)
+                return;
+
+            if (self.is_blank_)
+            {
+                CarRoot::ToolTip::tip.value = "";
+                return;
+            }
+
+            var actors = [
+                self.Board::ScaleXY,
+                self.Board::Cover::Fade,
+                self.Board::FocusFrame::Fade,
+                self.Reflect::ScaleX
+            ];
+
+            foreach (var actor in actors)
+            {
+                actor.forward();
+                actor.start();
+            }
+
+            CarRoot::ToolTip::tip.value = "";
+            context.addTimeOut("display_tooltip", (context) => 
+            {
+                if (self.car_code_ == nil)
+                    return;
+
+                CarRoot::ToolTip::tip.value = SpecDatabaseUtil::getCarSpecText(context, self.car_code_);
+            }, context);
+
+            context.setTimeOut("display_tooltip", 0.1);
+        }
+
+        method focus_leave(context)
+        {
+            if (!self.is_initialized_)
+                return;
+
+            if (is_blank_)
+                return;
+
+            var actors = [
+                self.Board::ScaleXY,
+                self.Board::Cover::Fade,
+                self.Board::FocusFrame::Fade,
+                self.Reflect::ScaleX
+            ];
+
+            foreach (var actor in actors)
+            {
+                actor.backward();
+                actor.start();
+            }
+        }
+
+        method setVisibleReflect(item_index)
+        {
+            self.Reflect.visible = item_index % (5 * 2) >= (5 * 2 / 2);
+        }
+
+        method onLoad(context)
+        {
+            self.CarName.text = "";
+            var board = self.Board;
+
+            board.CarThumb.image_path = "";
+            board.Manufacturer.text = "";
+            board.Logo.image_path = "";
+            board.Drivetrain.text = "";
+            board.Power.text = "";
+            board.PP.text = "";
+            board.CountryFlag.image_path = "";
+            board.Block.visible = false;
+        }
+
+        method onFinalize(context)
+        {
+            var board = self.Board;
+            board.CarThumb.on_delay_load_complete = nil;
+            board.Logo.on_delay_load_complete = nil;
+        }
+
+        method activate(context)
+        {
+            if (!self.is_initialized_)
+                return nil;
+
+            if (self.is_blank_)
+            {
+                sound.play("disable");
+                return nil;
+            }
+
+            if (self.cannot_select_)
+            {
+                sound.play("disable");
+                return nil;
+            }
+
+            if (gSequenceCondition.game_mode == gtengine::GameMode::TIME_ATTACK &&
+                CarRoot.car_category_ == CAR_CATEGORY::GARAGE)
+                sound.play("next");
+            else
+                sound.play("ok");
+
+            return getCarParameter(context);
+        }
+
+        method init(context, car_code, item_index)
+        {
+            self.car_code_ = car_code;
+            var board = self.Board;
+            var info = SPECDB.query1("SELECT * FROM CAR_VIEW WHERE ID=?", [car_code]);
+
+            self.CarName.text = gtengine::MSpecDB::getCarShortName(car_code);
+
+            var ps_v = pdiext::MUnit::GetPowerForDisplay(info.psvalue);
+            var ps_u = pdiext::MUnit::GetUnitOfPower();
+            if (ps_v > 0)
+                board.Power.text = "%d %s".format(ps_v, ps_u);
+            else
+                board.Power.text = "--- %s".format(ps_u);
+
+            board.Drivetrain.text = manager.translate("DriveTrainName", info.DriveTypeName);
+
+            var mtd_end_load_thumb = method (context) 
+            {
+                if (context == nil)
+                    return;
+
+                board.CarThumb.FadeActor.start();
+                board.CarThumb.on_delay_load_complete = nil;
+            };
+
+            board.CarThumb.on_delay_load_complete = *self{mtd_end_load_thumb};
+
+            if (GetVersionBranch() == "demo")
+                board.CarThumb.image_path = "piece/gt6/car_img/%s_%02d_cmp.img".format(info.Label, info.MainColor)
+            else
+                board.CarThumb.image_path = "car/thumbnail_L/%s_%02d".format(info.Label, info.MainColor)
+
+            board.CarThumb.FadeActor.reset();
+            board.Manufacturer.text = manager.translate("TunerName", info.Tuner);
+
+            var mtd_end_load_logo = method (context)
+            {
+                if (context == nil)
+                    return;
+
+                board.Logo.FadeActor.start();
+                board.Logo.on_delay_load_complete = nil;
+            };
+
+            board.Logo.on_delay_load_complete = *self{mtd_end_load_logo};
+            board.Logo.image_path = "piece/gt6/tunner_logo_M/%s.img".format(info.Tuner);
+            board.Logo.FadeActor.reset();
+
+            var mtd_end_load_flag = method (context)
+            {
+                if (context == nil)
+                    return;
+
+                board.CountryFlag.FadeActor.start();
+                board.CountryFlag.on_delay_load_complete = nil;
+            };
+
+
+            board.CountryFlag.on_delay_load_complete = *self{mtd_end_load_flag};
+            var country_flag = info.CountryFlag != "-" ? info.CountryFlag.downcase() : "pdi";
+            board.CountryFlag.image_path = "piece/flag_ranking/%s.img".format(country_flag);
+            board.CountryFlag.FadeActor.reset();
+
+            if (!gSequenceCondition.checkEnableRentACar(car_code))
+            {
+                board.Block.visible = true;
+                self.cannot_select_ = true;
+            }
+
+            self.setVisibleReflect(item_index);
+            self.is_blank_ = false;
+            self.is_initialized_ = true;
+        }
+
+        method initGarageCar(context, garage_car, item_index)
+        {
+            self.garage_car_ = garage_car;
+            self.car_code_ = garage_car.car_code;
+
+            var board = self.Board;
+            var info = SPECDB.query1("SELECT Tuner, CountryFlag FROM CAR_VIEW WHERE ID=?", [garage_car.car_code]);
+
+            self.CarName.text = garage_car.short_name;
+
+            var ps_v = garage_car.real_spec_hidden ? -1 : garage_car.power;
+            var ps_u = pdiext::MUnit::GetUnitOfPower();
+            if (ps_v > 0)
+                board.Power.text = "%d%s".format(ps_v, ps_u);
+            else
+                board.Power.text = "--- %s".format(ps_u);
+
+            board.Drivetrain.text = SpecDatabaseUtil::changeDriveTrainTypeToString(garage_car.drive_train);
+
+            var mtd_end_load_thumb = method (context)
+            {
+                if (context == nil)
+                    return;
+
+                board.CarThumb.FadeActor.start();
+                board.CarThumb.on_delay_load_complete = nil;
+            };
+
+            board.CarThumb.on_delay_load_complete = *self{mtd_end_load_thumb};
+            board.CarThumb.image_path = GarageUtil::Thumbnail::getPath(garage_car.garage_id, GarageUtil::Thumbnail::Type::Garage, GarageUtil::Thumbnail::Size::L);
+            board.CarThumb.FadeActor.reset();
+
+            board.Manufacturer.text = manager.translate("TunerName", info.Tuner);
+
+            var mtd_end_load_logo = method (context)
+            {
+                if (context == nil)
+                    return;
+
+                board.Logo.FadeActor.start();
+                board.Logo.on_delay_load_complete = nil;
+            };
+
+            board.Logo.on_delay_load_complete = *self{mtd_end_load_logo};
+            board.Logo.image_path = "piece/gt6/tunner_logo_M/%s.img".format(info.Tuner);
+            board.Logo.FadeActor.reset();
+
+            var mtd_end_load_flag = method (context)
+            {
+                if (context == nil)
+                    return;
+
+                board.CountryFlag.FadeActor.start();
+                board.CountryFlag.on_delay_load_complete = nil;
+            };
+
+
+            board.CountryFlag.on_delay_load_complete = *self{mtd_end_load_flag};
+            var country_flag = info.CountryFlag != "-" ? info.CountryFlag.downcase() : "pdi";
+            board.CountryFlag.image_path = "piece/flag_ranking/%s.img".format(country_flag);
+            board.CountryFlag.FadeActor.reset();
+
+            if (!gSequenceCondition.checkEnableGarageCar(garage_car))
+            {
+                board.Block.visible = true;
+                self.cannot_select_ = true;
+            }
+
+            self.setVisibleReflect(item_index);
+            self.is_blank_ = false;
+            self.is_initialized_ = true;
+        }
+
+        method initBlank(context, item_index)
+        {
+            self.Board::Cover.visible = false;
+            self.setVisibleReflect(item_index);
+            self.is_blank_ = true;
+            self.is_initialized_ = true;
+        }
+    }
+}

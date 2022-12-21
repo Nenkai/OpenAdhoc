@@ -1,0 +1,854 @@
+
+
+
+
+
+
+
+
+
+
+
+//////////////////////////////////
+// Used for demo branch
+/////////////////////////////////
+module GTTopRoot
+{
+    #include "TopNews.ad"
+
+    static sDefaultFocus = ScrolledWindow::clip::space::MyHome::Pane::Icons::Garage;
+    static sIsLookingAtTarget = false;
+
+    method open(context)
+    {
+        SequenceUtil::enableStartMenuRoot();
+        SequenceUtil::startPageSimple(context, self);
+    }
+
+    method onRealize(manager)
+    {
+        var focus_area = ScrolledWindow::clip::space::MyHome;
+        if (GAME_STATUS.user_profile.option.kiosk_mode)
+        {
+            for (var area = ScrolledWindow::clip::space.first; area != nil; area = area.next)
+            {
+                area.is_enable = false;
+            }
+        }
+
+        var AREA_demo = ScrolledWindow::clip::space::Demo;
+        AREA_demo.visible = true;
+        AREA_demo.is_enable = true;
+
+        var focus_area = AREA_demo;
+
+        ScrolledWindow::clip::space.minimum_width = 0.0;
+
+        News.is_enable = false;
+
+        var option = GAME_STATUS.user_profile.option;
+
+        var demo_icons = ScrolledWindow::clip::space::Demo::Pane::Icons;
+        demo_icons.Single.visible = option.visible_icon_singlerace;
+        demo_icons.FreeRun.visible = option.visible_icon_timetrial;
+        demo_icons.OpenLobby.visible = option.visible_icon_open_lobby;
+
+        for (var w = focus_area.Pane::Icons.first; w != nil; w = w.next)
+        {
+            if (w.visible)
+            {
+                sDefaultFocus = w;
+                break;
+            }
+        }
+    }
+
+    method onInitialize(context)
+    {
+        GTModeProject.PlayMenuBGM(context, GTTopRoot);
+
+        checkNewMark(context);
+        checkUnlockIcons(context);
+        updateFriendList(context);
+
+        News.initialize(context);
+        News.off(context);
+
+        ToolTip::tip.remove();
+        ToolTip::tip.action_type = 1;
+        ToolTip::tip.value = "";
+
+        SceneFaceUtil::loadScene(SceneFace, "menuBG_circle");
+
+        resetLeaveDetect(context);
+        LeaveDetectUtil::suspend(context);
+
+        var focus_w = getSavedFocusWidget();
+        GTTopRoot.setFocus(focus_w);
+
+        context.pushEvent(menu::MFunctionEvent(postInitialize, context));
+    }
+
+    method postInitialize(context)
+    {
+        context.wait();
+        ScrolledWindow::Fade.restart();
+
+        CursorUtil::setCursor(context, "cursor_chrome");
+        context.cursor_visible = true;
+        context.getCursorRoot().visible = true;
+        showTutorial(context);
+
+        var focus_w = getSavedFocusWidget();
+        if (focus_w == nil)
+            focus_w = sDefaultFocus;
+
+        GTTopRoot.setFocus(focus_w);
+
+        removeSavedFocus();
+        if (!sIsLookingAtTarget)
+        {
+            ScrolledWindow::clip.warp(focus_w);
+            sIsLookingAtTarget =  false;
+        }
+
+        setTooltipText(context);
+
+        LeaveDetectUtil::resume(context);
+    }
+
+    method onFinalize(context)
+    {
+        LeaveDetectUtil::end(context);
+        EventRace2.clearCallback(context);
+        News.finalize(context);
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (LeaveDetectUtil::activated(context, event))
+            return STATE_YIELD;
+
+        if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+        {
+            checkNewMark(context);
+            resetLeaveDetect(context);
+            return STATE_YIELD;
+        }
+
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_SELECT:
+                if (GTModeProject::IsDevelop(context))
+                {
+                    LeaveDetectUtil::suspend(context);
+                    var state = context.getUpdateContext().getPadButtonState(0);
+
+                    if (state & 0x800)
+                    {
+                        var project = manager.loadProject("/%{PROJECT_ROOT_DIR}/develop/develop");
+                        DevelopProject::DevelopRoot.open(context);
+                        main::manager.unloadProject(project);
+                        CursorProject::StartMenuRoot::StartMenu.reflectCurrentStatus(context);
+                        context.finish(true);
+                    }
+                    else if (state & 0x100)
+                    {
+                        startAutoDemo(context);
+                    }
+                    else
+                    {
+                        context.finish(true);
+                    }
+
+                    LeaveDetectUtil::resume(context);
+                }
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    method onActivate(context, event)
+    {
+        var on_activate_method = "on%s".format(event.widget.name);
+        if (GTTopRoot.defined(on_activate_method))
+        {
+            saveFocus(event.widget);
+            LeaveDetectUtil::suspend(context);
+            GTTopRoot[on_activate_method](context);
+            LeaveDetectUtil::resume(context);
+            return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    method onCancel(context)
+    {
+        return STATE_YIELD;
+    }
+
+    method resetLeaveDetect(context)
+    {
+        LeaveDetectUtil::end(context);
+
+        if (GetVersionBranch() == "demo" && !AppOpt.defined("no_autodemo"))
+        {
+            var timeout_sec = GAME_STATUS.user_profile.option.autodemo_start_interval;
+            if (timeout_sec > 0)
+            {
+                if (timeout_sec < 10)
+                    timeout_sec = 10;
+
+                LeaveDetectUtil::begin(context, timeout_sec - 5, self, startTimeoutMessage, endTimeoutMessage);
+            }
+        }
+    }
+
+    method saveFocus(icon_w)
+    {
+        var area_w = icon_w.parent.parent.parent;
+        GTModeProject.history[$"GTTopRoot::FocusAreaName"] = area_w.name;
+        GTModeProject.history[$"GTTopRoot::FocusIconName"] = icon_w.name;
+    }
+
+    method getSavedFocusWidget()
+    {
+        var focus_w = nil;
+        var area_name = GTModeProject.history[$"GTTopRoot::FocusAreaName"];
+        var icon_name = GTModeProject.history[$"GTTopRoot::FocusIconName"];
+
+        if (ScrolledWindow::clip::space.defined(area_name))
+        {
+            var area_w = ScrolledWindow::clip::space[area_name];
+            if (area_w.Pane::Icons.defined(icon_name))
+            {
+                focus_w = area_w.Pane::Icons[icon_name];
+            }
+        }
+
+        return focus_w;
+    }
+
+    method removeSavedFocus()
+    {
+        GTModeProject.history[$"GTTopRoot::FocusAreaName"] = "";
+        GTModeProject.history[$"GTTopRoot::FocusIconName"] = "";
+    }
+
+    method startAutoDemo(context)
+    {
+        SequenceUtil::startProjectSimple(context, "leavedemo", "gtmode");
+    }
+
+    method startTimeoutMessage(context)
+    {
+        resetTooltipText(context);
+        ToolTip::tip.value = context.translate(GTTopRoot, "Message_StartDemoSoon");
+        context.addTimeOut("autodemo_countdown", startAutoDemo, context);
+        context.setTimeOut("autodemo_countdown", 5f);
+    }
+
+    method endTimeoutMessage(context)
+    {
+        context.removeTimeOut("autodemo_countdown");
+        setTooltipText(context);
+    }
+
+    method checkRidingCarOnRaceEvent(context)
+    {
+        var garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+        if (garage_id == gtengine::MSpecDB::NO_CODE)
+        {
+            sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                manager.translate("CommonGTMode", "Message_PleaseSelectCar"));
+            return false;
+        }
+
+        return true;
+    }
+
+    method tryLogin(context)
+    {
+        if (isDemoVersion())
+            return true;
+
+        LoginUtil::tryLogin(context);
+
+        if (!LoginUtil::isOnline())
+        {
+            main::sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                context.translate(GTTopRoot, "Error_NetworkIsOffline"));
+            return false;
+        }
+
+        return true;
+    }
+
+    method resetTooltipText(context)
+    {
+        ToolTip::tip.value = "";
+        News.off(context);
+    }
+
+    method setTooltipText(context)
+    {
+        var tooltip_text = getTooltipTextForDemo(context);
+        if (tooltip_text != "")
+        {
+            ToolTip::tip.value = tooltip_text;
+            News.off(context);
+        }
+        else
+        {
+            ToolTip::tip.value = "";
+            News.on(context);
+        }
+    }
+
+    method getTooltipTextForDemo(context)
+    {
+        var tooltip_text = "";
+        var option = GAME_STATUS.user_profile.option;
+
+        if (GetVersionBranch() == "demo")
+            tooltip_text = context.translate(GTTopRoot, "Message_ThisIsE3Version");
+
+        if (option.kiosk_mode)
+            tooltip_text = context.translate(GTTopRoot, "Message_ThisIsDemoVersion");
+
+        var tuner = GAME_STATUS.user_profile.option.kiosk_limit_tuner;
+        if (tuner != gtengine::MSpecDB::NO_CODE)
+        {
+            var tuner_label = SPECDB.executeQuery1R1C("SELECT TunerString FROM TUNER WHERE ID=?", [tuner]);
+            var tuner_name = manager.translate("TunerName", tuner_label);
+            tooltip_text += " / %{tuner_name} Version";
+        }
+        return tooltip_text;
+    }
+
+    module ScrolledWindow::clip::space
+    {
+        attribute area_list;
+
+        method onInitialize(context)
+        {
+            self.area_list = [];
+            var area_index = 0;
+            var child_list = self.getChildList();
+
+            for (var i = 0; i < child_list.size; i++)
+            {
+                var area_w = child_list[i];
+                area_w.defineAttribute("area_index", area_index);
+
+                if (area_w.is_enable)
+                {
+                    var icon_list = area_w.Pane::Icons.getChildList();
+                    for (var ii = 0; ii < icon_list.size; ii++)
+                    {
+                        var icon_w = icon_list[ii];
+                        icon_w.defineAttribute("index", ii);
+                        icon_w.defineAttribute("area_index", area_index);
+                    }
+
+                    self.area_list.push(area_w);
+                    area_index++;
+                }
+            }
+
+            HScrollPointer.setItemCount(context, area_list.size);
+        }
+
+        method onFinalize(context)
+        {
+            self.area_list = nil;
+        }
+
+        method onFocusEnter(context, event)
+        {
+            var icon_w = event.widget;
+            HScrollPointer.setPointer(icon_w.area_index);
+            return STATE_EXIT;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (LeaveDetectUtil::activated(context, event))
+                return STATE_YIELD;
+
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L1:
+                    var icon_w = event.widget;
+                    var left_area_index = icon_w.area_index - 1;
+                    if (left_area_index < 0)
+                        return STATE_YIELD;
+
+                    sound.play("cursor");
+                    
+                    var left_area_w = self.area_list[left_area_index];
+                    var focus_w = left_area_w.Pane::Icons.first;
+                    GTTopRoot.setFocus(focus_w);
+                    return STATE_YIELD;
+
+                case CELL_PAD_CTRL_R1:
+                    var icon_w = event.widget;
+                    var right_area_index = icon_w.area_index + 1;
+                    if (right_area_index >= self.area_list.size)
+                        return STATE_YIELD;
+
+                    sound.play("cursor");
+                    
+                    var right_area_w = self.area_list[right_area_index];
+                    var focus_w = right_area_w.Pane::Icons.first;
+                    GTTopRoot.setFocus(focus_w);
+                    return STATE_YIELD;
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module ScrolledWindow::clip::space::CarDealer::Pane::Icons
+    {
+        module CarDealer_Asia
+        {
+            method onInitialize(context)
+            {
+                var dealer_count = GTModeProject.history[$"CashAsiaDealerCount"];
+                label2.text = dealer_count != nil ? dealer_count : "--";
+            }
+        }
+
+        module CarDealer_America
+        {
+            method onInitialize(context)
+            {
+                var dealer_count = GTModeProject.history[$"CashAmericaDealerCount"];
+                label2.text = dealer_count != nil ? dealer_count : "--";
+            }
+        }
+
+        module CarDealer_Europe
+        {
+            method onInitialize(context)
+            {
+                var dealer_count = GTModeProject.history[$"CashEuropeDealerCount"];
+                label2.text = dealer_count != nil ? dealer_count : "--";
+            }
+        }
+    }
+
+    method onGarage(context)
+    {
+        var garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+        if (garage_id == gtengine::MSpecDB::NO_CODE)
+        {
+            sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                manager.translate("CommonGTMode", "Message_GarageEmpty"));
+            return;
+        }
+
+        sound.play("ok");
+        GarageRoot.open(context);
+
+        if (TutorialUtil::isBegin("gttop", "buy_car"))
+            context.finish(true);
+    }
+
+    method onGallery(context)
+    {
+        sound.play("ok");
+        ReplayListRoot.open(context, ReplayListRoot::MODE::ALL);
+    }
+
+    method onMessage(context)
+    {
+        sound.play("ok");
+    }
+
+    method onStatus(context)
+    {
+        sound.play("ok");
+        Status2Root.open(context);
+    }
+
+    method onDLC(context)
+    {
+        DLCRoot.open(context);
+    }
+
+    method onCommunity(context)
+    {
+        if (!checkRidingCarOnRaceEvent(context))
+            return;
+
+        sound.play("ok");
+        CommunityProject::CommunityRoot.open(context);
+    }
+
+    method onChampionship(context)
+    {
+        sound.play("disable");
+    }
+
+    method onSesonalEvents(context)
+    {
+        sound.play("disable");
+        SeasonalEventsRoot.open(context);
+    }
+
+    method onArcade_SinglePlay(context)
+    {
+        sound.play("ok");
+        main::GameSequence::setArgumentObject(["is_single_play" : true]);
+        SequenceUtil::startProjectSimple(context, "arcade", "gtmode");
+    }
+
+    method onArcade_MultiPlay(context)
+    {
+        sound.play("ok");
+        main::GameSequence::setArgumentObject(["is_single_play" : false]);
+        SequenceUtil::startProjectSimple(context, "arcade", "gtmode");
+    } 
+
+    method onSingle(context)
+    {
+        sound.play("ok");
+        main::GameSequence::setArgumentObject(["fixed_game_mode" : gtengine::GameMode::SINGLE_RACE]);
+        SequenceUtil::startProjectSimple(context, "arcade", "gtmode");
+    } 
+
+    method onFreeRun(context)
+    {
+        sound.play("ok");
+        main::GameSequence::setArgumentObject(["fixed_game_mode" : gtengine::GameMode::TIME_ATTACK]);
+        SequenceUtil::startProjectSimple(context, "arcade", "gtmode");
+    }
+
+    method onLanParty(context)
+    {
+        sound.play("disable");
+    }
+
+    method onCarrer_B(context)
+    {
+        if (!checkRidingCarOnRaceEvent(context))
+            return;
+
+        sound.play("ok");
+        GTModeRoot.open(context, "Beginner");
+    }
+
+    method onCarrer_A(context)
+    {
+        if (!checkRidingCarOnRaceEvent(context))
+            return;
+    }
+
+    method onCarrer_IC(context)
+    {
+        if (!checkRidingCarOnRaceEvent(context))
+            return;
+    }
+
+    method onCarrer_IB(context)
+    {
+        if (!checkRidingCarOnRaceEvent(context))
+            return;
+    }
+
+    method onCarrer_IA(context)
+    {
+        if (!checkRidingCarOnRaceEvent(context))
+            return;
+    }
+
+    method onCarrer_S(context)
+    {
+        if (!checkRidingCarOnRaceEvent(context))
+            return;
+    }
+
+    method onCarrer_Formula(context)
+    {
+        if (!checkRidingCarOnRaceEvent(context))
+            return;
+    }
+
+    method LRV(context)
+    {
+        if (!checkRidingCarOnRaceEvent(context))
+            return;
+
+        sound.play("ok");
+        RaceEventRoot.open(context, "beginner_event", "sundaycup");
+    }
+
+    method onPhotoTravel(context)
+    {
+        sound.play("ok");
+        PhotoLocationRoot.open(context);
+    }
+
+    method onCourseMaker(context)
+    {
+        sound.play("ok");
+        var gp = gtengine::MGameParameter();
+        gp.event.game_mode = gtengine::GameMode::COURSE_EDIT;
+        gp.event.track.course_code = gtengine::MSpecDB::getCourseCode("template01");
+        GameParameterUtil::executeEvent(context, gp, GAME_STATUS);
+    }
+
+    method onGps(context)
+    {
+        if (GetVersionBranch() != "gt6")
+        {
+            sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                manager.translate("CommonGTMode", "Message_NotAvailable"));
+
+            return;
+        }
+
+        sound.play("ok");
+        SequenceUtil::startProjectSimple(context, "gps_replay", "gtmode");
+    }
+
+    method getPlayerName()
+    {
+        return GAME_STATUS.user_profile.residence.player_firstname;
+    }
+
+    method getTutorialParams(keyword)
+    {
+        var params = nil;
+        switch (keyword)
+        {
+            case "welcome":
+                params = [
+                    "speaker" : "SPEAKER_LUCAS",
+                    "open_wait_sec" : 2.3
+                ];
+                break;
+
+            case "introduction":
+                params = [
+                    "speaker" : "SPEAKER_LUCAS",
+                    "open_wait_sec" : 0.0
+                ];
+                break;
+
+            case "after_tutorial":
+                break;
+
+            case "after_tutorial1":
+                params = [
+                    "target_blink_start" : 1,
+                    "speaker" : "SPEAKER_LUCAS",
+                    "open_wait_sec" : 0.0
+                ];
+                break;
+
+            case "after_sundaycup":
+                params = [
+                    "target_blink_start" : 1,
+                    "speaker" : "SPEAKER_LUCAS",
+                    "open_wait_sec" : 1.0
+                ];
+                break;
+
+            case "goto_sundaycup":
+                params = [
+                    "speaker" : "SPEAKER_LUCAS",
+                    "open_wait_sec" : 1.0
+                ];
+                break;
+
+            case "goto_clubmancup":
+                params = [
+                    "speaker" : "SPEAKER_LUCAS",
+                    "open_wait_sec" : 1.0
+                ];
+                break;
+
+            case "after_clubmancup":
+                params = [
+                    "speaker" : "SPEAKER_LUCAS",
+                    "open_wait_sec" : 1.0
+                ];
+                break;
+
+            case "after_gtacademy":
+                params = [
+                    "speaker" : "SPEAKER_LUCAS",
+                    "open_wait_sec" : 1.0,
+                    "build_text" : getPlayerName(),
+                ];
+                break;
+
+            case "after_present15th":
+                params = [
+                    "speaker" : "SPEAKER_LUCAS",
+                    "open_wait_sec" : 0.0
+                ];
+                break;
+
+            case "complete":
+                params = [
+                    "speaker" : "SPEAKER_LUCAS",
+                    "open_wait_sec" : 0.0
+                ];
+                break;
+
+            default:
+                params = [
+                    "speaker" : "SPEAKER_LUCAS",
+                ];
+        }
+
+        return params;
+    }
+
+    method lookAtTarget(context, param, warp)
+    {
+        if (warp == nil)
+            warp = true;
+
+        if (param != nil && param["target"] != nil)
+        {
+            var target_w = param["target"];
+            GTTopRoot.setFocus(target_w);
+
+            if (warp)
+                ScrolledWindow::clip.warp(target_w);
+
+            sIsLookingAtTarget = true;
+        }
+    }
+
+    method checkNewMark(context)
+    {
+        var myhome_icons = ScrolledWindow::clip::space::MyHome::Pane::Icons;
+        myhome_icons.Garage::New.visible = GAME_STATUS.user_profile.context.garage_new_mark;
+    }
+
+    method checkUnlockIcons(context)
+    {
+
+    }
+
+    method updateFriendList(context)
+    {
+        if (!LoginUtil::isOnline())
+            return;
+
+        Grim2Util::updateFriendList(context);
+    }
+
+    method showTutorial(context)
+    {
+        if (TutorialUtil::isDone("gttop", "complete"))
+        {
+            ;
+        }
+        else if (TutorialUtil::isBegin("gttop", "complete"))
+        {
+            TutorialUtil::done("gttop", "complete");
+        }
+        else if (TutorialUtil::isBegin("gttop", "after_present15th"))
+        {
+            var param = getTutorialParams("after_present15th");
+            lookAtTarget(context, param);
+            TutorialUtil::message(context, "after_present15th", param);
+            TutorialUtil::done("gttop", "after_present15th");
+            TutorialUtil::begin("gttop", "complete");
+        }
+        else if (TutorialUtil::isBegin("gttop", "after_gtacademy"))
+        {
+            var param = getTutorialParams("after_gtacademy");
+            lookAtTarget(context, param);
+            TutorialUtil::message(context, "after_gtacademy", param);
+            TutorialUtil::done("gttop", "after_gtacademy");
+            TutorialUtil::begin("gttop", "goto_present15th");
+        }
+        else if (TutorialUtil::isBegin("gttop", "after_clubmancup"))
+        {
+            var param = getTutorialParams("after_clubmancup");
+            lookAtTarget(context, param);
+            TutorialUtil::message(context, "after_clubmancup", param);
+            TutorialUtil::done("gttop", "after_clubmancup");
+            TutorialUtil::begin("gttop", "goto_gtacademy");
+
+            TutorialUtil::done("gttop", "sundaycup_first_finish");
+            TutorialUtil::done("gttop", "sundaycup_finish_with_trophy");
+            TutorialUtil::done("gttop", "beginner_advice0");
+            TutorialUtil::done("gttop", "beginner_advice1");
+        }
+        else if (TutorialUtil::isBegin("gttop", "goto_clubmancup"))
+        {
+            var param = getTutorialParams("goto_clubmancup");
+            lookAtTarget(context, param);
+            TutorialUtil::message(context, "goto_clubmancup", param);
+
+            TutorialUtil::progress("gttop", "goto_clubmancup");
+        }
+        else if (TutorialUtil::isBegin("gttop", "after_sundaycup"))
+        {
+            var param = getTutorialParams("after_sundaycup");
+            lookAtTarget(context, param);
+            TutorialUtil::message(context, "after_sundaycup", param);
+
+            TutorialUtil::progress("gttop", "after_sundaycup");
+        }
+        else if (TutorialUtil::isBegin("gttop", "goto_sundaycup"))
+        {
+            var param = getTutorialParams("goto_sundaycup");
+            lookAtTarget(context, param);
+            TutorialUtil::message(context, "goto_sundaycup", param);
+            TutorialUtil::progress("gttop", "goto_sundaycup");
+
+            TutorialUtil::begin("gttop", "sundaycup_first_finish");
+            TutorialUtil::begin("gttop", "sundaycup_finish_with_trophy");
+            TutorialUtil::begin("gttop", "beginner_advice0");
+        }
+        else if (TutorialUtil::isBegin("gttop", "after_tutorial"))
+        {
+            var param = getTutorialParams("after_tutorial");
+            var param2 = getTutorialParams("after_tutorial1");
+
+            lookAtTarget(context, param2);
+
+            TutorialUtil::message(context, "after_tutorial", param);
+            TutorialUtil::done("gttop", "after_tutorial");
+
+            var blink = param["target"]["WhiteBlink"];
+            if (blink != nil)
+            {
+                blink.actor.reset();
+            } 
+
+            TutorialUtil::message(context, "after_tutorial1", param2);
+            TutorialUtil::progress("gttop", "after_tutorial1");
+        }
+    }
+
+    method startTutorial(context)
+    {
+        var fst = main::pdistd::ReadFile("game_parameter/gt6/event/tutorial.xml");
+        var xml_data = fst["buffer"];
+        if (xml_data != nil)
+        {
+            var gp_list = GameParameterUtil::parseXML(xml_data);
+            var gp = gp_list[0];
+            var entry0 = gp.event.entry_set.entries[0];
+            entry0.driver_parameter = main::Residence::create_player(false, 0);
+            GameParameterUtil::executeEvent(context, gp, GAME_STATUS);
+        }
+    }
+}

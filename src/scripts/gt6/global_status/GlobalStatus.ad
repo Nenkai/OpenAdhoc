@@ -1,0 +1,291 @@
+
+
+//---------------------------------------------------------------------------------------
+// GlobalStatus.ad
+//
+// Creates the save instance
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module GlobalStatus
+{
+    static MAJOR_VERSION = 24;
+    static MAJOR_VERSION_DEV = 25;
+    static MINOR_VERSION = 18;
+
+    static loaded_minor_version = nil;
+
+    function getLoadedMinorVersion()
+    {
+        return loaded_minor_version;
+    }
+
+    function isOlderEqualThan(compare_minor_version)
+    {
+        if (loaded_minor_version == nil)
+            return false;
+        else if (loaded_minor_version > compare_minor_version)
+            return false;
+        else
+            return true;
+    }
+
+    static DB_PATH = "/APP_CACHE/game%03d.db".format(MAJOR_VERSION);
+    static SQLITE_for_game = nil;
+
+    function getSqlite()
+    {
+        return SQLITE_for_game;
+    }
+
+    function createSqlite(global_status_ref)
+    {
+        SQLITE_for_game = nil;
+
+        if (pdistd::Exist(DB_PATH))
+            pdistd::RemoveFile(DB_PATH);
+
+        var sqlite = pdistd::MSqlite();
+        var res = sqlite.open(DB_PATH);
+        res != 0; // Normal
+
+        SQLITE_for_game = sqlite;
+        UserProfile::InitializeDB((*global_status_ref).user_profile);
+    }
+
+    function loadSqlite()
+    {
+        var sqlite = pdistd::MSqlite();
+        if (!pdistd::Exist(DB_PATH))
+            return false;
+
+        var res = sqlite.open(DB_PATH);
+        if (res != 0)
+            return false;
+
+        SQLITE_for_game = sqlite;
+        return true;
+    }
+
+    function finalizeSqlite()
+    {
+        var sqlite = SQLITE_for_game;
+        if (sqlite != nil)
+            sqlite.close();
+
+        SQLITE_for_game = nil;
+    }
+
+    function loadData(global_status_ref, loaded_data)
+    {
+        var success = false;
+        var tryBackup = false;
+        var version_error = false;
+
+        if (loaded_data != nil)
+            [success, tryBackup, version_error] = GlobalStatus::unpack(global_status_ref, loaded_data);
+        
+        if (success)
+        {
+            success = loadSqlite();
+            if (!success)
+                return [false, true, false];
+
+            UserProfile::InitializeDB((*global_status_ref).user_profile);
+            success = (*global_status_ref).user_profile.loadGarage();
+
+            if (success)
+                return [true, false, false];
+            else
+                tryBackup = true;
+        }
+
+        if (tryBackup)
+            return [false, true, false];
+        else if (version_error)
+        {
+            return [false, false, true];
+        }
+        else
+        {
+            createSqlite(global_status_ref);
+            (*global_status_ref).user_profile.createGarage();
+            return [false, false, false];
+        }
+    }
+
+    async function beginSave(size_ref, global_status)
+    {
+        await function () 
+        {
+            SQLITE_for_game.close()
+        };
+
+        GlobalStatus::pack(nil, size_ref, global_status);
+        var needed_size = *size_ref + 0x2800;
+        var tsm = false;
+
+        if (needed_size > 0x100 * 0x400)
+            tsm = true;
+
+        var buf = pdistd::MBlob();
+        buf.reserve(needed_size, tsm);
+
+        var success = await () => GlobalStatus::pack(buf, size_ref, global_status);
+        return buf;
+    }
+
+    async function endSave(size_ref, global_status)
+    {
+        var res = await () => SQLITE_for_game.open(DB_PATH);
+    }
+
+    function create()
+    {
+        // Whats with these dummy allocations?
+        var dummy_allocation = ByteData(0x10, (32 * 1024) * pdistd::MRandom::GetValue(1, 16));
+        
+        var st = CreateStructure();
+        var instance = st();
+
+        dummy_allocation = nil;
+        Initialize(instance);
+        return instance;
+    }
+
+    function pack(buf, size_ref, data)
+    {
+        var serialized_size = 0;
+        if (buf != nil)
+        {
+            var offset_buf = buf.referData(0x10);
+            serialized_size = data.serialize(offset_buf);
+            var crc32 = data.getTypeCRC();
+            var header_buf = Binary::Pack("UI*8", [MAJOR_VERSION, MINOR_VERSION, crc32, serialized_size]);
+            buf.setByteData(header_buf);
+        }
+        else
+        {
+            serialized_size = data.serialize(nil);
+        }
+
+        *size_ref = 0x10 + serialized_size;
+        if (buf != nil)
+        {
+            if (buf.size < *size_ref)
+                return false;
+            else
+                return true;
+        }
+        else
+            return true;
+    }
+
+    function unpack(global_status_ref, buf)
+    {
+        var global_status = *global_status_ref;
+        if (buf == nil)
+        {
+            Initialize(global_status);
+            return [false, true, false];
+        }
+
+        var [major_version, minor_version, crc32, serialized_size] = Binary::Unpack("UI*8", buf);
+        if (major_version != MAJOR_VERSION && major_version != MAJOR_VERSION_DEV)
+        {
+            Initialize(global_status);
+            return [false, false, true];
+        }
+
+        loaded_minor_version = minor_version;
+        if (minor_version != MINOR_VERSION)
+            ; // Don't care
+
+        if (minor_version > MINOR_VERSION)
+            return [false, false, true];
+
+        var current_crc32 = global_status.getTypeCRC();
+        if (crc32 != current_crc32)
+            ;
+            
+        Initialize(global_status);
+        var offset_buf = buf.referData(0x10);
+        global_status.deserialize(offset_buf);
+        return [true, false, false];
+    }
+
+    function clearInitializer()
+    {
+        undef initialize;
+        undef create;
+        undef CreateStructure;
+        undef Initialize;
+        undef ReinitializeDB;
+        undef DefineMethod;
+        undef clearInitializer;
+        undef unpack;
+
+        UserProfile::clearInitializer();
+        GameConfig::clearInitializer();
+
+        if (main.defined("BranchStatus") && main::BranchStatus.defined("clearInitializer"))
+            BranchStatus::clearInitializer();
+    }
+
+    function CreateStructure()
+    {
+        var st = STStructure("Impl");
+        GlobalStatus.defineModule(st);
+        st.define("user_profile", UserProfile::CreateStructure());
+        st.define("config", GameConfig::CreateStructure());
+        st.define("entitlement", STObject(gtengine::MEntitlement));
+
+        if (main.defined("BranchStatus") && main::BranchStatus.defined("CreateStructure"))
+            st.define("branch", BranchStatus::CreateStructure());
+
+        DefineMethod();
+
+        return st;
+    }
+
+    function Initialize(instance)
+    {
+        UserProfile::Initialize(instance.user_profile);
+        GameConfig::Initialize(instance.config);
+        instance.entitlement = gtengine::MEntitlement();
+
+        if (main.defined("BranchStatus") && main::BranchStatus.defined("Initialize"))
+            BranchStatus::Initialize(instance.branch);
+    }
+
+    function Finalize(instance)
+    {
+        if (instance != nil)
+            UserProfile::Finalize(instance.user_profile);
+
+        finalizeSqlite();
+    }
+
+    function ReinitializeDB(instance)
+    {
+        UserProfile::ReinitializeDB(instance.user_profile);
+    }
+
+    function DefineMethod()
+    {
+        module Impl
+        {
+            method apply()
+            {
+                self.user_profile.apply();
+                entitlement.setGlobal();
+                if (self.defined("branch"))
+                    self.branch.apply();
+            }
+        }
+    }
+}

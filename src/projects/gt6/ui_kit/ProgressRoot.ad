@@ -1,0 +1,350 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ProgressRoot
+{
+    class Data
+    {
+        attribute progress = main::pdistd::MProgress();
+        attribute aborted = false;
+        attribute canceling = false;
+        attribute complete = false;
+        attribute result = false;
+        attribute watcher;
+        attribute ignore_progress = false;
+        attribute auto_mode = false;
+        attribute failed_message_func;
+        attribute event_loop;
+        attribute can_cancel = true;
+
+        method __init__()
+        {
+            
+        }
+
+        method begin_message(context)
+        {
+            return nil;
+        }
+
+        method success_message(context)
+        {
+            return nil;
+        }
+
+        method failed_message(context)
+        {
+            return nil;
+        }
+
+        method cancel_message(context)
+        {
+            return nil;
+        }
+
+        method preExecute(context)
+        {
+            
+        }
+
+        method begin(context)
+        {
+
+        }
+
+        method end(context)
+        {
+
+        }
+
+        method isFinish(context)
+        {
+
+        }
+
+        method getProgress(context)
+        {
+
+        }
+
+        method cancel(context)
+        {
+
+        }
+
+        method closeWatcher()
+        {
+            if (self.watcher != nil)
+            {
+                WatcherUtil::Delete(self.watcher);
+                self.watcher = nil;
+            }
+        }
+
+        method OnProgress(context)
+        {
+            if (self.ignore_progress)
+                return;
+
+            if (isFinish(context))
+            {
+                self.complete = !self.aborted;
+                if (!self.canceling)
+                {
+                    self.ignore_progress = true;
+                    DialogUtil::setProgressCancelCB(context, nil);
+
+                    if (self.event_loop != nil)
+                    {
+                        self.event_loop.leave();
+                        self.event_loop = nil;
+                    }
+                }
+            }
+            else
+            {
+                var val = getProgress(context);
+                self.progress.value = val;
+            }
+        }
+
+        method OnCancel(context)
+        {
+            var text = cancel_message(context);
+            if (text == nil)
+                return;
+
+            self.canceling = true;
+
+            var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, text);
+            if (res)
+            {
+                cancel(context);
+                self.aborted = true;
+            }
+
+            self.canceling = false;
+        }
+
+        method executeImpl(context, args)
+        {
+            var res = begin(context);
+            if (!res)
+            {
+                DialogUtil::setProgressCancelCB(context, nil);
+                return false;
+            }
+
+            self.watcher = WatcherUtil::Create(context, OnProgress, 60);
+            self.event_loop = main::menu::EventLoop(context);
+            self.event_loop.enter();
+            closeWatcher();
+
+            if (self.aborted)
+                self.complete = false;
+
+            res = end(context);
+            if (!res)
+                self.complete = false;
+
+            return [self.complete, self.complete & self.auto_mode];
+        }
+
+        method execute(context)
+        {
+            preExecute(context);
+            
+            self.progress.value = 0.0;
+            DialogUtil::setProgress(context, self.progress);
+
+            if (self.can_cancel)
+                DialogUtil::setProgressCancelCB(context, OnCancel);
+
+            var res = DialogUtil::openProgressDialog(context, begin_message(context), success_message(context),
+                self.failed_message_func == nil ? failed_message(context) : self.failed_message_func,
+                executeImpl, nil);
+
+            self.result = res;
+            return self.result;
+        }
+    }
+
+    class GrimHttp extends Data
+    {
+        attribute request;
+        
+        method beginImpl(context)
+        {
+
+        }
+
+        method failed_message(context)
+        {
+            return nil;
+        }
+
+        method end(context)
+        {
+            if (self.request == nil)
+                return false;
+
+            return self.request.isDone();
+        }
+
+        method isFinish(context)
+        {
+            if (self.request == nil)
+                return false;
+
+            return self.request.isDone() || self.request.isError() || main::pdiext::MSystemCondition::IsExitGame();
+        }
+
+        method getProgress(context)
+        {
+            if (self.request == nil)
+                return 0;
+
+            var [current, total] = self.request.getProgress();
+            if (total == 0)
+                return 0.0;
+
+            return current.toFloat() / total;
+        }
+
+        method cancel(context)
+        {
+            if (self.request != nil)
+            {
+                self.request.abort();
+            }
+        }
+
+        method failed_message2(context)
+        {
+            var text = failed_message(context);
+            if (self.request != nil)
+            {
+                return context.translate(ProgressRoot, "SaveData", "FORMAT_NAME").build(text, 
+                    "ID = %d".format(self.request.getLastErrorById()));
+            }
+            else
+                return text;
+        }
+
+        method preExecute(context)
+        {
+            self.failed_message_func = failed_message2;
+        }
+
+        method begin(context)
+        {
+            if (!LoginUtil::isOnline())
+                return false;
+
+            return beginImpl(context);
+        }
+    }
+
+    class ThreadData extends Data
+    {
+        attribute exec_func;
+        attribute args;
+        attribute thread;
+
+        method __init__(exec_func, args)
+        {
+            self.exec_func = exec_func;
+            self.args = args;
+        }
+
+        method begin(context)
+        {
+            if (self.exec_func == nil)
+                return false;
+
+            self.thread = Thread(self.exec_func, self.args, self.progress);
+            self.thread.start();
+            return true;
+        }
+
+        method end(context)
+        {
+            if (self.isFinish())
+            {
+                if (self.thread != nil)
+                {
+                    self.thread.terminate();
+                    self.thread = nil;
+                }
+
+                self.exec_func = nil;
+                self.args = nil;
+                return true;
+            }
+
+            return false;
+        }
+
+        method isFinish(context)
+        {
+            return self.progress.value == 1.0;
+        }
+
+        method getProgress(context)
+        {
+            return self.progress.value;
+        }
+
+        method cancel(context)
+        {
+            
+        }
+    }
+
+    attribute data_list;
+    attribute result;
+
+    method open(context, data_list)
+    {
+        self.result = false;
+        self.data_list = data_list;
+        SequenceUtil::pushPage(context, ProgressRoot);
+        var result = self.result;
+        self.result = nil;
+        self.data_list = nil;
+        return result;
+    }
+    
+    method close(context)
+    {
+        SequenceUtil::popPage(context, ProgressRoot);
+    }
+
+    method onInitialize(context)
+    {
+        context.pushEvent(main::menu::MScriptEvent(context, ProgressRoot, "on_initialize"));
+    }
+
+    method on_initialize(context)
+    {
+        foreach (var data in self.data_list)
+        {
+            self.result = data.execute(context);
+            if (!self.result)
+                break;
+        }
+
+        close(context);
+    }
+}

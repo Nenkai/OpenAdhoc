@@ -1,0 +1,157 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module GPFileUtil
+{
+    static CATEGORY_SYSTEM = 0;
+    static CATEGORY_USER = 1;
+    static TABLE_VERSION = 117;
+	
+    class Data extends System::Object
+    {
+        attribute id;
+        attribute category;
+        attribute xml_game_parameter;
+        attribute title;
+        attribute description;
+        attribute sort_order;
+        attribute datetime;
+        attribute snapshot_path;
+
+        method create(gp, snapshot_path, category, sort_order)
+        {
+            self.category = category != nil ? category : CATEGORY_USER;
+            self.title = gp.event.information.one_line_title.getText();
+            self.description = gp.event.information.description.getText();
+            self.sort_order = sort_order != nil ? sort_order : 0;
+            self.datetime = pdiext::getBetterTime().getBySecond();
+            if (snapshot_path == nil || snapshot_path == "")
+            {
+                self.snapshot_path = gp.event.information.flier_image_path;
+            }
+            else
+            {
+                pdistd::MakeDirectory("/APP_DATA/gp_snapshot/", true);
+                var basename = IO::Path::GetBaseName(snapshot_path);
+                var src = snapshot_path;
+                var dst = "/APP_DATA/gp_snapshot/" + basename;
+                var res = pdistd::CopyFile(src, dst);
+                if (res == pdistd::FileError::OK)
+                {
+                    gp.event.information.flier_image_path = dst;
+                    self.snapshot_path = dst;
+                }
+                else
+                    self.snapshot_path = "";
+            }
+
+            self.xml_game_parameter = GameParameterUtil::createXML([gp]);
+        }
+    }
+
+
+    function loadPresetEvents()
+    {
+        var file_list = ["textdata/develop/pit_nascar_indianapolis8.xml"];
+        foreach (var gp_file in file_list)
+        {
+            var path = gp_file;
+
+
+            var fst = main::pdistd::ReadFile(path);
+            var xml_data = fst["buffer"];
+            if (xml_data != nil)
+            {
+                var gp_list = GameParameterUtil::parseXML(xml_data);
+                var gp = gp_list[0];
+                GPFileUtil::save(gp, nil, GPFileUtil::CATEGORY_SYSTEM, 0);
+            }
+        }
+    }
+
+    function initialize()
+    {
+        DBUtil::drop_table_common(SQLITE, "t_game_parameter");
+        var res = true;
+        if (res)
+        {
+            var sql = "CREATE TABLE IF NOT EXISTS" "t_game_parameter" " ("
+                      "id INTEGER, "
+                      "category INTEGER, " 
+                      "xml_game_parameter TEXT, "
+                      "title INTEGER, " 
+                      "description INTEGER, " 
+                      "sort_order INTEGER, "
+                      "datetime INTEGER, "
+                      "snapshot_path TEXT, "
+                      "PRIMARY KEY (id))";
+            var res = SQLITE.execute0(sql);
+            if (!(res == SQLITE_OK)) // Normally assert, lines don't match
+            {
+                ErrorUtil::warningDBFailed(res, __FILE__, __LINE__); 
+                return false;
+            }
+            loadPresetEvents();
+        }
+    }
+    
+    function getList(category)
+    {
+        var query = DBUtil::getSelectQuery("t_game_parameter", Data);
+        if (category == nil)
+            category = CATEGORY_SYSTEM;
+
+        var cond;
+        if (category == CATEGORY_SYSTEM)
+            cond = " WHERE category = %{category} ORDER BY sort_order";
+        else
+            cond = " WHERE category = %{category} ORDER BY datetime DESC";
+        var res = SQLITE.executeQuery(query + cond);
+
+        return DBUtil::getDataList(Data, res);
+    }
+
+
+    function save(gp, snapshot_path, category, sort_order)
+    {
+
+        var data = Data();
+        data.create(gp, snapshot_path, category, sort_order);
+        DBUtil::insert("t_game_parameter", data);
+    }
+
+    function remove(data)
+    {
+
+        if (pdistd::Exist(data.snapshot_path))
+            pdistd::RemoveFile(data.snapshot_path);
+        
+        DBUtil::deleteRow("t_game_parameter", data);
+    }
+
+    function clear(category)
+    {
+        var sql = "DELETE FROM "
+                  "t_game_parameter"
+                  " WHERE category = %{category}";
+        var res = SQLITE.execute(sql);
+        if (!(res == SQLITE_DONE))
+        {
+            ErrorUtil::warningDBFailed(res, __FILE__, __LINE__);
+            return false;
+        }
+    }
+}

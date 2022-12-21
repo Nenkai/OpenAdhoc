@@ -1,0 +1,287 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module LobbyUtil
+{
+    class LobbyEvent
+    {
+        attribute type;
+        attribute error;
+        attribute requestId;
+        method __init__()
+        {
+            type = pdistd::LobbyEventType::None;
+            error = pdistd::LobbyError::None;
+            requestId = 0;
+        }
+    }
+    class Callback
+    {
+        attribute type;
+        attribute func;
+        attribute arg;
+        method __init__()
+        {
+            type = pdistd::LobbyEventType::None;
+            func = nil;
+            arg = nil;
+        }
+    }
+
+    class EventHandler
+    {
+        attribute callbackList;
+        attribute eventList;
+
+        method __init__()
+        {
+            self.reset();
+        }
+
+        method reset()
+        {
+            self.callbackList = [];
+            self.eventList = [];
+        }
+
+        method finalize()
+        {
+            self.reset();
+        }
+
+        method setCallback(context, type, func, arg)
+        {
+            var c = Callback();
+            c.type = type;
+            c.func = func;
+            c.arg = arg;
+            self.callbackList.push(c);
+        }
+
+        method unsetCallback(context, type, func)
+        {
+            for (var i = 0; i < self.callbackList.size; i++)
+            {
+                if (self.callbackList[i].type == type && self.callbackList[i].func == func)
+                {
+                    self.callbackList.erase(i);
+                    return;
+                }
+            }
+        }
+
+        method onLobbyEvent(context, type, error, requestId, args)
+        {
+            switch (type)
+            {
+                case pdistd::LobbyEventType::SearchResult:
+                case pdistd::LobbyEventType::GetExternalRoomInfoResult:
+                case pdistd::LobbyEventType::GetRTTResult:
+                case pdistd::LobbyEventType::GetExternalRoomMemberListResult:
+                    Lobby.catchRequestState(requestId);
+                    break;
+                default:
+                    return;  
+            }
+
+            if (error != pdistd::LobbyError::None)
+            {
+                foreach (var c in self.callbackList)
+                {
+                    if (c.type == type && c.func != nil)
+                        c.func(context, type, error, requestId, c.arg, args);
+                }
+            }
+        }
+
+        function getEventNum()
+        {
+            return self.eventList.size;
+        }
+
+        function getLastEvent()
+        {
+            if (getEventNum() > 0)
+                return self.eventList[self.eventList.size - 1];
+            return nil;
+        }
+
+        function getEvent(requestId)
+        {
+            for (var i = 0; i < self.eventList.size; i++)
+            {
+                if (self.eventList[i].requestId == requestId)
+                    return self.eventList[i];
+            }
+
+            return nil;
+        }
+
+        function disposeEvent(requestId)
+        {
+            for (var i = 0; i < self.eventList.size; i++)
+            {
+                if (self.eventList[i].requestId == requestId)
+                {
+                    self.eventList.erase(i);
+                    return;
+                }
+            }
+        }
+    }
+
+    function mergeRoomList(oldList, newList, limit)
+    {
+        var list = [];
+        foreach (var room in newList)
+        {
+            var roomId = room["roomId"];
+            var isExisted = false;
+
+            foreach (var [i, oldRoom] in oldList.iterator_with_index)
+            {
+                if (roomId == oldRoom["roomId"])
+                {
+                    oldList[i] = room;
+                    isExisted = true;
+                    break;
+                }
+            }
+
+            if (!isExisted)
+                list.push(room);
+        }
+
+        if (limit != nil)
+        {
+            var free = limit - oldList.size;
+            if (list.size > free)
+                list.resize(free);
+        }
+
+        oldList += list;
+        return oldList;
+    }
+
+    class AsyncRoomList
+    {
+        attribute eventHandler_;
+        attribute roomList_;
+        attribute onListUpdate_;
+        attribute onRoomUpdate_;
+        attribute filterFunction_;
+
+        method __init__(handler)
+        {
+            self.eventHandler_ = handler;
+            self.roomList_ = [];
+        }
+
+        method initialize(context)
+        {
+            self.eventHandler_.setCallback(context, pdistd::LobbyEventType::SearchResult, onSearchRoomResult, self);
+            self.eventHandler_.setCallback(context, pdistd::LobbyEventType::GetRTTResult, onGetRTTResult, self);
+        }
+
+        method finalize(context)
+        {
+            self.eventHandler_.unsetCallback(context, pdistd::LobbyEventType::SearchResult, onSearchRoomResult);
+            self.eventHandler_.unsetCallback(context, pdistd::LobbyEventType::GetRTTResult, onGetRTTResult);
+            self.eventHandler_ = nil;
+            self.onListUpdate_ = nil;
+            self.onRoomUpdate_ = nil;
+            self.filterFunction_ = nil;
+            self.roomList_ = nil;
+        }
+
+        method setFilterFunction(func)
+        {
+            self.filterFunction_ = func;
+        }
+
+        method setListUpdateCallback(func)
+        {
+            self.onListUpdate_ = func;
+        }
+
+        method setRoomUpdateCallback(func)
+        {
+            self.onRoomUpdate_ = func;
+        }
+
+        method getRoomList()
+        {
+            return self.roomList_;
+        }
+
+        method clearRoomList(context)
+        {
+            self.roomList_ = [];
+            if (self.onListUpdate_ != nil)
+                self.onListUpdate_(context, self.roomList_);
+        }
+
+        method onSearchRoomResult(context, type, error, requestId, arg)
+        {
+            if (arg != self)
+                return;
+
+            if (error != pdistd::LobbyError::None)
+            {
+                if (error != pdistd::LobbyError::RoomNotFound)
+                    return;
+            }
+
+            var roomList = Lobby.getRoomList(requestId);
+            if (roomList == nil || roomList.size < 1)
+                return;
+
+            var roomListTmp = [];
+            foreach (var room in roomList)
+            {
+                if (self.filterFunction_ == nil || self.filterFunction_(context, room))
+                    roomListTmp.push(room);
+            }
+
+            roomList = roomListTmp;
+            if (roomList.size < 1)
+                return;
+
+            self.roomList_ = LobbyUtil::mergeRoomList(self.roomList_, roomList);
+            if (self.onListUpdate_ != nil)
+                self.onListUpdate_(context, self.roomList_);
+        }
+
+        method onGetRTTResult(context, type, error, requestId, arg, args)
+        {
+            if (arg != self)
+                return;
+
+            var [roomId, rtt] = args;
+            var func = self.onRoomUpdate_;
+            foreach (var room in self.roomList_)
+            {
+                if (room["roomId"] == roomId)
+                {
+                    room["rtt"] = rtt;
+                    if (func != nil)
+                        func(context, roomId, room);
+                }
+            }
+        }
+    }
+}

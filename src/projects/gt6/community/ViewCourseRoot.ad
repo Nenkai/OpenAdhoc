@@ -1,0 +1,388 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ViewCourseRoot
+{
+    attribute popup;
+    attribute closed = false;
+    attribute data;
+    attribute upload_mode = false;
+    
+    class Data
+    {
+        method __init__(_course, _mypage)
+        {
+            self.course = _course;
+            self.mypage = _mypage;
+            self.freerun = false;
+            self.delete= false;
+            self.status = false;
+            self.edit = false;
+        }
+
+        attribute course;
+        attribute mypage;
+        attribute freerun;
+        attribute delete;
+        attribute status;
+        attribute edit;
+    }
+
+    method _open(context, course, mypage)
+    {
+        self.data = Data(course, mypage);
+        self.closed = false;
+        self.popup = SequenceUtil::ModalPage(context, ViewCourseRoot);
+        self.popup.open();
+        
+        var res = self.data;
+        self.data = nil;
+        return res;
+    }
+
+    method openView(context, course, mypage)
+    {
+        self.upload_mode = false;
+        return _open(context, course, mypage);
+    }
+
+    method openUpload(context, course)
+    {
+        self.upload_mode = true;
+        return _open(context, course, true);
+    }
+
+    method close(context)
+    {
+        Community.clearCallback();
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        
+        FadeActor.out = true;
+
+        if (self.popup != nil)
+        {
+            self.popup.close(FadeActor.period);
+            self.popup = nil;
+        }
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.setFocus(Body::R::Body::Close);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        var course = self.data.course;
+        Body::L::Head::label.text = checkText(context, course["title"], course["title_hidden"], "DELETED_TITLE");
+        Body::L::VBox::Theme::TextFace.text = manager.translate("CourseName", course["theme"]);
+        Body::L::VBox::Length::TextFace.text = manager.translate("SaveData", "FORMAT_NAME")
+            .build(pdiext::MUnit::GetCourseLengthString(course["length"], true),
+                   manager.translate("CourseMaker", course["one_way"] ? "COURSE_ONEWAY" : "COURSE_LOOP"));
+        Body::L::VBox::Corner::TextFace.text = course["corners"];
+        Body::L::VBox::Author::TextFace.text = course["source_user_id"];
+
+        var local_time = course["create_time"].toLocal();
+        Body::L::VBox::Date::TextFace.text = manager.translate("DateTime", "FORMAT_DATE_TIME")
+            .build(local_time.year, 
+                "%02d".format(local_time.month),
+                "%02d".format(local_time.day),
+                "%02d".format(local_time.hour),
+                "%02d".format(local_time.minute));
+
+        var comment = checkText(context, course["comment"], course["comment_hidden"], "DELETED_COMMENT");
+        var is_debug = IsDevelop(context);
+
+        if (is_debug)
+            comment += "\nDEBUG: CourseID " + course["course_id"];
+        
+        Body::L::VBox::Comment::TextFace.text = nolinebreak(comment);
+        
+        var status_public = course["status"] == 2;
+
+        Body::R::Body::ChangeState::label.text = manager.translate("Community", status_public ? "Label_UploadCancel" : "Label_Upload");
+        Body::R::Body::ChangeState::label_i.text = Body::R::Body::ChangeState::label.text;
+
+        var mypage = self.data.mypage;
+        var editable = course["user_id"] == course["source_user_id"];
+
+        Body::R::Body::ChangeState.visible = mypage || self.upload_mode;
+        Body::R::Body::FreeRun.visible = !self.upload_mode;
+        Body::R::Body::Edit.visible = mypage && !self.upload_mode && editable;
+        Body::R::Body::Remove.visible = mypage && !self.upload_mode;
+        Body::R::Body::Save.visible = !mypage && !self.upload_mode;
+
+        if (course["photo_hidden"] > 0)
+        {
+            setPngImage(self.Body::R::Body::Photo::Image::ImageFaceReject, "_" + course["photo_id"]);
+            Body::R::Body::FreeRun.visible = false;
+            Body::R::Body::Save.visible = false;
+        }
+        else
+        {
+            setPngImage(self.Body::R::Body::Photo::Image::ImageFace,course["photo_id"]);
+        }
+       
+        ViewCourseRoot.setFocus(Body::R::Body::Close);
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    module Body::R::Body
+    {
+        module ChangeState
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var course = ViewCourseRoot.data.course;
+                var status = course["status"];
+
+                var res = LocalCourseMakerUtil::changeState(context, course);
+                if (!res)
+                    return STATE_YIELD;
+
+                ViewCourseRoot.data.status = true;
+                if (ViewCourseRoot.upload_mode)
+                    ViewCourseRoot.close(context);
+                else
+                {
+                    self.label.text = manager.translate("Community", course["status"] == 1 ? "Label_Upload" : "Label_UploadCancel");
+                    self.label_i.text = self.label.text;
+                }
+
+                return STATE_YIELD;
+            }
+        }
+
+        module FreeRun
+        {
+            method onActivate(context)
+            {
+                sound.play("next");
+                ViewCourseRoot.data.freerun = true;
+                ViewCourseRoot.close(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module Edit
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var course = ViewCourseRoot.data.course;
+                var res = EditCourseRoot.open(context, course);
+
+                if (res)
+                {
+                    Body::L::Head::label.text = checkText(context, course["title"], course["title_hidden"], "DELETED_TITLE");
+                    var comment = checkText(context, course["comment"], course["comment_hidden"], "DELETED_COMMENT");
+                    Body::L::VBox::Comment::TextFace.text = nolinebreak(comment);
+                    ViewCourseRoot.data.edit = true;
+                }
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Remove
+        {
+            function canRemove(context, course)
+            {
+                var myclub = nil;
+
+                var user_id = Grim2.getLoginUserId();
+                var request = Community.requestClubListByUser(user_id, (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    var club_list = Community.decodeClubList(request);
+                    foreach (var club in club_list)
+                    {
+                        var user_id_list = club["user_id_list"];
+                        var owner = user_id_list.indexOf(user_id) != -1;
+                        if (owner)
+                        {
+                            myclub = club;
+                            break;
+                        }
+                    }
+                }
+
+                if (myclub == nil)
+                    return true;
+
+                var course_in_use = false;
+                var course_id = course["course_id"];
+                request = Community.requestEventListByClub(myclub["club_id"], (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    var event_list = Community.decodeEventList(request);
+                    foreach (var event in event_list)
+                    {
+                        var xml = event["regulation"];
+                        var gp = EventSettingUtil::loadSettingFromXml(xml);
+
+                        if (gp != nil)
+                        {
+                            if (course_id == gp.event.track.generated_course_id)
+                            {
+                                course_in_use = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                return !course_in_use;
+            }
+            
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                if (!QUERY(context, "Community", "QUERY_REMOVE_COURSE"))
+                {
+                    return STATE_YIELD;
+                }
+
+                if (!canRemove(context, ViewCourseRoot.data.course))
+                {
+                    ERROR(context, "Community", "ERROR_CANT_DELETE_COUSE_IN_USE");
+                    return STATE_YIELD;
+                }
+
+                var res = LocalCourseMakerUtil::remove(context, ViewCourseRoot.data.course);
+                GENERIC_RESULT(context, res);
+
+                if (res)
+                {
+                    ViewCourseRoot.data.delete = true;
+                    ViewCourseRoot.close(context);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Save
+        {
+            function checkDelete(context)
+            {
+                var course_list = [];
+                var user_id = Grim2.getLoginUserId();
+                var request = main::Course.requestList(user_id, (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    course_list = main::Course.decodeCourseList(request);
+                }
+
+                if (course_list.size < 30)
+                    return 0;
+
+                var course_id = 0;
+
+                foreach (var course in course_list)
+                {
+                    if (course["status"] == 0)
+                    {
+                        course_id = course["course_id"];
+                        break;
+                    }
+                }
+
+                return course_id;
+            }
+
+            method onActivate(context)
+            {
+                if (PDINetwork.isChatRestricted())
+                {
+                    sound.play("disable");
+                    ERROR(context, "OnlineMessage", "ERROR_CHAT_RESTRICTED_FUNCTION");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+
+                var course_id = checkDelete(context);
+
+                var message = course_id > 0 ? "QUERY_SAVE_COURSE_WITH_DELETE" : "QUERY_SAVE_COURSE";
+                if (!QUERY(context, "Community", message))
+                    return STATE_YIELD;
+
+                if (course_id > 0)
+                {
+                    var course0 = ["course_id" : course_id];
+                    if (!LocalCourseMakerUtil::remove(context, course0))
+                    {
+                        GENERIC_RESULT(context, false);
+                        return STATE_YIELD;
+                    }
+                }
+
+                var res = LocalCourseMakerUtil::save(context, ViewCourseRoot.data.course);
+                if (res == -3)
+                {
+                    ERROR(context, "Community", "ERROR_COURSE_TOO_MUCH");
+                }
+                else
+                {
+                    GENERIC_RESULT(context, res > 0);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Close
+        {
+            method onCancel(context)
+            {
+                sound.play("cancel");
+                ViewCourseRoot.close(context);
+                return STATE_YIELD;
+            }
+
+            method onActivate(context)
+            {
+                sound.play("ok");
+                ViewCourseRoot.close(context);
+                return STATE_YIELD;
+            }
+        }
+    }
+}

@@ -1,0 +1,239 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module GraphEditRoot
+{
+    function default_format_func(x, y)
+    {
+        return "%f, %f".format(x, y);
+    }
+
+    static eventloop = nil;
+    static target_path;
+    static path;
+    static min = [0.0, 0.0];
+    static max = [1.0, 1.0];
+    static scale = [1.0, -1.0];
+    static offset = [0.0, 1.0];
+    static grab;
+    static format_func = default_format_func;
+
+    function open(context)
+    {
+        grab = nil;
+        context.pushPage(GraphEditRoot);
+        eventloop = main::menu::EventLoop(context);
+        eventloop.enter();
+    }
+
+    function close(context)
+    {
+        if (eventloop != nil)
+        {
+            eventloop.leave();
+            eventloop = nil;
+        }
+
+        context.closePage(GraphEditRoot);
+    }
+
+    function onInitialize(context)
+    {
+        context.cursor = "normal";
+        context.cursor_visible = true;
+
+        Dialog::View::HBox::SBox::axis.type = "break_line";
+        Dialog::View::HBox::SBox::graph.type = "continuity_line";
+
+        update_axis();
+    }
+
+    function onFinalize(context)
+    {
+        target_path = nil;
+        path = nil;
+        grab = nil;
+
+        format_func = default_format_func;
+        Dialog::View::HBox::SBox::Points.clearChildren(context);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    function setRange(_min, _max)
+    {
+        min = _min;
+        max = _max;
+        scale = [1.0 / (max[0] - min[0]), -1.0 / (max[1] - min[1])];
+        offset = [-min[0] * scale[0], 1.0 - (min[1] * scale[1])];
+        update_axis();
+    }
+
+    function setPath(_path)
+    {
+        target_path = _path;
+        path = _path.getDeepCopy();
+        grab = nil;
+        Dialog::View::HBox::SBox::Points.clearChildren();
+        update_path();
+    }
+
+    function apply()
+    {
+        for (var i = 0; i < target_path.size; i++)
+        {
+            target_path[i] = path[i].getDeepCopy();
+        }
+    }
+
+    function update_path()
+    {
+        var graph_points = Array(path.size);
+        for (var i = 0; i < path.size; i++)
+        {
+            var p = Array(2);
+            p[0] = (path[i][0] * scale[0]) + offset[0];
+            p[1] = (path[i][1] * scale[1]) + offset[1];
+            graph_points[i] = p;
+
+            var point = Dialog::View::HBox::SBox::Points.getChild(i);
+            if (point == nil)
+            {
+                point = hidden::Point.doCopy();
+                point.defineStatic("index", i);
+                Dialog::View::HBox::SBox::Points.appendChild(point);
+            }
+
+            point.x = p[0] * Dialog::View::HBox::SBox::Points.w;
+            point.y = p[1] * Dialog::View::HBox::SBox::Points.h;
+            point.label.text = format_func(path[i][0], path[i][1]);
+        }
+
+        Dialog::View::HBox::SBox::graph.points = graph_points;
+    }
+
+    function update_axis()
+    {
+        var lines = [
+            [0.0, offset[1]],
+            [1.0, offset[1]],
+            [offset[0], 0.0],
+            [offset[0], 1.0],
+        ];
+
+        var x_range = Math::max(Math::abs(min[0]), Math::abs(max[0]));
+        var y_range = Math::max(Math::abs(min[1]), Math::abs(max[1]));
+        var x_scale_step = 10.0 ** ((Math::log(x_range) * 0.4342945) - 1.0).toInt().toFloat(); // LOG10E
+        var y_scale_step = 10.0 ** ((Math::log(y_range) * 0.4342945) - 1.0).toInt().toFloat(); // LOG10E
+        
+        for (var i = ((min[0] / x_scale_step) - 0.5).toInt(); i <= ((max[0] / x_scale_step) + 0.5).toInt(); i++)
+        {
+            var x = (i * x_scale_step) * scale[0] + offset[0];
+            lines.push([x, offset[1]]);
+            lines.push([x, offset[1] - 0.025]);
+        }
+
+        for (var i = ((min[1] / y_scale_step) - 0.5).toInt(); i <= ((max[1] / y_scale_step) + 0.5).toInt(); i++)
+        {
+            var y = (i * y_scale_step) * scale[1] + offset[1];
+            lines.push([offset[0], y]);
+            lines.push([offset[0] + 0.025, y]);
+        }
+
+        Dialog::View::HBox::SBox::axis.points = lines;
+    }
+}
+
+module GraphEditRoot::hidden::Point
+{
+    function onActivate(context, event, widget)
+    {
+        GraphEditRoot::grab = GraphEditRoot::grab == nil ? widget : nil;
+        main::sound.play("ok");
+        return STATE_YIELD;
+    }
+
+    function onCancel(context, event, widget)
+    {
+        if (GraphEditRoot::grab != nil)
+        {
+            GraphEditRoot::grab = nil;
+            main::sound.play("cancel");
+            return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+    
+    static cursor_move = [
+        CELL_PAD_CTRL_L3_UP : [0.0, 1.0],
+        CELL_PAD_CTRL_L3_DOWN : [0.0, -1.0],
+        CELL_PAD_CTRL_L3_LEFT : [-1.0, 0.0],
+        CELL_PAD_CTRL_L3_RIGHT : [1.0, 0.0]
+    ];
+
+    function onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_L3_UP:
+            case CELL_PAD_CTRL_L3_DOWN:
+            case CELL_PAD_CTRL_L3_LEFT:
+            case CELL_PAD_CTRL_L3_RIGHT:
+                if (GraphEditRoot::grab != nil)
+                {
+                    var widget = GraphEditRoot::grab;
+                    var index = widget.index;
+                    var point = path[index];
+                    var pad = context.getUpdateContext().getPadButtonState(0);
+                    var step = pad & 0x800 ? 0.1 : 0.01;
+                    var move = cursor_move[event.keysym];
+                    point[0] = Math::clamp(point[0] + (move[0] * step), min[0], max[0]);
+                    point[1] = Math::clamp(point[1] + (move[1] * step), min[1], max[1]);
+
+                    update_path();
+                    main::sound.play("param");
+                    return STATE_YIELD;
+                } 
+        }
+
+        return STATE_EXIT;
+    }
+}
+
+module GraphEditRoot::Dialog::Buttons::YesNo::Yes
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        apply();
+        close(context);
+        return STATE_YIELD;
+    }
+}
+
+module GraphEditRoot::Dialog::Buttons::YesNo::No
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        close(context);
+        return STATE_YIELD;
+    }
+}

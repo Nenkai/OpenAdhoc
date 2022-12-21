@@ -1,0 +1,198 @@
+
+
+//---------------------------------------------------------------------------------------
+// ServerUtil.ad
+//
+// Utility module
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module ServerUtil
+{
+    function initialize(context)
+    {
+        LOBBY::initialize(context);
+        ResidentLobby::initialize(context);
+    }
+
+    module LOBBY
+    {
+        static sMonitor = Monitor();
+        static sThread = Thread();
+        static sResult = false;
+        static sConnectRequest = false;
+        static sIsRunning = false;
+        static sEmptyMap = Map();
+        static sConfig = sEmptyMap;
+
+        function initialize(context)
+        {
+            sThread.setEntry(threadImpl, context);
+            sThread.start();
+        }
+
+        function isTrying()
+        {
+            return sConnectRequest || sIsRunning;
+        }
+
+        function connectRequest(context, config)
+        {
+            if (isTrying())
+                return true;
+
+            sConfig = config;
+            sConnectRequest = true;
+            sMonitor.puls();
+            return true;
+        }
+
+        function connect(context, config)
+        {
+            if (!isTrying())
+            {
+                if (!connectRequest(context, config))
+                    return false;
+            }
+
+            joinThread(context);
+            return sResult;
+        }
+
+        function clearConfig()
+        {
+            sConfig = nil;
+            sConfig = sEmptyMap;
+        }
+
+        function threadImpl(context)
+        {
+            do 
+            { 
+                while (!sConnectRequest)
+                {
+                    sMonitor.wait();
+                    if (pdiext::MSystemCondition::IsExitGame())
+                        return;
+                }
+
+                sIsRunning = true;
+                threadImplConnect(context);
+                sIsRunning = false;
+                sConnectRequest = false;
+
+            } while (!pdiext::MSystemCondition::IsExitGame());
+        }
+
+        function threadImplConnect(context)
+        {
+            sResult = false;
+            
+            var ret = OnlineUtil::initializeLobby(context, false, true);
+            if (!ret)
+                return;
+
+            var req = Lobby.getServerListRequest();
+            if (req < 0)
+                return;
+
+            ret = Lobby.pollRequest(req);
+            if (ret < 1)
+                return;
+
+            var server = sConfig["server"];
+            if (server != nil)
+                Lobby.selectServer(server);
+
+            var worldNumber = sConfig["worldNumber"];
+            if (worldNumber != nil)
+                Lobby.selectWorldByWorldNumber(worldNumber);
+
+            yield;
+
+            OnlineUtil::reportLobbyServerStatus(context);
+
+            var callback = sConfig["connectedCallback"];
+            if (callback != nil)
+                callback(context);
+
+            sResult = true;
+        }
+
+        function joinThread(context)
+        {
+            while (isTrying())
+                yield;
+        }
+    }
+
+    module ResidentLobby
+    {
+        static sMonitor = Monitor();
+        static sThread = Thread();
+        static sDestroyTime = 0L;
+    
+        function initialize(context)
+        {
+            sThread.setEntry(onTick, context);
+            sThread.start();
+        }
+
+        function stay(context)
+        {
+            sDestroyTime = 0;
+        }
+
+        function leave(context)
+        {
+            updateDestroyTime();
+            sThread.wakeup();
+            sMonitor.puls();
+        }
+
+        function destroyImmediately(context)
+        {
+            finalizeImpl(context);
+        }
+
+        function onTick(context)
+        {
+            do
+            {
+                if (sDestroyTime == 0)
+                    sMonitor.wait();
+
+                var now = pdistd::GetSystemTimeMilliSecond();
+                while (now < sDestroyTime)
+                {
+                    var diffSec = (sDestroyTime - now) / 1000;
+                    if (diffSec < 1)
+                        diffSec = 1;
+
+                    Thread::Sleep(diffSec);
+
+                    now = pdistd::GetSystemTimeMilliSecond();
+                }
+
+                if (sDestroyTime != 0)
+                    finalizeImpl(context);
+                sDestroyTime = 0;
+                
+            } while (!pdiext::MSystemCondition::IsExitGame())
+        }
+
+        function finalizeImpl(context)
+        {
+            OnlineUtil::finalizeLobby(context);
+        }
+
+        function updateDestroyTime()
+        {
+            sDestroyTime = pdistd::GetSystemTimeMilliSecond() + ((5 * 60) * 1000);
+        }
+    }
+}

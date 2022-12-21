@@ -1,0 +1,865 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module MessengerRoot
+{
+    hidden.visible = false;
+    ChatInput.visible = false;
+
+    static sInitialized = false;
+    static sDuration = 0.0;
+    static sNoticeList = nil;
+    static sLatestNoticeId = -1;
+    static sEnableFiltering = false;
+    static sFilteringNoticeType = [];
+    static sShowCallback = nil;
+    static sHideCallback = nil;
+    
+    module MODE_ENUM
+    {
+        static SCROLL_MODE = 0;
+        static POPUP_MODE = 1;
+        static CHAT_MODE = 2;
+    }
+
+    static sCurrentMode;
+    static sDefaultRect;
+    static sTargetRect = nil;
+    static sCascadeRoot = nil;
+    static sGpb;
+
+    method onRealize()
+    {
+        HBox::SBox::QueueBox.max_item_count = 100;
+        HBox::QueueBox2.max_item_count = 100;
+        MessengerRoot.display_priority = 5;
+        
+        sDuration = HBox::SBox.VisibleEffect.getEndDuration(0);
+        var w = HBox::SBox;
+
+        sDefaultRect = [w.x, w.y, w.w, w.h];
+    }
+
+    method setGeometry(x, y, w, h)
+    {
+        if (sTargetRect != nil)
+        {
+            sTargetRect[0] = x;
+            sTargetRect[1] = y;
+            sTargetRect[2] = w;
+            sTargetRect[3] = h;
+
+            HBox::SBox.x = sTargetRect[0];
+            HBox::SBox.y = sTargetRect[1];
+            HBox::SBox::QueueBox.minimum_width = sTargetRect[2];
+            HBox::SBox::QueueBox.minimum_height = sTargetRect[3];
+        }
+    }
+
+    method onInitialize(context)
+    {
+        HBox::SBox.x = sTargetRect != nil ? sTargetRect[0] : sDefaultRect[0];
+        HBox::SBox.y = sTargetRect != nil ? sTargetRect[1] : sDefaultRect[1];
+        HBox::SBox::QueueBox.minimum_width = sTargetRect != nil ? sTargetRect[2] : sDefaultRect[2];
+        HBox::SBox::QueueBox.minimum_height = sTargetRect != nil ? sTargetRect[3] : sDefaultRect[3];
+
+        HBox::SBox::QueueBox.can_focus = false;
+        HBox::SBox.VisibleEffect.reverse = false;
+        HBox::SBox.VisibleEffect.reset();
+        HBox::QueueBox2.can_focus = false;
+        HBox::QueueBox2.VisibleEffect.reverse = false;
+        HBox::QueueBox2.VisibleEffect.reset();
+
+        sInitialized = true;
+    }
+
+    method onFinalize(context)
+    {
+        if (self.effect_watcher_ != nil)
+        {
+            self.effect_watcher_.remove();
+            self.effect_watcher_ = nil;
+        }
+
+        leaveScrollMode(context);
+
+        HBox::SBox.x = sDefaultRect[0];
+        HBox::SBox.y = sDefaultRect[1];
+        HBox::SBox::QueueBox.w = HBox::SBox::QueueBox.minimum_width =sDefaultRect[2];
+        HBox::SBox::QueueBox.h = HBox::SBox::QueueBox.minimum_height = sDefaultRect[3];
+
+        sCurrentMode = nil;
+        sTargetRect = nil;
+        sInitialized = false;
+        sShowCallback = nil;
+        sHideCallback = nil;
+    }
+
+    async method open(context, x, y, w, h, hide_base)
+    {
+        sTargetRect = [x, y, w, h];
+        sCascadeRoot = nil;
+
+        MessengerRoot.react_event = false;
+        var hide_base = hide_base == nil ? false : hide_base;
+        HBox::SBox.active = !hide_base;
+
+        await () => { context.loadGpb(main::PROJECT_ROOT_DIR + "/ui_kit", "MessengerRoot"); };
+        context.pushPage(MessengerRoot);
+    }
+
+    method open_cascade(context, cascade_root, hide_base, x, y, w, h)
+    {
+        if (x != nil && y != nil && w != nil && h != nil)
+            sTargetRect = [x, y, w, h];
+        else
+            sTargetRect = [cascade_root.sx, cascade_root.sy, cascade_root.w, cascade_root.h];
+
+        sCascadeRoot = cascade_root;
+        MessengerRoot.react_event = false;
+        hide_base = hide_base == nil ? false : hide_base;
+        HBox::SBox.active = !hide_base;
+
+        sCascadeRoot.appendRootWindow(context, MessengerRoot);
+    }
+
+    method close(context)
+    {
+        if (sCascadeRoot != nil)
+        {
+            sCascadeRoot.clearRootWindow(context);
+            sCascadeRoot = nil;
+        }
+        else
+        {
+            context.unloadGpb(main::PROJECT_ROOT_DIR + "/ui_kit", "MessengerRoot");
+            context.closePage(MessengerRoot);
+        }
+    }
+
+    method setNoticeList(noticeList)
+    {
+        sNoticeList = noticeList;
+    }
+
+    method setMessageBoxCount(context, req_size)
+    {
+        var put_size = req_size;
+        var items = Array(put_size);
+        var items2 = Array(put_size);
+
+        for (var i = 0; i < put_size; i++)
+        {
+            var x = 0 - (put_size - i);
+            items[i] = generateMessageBox(context, x);
+            items2[i] = generateMessageScale(context, x);
+        }
+
+        HBox::SBox::QueueBox.appendItemWidgets(context, items);
+        HBox::QueueBox2.appendItemWidgets(context, items2);
+    }
+
+    method putLogs(context, requestCount)
+    {
+        if (sNoticeList == nil)
+            return;
+
+        var messageList = sNoticeList.getNotice();
+        var count = requestCount < messageList.size ? requestCount : messageList.size;
+        if (messageList.size < 1)
+            return;
+
+        var sz = messageList.size;
+        var msgs = Array(count);
+
+        for (var i = 0; i < count; i++)
+        {
+            var msg = messageList[(sz - count) + i];
+            if (msg.id > sLatestNoticeId)
+                sLatestNoticeId = msg.id;
+
+            msgs[i] = msg;
+        }
+
+        putMessageBoxList(context, msgs);
+    }
+
+    method abort(context)
+    {
+        if (sCurrentMode == MODE_ENUM::SCROLL_MODE)
+            leaveScrollMode(context);
+
+        close(context);
+    }
+
+    method clearLog(context)
+    {
+        sLatestNoticeId = -1;
+        HBox::SBox::QueueBox.clearItemWidget(context);
+        HBox::QueueBox2.clearItemWidget(context);
+    }
+
+    method setShowHideCallback(show_callback, hide_callback)
+    {
+        if (sTargetRect != nil)
+        {
+            sShowCallback = show_callback;
+            sHideCallback = hide_callback;
+        }
+    }
+
+    method showWindow(context)
+    {
+        if (sTargetRect != nil)
+        {
+            if (sShowCallback != nil)
+            {
+                sShowCallback(context);
+            }
+
+            HBox::SBox.VisibleEffect.reverse = false;
+            HBox::SBox.VisibleEffect.start();
+        }
+    }
+
+    method hideWindow(context)
+    {
+        if (sTargetRect != nil)
+        {
+            if (sHideCallback != nil)
+            {
+                sHideCallback(context);
+            }
+
+            HBox::SBox.VisibleEffect.reverse = true;
+            HBox::SBox.VisibleEffect.start();
+        }
+    }
+
+    method enterPopupMode(context)
+    {
+        if (sCurrentMode == MODE_ENUM::POPUP_MODE)
+            return;
+
+        sCurrentMode = MODE_ENUM::POPUP_MODE;
+
+        foreach (var i in HBox::SBox::QueueBox.getIndexIterator())
+        {
+            var item = HBox::SBox::QueueBox.getItemWidget(i);
+            if (item != nil)
+            {
+                item.AppearEffect.reverse = true;
+                item.AppearEffect.reset();
+            }
+        }
+
+        hideWindow(context);
+    }
+
+    method enterChatMode(context)
+    {
+        if (sCurrentMode == MODE_ENUM::CHAT_MODE)
+            return;
+
+        sCurrentMode = MODE_ENUM::CHAT_MODE;
+
+        if (self.effect_watcher_ != nil)
+        {
+            self.effect_watcher_.remove();
+            self.effect_watcher_ = nil;
+        }
+
+        foreach (var i in HBox::SBox::QueueBox.getIndexIterator())
+        {
+            var item = HBox::SBox::QueueBox.getItemWidget(i);
+            if (item != nil)
+            {
+                item.AppearEffect.reverse = true;
+                item.AppearEffect.reset();
+            }
+        }
+
+        showWindow(context);
+    }
+
+    attribute tmp_mode_;
+
+    method enterScrollMode(context)
+    {
+        if (sCurrentMode == MODE_ENUM::SCROLL_MODE)
+            return;
+
+        self.tmp_mode_ = sCurrentMode;
+        sCurrentMode = MODE_ENUM::SCROLL_MODE;
+
+        enterChatMode(context);
+
+        HBox::SBox::QueueBox.can_focus = true;
+        HBox::SBox::QueueBox.focus_index = HBox::SBox::QueueBox.last_index;
+        HBox::QueueBox2.focus_index = HBox::SBox::QueueBox.focus_index;
+
+        visibleMessageScale();
+
+        MessengerRoot.setFocus(HBox::SBox::QueueBox);
+        MessengerRoot.react_event = true;
+
+        SequenceUtil::enterEventLoop(context, self);
+    }
+
+    method leaveScrollMode(context)
+    {
+        if (sCurrentMode != MODE_ENUM::SCROLL_MODE)
+            return;
+
+        sCurrentMode = self.tmp_mode_;
+
+        if (self.tmp_mode_ != nil && self.tmp_mode_ == MODE_ENUM::POPUP_MODE)
+            enterPopupMode(context);        
+
+        self.tmp_mode_ = nil;
+
+        HBox::SBox::QueueBox.can_focus = false;
+        HBox::SBox::QueueBox.focus_index = HBox::SBox::QueueBox.last_index;
+        HBox::QueueBox2.focus_index = HBox::SBox::QueueBox.focus_index;
+
+        invisibleMessageScale();
+
+        MessengerRoot.react_event = false;
+
+        SequenceUtil::leaveEventLoop(context, self);
+    }
+
+    method visibleMessageScale(context)
+    {
+        HBox::QueueBox2.VisibleEffect.reverse = true;
+        HBox::QueueBox2.VisibleEffect.restart();
+
+        HBox::QueueBox2.TranslateEffect.reverse = true;
+        HBox::QueueBox2.TranslateEffect.restart();
+    }
+
+    method invisibleMessageScale(context)
+    {
+        HBox::QueueBox2.VisibleEffect.reverse = false;
+        HBox::QueueBox2.VisibleEffect.restart();
+
+        HBox::QueueBox2.TranslateEffect.reverse = false;
+        HBox::QueueBox2.TranslateEffect.restart();
+    }
+
+    method scrollUp(context)
+    {
+        if (sNoticeList == nil)
+            return false;
+
+        if (sCurrentMode == MODE_ENUM::CHAT_MODE)
+            return HBox::SBox::QueueBox.incIndex(1);
+        
+        return false;
+    }
+
+    method scrollDown(context)
+    {
+        if (sNoticeList == nil)
+            return false;
+
+        if (sCurrentMode == MODE_ENUM::CHAT_MODE)
+            return HBox::SBox::QueueBox.decIndex(1);
+        
+        return false;
+    }
+
+    function findEmoticon(msg)
+    {
+        var econ_image = "";
+        var sp_code = "";
+        var re = System::Regexp();
+
+        if (re("^\%{(.*)}(.*)").match(*msg))
+        {
+            for (var i = 1; i < re.size; i++)
+            {
+                sp_code = re[1];
+                &msg = re[2];
+            }
+        }
+
+        switch (sp_code)
+        {
+            case ":)":
+                econ_image = "/image/gt5p/test/drift_score5.dds";
+                break;
+
+            case ":(":
+                econ_image = "/image/gt5p/test/drift_score1.dds";
+                break;
+        }
+
+        return econ_image;
+    }
+
+    function generateMessageBox(context, index)
+    {
+        if (sNoticeList == nil)
+            return nil;
+        
+        var msg = index.isInstanceOf(pdistd::MNoticeData) ? index : sNoticeList.getNotice(index);
+        if (msg.type != gtengine::NoticeType::RoomChat && 
+            msg.type != gtengine::NoticeType::AutoMessage)
+        {
+            var item = hidden::SystemMessageBox.doCopy();
+            item.id_ = msg.id;
+            item.Message.TextFace.text = msg.body;
+
+            var tw = sDefaultRect[2];
+            if (sTargetRect != nil)
+                tw = sTargetRect[2];
+
+            var dw = item.w - item.Message.TextFace.w;
+            var w = tw - dw;
+            item.Message.TextFace.w = w;
+            item.Message.TextFace.minimum_width = w;
+            return item;
+        }
+        else
+        {
+            var msg_text = msg.body;
+
+            var item = hidden::MessageBox.doCopy();
+            item.id_ = msg.id;
+            var is_auto = msg.type == gtengine::NoticeType::AutoMessage;
+
+            if (is_auto)
+            {
+                item.title.TextFace_auto.text = msg.title;
+                item.title.TextFace_autoa.text = msg.title;
+                item.Message.TextFace_auto.text = msg_text;
+                item.Message.TextFace_autoa.text = msg_text;
+            }
+            else
+            {
+                item.title.TextFace.text = msg.title;
+                item.title.TextFacea.text = msg.title;
+                item.Message.TextFace.text = msg_text;
+                item.Message.TextFacea.text = msg_text;
+            }
+
+            var me = msg.title == PDINetwork.getClientName();
+            item.icon.visible = !is_auto && !me;
+            item.icona.visible = !is_auto && me;
+            item.title.TextFace.visible = !is_auto;
+            item.title.TextFacea.visible = !is_auto;
+            item.Message.TextFace.visible = !is_auto;
+            item.Message.TextFacea.visible = !is_auto;
+
+            item.icon_auto.visible = is_auto && !me;
+            item.icon_autoa.visible = is_auto && me;
+            item.title.TextFace_auto.visible = is_auto;
+            item.title.TextFace_autoa.visible = is_auto;
+            item.Message.TextFace_auto.visible = is_auto;
+            item.Message.TextFace_autoa.visible = is_auto;
+
+            var tw = sDefaultRect[2];
+            if (sTargetRect != nil)
+                tw = sTargetRect[2];
+
+            var dw = item.w - item.Message.TextFace.w;
+            var w = tw - dw;
+            item.Message.TextFace.w = w;
+            item.Message.TextFace.minimum_width = w;
+            item.Message.TextFacea.w = w;
+            item.Message.TextFacea.minimum_width = w;
+            item.Message.TextFace_auto.w = w;
+            item.Message.TextFace_auto.minimum_width = w;
+            item.Message.TextFace_autoa.w = w;
+            item.Message.TextFace_autoa.minimum_width = w;
+
+            item.title.active = me;
+            item.Message.active = me;
+            return item;
+        }
+    }
+
+    function generateMessageScale(context, index)
+    {
+        if (sNoticeList == nil)
+            return nil;
+
+        var msg = index.isInstanceOf(pdistd::MNoticeData) ? index : sNoticeList.getNotice(index);
+        if (msg.type != gtengine::NoticeType::RoomChat)
+        {
+            var item = hidden::SystemMessageScale.doCopy();
+            item.id_ = msg.id;
+            return item;
+        }
+        else
+        {
+            var item = hidden::MessageScale.doCopy();
+            item.id_ = msg.id;
+            return item;
+        }
+    }
+
+    attribute effect_watcher_;
+
+    method effect_timer(context)
+    {
+        hideWindow(context);
+
+        if (self.effect_watcher_ != nil)
+        {
+            self.effect_watcher_.remove();
+            self.effect_watcher_ = nil;
+        }
+    }
+
+    method setFilterType(filter, visible)
+    {
+        return; // Normal
+
+        for (var i = 0; i < sFilteringNoticeType.size; i++)
+        {
+            if (sFilteringNoticeType[i] == filter)
+            {
+                if (visible)
+                {
+                    break;
+                }
+                else
+                {
+                    sFilteringNoticeType.erase(i);
+                    break;
+                }
+            }
+        }
+
+        return;
+    }
+
+    method refreshMessageList(context, index = -1)
+    {
+        if (sNoticeList == nil)
+            return false;
+
+        var vanishedList = sNoticeList.checkLifetime();
+        var messageList = sNoticeList.getNotice();
+
+        var removeIndexList =[];
+        if (vanishedList.size > 0)
+        {
+            for (var i = 0; i < HBox::SBox::QueueBox.getItemCount(); i++)
+            {
+                var item = HBox::SBox::QueueBox.getItemWidget(i);
+                if (item == nil)
+                    continue;
+
+                for (var j = 0; j < vanishedList.size; j++)
+                {
+                    if (item.id_ == vanishedList[j])
+                    {
+                        removeIndexList.push(i);
+                        break;
+                    }
+                }
+            }
+
+            HBox::SBox::QueueBox.removeItemWidgets(context, removeIndexList);
+            HBox::QueueBox2.removeItemWidgets(context, removeIndexList);
+        }
+
+        var added = false;
+        if (menu::MQueueBox.defined($"setItemWidgets"))
+        {
+            foreach (var msg in messageList)
+            {
+                if (HBox::SBox::QueueBox.getItemWidget(msg.id) == nil)
+                {
+                    putMessageBox(context, msg);
+                    added = true;
+                }
+            }
+        }
+        else
+        {
+            foreach (var msg in messageList)
+            {
+                if (msg.id > sLatestNoticeId)
+                {
+                    putMessageBox(context, msg);
+                    sLatestNoticeId = msg.id;
+                    added = true;
+                }
+            }
+        }
+
+        return added;
+    }
+
+    method putMessageBox(context, msg)
+    {
+        putMessageBoxList(context, [msg]);
+    }
+
+    method putMessageBoxList(context, msg_list)
+    {
+        if (menu::MQueueBox.defined($"setItemWidgets"))
+        {
+            var item_list = [];
+            foreach (var msg in msg_list)
+            {
+                var item = generateMessageBox(context, msg);
+                if (item == nil)
+                    continue;
+
+                item_list.push([msg.id, item]);
+            }
+
+            if (item_list.size <= 0)
+                return;
+
+            HBox::SBox::QueueBox.setItemWidgets(context, item_list);
+
+            foreach (var item in item_list)
+            {
+                item[1].AppearEffect.reverse = false;
+                item[1].AppearEffect.restart();
+            }
+        }
+        else
+        {
+            var item_list = [];
+            foreach (var msg in msg_list)
+            {
+                var item = generateMessageBox(context, msg);
+                if (item == nil)
+                    continue;
+
+                item_list.push(item);
+            }
+
+            if (item_list.size <= 0)
+                return;
+
+            HBox::SBox::QueueBox.appendItemWidgets(context, item_list);
+
+            foreach (var item in item_list)
+            {
+                item.AppearEffect.reverse = false;
+                item.AppearEffect.restart();
+            }
+        }
+
+        if (sCurrentMode == MODE_ENUM::POPUP_MODE)
+        {
+            if (self.effect_watcher_ != nil)
+            {
+                self.effect_watcher_.remove();
+                self.effect_watcher_ = nil;
+            }
+
+            self.effect_watcher_ = WatcherUtil::Create(context, self.effect_timer, 600);
+        }
+
+        showWindow(context);
+
+        if (sCurrentMode == MODE_ENUM::SCROLL_MODE)
+        {
+            if (HBox::SBox::QueueBox.focus_index == HBox::SBox::QueueBox.last_index - 1)
+            {
+                HBox::SBox::QueueBox.focus_index = HBox::SBox::QueueBox.last_index;
+            }
+        }
+        else
+        {
+            HBox::SBox::QueueBox.focus_index = HBox::SBox::QueueBox.last_index;
+        }
+
+
+    }
+
+    method putMessage(type, title, body, lifetime = -1)
+    {
+        if (sNoticeList == nil)
+            return nil;
+
+        return sNoticeList.addNotice(type, title, body, lifetime, true);
+    }
+
+    method putSystemChatMessage(context, type, msg, lifetime = -1)
+    {
+        var notice = putMessage(type, "", msg, lifetime);
+        if (notice == nil)
+            return;
+
+        if (!sInitialized)
+            return;
+
+        putMessageBox(context, notice);
+        sLatestNoticeId = notice.id;
+    }
+
+    method onVisibleNotify(context, indices)
+    {
+        foreach (var i in indices)
+        {
+            if (self.getItemVisible(i))
+            {
+                var item = self.getItemWidget(i);
+                if (item == nil)
+                {
+                    item = generateMessageBox(context, i);
+                    item.opacity = 0.0;
+                    item.AppearEffect.reverse = true;
+                    self.setItemWidget(i, context, item);
+                }
+            }
+            else
+            {
+                self.setItemWidget(i, context, nil);
+            }
+        }
+
+        return 1;
+    }
+}
+
+module MessengerRoot::HBox::SBox::QueueBox
+{
+    method onFocusChanged()
+    {
+        MessengerRoot::HBox::QueueBox2.focus_index = self.focus_index;
+    }
+
+    method onCancel(context)
+    {
+        MessengerRoot.leaveScrollMode(context);
+        return 1;
+    }
+}
+
+module MessengerRoot::hidden::MessageBox
+{
+    attribute id_ = -1;
+
+    module title::TextFace
+    {
+        method onRealize()
+        {
+            if (pdiext::MSystemConfiguration::isSDTV())
+            {
+                self.scale_x = 2.4;
+                self.scale_y = 2.4;
+            }
+        }
+    }
+
+    module title::TextFacea
+    {
+        method onRealize()
+        {
+            if (pdiext::MSystemConfiguration::isSDTV())
+            {
+                self.scale_x = 2.4;
+                self.scale_y = 2.4;
+            }
+        }
+    }
+
+    module title::TextFace_auto
+    {
+        method onRealize()
+        {
+            if (pdiext::MSystemConfiguration::isSDTV())
+            {
+                self.scale_x = 2.4;
+                self.scale_y = 2.4;
+            }
+        }
+    }
+
+    module title::TextFace_autoa
+    {
+        method onRealize()
+        {
+            if (pdiext::MSystemConfiguration::isSDTV())
+            {
+                self.scale_x = 2.4;
+                self.scale_y = 2.4;
+            }
+        }
+    }
+
+    module Message::TextFace
+    {
+        method onRealize()
+        {
+            if (pdiext::MSystemConfiguration::isSDTV())
+            {
+                self.scale_x = 2.4;
+                self.scale_y = 2.4;
+            }
+        }
+    }
+
+    module Message::TextFacea
+    {
+        method onRealize()
+        {
+            if (pdiext::MSystemConfiguration::isSDTV())
+            {
+                self.scale_x = 2.4;
+                self.scale_y = 2.4;
+            }
+        }
+    }
+
+    module Message::TextFace_auto
+    {
+        method onRealize()
+        {
+            if (pdiext::MSystemConfiguration::isSDTV())
+            {
+                self.scale_x = 2.4;
+                self.scale_y = 2.4;
+            }
+        }
+    }
+
+    module Message::TextFace_autoa
+    {
+        method onRealize()
+        {
+            if (pdiext::MSystemConfiguration::isSDTV())
+            {
+                self.scale_x = 2.4;
+                self.scale_y = 2.4;
+            }
+        }
+    }
+}
+
+module MessengerRoot::hidden::SystemMessageBox
+{
+    attribute id_ = -1;
+}
+
+module MessengerRoot::hidden::MessageScale
+{
+    attribute id_ = -1;
+}
+
+module MessengerRoot::hidden::SystemMessageScale
+{
+    attribute id_ = -1;
+}

@@ -1,0 +1,2717 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CarSelectPopup
+{
+    module OPEN_MODE
+    {
+        static GARAGE = 1;
+        static CAR_SELECT = 2;
+        static CAR_PICKUP = 3;
+    }
+
+    attribute modal_page;
+    attribute closed = false;
+    attribute result;
+    attribute open_mode;
+    attribute riding_garage_id_when_open;
+    attribute update_carlist_func;
+    attribute update_carlist_func_args;
+    attribute mgarage;
+    attribute mgarage_is_stockyard;
+    attribute favorite_list_opened;
+    attribute unselectable_list;
+    attribute sort_type = gtengine::GarageSortType::RIDE;
+    attribute sort_order = gtengine::GarageSortOrder::NORMAL;
+    attribute regulation;
+    attribute filter_dirt;
+    attribute request_update_thumb = false;
+    attribute need_save = false;
+
+    method open(context, open_mode)
+    {
+        self.open_mode = open_mode != nil ? open_mode : OPEN_MODE::GARAGE;
+        self.need_save = false;
+        self.closed = false;
+        self.result = open_mode == OPEN_MODE::CAR_PICKUP ? nil : false;
+
+        self.modal_page = SequenceUtil::ModalPage(context, CarSelectPopup);
+        self.modal_page.open();
+    
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method openGarage(context)
+    {
+        return self.open(context, OPEN_MODE::GARAGE);
+    }
+
+    method openCarSelect(context, regulation, filter_dirt)
+    {
+        self.regulation = regulation;
+        self.filter_dirt = filter_dirt;
+        return self.open(context, OPEN_MODE::CAR_SELECT);
+    }
+
+    method openCarPickup(context, unselectable_list)
+    {
+        self.unselectable_list = unselectable_list;
+        return self.open(context, OPEN_MODE::CAR_PICKUP);
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        self.input_enable = false;
+        self.OpenActor.on_effect_end = nil;
+
+        if (self.open_mode == OPEN_MODE::GARAGE || self.open_mode == OPEN_MODE::CAR_SELECT)
+        {
+            var riding_garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+            self.result = riding_garage_id != self.riding_garage_id_when_open;
+        }
+
+        if (self.need_save && StockyardUtil::sStockyardGarage == nil)
+            SaveDataUtilGT6::saveEveryWhere(context);
+
+        self.need_save = false;
+
+        StockyardUtil::applyGarage(context);
+        PageUtil::visibleUnderPages(context, self);
+
+        CarSelectPopup.setFocus(nil);
+
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        if (self.modal_page != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+        }
+    }
+
+    method abort(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        self.OpenActor.on_effect_end = nil;
+
+        CarPopup.close(context);
+        CarOrderPopup.close(context);
+
+        PageUtil::visibleUnderPages(context, self);
+
+        if (self.modal_page != nil)
+        {
+            self.modal_page.close();
+            self.modal_page = nil;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        hidden.visible = false;
+
+        var saved_sort_type = KeyValueUtil::getInt("garage", "sort_type");
+        self.sort_type = saved_sort_type != nil ? saved_sort_type : gtengine::GarageSortType::RIDE;
+
+        var saved_sort_order = KeyValueUtil::getInt("garage", "sort_order");
+        self.sort_order = saved_sort_order != nil ? saved_sort_order : gtengine::GarageSortOrder::NORMAL;
+
+        switch (self.open_mode)
+        {
+            case self.open_mode == OPEN_MODE::GARAGE: // Strange but thats how it is
+                ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Header::Title.text = context.translate(CarSelectPopup, "Label_CarList");
+                ListMenu::Menus::Main_TopMenu::Title.text = context.translate(CarSelectPopup, "Label_CarList");
+                ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Stockyard.is_enable = true;
+                break;
+
+            case OPEN_MODE::CAR_SELECT:
+            case OPEN_MODE::CAR_PICKUP:
+                ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Header::Title.text = context.translate(CarSelectPopup, "Label_CarSelect");
+                ListMenu::Menus::Main_TopMenu::Title.text = context.translate(CarSelectPopup, "Label_CarSelect");
+                ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Stockyard.is_enable = false;
+                break;
+        }
+
+        self.riding_garage_id_when_open = GAME_STATUS.user_profile.garage.getRidingGarageId();
+        self.disable_cnt = 0;
+        self.disableInput(context);
+
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+
+        actor.on_effect_end = (context) => 
+        {
+            if (self.closed)
+                return;
+
+            actor.on_effect_end = nil;
+            PageUtil::invisibleUnderPages(context, self);
+
+            self.enableInput(context);
+        };
+
+        self.CloseActor.stop();
+
+        if (GetVersionBranch() == "demo" || GetVersionBranch() == "academy")
+        {
+            var garage_menu = ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Garage;
+            garage_menu.VBox::Favorites.active0 = true;
+            garage_menu.VBox::GroupByCategory.active0 = true;
+            garage_menu.VBox::GroupByTuner.active0 = true;
+            garage_menu.VBox::Filter.active0 = true;
+        }
+
+        if (self.regulation != nil)
+        {
+            ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Garage::VBox::EntryCars.visible = true;
+            ListMenu::Menus::Main_TopMenu.default_focus_ = ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Garage::VBox::EntryCars;
+        }
+        else
+        {
+            ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Garage::VBox::EntryCars.visible = false;
+            ListMenu::Menus::Main_TopMenu.default_focus_ = ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Garage::VBox::RecentUsed;
+        }
+
+        GAME_STATUS.user_profile.context.garage_new_mark = false;
+
+        ListMenu::Menus.shiftMainMenu(context, $"Main_TopMenu", true);
+
+        ListMenu::Menus::Main_TopMenu.updateCarCount(context);
+
+        ButtonHelpGT6.addButtonSet(context, "onMain", [
+                ["Enter"],
+                ["Close"]
+        ]);
+
+        ButtonHelpGT6.addButtonSet(context, "onSub", [
+            ["Enter"],
+            ["Back"]
+        ]);
+
+        if (GetVersionBranch() == "demo")
+        {
+            ButtonHelpGT6.addButtonSet(context, "onCarList_Garage", [
+                ["Enter", manager.translate(CarSelectPopup, "Label_OpenDetail")],
+                ["Back"]
+            ]);
+
+            ButtonHelpGT6.addButtonSet(context, "onCarList_CarSelect", [
+                ["Enter", context.translate(CarSelectPopup, "Label_ChangeCar")],
+                ["Back"]
+            ]);
+
+            ButtonHelpGT6.addButtonSet(context, "onCarList_CarPickup", [
+                ["Enter", manager.translate(CarSelectPopup, "Label_SelectCar")],
+                ["Back"]
+            ]);
+        }
+        else
+        {
+            ButtonHelpGT6.addButtonSet(context, "onCarList_Garage", [
+                ["Enter", manager.translate(CarSelectPopup, "Label_OpenDetail")],
+                ["Square", manager.translate(CarSelectPopup, "Label_CarOrder")],
+                ["Select", manager.translate(CarSelectPopup, "Label_Edit")],
+                ["Back"],
+            ]);
+
+            ButtonHelpGT6.addButtonSet(context, "onCarList_CarSelect", [
+                ["Enter", context.translate(CarSelectPopup, "Label_ChangeCar")],
+                ["Square", manager.translate(CarSelectPopup, "Label_CarOrder")],
+                ["Back"]
+            ]);
+
+            ButtonHelpGT6.addButtonSet(context, "onCarList_CarPickup", [
+                ["Enter", manager.translate(CarSelectPopup, "Label_SelectCar")],
+                ["Square", manager.translate(CarSelectPopup, "Label_CarOrder")],
+                ["Back"]
+            ]);
+        }
+
+        ButtonHelpGT6.addButtonSet(context, "EditMode", [
+            ["Enter", manager.translate(CarSelectPopup, "Label_EditSelect")],
+            ["Triangle", manager.translate(CarSelectPopup, "Label_EditSelectAll")],
+            ["Back"]
+        ]);
+    }
+
+    method onFinalize(context)
+    {
+        ListMenu.clearCategoryComponent(context);
+        self.open_mode = nil;
+        self.riding_garage_id_when_open = nil;
+        self.update_carlist_func = nil;
+        self.update_carlist_func_args = nil;
+        self.mgarage = nil;
+        self.mgarage_is_stockyard = nil;
+        self.favorite_list_opened = nil;
+        self.unselectable_list = nil;
+        self.regulation = nil;
+
+        context.enableInput();
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (event.keysym == CELL_PAD_CTRL_L3_RIGHT)
+        {
+            if (ListMenu::ListWindow.inViewMode(context))
+            {
+                sound.play("cursor");
+                return STATE_YIELD;
+            }
+        }
+
+        return STATE_EXIT;
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        self.close(context);
+
+        return STATE_YIELD;
+    }
+
+    method updateAllCars(context)
+    {
+        var progress = pdistd::MProgress();
+        progress.value = 0.0;
+
+        static abort_update = false;
+
+        DialogUtil::setProgress(context, progress);
+        DialogUtil::setProgressCancelCB(context, (context) => { abort_update = true });
+
+        var res = DialogUtil::openProgressDialog(context,
+            manager.translate("GarageProject::CarSelectPopup", "NOW_CONVERTING"),
+            manager.translate("GarageProject::CarSelectPopup", "CONVERT_DONE"),
+            manager.translate("GarageProject::CarSelectPopup", "CONVERT_NOT_DONE"),
+            function (context) 
+            {
+                var complete = true;
+                var idx = 0;
+                var car_num = CarSelectPopup.mgarage.getCarCount();
+                var total = car_num;
+                CarSelectPopup.mgarage.beginUpdateInformation();
+
+                for (var i = 0; i < total; ++i)
+                {
+                    CarSelectPopup.mgarage.updateInformationOne();
+                    progress.value = Float(idx) / Float(total);
+                    DialogUtil::setProgressLabel(context, "%d / %d".format(idx, total));
+
+                    if (abort_update)
+                    {
+                        complete = false;
+                        break;
+                    }
+
+                    ++idx;
+                    yield;
+                }
+
+                CarSelectPopup.mgarage.endUpdateInformation(complete);
+
+                return [complete, true];
+            }
+        );
+
+        DialogUtil::setProgressCancelCB(context, nil);
+        DialogUtil::setProgress(context, nil);
+    }
+
+    method transferToStockyard(context, mgarage_car_list, args, state_ref_list)
+    {
+        sound.play("ok");
+
+        if (mgarage_car_list.size == 0)
+        {
+            OK(context, "Gallery", "MSG_NO_SELECTED_ITEM");
+            return;
+        }
+
+        var message = manager.translate("CommonGTMode", "MSG_GARAGE_CARS_MOVE_TO_STOCKYARD");
+        var progress = pdistd::MProgress();
+        progress.value = 0.0;
+
+        static aborted = false;
+        static abort_transfer_riding_car = false;
+
+        DialogUtil::setProgress(context, progress);
+        DialogUtil::setProgressCancelCB(context, (context) => { aborted = true },
+            manager.translate("Component", "Label_Cancel"));
+
+        DialogUtil::openProgressDialog(context, message, nil, nil, async function (context, args) 
+        {
+            var riding_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+            for (var i = 0; i < mgarage_car_list.size; i++)
+            {
+                var num = (i + 1).toFloat();
+                var max = mgarage_car_list.size;
+                progress.value = num / max;
+                
+                DialogUtil::setProgressLabel(context, "%d / %d".format(num, max));
+                var mgarage_car = mgarage_car_list[i];
+
+                if (mgarage_car.garage_id == riding_id)
+                {
+                    abort_transfer_riding_car = true;
+                    break;
+                }
+
+                StockyardUtil::getGarage(context);
+
+                var res = await () => StockyardUtil::transferToStockyard(context, mgarage_car);
+                if (res)
+                {
+                    &state_ref_list[i] = ListMenu::ListWindow::ITEM_STATE::Blank;
+                }
+                else
+                {
+                    main::sound.play("disable");
+                    ERROR(context, "CommonGTMode", "ERROR_STOCKYARD_IS_ORVER");
+                    break;
+                }
+
+                yield;
+
+                if (aborted)
+                {
+                    main::sound.play("disable");
+                    OK(context, "CommonGTMode", "MSG_ABORT_EXECUTE_FUNCTIONS");
+                    break;
+                }
+            }
+
+            return [true, true];
+        });
+
+        if (abort_transfer_riding_car)
+        {
+            OK(context, "CommonGTMode", "MSG_ABORT_TRANSFER_RIDING_CAR");
+        }
+    }
+
+    method transferToGarage(context, mgarage_car_list, args, state_ref_list)
+    {
+        sound.play("ok");
+
+        if (mgarage_car_list.size == 0)
+        {
+            OK(context, "Gallery", "MSG_NO_SELECTED_ITEM");
+            return;
+        }
+
+        var message = manager.translate("CommonGTMode", "MSG_STOCKYARD_CARS_MOVE_TO_GARAGE");
+        var progress = pdistd::MProgress();
+        progress.value = 0.0;
+
+        static aborted = false;
+
+        DialogUtil::setProgress(context, progress);
+        DialogUtil::setProgressCancelCB(context, (context) => { aborted = true },
+            manager.translate("Component", "Label_Cancel"));
+
+        DialogUtil::openProgressDialog(context, message, nil, nil, async function (context, args) 
+        {
+            var riding_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+            for (var i = 0; i < mgarage_car_list.size; i++)
+            {
+                var num = (i + 1).toFloat();
+                var max = mgarage_car_list.size;
+                progress.value = num / max;
+                
+                DialogUtil::setProgressLabel(context, "%d / %d".format(num, max));
+                var mgarage_car = mgarage_car_list[i];
+
+                if (mgarage_car.garage_id == riding_id)
+                    continue;
+
+                StockyardUtil::getGarage(context);
+
+                var res = await () => StockyardUtil::transferToGarage(context, mgarage_car);
+                if (res)
+                {
+                    &state_ref_list[i] = ListMenu::ListWindow::ITEM_STATE::Blank;
+                }
+                else
+                {
+                    main::sound.play("disable");
+                    ERROR(context, "CommonGTMode", "ERROR_GARAGE_IS_ORVER");
+                    break;
+                }
+
+                yield;
+
+                if (aborted)
+                {
+                    main::sound.play("disable");
+                    OK(context, "CommonGTMode", "MSG_ABORT_EXECUTE_FUNCTIONS");
+                    break;
+                }
+            }
+
+            return [true, true];
+        });
+    }
+
+    method addFavorites(context, mgarage_car_list, args, state_ref_list)
+    {
+        sound.play("ok");
+
+        if (mgarage_car_list.size == 0)
+        {
+            OK(context, "Gallery", "MSG_NO_SELECTED_ITEM");
+            return;
+        }
+
+        var favorite_count = mgarage.getCarCount(["favorite" : true]);
+        var addable_count = gFavoriteCarMax - favorite_count;
+        var add_count = 0;
+
+        for (var i = 0; i < mgarage_car_list.size; i++)
+        {
+            var mgarage_car = mgarage_car_list[i];
+            
+            if (add_count < addable_count)
+            {
+                if (Function::setFavorite(context, mgarage_car.garage_id, true, false))
+                {
+                    add_count++;
+                    CarSelectPopup.need_save = true;
+                }
+            }
+            else
+            {
+                ERROR(context, "CommonGTMode", "ERROR_FAVORITE_IS_ORVER");
+                break;
+            }
+        }
+
+        OK(context, "Gallery", "MSG_ADD_FAVORITE");
+    }
+
+    method removeFavorites(context, mgarage_car_list, args, state_ref_list)
+    {
+        sound.play("ok");
+
+        if (mgarage_car_list.size == 0)
+        {
+            OK(context, "Gallery", "MSG_NO_SELECTED_ITEM");
+            return;
+        }
+
+        for (var i = 0; i < mgarage_car_list.size; i++)
+        {
+            var mgarage_car = mgarage_car_list[i];
+            
+            if (Function::setFavorite(context, mgarage_car.garage_id, false, false))
+            {
+                &state_ref_list[i] = ListMenu::ListWindow::ITEM_STATE::Blank;
+                CarSelectPopup.need_save = true;
+            }
+        }
+
+        OK(context, "Gallery", "MSG_REMOVE_FAVORITE");
+    }
+
+    method captureThumbnails(context, mgarage_car_list, args, state_ref_list)
+    {
+        sound.play("ok");
+
+        if (mgarage_car_list.size == 0)
+        {
+            OK(context, "Gallery", "MSG_NO_SELECTED_ITEM");
+            return;
+        }
+
+        if (!QUERY(context, "CommonGTMode", "QUERY_UPDATE_CAR_IMAGE"))
+            return;
+
+        var message = manager.translate("CommonGTMode", "NOW_UPDATE_CAR_IMAGE");
+        var progress = pdistd::MProgress();
+        progress.value = 0.0;
+
+        static aborted = false;
+
+        DialogUtil::setProgress(context, progress);
+        DialogUtil::setProgressCancelCB(context, (context) => { aborted = true },
+            manager.translate("Component", "Label_Cancel"));
+
+        DialogUtil::openProgressDialog(context, message, nil, nil, async function (context, args) 
+        {
+            for (var i = 0; i < mgarage_car_list.size; i++)
+            {
+                var num = (i + 1).toFloat();
+                var max = mgarage_car_list.size;
+                progress.value = num / max;
+
+                DialogUtil::setProgressLabel(context, "%d / %d".format(num, max));
+                var mgarage_car = mgarage_car_list[i];
+
+                var cp = self.mgarage.getCar(mgarage_car.garage_id);
+                
+                await () => 
+                {
+                    if (self.mgarage_is_stockyard)
+                        GarageUtil::Thumbnail::capture(context, SceneFaceForCapture, mgarage_car.garage_id, cp, GarageUtil::Thumbnail::Type::Stockyard);
+                    else
+                        GarageUtil::Thumbnail::capture(context, SceneFaceForCapture, mgarage_car.garage_id, cp, GarageUtil::Thumbnail::Type::Garage);
+
+                    self.request_update_thumb = true;
+                };
+
+                yield;
+
+                if (aborted)
+                {
+                    OK(context, "CommonGTMode", "MSG_ABORT_EXECUTE_FUNCTIONS");
+                    break;
+                }
+            }
+
+            return [true, true];
+        });
+    }
+
+    function CheckDebugCommand(context)
+    {
+        var state = context.getUpdateContext().getPadButtonState(0);
+        if (state & 0x800)
+        {
+            var car_list = SPECDB.queryList(("SELECT ID FROM GENERIC_CAR "
+                                            "WHERE SpecifyFlags1 & %d AND CarLabel <> 'car_color_sample' AND CarLabel <> 'wheel_color_sample' "
+                                            "ORDER BY RANDOM() LIMIT 50").format(gtengine::GenericFlag::USE_PREMIUM_MODEL));
+            
+            var progress = pdistd::MProgress();
+            progress.value = 0f;
+            static aborted = false;
+            
+            DialogUtil::setProgress(context, progress);
+            DialogUtil::setProgressCancelCB(context, (context) => { aborted = true; });
+            DialogUtil::openProgressDialog(context, "add cars.", "done!", "faild!", async (context, args) => 
+            {
+                for (var i = 0; i < car_list.size; i++)
+                {
+                    var car_no = (i + 1).toFloat();
+                    progress.value = car_no / car_list.size;
+                    var car = car_list[i];
+            
+                    DialogUtil::setProgressLabel(context, "%d / %d".format(car_no, car_list.size));
+            
+                    if (await () => gtengine::MSpecDB::isUnderDevelopmentCar(car.ID))
+                        continue;
+            
+                    var cp = await () => gtengine::MCarParameter(car.ID);
+                    var garage_id = await () => GAME_STATUS.user_profile.garage.addCar(cp);
+            
+                    if (aborted)
+                        break;
+                    
+                    yield;
+                }
+            
+                return [true, true];
+            });
+        }
+    }
+
+    attribute disable_cnt = 0;
+
+    method disableInput(context)
+    {
+        if (self.disable_cnt == 0)
+        {
+            context.event_mask = 5;
+            context.disableInput();
+            context.filterKeyEvent();
+        }
+
+        self.disable_cnt++;
+    }
+
+    method enableInput(context)
+    {
+        self.disable_cnt--;
+
+        if (disable_cnt < 0)
+            disable_cnt = 0;
+
+        if (disable_cnt == 0)
+        {
+            context.event_mask = 5;
+            context.enableInput();
+        }
+    }
+
+    method createCarListArgs(drivetrain, tuner, nationality, range_pp1k_min, range_pp1k_max, range_power_min, range_power_max, range_weight_min, range_weight_max, range_year_min, range_year_max)
+    {
+        var args = Map();
+        args["sort_type"] = self.sort_type;
+        args["sort_order"] = self.sort_order;
+
+        if (drivetrain != nil)
+            args["filter_drivetrain"] = drivetrain;
+
+        if (tuner != nil)
+            args["filter_tuner"] = tuner;
+
+        if (nationality != nil)
+            args["filter_nationality"] = nationality;
+
+        if (range_pp1k_min != nil)
+            args["range_pp1k_min"] = range_pp1k_min;
+
+        if (range_pp1k_max != nil)
+            args["range_pp1k_max"] = range_pp1k_max + 1;
+
+        if (range_power_min != nil)
+            args["range_power_min"] = range_power_min;
+
+        if (range_power_max != nil)
+            args["range_power_max"] = range_power_max + 1;
+
+        if (range_weight_min != nil)
+            args["range_weight_min"] = range_weight_min;
+
+        if (range_weight_max != nil)
+            args["range_weight_max"] = range_weight_max + 1;
+
+        if (range_year_min != nil)
+            args["range_year_min"] = range_year_min;
+
+        if (range_year_max != nil)
+            args["range_year_max"] = range_year_max + 1;
+
+        return args;
+    }    
+
+    method activateMainGarage(context)
+    {
+        self.mgarage = GAME_STATUS.user_profile.garage;
+        if (!self.mgarage.isDistanceUpdated() && self.sort_type == gtengine::GarageSortType::DISTANCE)
+            self.sort_type = gtengine::GarageSortType::RIDE;
+
+        self.mgarage_is_stockyard = false;
+    }
+
+    method activateStockyardGarage(context)
+    {
+        self.mgarage = StockyardUtil::getGarage(context);
+        if (!self.mgarage.isDistanceUpdated() && self.sort_type == gtengine::GarageSortType::DISTANCE)
+            self.sort_type = gtengine::GarageSortType::RIDE;
+
+        self.mgarage_is_stockyard = true;
+    }
+
+    method getCarList(args)
+    {
+        self.favorite_list_opened = false;
+        return self.mgarage.getCarList(args);
+    }
+
+    method getCarCount(args)
+    {
+        return self.mgarage.getCarCount(args);
+    }
+
+    method getCarAll()
+    {
+        self.favorite_list_opened = false;
+        return self.mgarage.getCarList(["sort_type" : self.sort_type,
+            "sort_order" : self.sort_order]);
+    }
+
+    method getFavoriteCars()
+    {
+        self.favorite_list_opened = true;
+        return self.mgarage.getCarList(["favorite" : true,
+            "sort_type" : self.sort_type,
+            "sort_order" : self.sort_order]);
+    }
+
+    method getTunerCars(tuner)
+    {
+        self.favorite_list_opened = false;
+        return self.mgarage.getCarList(["filter_tuner" : tuner,
+            "sort_type" : self.sort_type,
+            "sort_order" : self.sort_order]);
+    }
+
+    method getEntryCars()
+    {
+        self.favorite_list_opened = false;
+        var map = createEntryCarsCondition();
+        map["sort_type"] = self.sort_type;
+        map["sort_order"] = self.sort_order;
+
+        return self.mgarage.getCarList(map);
+    }
+
+    method getTunerCarCount(tuner)
+    {
+        return self.mgarage.getCarCount(["filter_tuner" : tuner]);
+    }
+
+    method setCondition(map, name, value)
+    {
+        if (value.isInstanceOf(Array) || value != gtengine::MGameParameter::INVALID_VALUE_INT)
+            map[name] = value;
+    }
+
+    method createEntryCarsCondition()
+    {
+        var map = Map();
+        map["regulation"] = CarSelectPopup.regulation;
+        if (CarSelectPopup.filter_dirt != nil)
+            map["filter_dirt"] = CarSelectPopup.filter_dirt;
+
+        return map;
+    }
+
+    module ImportMenuCommons
+    {
+        attribute focus_;
+        attribute active_;
+
+        method isActiveMenu(w)
+        {
+            return self.active_ == w;
+        }
+
+        method setActiveMenu(a, w)
+        {
+            if (self.active_ != nil)
+            {
+                self.active_.active = false;
+                self.active_ = nil;
+            }
+
+            if (w != nil)
+            {
+                w.active = a;
+                self.active_ = w;
+            }
+        }
+
+        method _on_focus_CB(context)
+        {
+            var focus_w;
+            if (self.active_ != nil)
+            {
+                focus_w = self.active_;
+            }
+            else if (self.defined($"default_focus_") && self.default_focus_ != nil)
+            {
+                focus_w = self.default_focus_;
+            }
+
+            if (focus_w != nil)
+            {
+                if (self["ScrolledWindow"] != nil)
+                    self.ScrolledWindow::clip.warp(focus_w);
+
+                CarSelectPopup.setFocus(focus_w);
+                
+                if (focus_w.defined($"onFocus_CB"))
+                    focus_w[$"onFocus_CB"](context);
+
+                if (self.defined($"onFocus_CB"))
+                    self[$"onFocus_CB"](context);
+            }
+        }
+
+        method _leave_focus_CB(context)
+        {
+            if (self.defined($"leaveFocus_CB"))
+                self[$"leaveFocus_CB"](context);
+        }
+    }
+
+    module ListMenu::Menus
+    {
+        attribute main_menu_;
+        attribute sub_menu_;
+
+        method shiftMainMenu(context, main_menu, warp)
+        {
+            CarSelectPopup.disableInput(context);
+            self.insensitive = false;
+
+            var sub_menu_w = self.sub_menu_ != nil ? ListMenu::Menus[self.sub_menu_] : nil;
+            var main_menu_w = ListMenu::Menus[main_menu];
+            if (main_menu_w != nil)
+            {
+                main_menu_w.x = 0.0;
+                main_menu_w.visible = true;
+
+                if (main_menu_w.defined("init_CB"))
+                    main_menu_w.init_CB(context);
+            }
+
+            if (sub_menu_w != nil)
+            {
+                if (sub_menu_w.defined("_leave_focus_CB"))
+                    sub_menu_w._leave_focus_CB(context);
+            }
+
+            if (main_menu_w != nil)
+            {
+                if (main_menu_w.defined("_on_focus_CB"))
+                    main_menu_w._on_focus_CB(context);
+            }
+
+            self.MoveActor.reverse = false;
+            self.MoveActor.start();
+
+            self.MoveActor.on_effect_end = (context) => 
+            {
+                if (sub_menu_w != nil)
+                    sub_menu_w.visible = false;
+
+                ButtonHelpGT6.setButtonSet(context, "onMain");
+                ListMenu::Menus::MoveActor.on_effect_end = nil;
+
+                CarSelectPopup.enableInput(context);
+            };
+
+            if (warp == true)
+                self.MoveActor.warp();
+
+            self.main_menu_ = main_menu;
+            self.sub_menu_ = nil;
+        }
+
+        method shiftSubMenu(context, sub_menu, warp)
+        {
+            CarSelectPopup.disableInput(context);
+
+            var main_menu_w = self.main_menu_ != nil ? ListMenu::Menus[self.main_menu_] : nil;
+            var sub_menu_w = ListMenu::Menus[sub_menu];
+            if (sub_menu_w != nil)
+            {
+                sub_menu_w.x = 480.0;
+                sub_menu_w.visible = true;
+
+                if (sub_menu_w.defined("init_CB"))
+                    sub_menu_w.init_CB(context);
+
+                context.wait();
+            }
+
+            if (main_menu_w != nil)
+            {
+                if (main_menu_w.defined("_leave_focus_CB"))
+                main_menu_w._leave_focus_CB(context);
+            }
+
+            if (sub_menu_w != nil)
+            {
+                if (sub_menu_w.defined("_on_focus_CB"))
+                    sub_menu_w._on_focus_CB(context);
+            }
+
+            self.MoveActor.reverse = true;
+            self.MoveActor.start();
+
+            self.MoveActor.on_effect_end = (context) => 
+            {
+                if (main_menu_w != nil)
+                    main_menu_w.visible = false;
+
+                ButtonHelpGT6.setButtonSet(context, "onSub");
+                ListMenu::Menus::MoveActor.on_effect_end = nil;
+
+                CarSelectPopup.enableInput(context);
+            };
+
+            if (warp == true)
+                self.MoveActor.warp();
+
+            self.sub_menu_ = sub_menu;
+        }
+
+        method onInitialize(context)
+        {
+            for (var w = self.first; w != nil; w = w.next)
+                w.visible = false;
+        }
+    }
+
+    module ListMenu::Menus::Main_TopMenu
+    {
+        import ImportMenuCommons::*;
+
+        attribute default_focus_ = ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Garage::VBox::RecentUsed;
+
+        method updateCarCount(context)
+        {
+            var garage_carcount = GAME_STATUS.user_profile.garage.getCarCount();
+            ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Garage::CarCount.text = garage_carcount;
+
+            var stockyard_carcount = GAME_STATUS.user_profile.garage_stockyard_carcount;
+            ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Stockyard::CarCount.text = stockyard_carcount;
+
+            for (var w = ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Stockyard::VBox.first; w != nil; w = w.next)
+                w.active0 = stockyard_carcount == 0;
+        }
+
+        method onFinalize(context)
+        {
+            self.setActiveMenu(false);
+        }
+    }
+
+    module ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Garage::VBox
+    {
+        module RecentUsed
+        {
+            method updateCarList(context)
+            {
+                CarSelectPopup.activateMainGarage(context);
+                var mgarage_car_list = CarSelectPopup.getCarAll();
+
+                ListMenu::ListWindow.setCarList(context, mgarage_car_list, CarSelectPopup.mgarage_is_stockyard);
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+
+                CarSelectPopup.update_carlist_func = self.updateCarList;
+                CarSelectPopup.update_carlist_func_args = nil;
+
+                ListMenu::ListWindow::Head::Label.text = "%s > %s".format(ListMenu::ListWindow.getCategoryText(context),
+                    context.translate(CarSelectPopup, "Label_All"));
+            }
+
+            method onFocus_CB(context)
+            {
+                if (!ListMenu::Menus::Main_TopMenu.isActiveMenu(self))
+                    self.updateCarList(context);
+            }
+
+            method onActivate(context)
+            {
+                if (self.active0)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+                self.onFocus_CB(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module Favorites
+        {
+            method updateCarList(context)
+            {
+                CarSelectPopup.activateMainGarage(context);
+                var mgarage_car_list = CarSelectPopup.getFavoriteCars();
+
+                ListMenu::ListWindow.setCarList(context, mgarage_car_list, CarSelectPopup.mgarage_is_stockyard);
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+
+                CarSelectPopup.update_carlist_func = self.updateCarList;
+                CarSelectPopup.update_carlist_func_args = nil;
+
+                ListMenu::ListWindow::Head::Label.text = "%s > %s".format(ListMenu::ListWindow.getCategoryText(context),
+                    context.translate(CarSelectPopup, "Label_FavoriteCars"));
+            }
+
+            method onFocus_CB(context)
+            {
+                if (!ListMenu::Menus::Main_TopMenu.isActiveMenu(self))
+                    self.updateCarList(context);
+            }
+
+            method onActivate(context)
+            {
+                if (self.active0)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+                self.onFocus_CB(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module GroupByTuner
+        {
+            method onActivate(context)
+            {
+                if (self.active0)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+                CarSelectPopup.activateMainGarage(context);
+
+                ListMenu::Menus.shiftSubMenu(context, $"Sub_GroupByTuner");
+                return STATE_YIELD;
+            }
+        }
+
+        module GroupByCategory
+        {
+            method onActivate(context)
+            {
+                if (self.active0)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+                CarSelectPopup.activateMainGarage(context);
+
+                ListMenu::Menus.shiftSubMenu(context, $"Sub_GroupByCategory");
+                return STATE_YIELD;
+            }
+        }
+
+        module Filter
+        {
+            method onActivate(context)
+            {
+                if (self.active0)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+                CarSelectPopup.activateMainGarage(context);
+
+                ListMenu::Menus.shiftSubMenu(context, $"Sub_Filter");
+                return STATE_YIELD;
+            }
+        }
+
+        module EntryCars
+        {
+            method updateCarList(context)
+            {
+                CarSelectPopup.activateMainGarage(context);
+                var mgarage_car_list = CarSelectPopup.getEntryCars();
+
+                ListMenu::ListWindow.setCarList(context, mgarage_car_list, CarSelectPopup.mgarage_is_stockyard);
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+
+                CarSelectPopup.update_carlist_func = self.updateCarList;
+                CarSelectPopup.update_carlist_func_args = nil;
+
+                ListMenu::ListWindow::Head::Label.text = "%s > %s".format(ListMenu::ListWindow.getCategoryText(context),
+                    context.translate(CarSelectPopup, "Label_EntryCars"));
+            }
+
+            method onFocus_CB(context)
+            {
+                if (!ListMenu::Menus::Main_TopMenu.isActiveMenu(self))
+                    self.updateCarList(context);
+            }
+
+            method onActivate(context)
+            {
+                if (self.active0)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+                self.onFocus_CB(context);
+                return STATE_YIELD;
+            }
+        }
+    }
+
+    module ListMenu::Menus::Main_TopMenu::ScrolledWindow::clip::space::Stockyard::VBox
+    {
+        module All
+        {
+            method updateCarList(context)
+            {
+                CarSelectPopup.activateStockyardGarage(context);
+                var mgarage_car_list = CarSelectPopup.getCarAll();
+
+                ListMenu::ListWindow.setCarList(context, mgarage_car_list, CarSelectPopup.mgarage_is_stockyard);
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+
+                CarSelectPopup.update_carlist_func = self.updateCarList;
+                CarSelectPopup.update_carlist_func_args = nil;
+
+                ListMenu::ListWindow::Head::Label.text = "%s > %s".format(ListMenu::ListWindow.getCategoryText(context),
+                    context.translate(CarSelectPopup, "Label_All"));
+            }
+
+            method onFocus_CB(context)
+            {
+                if (!ListMenu::Menus::Main_TopMenu.isActiveMenu(self))
+                    self.updateCarList(context);
+            }
+
+            method onActivate(context)
+            {
+                if (self.active0)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+                self.onFocus_CB(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module GroupByTuner
+        {
+            method onActivate(context)
+            {
+                if (self.active0)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+                CarSelectPopup.activateStockyardGarage(context);
+
+                ListMenu::Menus.shiftSubMenu(context, $"Sub_GroupByTuner");
+                return STATE_YIELD;
+            }
+        }
+
+        module GroupByCategory
+        {
+            method onActivate(context)
+            {
+                if (self.active0)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+                CarSelectPopup.activateStockyardGarage(context);
+
+                ListMenu::Menus.shiftSubMenu(context, $"Sub_GroupByCategory");
+                return STATE_YIELD;
+            }
+        }
+
+        module Filter
+        {
+            method onActivate(context)
+            {
+                if (self.active0)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+
+                ListMenu::Menus::Main_TopMenu.setActiveMenu(true, self);
+                CarSelectPopup.activateStockyardGarage(context);
+
+                ListMenu::Menus.shiftSubMenu(context, $"Sub_Filter");
+                return STATE_YIELD;
+            }
+        }
+    }
+
+    module ListMenu::Menus::Sub_GroupByTuner
+    {
+        import ImportMenuCommons::*;
+
+        attribute default_focus_;
+        attribute initialized_ = false;
+        attribute active_w_;
+
+        method init_CB(context)
+        {
+            ListMenu::Menus::Sub_GroupByTuner::ScrolledWindow::clip::space.clearChildren(context);
+            var res = SPECDB.queryList("SELECT TunerString, ID, Country FROM TUNER ORDER BY Country");
+            self.default_focus_ = nil;
+            var category_w = nil;
+
+            foreach (var data in res)
+            {
+                var car_count = CarSelectPopup.getTunerCarCount(data.ID);
+                if (car_count == 0)
+                    continue;
+
+                if (category_w == nil || category_w.country != data.Country)
+                {
+                    var w = hidden::TunerCountry.doCopy();
+                    var country_str = gtengine::MSpecDB::getCountryString(data.Country);
+                    w.setText(manager.translate("Country", country_str));
+                    w.Flag.image_path = "piece/gt6/flag_menu/%s.img".format(country_str);
+                    w.defineAttribute("country", data.Country);
+                    ListMenu::Menus::Sub_GroupByTuner::ScrolledWindow::clip::space.appendChild(context, w);
+                    category_w = w;
+                }
+
+                var w = hidden::TunerItem.doCopy();
+                var name = context.translate(CarSelectPopup, "TunerName", data.TunerString);
+                w.setText("%{name} (%{car_count})");
+                w.value = [data.ID, data.TunerString, name];
+                w.insensitive = car_count == 0;
+
+                category_w.setCategoryItemComponent(context, w);
+
+                if (self.default_focus_ == nil && car_count > 0)
+                    self.default_focus_ = w;
+            }
+
+            self.initialized_ = true;
+        }
+
+        method setActive(context, w)
+        {
+            if (self.active_w_ != nil)
+                self.active_w_.active = false;
+
+            self.active_w_ = w;
+            self.active_w_.active = true;
+        }
+
+        method isActive(w)
+        {
+            return self.active_w_ == w;
+        }
+
+        method updateCarList(context, w)
+        {
+            var [code, label, name] = w.value;
+            var mgarage_car_list = CarSelectPopup.getTunerCars(code);
+
+            ListMenu::ListWindow.setCarList(context, mgarage_car_list, CarSelectPopup.mgarage_is_stockyard);
+
+            CarSelectPopup.update_carlist_func = self.updateCarList;
+            CarSelectPopup.update_carlist_func_args = w;
+
+            ListMenu::ListWindow::Head::Label.text = "%s > %s > %s".format(ListMenu::ListWindow.getCategoryText(context),
+                context.translate(CarSelectPopup, "Label_GroupByTuner"), name);
+
+            self.setActive(context, w);
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            self.active_w_ = nil;
+            ListMenu::Menus.shiftMainMenu(context, $"Main_TopMenu");
+            return STATE_YIELD;
+        }
+
+        method onFinalize(context)
+        {
+            self.setActiveMenu(false);
+            ListMenu::Menus::Sub_GroupByTuner::ScrolledWindow::clip::space.clearChildren(context);
+        }
+    }    
+
+    module hidden::TunerItem
+    {
+        method onFocus_CB(context)
+        {
+            if (!ListMenu::Menus::Sub_GroupByTuner.isActive(self))
+                ListMenu::Menus::Sub_GroupByTuner.updateCarList(context, self);
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            self.onFocus_CB(context);
+            return STATE_YIELD;
+        }
+    }
+
+    module ListMenu::Menus::Sub_GroupByCategory
+    {
+        import ImportMenuCommons::*;
+
+        attribute default_focus_ = ListMenu::Menus::Sub_GroupByCategory::ScrolledWindow::clip::space::VBox::NormalCars;
+
+        method updateCarList(context, w)
+        {
+            var mgarage_car_list = CarSelectPopup.getCarAll();
+
+            ListMenu::ListWindow.setCarList(context, mgarage_car_list, CarSelectPopup.mgarage_is_stockyard);
+
+            CarSelectPopup.update_carlist_func = self.updateCarList;
+            CarSelectPopup.update_carlist_func_args = nil;
+
+            ListMenu::ListWindow::Head::Label.text = "%s > %s > %s".format(ListMenu::ListWindow.getCategoryText(context),
+                context.translate(CarSelectPopup, "Label_GroupByCategory"), w.Label.text);
+        }
+
+        method onFinalize(context)
+        {
+            self.setActiveMenu(false);
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            var w = CarSelectPopup.getFocusWidget();
+            self.updateCarList(context, w);
+            return STATE_YIELD;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            ListMenu::Menus.shiftMainMenu(context, $"Main_TopMenu");
+            return STATE_YIELD;
+        }
+    }
+    
+    module ListMenu::Menus::Sub_GroupByCategory::ScrolledWindow::clip::space
+    {
+        module VBox::NormalCars
+        {
+            method onFocus_CB(context)
+            {
+                ListMenu::Menus::Sub_GroupByCategory.updateCarList(context, self);
+            }
+        }
+
+        module VBox::RacingCars
+        {
+            method onFocus_CB(context)
+            {
+                ListMenu::Menus::Sub_GroupByCategory.updateCarList(context, self);
+            }        }
+
+        module VBox::TuningCars
+        {
+            method onFocus_CB(context)
+            {
+                ListMenu::Menus::Sub_GroupByCategory.updateCarList(context, self);
+            }        }
+
+        module VBox::ConceptCars
+        {
+            method onFocus_CB(context)
+            {
+                ListMenu::Menus::Sub_GroupByCategory.updateCarList(context, self);
+            }        
+        }
+    }
+
+    module ListMenu::Menus::Sub_Filter
+    {
+        import ImportMenuCommons::*;
+
+        attribute default_focus_ = ListMenu::Menus::Sub_Filter::ScrolledWindow::clip::space::PP::OptionMenu;
+
+        method resetOptionMenu(context)
+        {
+            var space = ListMenu::Menus::Sub_Filter::ScrolledWindow::clip::space;
+            space.PP::OptionMenu.setIndex(context, 0);
+            space.Power::OptionMenu.setIndex(context, 0);
+            space.Weight::OptionMenu.setIndex(context, 0);
+            space.Year::OptionMenu.setIndex(context, 0);
+            space.Country::OptionMenu.setIndex(context, 0);
+            space.Drivetrain::OptionMenu.setIndex(context, 0);
+        }
+
+        function appendOptionMenuRangeItem(context, option_menu, range)
+        {
+            var [min, max] = range;
+            var w = hidden::PulldownItem.doCopy();
+            w.defineAttribute("min", min);
+            w.defineAttribute("max", max);
+
+            if (max == nil && min == nil)
+                w.label.text = context.translate(CarSelectPopup, "Label_All");
+            else if (max == nil)
+            {
+                if (option_menu.parent.name == "Year")
+                    w.label.text = context.translate(CarSelectPopup, "Range_MaxOrLater").build(min);
+                else
+                    w.label.text = context.translate(CarSelectPopup, "Range_MaxOrMore").build(min);
+            }
+            else if (min == nil)
+            {
+                if (option_menu.parent.name == "Year")
+                    w.label.text = context.translate(CarSelectPopup, "Range_MinOrEarlier").build(max);
+                else
+                    w.label.text = context.translate(CarSelectPopup, "Range_MinOrLess").build(max);
+            }
+            else
+            {
+                w.label.text = context.translate(CarSelectPopup, "Range_MinToMax").build(min, max);
+            }
+
+            w.label_i.text = w.label.text;
+            option_menu.popup.vbox.appendChild(context, w);
+        }
+
+        function appendOptionMenuRangeItems(context, option_menu, range_list)
+        {
+            option_menu.popup.vbox.clearChildren(context);
+            foreach (var range in range_list)
+            {
+                appendOptionMenuRangeItem(context, option_menu, range);
+            }
+
+            option_menu.applyAppend(context);
+        }
+
+        method getOptionMenuValueRange(option_menu)
+        {
+            var w = option_menu.getItem(option_menu.index);
+            return [w.min, w.max];
+        }
+
+        method updateCarList(context)
+        {
+            var space = ListMenu::Menus::Sub_Filter::ScrolledWindow::clip::space;
+            var drivetrain = space.Drivetrain::OptionMenu.getValue();
+            var country = space.Country::OptionMenu.getValue();
+            var tuner = nil;
+            var [range_pp1k_min, range_pp1k_max] = space.PP::OptionMenu.getValue();
+            var [range_power_min, range_power_max] = space.Power::OptionMenu.getValue();
+            var [range_weight_min, range_weight_max] = space.Weight::OptionMenu.getValue();
+            var [range_year_min, range_year_max] = space.Year::OptionMenu.getValue();
+
+            var args = CarSelectPopup.createCarListArgs(drivetrain, tuner, country,
+                range_pp1k_min, range_pp1k_max,
+                range_power_min, range_power_max,
+                range_weight_min, range_weight_max,
+                range_year_min, range_year_max);
+
+            var mgarage_car_list = CarSelectPopup.getCarList(args);
+            ListMenu::ListWindow.setCarList(context, mgarage_car_list, CarSelectPopup.mgarage_is_stockyard);
+
+            CarSelectPopup.update_carlist_func = self.updateCarList;
+            CarSelectPopup.update_carlist_func_args = nil;
+        }
+
+        method onFocus_CB(context)
+        {
+            self.resetOptionMenu(context);
+            self.updateCarList(context);
+
+            ListMenu::ListWindow::Head::Label.text = "%s > %s".format(ListMenu::ListWindow.getCategoryText(context),
+                context.translate(CarSelectPopup, "Label_Filter"));
+
+        }
+
+        method onFinalize(context)
+        {
+            self.setActiveMenu(false);
+        }
+
+        method onActivate(context)
+        {
+            return STATE_YIELD;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            ListMenu::Menus.shiftMainMenu(context, $"Main_TopMenu");
+            return STATE_YIELD;
+        }
+    }
+
+    module ListMenu::Menus::Sub_Filter::ScrolledWindow::clip::space
+    {
+        module PP::OptionMenu
+        {
+            attribute prev_index;
+            attribute appended_rangeitems = false;
+            attribute range_list = [
+                [nil, nil],
+                [nil, 300],
+                [301, 400],
+                [401, 500],
+                [501, 600],
+                [601, 700],
+                [701, nil]
+            ];
+
+            method getValue()
+            {
+                var w = self.getItem(self.index);
+                return [w.min, w.max];
+            }
+
+            method initialize(context)
+            {
+                ListMenu::Menus::Sub_Filter::appendOptionMenuRangeItems(context, self, [[nil, nil]]);
+            }
+
+            method on_popup_open(context)
+            {
+                if (!self.appended_rangeitems)
+                {
+                    ListMenu::Menus::Sub_Filter::appendOptionMenuRangeItems(context, self, self.range_list);
+                    self.appended_rangeitems = true;
+                }
+            }
+
+            method onInitialize(context)
+            {
+                if (self.defined("initialize"))
+                    self["initialize"](context);
+            }
+
+            method onPopupOpen(context)
+            {
+                self.prev_index = self.index;
+                if (self.defined("on_popup_open"))
+                    self["on_popup_open"](context);
+
+                return 1;
+            }
+
+            method onPopupClosed(context)
+            {
+                if (self.prev_index != self.index)
+                {
+                    ListMenu::Menus::Sub_Filter::updateCarList(context);
+                    self.prev_index = self.index;
+                }
+
+                return 1;
+            }
+        }
+
+        module Power::OptionMenu
+        {
+            attribute prev_index;
+            attribute appended_rangeitems = false;
+            attribute range_list = [
+                [nil, nil],
+                [nil, 100],
+                [101, 200],
+                [201, 300],
+                [301, 400],
+                [401, 500],
+                [501, 600],
+                [601, 700],
+                [701, 800],
+                [801, nil],
+            ];
+
+            import PP::OptionMenu::getValue;
+            import PP::OptionMenu::initialize;
+            import PP::OptionMenu::on_popup_open;
+            import PP::OptionMenu::onInitialize;
+            import PP::OptionMenu::onPopupOpen;
+            import PP::OptionMenu::onPopupClosed;
+        }
+
+        module Drivetrain::OptionMenu
+        {
+            attribute prev_index;
+
+            method getValue(context)
+            {
+                var w = self.getItem(self.index);
+                var drive_train = [
+                    "FR" : gtengine::DriveTrainType::FR,
+                    "FF" : gtengine::DriveTrainType::FF,
+                    "4WD" : gtengine::DriveTrainType::_4WD,
+                    "MR" : gtengine::DriveTrainType::MR,
+                    "RR" : gtengine::DriveTrainType::RR,
+                    "OTHER" : gtengine::DriveTrainType::OTHER,
+                ];
+
+                return drive_train[w.name];
+            }
+
+            import PP::OptionMenu::onInitialize;
+            import PP::OptionMenu::onPopupOpen;
+            import PP::OptionMenu::onPopupClosed;
+        }
+
+        module Weight::OptionMenu
+        {
+            attribute prev_index;
+            attribute appended_rangeitems = false;
+            attribute range_list = [
+                [nil, nil],
+                [nil, 700],
+                [701, 900],
+                [901, 1100],
+                [1101, 1300],
+                [1301, 1500],
+                [1501, 1700],
+                [1701, nil],
+            ];
+
+            import PP::OptionMenu::getValue;
+            import PP::OptionMenu::initialize;
+            import PP::OptionMenu::on_popup_open;
+            import PP::OptionMenu::onInitialize;
+            import PP::OptionMenu::onPopupOpen;
+            import PP::OptionMenu::onPopupClosed;
+        }
+
+        module Country::OptionMenu
+        {
+            attribute prev_index;
+            attribute created_items = false;
+
+            method getValue(context)
+            {
+                var w = self.getItem(self.index);
+                return w.defined("country_id") ? w.country_id : nil;
+            }
+
+            method initialize(context)
+            {
+                if (self.created_items)
+                    return;
+
+                self.popup.vbox.clearChildren(context);
+                var w = hidden::PulldownItem.doCopy();
+                w.label.text = manager.translate(CarSelectPopup, "Label_All");
+                self.popup.vbox.appendChild(context, w);
+
+                var countries = SPECDB.queryList("SELECT Label, code, ID FROM COUNTRY");
+                foreach (var country in countries)
+                {
+                    w = hidden::PulldownItem.doCopy();
+                    var country_str = country.code == "-" ? "PDI" : country.code.upcase();
+                    w.label.text = manager.translate("Country", country_str);
+                    w.defineAttribute("country_id", country.ID);
+                    self.popup.vbox.appendChild(context, w);
+                }
+
+                self.applyAppend(context);
+                self.created_items = true;
+            }
+
+            method onFinalize(context)
+            {
+                self.popup.vbox.clearChildren(context);
+                self.created_items = false;
+            }
+
+            import PP::OptionMenu::onInitialize;
+            import PP::OptionMenu::onPopupOpen;
+            import PP::OptionMenu::onPopupClosed;
+        }
+
+        module Year::OptionMenu
+        {
+            attribute prev_index;
+            attribute appended_rangeitems = false;
+            attribute range_list = [
+                [nil, nil],
+                [nil, 1970],
+                [1971, 1980],
+                [1981, 1990],
+                [1991, 2000],
+                [2001, 2010],
+                [2011, nil],
+            ];
+
+            import PP::OptionMenu::getValue;
+            import PP::OptionMenu::initialize;
+            import PP::OptionMenu::on_popup_open;
+            import PP::OptionMenu::onInitialize;
+            import PP::OptionMenu::onPopupOpen;
+            import PP::OptionMenu::onPopupClosed;
+        }
+
+        module ResetFilter
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var space = ListMenu::Menus::Sub_Filter::ScrolledWindow::clip::space;
+                space.PP::OptionMenu.setIndex(context, 0);
+                space.Power::OptionMenu.setIndex(context, 0);
+                space.Weight::OptionMenu.setIndex(context, 0);
+                space.Year::OptionMenu.setIndex(context, 0);
+                space.Country::OptionMenu.setIndex(context, 0);
+                space.Drivetrain::OptionMenu.setIndex(context, 0);
+
+                ListMenu::Menus::Sub_Filter::updateCarList(context);
+
+                return STATE_YIELD;
+            }
+        }
+    }
+
+    module ListMenu::ListWindow
+    {
+        module ITEM_STATE
+        {
+            static Blank = 1;
+            static Selected = 2;
+            static Riding = 3;
+        }
+
+        attribute mgarage_car_list_;
+        attribute item_state_list_;
+        attribute prev_focus_w_;
+        attribute prev_button_set_;
+        attribute is_stockyard_ = false;
+        attribute is_empty_ = false;
+        attribute in_view_ = false;
+        attribute in_edit_ = false;
+
+        method setHeadCarCount(context)
+        {
+            if (self.in_edit_)
+            {
+                var select_count = 0;
+
+                foreach (var state in self.item_state_list_)
+                {
+                    if (state == ITEM_STATE::Selected)
+                        ++select_count;
+                }
+
+                Head::CarCount.setText(select_count, self.mgarage_car_list_.size);
+            }
+            else
+            {
+                Head::CarCount.setText(self.mgarage_car_list_.size);
+            }
+        }
+
+        method inViewMode(context, warp)
+        {
+            if (self.is_empty_ || self.in_view_ || self.in_edit_)
+                return false;
+
+            var focus_w = CarSelectPopup.getFocusWidget();
+            if (focus_w == nil)
+                return false;
+
+            self.prev_focus_w_ = focus_w;
+            self.prev_button_set_ = ButtonHelpGT6.getCurrentButtonSetName();
+
+            ListMenu.MoveActor.reverse = false;
+            ListMenu.MoveActor.start();
+
+            if (warp == true)
+                ListMenu.MoveActor.warp();
+            
+            Head::CarCount.moveRight();
+
+            ListMenu::Menus.insensitive = true;
+            self.insensitive = false;
+
+            clip::VScrollbar.display_policy = "automatic";
+            self.setButtonHelp(context);
+
+            CarSelectPopup.setFocus(ListMenu.getListBox());
+
+            self.in_view_ = true;
+            return true;
+        }
+
+        method outViewMode(context, warp)
+        {
+            if (!self.in_view_ || self.in_edit_)
+                return false;
+
+            ListMenu.MoveActor.reverse = true;
+            ListMenu.MoveActor.start();
+
+            if (warp == true)
+                ListMenu.MoveActor.warp();
+            
+            Head::CarCount.moveLeft();
+
+            self.insensitive = true;
+            ListMenu::Menus.insensitive = false;
+
+            clip::VScrollbar.display_policy = "never";
+            CarSelectPopup.setFocus(self.prev_focus_w_);
+            self.prev_focus_w_ = nil;
+            ButtonHelpGT6.setButtonSet(context, self.prev_button_set_);
+            self.prev_button_set_ = nil;
+            self.in_view_ = false;
+            return true;
+        }
+
+        method inEditMode(context, warp)
+        {
+            if (CarSelectPopup.open_mode != OPEN_MODE::GARAGE || !self.in_view_ || self.in_edit_)
+                return false;
+
+            var data_list;
+            if (self.is_stockyard_)
+            {
+                data_list = [
+                    ListMenu::EditMenu::Group(manager.translate(CarSelectPopup, "Label_ManageSelectedCar"), [
+                        ListMenu::EditMenu::Button(manager.translate(CarSelectPopup, "Label_MoveToGarage"), true, 
+                            MultiSelectCallbackOnce, [CarSelectPopup.transferToGarage]),
+                        ListMenu::EditMenu::Button(manager.translate(CarSelectPopup, "Label_UpdateCarImage"), true, 
+                            MultiSelectCallbackOnce, [CarSelectPopup.captureThumbnails, true]),
+                    ]),
+                ];
+            }
+            else if (CarSelectPopup.favorite_list_opened)
+            {
+                data_list = [
+                    ListMenu::EditMenu::Group(manager.translate(CarSelectPopup, "Label_ManageSelectedCar"), [
+                        ListMenu::EditMenu::Button(manager.translate(CarSelectPopup, "Label_MoveToStockyard"), true, 
+                            MultiSelectCallbackOnce, [CarSelectPopup.transferToStockyard]),
+                        ListMenu::EditMenu::Button(manager.translate(CarSelectPopup, "Label_RemoveFavorite"), true, 
+                            MultiSelectCallbackOnce, [CarSelectPopup.removeFavorites, false]),
+                        ListMenu::EditMenu::Button(manager.translate(CarSelectPopup, "Label_UpdateCarImage"), true, 
+                            MultiSelectCallbackOnce, [CarSelectPopup.captureThumbnails, true]),
+                    ]),
+                ];
+            }
+            else
+            {
+                data_list = [
+                    ListMenu::EditMenu::Group(manager.translate(CarSelectPopup, "Label_ManageSelectedCar"), [
+                        ListMenu::EditMenu::Button(manager.translate(CarSelectPopup, "Label_MoveToStockyard"), true, 
+                            MultiSelectCallbackOnce, [CarSelectPopup.transferToStockyard]),
+                        ListMenu::EditMenu::Button(manager.translate(CarSelectPopup, "Label_AddFavorite"), true, 
+                            MultiSelectCallbackOnce, [CarSelectPopup.addFavorites, true]),
+                        ListMenu::EditMenu::Button(manager.translate(CarSelectPopup, "Label_UpdateCarImage"), true, 
+                            MultiSelectCallbackOnce, [CarSelectPopup.captureThumbnails, true]),
+                    ]),
+                ];
+            }
+
+            ListMenu::EditMenu.initialize(context, data_list);
+            ListMenu::EditMenu.appear(warp);
+            Head::CarCount.moveLeft();
+
+            ButtonHelpGT6.setButtonSet(context, "EditMode");
+
+            self.in_edit_ = true;
+            self.updateVisibleCarItems(context);
+            return true;
+        }
+
+        method outEditMode(context, warp)
+        {
+            if (!self.in_view_ || !self.in_edit_)
+                return false;
+
+            ListMenu::EditMenu.hide(warp);
+            Head::CarCount.moveRight();
+
+            var listbox = ListMenu.getListBox();
+
+            for (var i = 0; i < listbox.getItemCount(); i++)
+            {
+                var w = listbox.getItemWidget(i);
+                if (w != nil)
+                    w.visibleCheckbox(false);
+            }
+
+            self.setButtonHelp(context);
+            self.in_edit_ = false;
+            self.updateVisibleCarItems(context);
+            return true;
+        }
+
+        method setEditModeItems_AllSelect_or_AllCancel()
+        {
+            if (!self.in_view_ || !self.in_edit_)
+                return false;
+
+            var is_all_selected = true;
+
+            foreach (var state in item_state_list_)
+            {
+                if (state == ITEM_STATE::Blank || state == ITEM_STATE::Riding)
+                    continue;
+
+                if (state != ITEM_STATE::Selected)
+                {
+                    is_all_selected = false;
+                    break;
+                }
+            }
+
+            var listbox = ListMenu.getListBox();
+            for (var i = 0; i < listbox.getItemCount(); i++)
+            {
+                var state_ref = &self.item_state_list_[i];
+                if (*state_ref == ITEM_STATE::Blank)
+                    continue;
+
+                var w = listbox.getItemWidget(i);
+                if (is_all_selected)
+                {
+                    if (*state_ref == ITEM_STATE::Selected)
+                    {
+                        &state_ref = nil;
+                        if (w != nil)
+                            w.activeCheckbox(false);
+                    }
+                }
+                else 
+                {
+                    if (*state_ref != ITEM_STATE::Selected)
+                    {
+                        &state_ref = ITEM_STATE::Selected;
+                        if (w != nil)
+                            w.activeCheckbox(true);
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        method getCategoryText(context)
+        {
+            return self.is_stockyard_ ? context.translate(CarSelectPopup, "Label_StockyardMenus") :
+                context.translate(CarSelectPopup, "Label_GarageMenus");
+        }
+
+        method onInitialize(context)
+        {
+            self.is_empty_ = false;
+            self.in_view_ = false;
+            self.in_edit_ = false;
+            self.is_stockyard_ = false;
+            self.insensitive = true;
+
+            ListMenu.MoveActor.forward();
+            ListMenu.MoveActor.reset();
+
+            clip::VScrollbar.display_policy = "never";
+            Head::CarCount.moveLeft(true);
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+            {
+                if (self.outViewMode(context))
+                {
+                    sound.play("cursor");
+                    return STATE_YIELD;
+                }
+            }
+            else if (event.keysym == CELL_PAD_CTRL_SQUARE)
+            {
+                if (GetVersionBranch() == "demo")
+                    return STATE_YIELD;
+
+                if (!self.in_edit_)
+                {
+                    if (self.is_stockyard_ && GAME_STATUS.user_profile.garage_stockyard_carcount == 0)
+                    {
+                        sound.play("disable");
+                        return STATE_YIELD;
+                    }
+
+                    sound.play("ok");
+
+                    var tmp_sort_type = CarSelectPopup.sort_type;
+                    var tmp_sort_order = CarSelectPopup.sort_order;
+                    CarOrderPopup.open(context, &CarSelectPopup.sort_type, &CarSelectPopup.sort_order);
+
+                    if (CarSelectPopup.sort_type == gtengine::GarageSortType::DISTANCE && 
+                        !CarSelectPopup.mgarage.isDistanceUpdated())
+                    {
+                        updateAllCars(context);
+
+                        if (!CarSelectPopup.mgarage.isDistanceUpdated())
+                            CarSelectPopup.sort_type = tmp_sort_type;
+                    }
+
+                    if (tmp_sort_type != CarSelectPopup.sort_type || tmp_sort_order != CarSelectPopup.sort_order)
+                    {
+                        KeyValueUtil::set("garage", "sort_type", CarSelectPopup.sort_type);
+                        KeyValueUtil::set("garage", "sort_order", CarSelectPopup.sort_order);
+
+                        if (CarSelectPopup.update_carlist_func != nil)
+                            CarSelectPopup.update_carlist_func(context, CarSelectPopup.update_carlist_func_args);
+                    }
+
+                    return STATE_YIELD;
+                    
+                }
+            }
+            else if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
+            {
+                if (GetVersionBranch() == "demo")
+                    return STATE_YIELD;
+
+                if (self.setEditModeItems_AllSelect_or_AllCancel())
+                {
+                    sound.play("checkbox");
+                    setHeadCarCount(context);
+                    return STATE_YIELD;
+                }
+            }
+            else if (event.keysym == CELL_PAD_CTRL_SELECT)
+            {
+                if (GetVersionBranch() == "demo")
+                    return STATE_YIELD;
+
+                if (self.inEditMode(context))
+                {
+                    sound.play("ok");
+                    setHeadCarCount(context);
+                    return STATE_YIELD;
+                }
+            }
+
+            return STATE_EXIT;
+        }
+
+        method onActivate(context, event)
+        {
+            var listbox = ListMenu.getListBox();
+            var item_index = listbox.focus_index;
+            var item = listbox.getItemWidget(listbox.focus_index);
+            if (item == nil)
+                return STATE_YIELD;
+
+            if (!item.initialized_)
+                return STATE_YIELD;
+
+            if (item.unselectable_)
+            {
+                sound.play("disable");
+                return STATE_YIELD;
+            }
+
+            var state = self.item_state_list_[item_index];
+
+            if (state == ITEM_STATE::Blank)
+            {
+                sound.play("disable");
+                return STATE_YIELD;
+            }
+
+            if (self.in_edit_)
+            {
+                var is_selected = state == ITEM_STATE::Selected;
+                is_selected = !is_selected;
+
+                if (item.activeCheckbox(is_selected))
+                {
+                    sound.play("checkbox");
+                    self.item_state_list_[item_index] = is_selected ? ITEM_STATE::Selected : nil;
+                }
+                else
+                {
+                    sound.play("disable");
+                }
+
+                setHeadCarCount(context);
+            }
+            else 
+            {
+                var mgarage_car = item.value;
+                if (mgarage_car == nil)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                var is_exist_carcode = SPECDB.executeQuery1R1C("SELECT ID FROM GENERIC_CAR WHERE ID=?", [mgarage_car.car_code]) != nil;
+                if (!is_exist_carcode)
+                {
+                    sound.play("disable");
+                    ERROR(context, "CommonGTMode", "Message_NotAvailable");
+                    return STATE_YIELD;
+                }
+
+                if (!CarSelectPopup.mgarage.isExist(mgarage_car.garage_id))
+                {
+                    sound.play("disable");
+                    self.item_state_list_[item_index] = ITEM_STATE::Blank;
+                    self.updateCarItem(context, item, item_index);
+                    item.value = nil;
+                    return STATE_YIELD;
+                }
+
+                if (mgarage_car.invalid)
+                {
+                    Function::showErrorInvalidCar(context, mgarage_car);
+                    return STATE_YIELD;
+                }
+
+                switch (CarSelectPopup.open_mode)
+                {
+                    case OPEN_MODE::GARAGE:
+                        sound.play("ok");
+                        CarSelectPopup.setFocus(item);
+                        var is_stockyard = self.is_stockyard_;
+
+                        var [need_update, blanked, update_thumb, need_save] = CarPopup.open(context, mgarage_car, CarSelectPopup.mgarage, is_stockyard, CarSelectPopup.favorite_list_opened);
+                        if (blanked)
+                        {
+                            self.item_state_list_[item_index] = ITEM_STATE::Blank;
+                            self.updateCarItem(context, item, item_index);
+                            item.value = nil;
+                        }
+
+                        if (update_thumb)
+                        {
+                            var image_path = item.Thumbnail.image_path;
+                            item.Thumbnail.image_path = "";
+                            item.Thumbnail.image_path = image_path;
+                        }
+
+                        if (need_update)
+                            self.updateVisibleCarItems(context);
+
+                        if (need_save)
+                            CarSelectPopup.need_save = need_save;
+                        break;
+
+                    case OPEN_MODE::CAR_SELECT:
+                        if (state != ITEM_STATE::Riding)
+                        {
+                            sound.play("ok");
+                            Function::rideCar(context, mgarage_car);
+                            self.updateCarItem(context, item, item_index);
+                            CarSelectPopup.close(context);
+                        }
+                        else
+                        {
+                            sound.play("disable");
+                        }
+                        break;
+
+                    case OPEN_MODE::CAR_PICKUP:
+                        sound.play("ok");
+                        CarSelectPopup.result = mgarage_car.garage_id;
+                        CarSelectPopup.close(context);
+                        break;
+                }
+            }
+
+            return STATE_YIELD;
+        }
+
+        method onCancel(context)
+        {
+            if (self.in_edit_)
+            {
+                if (self.outEditMode(context))
+                {
+                    sound.play("cancel");
+                    setHeadCarCount(context);
+                }
+            }
+            else
+            {
+                if (self.outViewMode(context))
+                {
+                    sound.play("cancel");
+                }
+            }
+
+            return STATE_YIELD;
+        }
+
+        method setButtonHelp(context)
+        {
+            switch (CarSelectPopup.open_mode)
+            {
+                case OPEN_MODE::GARAGE:
+                    ButtonHelpGT6.setButtonSet(context, "onCarList_Garage");
+                    break;
+
+                case OPEN_MODE::CAR_SELECT:
+                    ButtonHelpGT6.setButtonSet(context, "onCarList_CarSelect");
+                    break;
+
+                case OPEN_MODE::CAR_PICKUP:
+                    ButtonHelpGT6.setButtonSet(context, "onCarList_CarPickup");
+                    break;
+            }
+        }
+
+        method setCarList(context, mgarage_car_list, is_stockyard)
+        {
+            self.mgarage_car_list_ = mgarage_car_list;
+            self.item_state_list_ = Array(self.mgarage_car_list_.size);
+            self.is_stockyard_ = is_stockyard;
+
+            if (!is_stockyard)
+            {
+                var riding_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+                for (var i = 0; i < self.mgarage_car_list_.size; i++)
+                {
+                    var mgarage_car = self.mgarage_car_list_[i];
+                    if (mgarage_car.garage_id == riding_id)
+                    {
+                        self.item_state_list_[i] = ITEM_STATE::Riding;
+                        break;
+                    }
+                }
+            }
+
+            var listbox = ListMenu.getListBox();
+            listbox.setItemTemplate(context, hidden::CarItem);
+            if (listbox.getItemCount() > 0)
+            {
+                listbox.setItemCount(0);
+                listbox.postRedraw();
+                context.wait();
+            }
+
+            if (mgarage_car_list.size > 0)
+            {
+                listbox.setItemCount(mgarage_car_list.size);
+                listbox.focus_index = 0;
+                self.is_empty_ = false;
+                ListMenu.setDisplayEmpty(self.is_empty_);
+            }
+            else
+            {
+                self.is_empty_ = true;
+                ListMenu.setDisplayEmpty(self.is_empty_, context.translate(CarSelectPopup, "Label_NoCar"));
+            }
+
+            switch (CarSelectPopup.sort_type)
+            {
+                case gtengine::GarageSortType::DISTANCE:
+                    ListMenu::ListWindow::ColumnList::Manufacturer::Label.text = manager.translate("GTModeProject::GarageRoot", "Label_Distance");
+                    break;
+
+                default:
+                    ListMenu::ListWindow::ColumnList::Manufacturer::Label.text = manager.translate(CarSelectPopup, "Column_Manufacturer");
+                    break;
+            }
+
+            ListMenu::ListWindow.setHeadCarCount(context);
+        }
+
+        method getFocusedItem()
+        {
+            var listbox = ListMenu.getListBox();
+            return listbox.getItemWidget(listbox.focus_index);
+        }
+
+        method updateVisibleCarItems(context)
+        {
+            var listbox = ListMenu.getListBox();
+            for (var i = 0; i < listbox.getItemCount(); i++)
+            {
+                var item = listbox.getItemWidget(i);
+                if (item != nil)
+                    updateCarItem(context, item, i);
+            }
+
+            self.ListMenu::Menus::Main_TopMenu.updateCarCount(context);
+            CarSelectPopup.request_update_thumb = false;
+        }
+
+        method updateCarItem(context, item, item_index)
+        {
+            if (item_index < self.item_state_list_.size)
+            {
+                item.opacity = 0.0;
+                
+                var state = self.item_state_list_[item_index];
+                if (CarSelectPopup.request_update_thumb && state == ITEM_STATE::Selected)
+                    item.Thumbnail.image_path = "";
+
+                if (state == ITEM_STATE::Blank)
+                {
+                    item.isBlank(true);
+                    if (self.in_edit_)
+                    {
+                        item.visibleCheckbox(true);
+                        item.insensitiveCheckbox(true);
+                        item.activeCheckbox(false);
+                    }
+                }
+                else
+                {
+                    var mgarage_car = self.mgarage_car_list_[item_index];
+                    var is_stockyard = self.is_stockyard_;
+                    item.init(context, item_index, mgarage_car, is_stockyard);
+
+                    if (self.in_edit_)
+                    {
+                        item.visibleCheckbox(true);
+                        if (item.isRiding())
+                        {
+                            item.insensitiveCheckbox(false);
+                            item.activeCheckbox(state == ITEM_STATE::Selected);
+                        }
+                        else
+                        {
+                            item.insensitiveCheckbox(false);
+                            item.activeCheckbox(state == ITEM_STATE::Selected);
+                        }
+                    }
+                }
+
+                item.opacity = 1.0;
+            }
+        }
+
+        method MultiSelectCallback(context, args)
+        {
+            for (var i = 0; i < self.item_state_list_.size; i++)
+            {
+                var state = self.item_state_list_[i];
+                if (state == ITEM_STATE::Selected)
+                {
+                    var edit_func = args[0];
+                    var args2 = args.size > 1 ? args[1] : nil;
+                    var state_ref = &self.item_state_list_[i];
+                    edit_func(context, self.mgarage_car_list_[i], args2, state_ref);
+                }
+            }
+
+            self.updateVisibleCarItems(context);
+        }
+
+        method MultiSelectCallbackOnce(context, args)
+        {
+            var select_mgarage_car_list = [];
+            var state_ref_list = [];
+
+            for (var i = 0; i < self.item_state_list_.size; i++)
+            {
+                var state = self.item_state_list_[i];
+                if (state == ITEM_STATE::Selected)
+                {
+                    select_mgarage_car_list.push(self.mgarage_car_list_[i]);
+                    var state_ref = &self.item_state_list_[i];
+                    state_ref_list.push(state_ref);
+                }
+            }
+
+            var edit_func = args[0];
+            var args2 = args.size > 1 ? args[1] : nil;
+            edit_func(context, select_mgarage_car_list, args2, state_ref_list);
+
+            self.updateVisibleCarItems(context);
+        }
+
+        module clip::ListBox
+        {
+            method onVisibleNotify(context, indexes)
+            {
+                foreach (var i in indexes)
+                {
+                    if (self.getItemVisible(i))
+                    {
+                        var w = self.getItemWidget(i);
+                        if (w == nil)
+                        {
+                            var item = self.getItemWidget(i, context);
+                            ListMenu::ListWindow.updateCarItem(context, item, i);
+                        }
+                    }
+                    else
+                    {
+                        self.setItemWidget(i, context, nil);
+                    }
+                }
+            }
+
+            method onFocusNotify(context, new_index, old_index)
+            {
+                var w = self.getItemWidget(new_index, context);
+                if (w != nil)
+                    CarSelectPopup.setFocus(w);
+            }
+        }
+
+        module Head::CarCount
+        {
+            method setText(a, b)
+            {
+                if (b == nil)
+                {
+                    CarCount::label_L.text = "";
+                    CarCount::label_S.text = a;
+                }
+                else
+                {
+                    CarCount::label_L.text = a;
+                    CarCount::label_S.text = "/" + b;
+
+                }
+            }
+
+            method moveLeft(warp)
+            {
+                self.MoveActor.forward();
+                self.MoveActor.start();
+
+                if (warp == true)
+                    self.MoveActor.warp();
+            }
+
+            method moveRight(warp)
+            {
+                self.MoveActor.backward();
+                self.MoveActor.start();
+
+                if (warp == true)
+                    self.MoveActor.warp();
+            }
+        }
+    }
+
+    module hidden::CarItem
+    {
+        attribute initialized_ = false;
+        attribute unselectable_ = false;
+
+        method init(context, car_index, mgarage_car, is_stockyard)
+        {
+            self.value = mgarage_car;
+            var car_no = car_index + 1;
+            self.setInfo(context, mgarage_car, car_no, is_stockyard);
+
+            self.setSortType(CarSelectPopup.sort_type, mgarage_car);
+            if (CarSelectPopup.open_mode == OPEN_MODE::CAR_PICKUP && 
+                CarSelectPopup.unselectable_list != nil)
+            {
+                if (CarSelectPopup.unselectable_list.indexOf(mgarage_car.garage_id) > -1)
+                {
+                    self.opacity = 0.4;
+                    self.unselectable_ =  true;
+                }
+            }
+
+            self.initialized_ = true;
+        }
+
+        function GetDistanceText(running_km)
+        {
+            var unit_text;
+            var km_mile;
+
+            if (GAME_STATUS.user_profile.option.unit_velocity)
+            {
+                unit_text = manager.translate("Unit", "LENGTH_MILE");
+                km_mile = running_km / 1.6;
+            }
+            else
+            {
+                unit_text = manager.translate("Unit", "LENGTH_KILOMETER");
+                km_mile = running_km;
+            }
+
+            if (km_mile > 999999.9)
+                km_mile = 999999.94;
+
+            var km_mile_text = pdiext::GetNumberString(km_mile, 0);
+            return km_mile_text + " " + unit_text;
+        }
+
+        method setSortType(sort_type, mgarage_car)
+        {
+            var sort_target;
+            switch (sort_type)
+            {
+                case gtengine::GarageSortType::PP:
+                    sort_target = self.PP::Label;
+                    break;
+
+                case gtengine::GarageSortType::POWER:
+                    sort_target = self.Power::Label;
+                    break;
+
+                case gtengine::GarageSortType::WEIGHT:
+                    sort_target = self.Weight::Label;
+                    break;
+
+                case gtengine::GarageSortType::YEAR:
+                    sort_target = self.Year::Label;
+                    break;
+
+                case gtengine::GarageSortType::DISTANCE:
+                    sort_target = self.Dealer::Label;
+                    sort_target.text = GetDistanceText(mgarage_car.distance_km);
+                    break;
+            }
+
+            if (sort_target != nil)
+                sort_target.text_color = self.TextColorForSort;
+        }
+    }
+
+    module ListMenu::EditMenu
+    {
+        class Group
+        {
+            method __init__(label, contents)
+            {
+                self.label = label;
+                self.contents = contents;
+            }
+
+            attribute label;
+            attribute contents;
+        }
+
+        class Content
+        {
+            method __init__(templete_item, label, enable, callback, args)
+            {
+                self.templete_item = templete_item;
+                self.label = label;
+                self.enable = enable != false;
+                self.callback = callback;
+                self.args = args;
+            }
+
+            attribute templete_item;
+            attribute label;
+            attribute enable;
+            attribute callback;
+            attribute args;
+        }
+
+        class Button extends Content
+        {
+            method __init__(label, enable, callback, args)
+            {
+                __super__::__init__(hidden::EditButtonItem, label, enable, callback, args);
+            }
+        }
+
+        method appear(warp)
+        {
+            self.insensitive = false;
+            self.MoveActor.forward();
+            self.MoveActor.start();
+
+            if (warp == true)
+                self.MoveActor.warp();
+        }
+
+        method hide(warp)
+        {
+            self.insensitive = true;
+            self.MoveActor.backward();
+            self.MoveActor.start();
+
+            if (warp == true)
+                self.MoveActor.warp();
+        }
+
+        method createContents(context, append_parent, contents)
+        {
+            foreach (var content in contents)
+            {
+                var w = content.templete_item.doCopy();
+                w.label.text = content.label;
+                w.label_i.text = content.label;
+                w.insensitive = !content.enable;
+                w.defineAttribute("data", content);
+                append_parent.appendChild(context, w);
+            }
+        }
+
+        method deleteContents(context)
+        {
+            ListMenu::EditMenu::ScrolledWindow::clip::space.clearChildren(context);
+        }
+
+        method initialize(context, data_list)
+        {
+            self.deleteContents(context);
+
+            foreach (var data in data_list)
+            {
+                if (data.isInstanceOf(Group))
+                {
+                    var group = data;
+                    var g = hidden::EditGroupItem.doCopy();
+                    g.GroupHeader::label.text = group.label;
+                    g.defineAttribute("data", group);
+                    self.createContents(context, g.VBox, group.contents);
+                    ListMenu::EditMenu::ScrolledWindow::clip::space.appendChild(context, g);
+                }
+                else if (data.isInstanceOf(Content))
+                {
+                    self.createContents(context, ListMenu::EditMenu::ScrolledWindow::clip::space, data);
+                }
+            }
+        }
+
+        method onInitialize(context)
+        {
+            self.hide(true);
+        }
+
+        method onFinalize(context)
+        {
+            self.deleteContents(context);
+        }
+
+        method onActivate(context, event)
+        {
+            var w = event.widget;
+            if (w.data.callback != nil)
+                w.data.callback(context, w.data.args);
+
+            return STATE_YIELD;
+        }
+
+        method onCancel(context)
+        {
+            if (ListMenu::ListWindow.outEditMode(context))
+            {
+                var listbox = ListMenu.getListBox();
+                CarSelectPopup.setFocus(listbox);
+                ListMenu::ListWindow.setHeadCarCount(context);
+                sound.play("cancel");
+            }
+
+            return STATE_YIELD;
+        }
+    }
+}

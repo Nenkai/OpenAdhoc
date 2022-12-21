@@ -1,0 +1,769 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module RaceResultRoot
+{
+    hidden.visible = false;
+
+    attribute isOpening = false;
+    attribute mode;
+
+    module PaneType
+    {
+        static Race = 1;
+        static RaceWithPoint = 2;
+        static Qualifier = 3;
+        static Point = 4;
+        static TimeTrial = 5;
+        static DriftTrial = 6;
+        static DriftTrialWithLike = 7;
+        static Endurance = 8;
+        static EnduranceWithQualifier = 9;
+    }
+
+    module Mode
+    {
+        static Race = 1;
+        static SeriesRace = 2;
+        static RaceWithQualifier = 3;
+        static TimeTrial = 4;
+        static DriftTrial = 5;
+        static Endurance = 6;
+        static EnduranceWithQualifier = 7;
+    }
+
+    method open(context, mode)
+    {
+        self.isOpening = true;
+        self.mode = mode;
+        SequenceUtil::pushPage(context, RaceResultRoot);
+    }
+
+    method close(context)
+    {
+        self.isOpening = false;
+        self.OpenActor.stop();
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        pdiext::ProcessUpdateIteration(300000);
+        SequenceUtil::popPage(context, RaceResultRoot);
+    }
+
+    method abort(context)
+    {
+        if (self.isOpening)
+            self.close(context);
+    }
+
+    method onInitialize(context)
+    {
+        ScrolledWindow::clip::space.initialize(context);
+        var adj = main::menu::MAdjustment();
+        ScrolledWindow::HScrollArrow.adjustment = adj;
+        ScrolledWindow::clip.h_adjustment = adj;
+
+        OnlineSession.updateMemberState(gtengine::RoomMemberState::Result, true);
+        ButtonHelpGT6.set(context, [
+            ["Back"]
+        ]);
+
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+        self.CloseActor.stop();
+    }
+
+    method onFinalize(context)
+    {
+        ScrolledWindow::clip::space.finalize(context);
+        OnlineSession.updateMemberState(gtengine::RoomMemberState::Result, false);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.close(context);
+        return STATE_YIELD;
+    }
+
+    function getLapString(laps)
+    {
+        return "%s %s".format(pdiext::GetNumberString(laps), UnitUtil::getLapStr(laps));
+    }
+
+    method updateTitle(context)
+    {
+        var widget = self.getFocusWidget();
+        self.Title.text = widget.getTitleString();
+    }
+
+    method getPaneTemplate(paneType)
+    {
+        var columnNum;
+        switch (paneType)
+        {
+            case PaneType::Race:
+                columnNum = 2;
+                break;
+
+            case PaneType::RaceWithPoint:
+                columnNum = 3;
+                break;
+
+            case PaneType::Qualifier:
+                columnNum = 2;
+                break;
+
+            case PaneType::Point:
+                columnNum = 1;
+                break;
+
+            case PaneType::TimeTrial:
+                columnNum = 2;
+                break;
+
+            case PaneType::DriftTrial:
+                columnNum = 2;
+                break;
+
+            case PaneType::DriftTrialWithLike:
+                columnNum = 4;
+                break;
+
+            case PaneType::Endurance:
+                columnNum = 2;
+                break;
+
+            case PaneType::EnduranceWithQualifier:
+                columnNum = 2;
+                break;
+        }
+
+        var name = "ListBase%dcolumn".format(columnNum);
+        var obj = hidden.getObjectAttribute(name);
+        return obj;
+    }
+
+    module ScrolledWindow::clip::space
+    {
+        attribute panes;
+
+        method initialize(context)
+        {
+            var paneTypes;
+            switch (RaceResultRoot.mode)
+            {
+                case Mode::Race:
+                    paneTypes = [PaneType::Race];
+                    break;
+
+                case Mode::SeriesRace:
+                    paneTypes = [];
+                    var rc = OnlineSession.getRoomConfig();
+
+                    for (var i = 0; i < rc.online_series_count; i++)
+                        paneTypes.push(PaneType::RaceWithPoint);
+
+                    break;
+
+                case Mode::RaceWithQualifier:
+                    paneTypes = [PaneType::Qualifier, PaneType::Race];
+                    break;
+
+                case Mode::TimeTrial:
+                    paneTypes = [PaneType::TimeTrial];
+                    break;
+
+                case Mode::DriftTrial:
+                    paneTypes = [PaneType::DriftTrial];
+                    break;
+
+                case Mode::Endurance:
+                    paneTypes = [PaneType::Endurance];
+                    break;
+
+                case Mode::EnduranceWithQualifier:
+                    paneTypes = [PaneType::EnduranceWithQualifier, PaneType::Endurance];
+                    break;
+            }
+
+            self.panes = Array(paneTypes.size);
+            for (var i = 0; i < paneTypes.size; ++i)
+            {
+                var paneType = paneTypes[i];
+                var pane = RaceResultRoot.getPaneTemplate(paneType).doCopy();
+                pane.defineAttribute("area_index", i);
+                pane.initialize(context, paneType);
+                self.appendChild(context, pane);
+                self.panes[i] = pane;
+            }
+
+            ScrollPointer::HScrollPointer.setItemCount(context, self.panes.size);
+        }
+
+        method finalize(context)
+        {
+            self.clearChildren(context);
+            self.panes = nil;
+        }
+
+        method onFocusEnter(context, event)
+        {
+            var widget = event.widget;
+            ScrollPointer::HScrollPointer.setPointer(widget.area_index);
+            RaceResultRoot.updateTitle(context);
+            return STATE_EXIT;
+        }
+
+        method onKeyPress(context, event)
+        {
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L1:
+                    var widget = event.widget;
+
+                    do 
+                    {
+                        var left_area_index = widget.area_index - 1;
+                        if (left_area_index < 0)
+                            return STATE_YIELD;
+
+                        if (self.panes != nil)
+                        {
+                            sound.play("cursor");
+                            var focus_w = self.panes[left_area_index];
+                            if (focus_w.visible)
+                            {
+                                RaceResultRoot.setFocus(focus_w);
+                                break;
+                            }
+                            else
+                            {
+                                widget = focus_w;
+                            }
+                        }
+                    }
+                    while (1);
+                    return STATE_YIELD;
+
+                case CELL_PAD_CTRL_R1:
+                    var widget = event.widget;
+
+                    do 
+                    {
+                        var right_area_index = widget.area_index + 1;
+                        if (right_area_index >= self.panes.size)
+                            return STATE_YIELD;
+
+                        if (self.panes != nil)
+                        {
+                            sound.play("cursor");
+                            var focus_w = self.panes[right_area_index];
+                            if (focus_w.visible)
+                            {
+                                RaceResultRoot.setFocus(focus_w);
+                                break;
+                            }
+                            else
+                            {
+                                widget = focus_w;
+                            }
+                        }
+                    }
+                    while (1);
+                    return STATE_YIELD;
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module hidden
+    {
+        module ListBase
+        {
+            attribute titleString;
+            attribute columnNum;
+
+            method onFinalize(context)
+            {
+                self.Space.clearChildren(context);
+            }
+
+            method initialize(context, paneType)
+            {
+                self.initializeHeader(context, paneType);
+                self.initializeList(context, paneType);
+            }
+
+            method initializeHeader(context, paneType)
+            {
+                var labels, titleKey;
+                switch (paneType)
+                {
+                    case PaneType::Race:
+                        labels = ["TITLE_TIME", "TITLE_GAP"];
+                        titleKey = "RACE_RESULT";
+                        break;
+    
+                    case PaneType::RaceWithPoint:
+                        labels = ["TITLE_TIME", "TITLE_GAP", "TITLE_POINT"];
+                        titleKey = "RACE_RESULT";
+                        break;
+    
+                    case PaneType::Qualifier:
+                        labels = ["TITLE_TIME", "TITLE_GAP"];
+                        titleKey = "QUALIFIER_RESULT";
+                        break;
+    
+                    case PaneType::Point:
+                        labels = ["TITLE_POINT"];
+                        titleKey = "POINT_RESULT";
+                        break;
+    
+                    case PaneType::TimeTrial:
+                        labels = ["TITLE_TIME", "TITLE_GAP"];
+                        titleKey = "TIME_TRIAL_RESULT";
+                        break;
+    
+                    case PaneType::DriftTrial:
+                        labels = ["TITLE_POINT", "TITLE_GAP"];
+                        titleKey = "DRIFT_TRIAL_RESULT";
+                        break;
+    
+                    case PaneType::DriftTrialWithLike:
+                        labels = ["TITLE_POINT", "TITLE_LIKE", "TITLE_TOTAL", "TITLE_GAP"];
+                        titleKey = "DRIFT_TRIAL_RESULT";
+                        break;
+
+                    case PaneType::Endurance:
+                        labels = ["TITLE_LAP", "TITLE_GAP"];
+                        titleKey = "RACE_RESULT";
+                        break;
+
+                    case PaneType::EnduranceWithQualifier:
+                        labels = ["TITLE_TIME", "TITLE_GAP"];
+                        titleKey = "QUALIFIER_RESULT";
+                        break;
+                }
+
+                for (var i = 0; i < labels.size; ++i)
+                {
+                    var name = "column%d".format(i + 1);
+                    var column = self.Header.getObjectAttribute(name);
+                    column.label.text = manager.translate(RaceResultRoot, labels[i]);
+                }
+
+                self.titleString = manager.translate(RaceResultRoot, titleKey);
+            }
+
+            method initializeList(context, paneType)
+            {
+                var lt = ORG.getLiveTimingRecord();
+                var session_previous_count = 1;
+
+                if (paneType == PaneType::Qualifier ||
+                    paneType == PaneType::EnduranceWithQualifier)
+                {
+                    session_previous_count += 1;
+                }
+
+                if (paneType == PaneType::RaceWithPoint)
+                {
+                    var rc = OnlineSession.getRoomConfig();
+                    session_previous_count += ((rc.online_series_count - self.area_index) - 1);
+                }
+
+                var nb_racers = lt.countEnabled(session_previous_count);
+                if (nb_racers == 0)
+                {
+                    var myname = PDINetwork.getDisplayName();
+                    var mySlotId = RaceOperator.getAccountSlotID(0);
+                    var top_time = nil;
+                    var top_laps = nil;
+                    var entries = lt.getEntries(true, session_previous_count);
+
+                    var use_best = paneType == PaneType::Qualifier ||
+                                   paneType == PaneType::EnduranceWithQualifier ||
+                                   paneType == PaneType::TimeTrial;
+
+                    var is_drift = paneType == PaneType::DriftTrial ||
+                                   paneType == PaneType::DriftTrialWithLike;
+
+                    var isEndurance = paneType == PaneType::Endurance ||
+                                      paneType == PaneType::EnduranceWithQualifier;
+
+                    for (var i = 0; i < nb_racers; ++i)
+                    {
+                        var item = self.getItemTemplate().doCopy();
+                        item.x = 0;
+                        item.y = 0;
+                        
+                        var Time = item.getTimeObject(paneType);
+                        var Lap = item.getLapObject(paneType);
+                        var Gap = item.getGapObject(paneType);
+                        var Total = item.getTotalObject(paneType);
+                        var Point = item.getPointObject(paneType);
+                        var Like = item.getLikeObject(paneType);
+
+                        var me = false;
+                        item.Number.label.text = "%d".format(i + 1);
+
+                        var entry = entries[i];
+                        var filled = false;
+                        var slot_id = entry.entry_id;
+                        if (slot_id >= 0)
+                        {
+                            var score = entry.total_time;
+                            if (entry.car_code != gtengine::MSpecDB::NO_CODE)
+                            {
+                                me = slot_id == mySlotId;
+                                item.Car.visible = true;
+                                item.Car.Chip.color.setCarColor(entry.car_code, entry.car_color, entry.paint_color);
+                                item.Car.label.text = gtengine::MSpecDB::getCarName(entry.car_code);
+
+                                var name = entry.driver_name;
+                                item.Name.label.text = name;
+                                item.Name.labela.text = name;
+
+                                var race_time = entry.total_time;
+                                if (use_best)
+                                    race_time = entry.best_lap_time;
+
+                                var isValidRaceTime = race_time != pdiext::MAX_LAPTIME1000 && race_time != 0;
+                                if (Time != nil)
+                                {
+                                    if (isValidRaceTime)
+                                    {
+                                        Time.label.text = pdiext::GetRaceTimeString(race_time);
+                                        if (top_time != nil)
+                                        {
+                                            if (Gap != nil)
+                                            {
+                                                if (is_drift)
+                                                    Gap.label.text = "%{race_time - top_time}";
+                                                else
+                                                    Gap.label.text = pdiext::GetDiffTimeString(race_time - top_time);
+                                            }
+                                        }
+                                        else 
+                                        {
+                                            if (Gap != nil)
+                                            {
+                                                if (isEndurance)
+                                                    Gap.label.text = RaceResultRoot::getLapString(entry.total_laps);
+                                                else
+                                                    Gap.label.text = "";
+                                            }
+
+                                            top_time = race_time;
+                                        }
+                                    }
+                                    else 
+                                    {
+                                        if (Gap != nil)
+                                            Gap.label.text = pdiext::GetDiffTimeString(pdiext::MAX_LAPTIME1000);
+
+                                        Time.label.text = manager.translate("RaceTypeName", "DNF");
+                                    }
+                                }
+
+                                if (Lap != nil)
+                                {
+                                    if (isValidRaceTime)
+                                        Lap.label.text = RaceResultRoot::getLapString(entry.total_laps);
+                                    else
+                                        Lap.label.text = manager.translate("RaceTypeName", "DNF");
+
+                                    if (Gap != nil)
+                                    {
+                                        if (isValidRaceTime)
+                                        {
+                                            if (top_laps != nil)
+                                            {
+                                                var isSameLap = entry.total_laps == top_laps;
+                                                if (isSameLap)
+                                                    Gap.label.text = pdiext::GetDiffTimeString(race_time - top_time)
+                                                else
+                                                    Gap.label.text = RaceResultRoot::getLapString(top_laps - entry.total_laps);
+                                            }
+                                            else
+                                            {
+                                                Gap.label.text = pdiext::GetRaceTimeString(race_time);
+                                                top_time = race_time;
+                                                top_laps = entry.total_laps;
+                                            }
+                                        }
+                                        else
+                                        {
+                                            Gap.label.text = pdiext::GetDiffTimeString(pdiext::MAX_LAPTIME1000);
+                                        }
+                                    }
+                                }
+
+                                if (Point != nil)
+                                {
+                                    if (is_drift)
+                                    {
+                                        var best_score = entry.best_lap_time;
+                                        Point.label.text = pdiext::GetNumberString(best_score);
+
+                                        if (Gap != nil)
+                                        {
+                                            if (top_time == nil)
+                                            {
+                                                Gap.label.text = "";
+                                                top_time = best_score;
+                                            }
+                                            else
+                                            {
+                                                Gap.label.text = pdiext::GetNumberString(best_score - top_time);
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Point.label.text = "%{entry.total_point + entry.point}";
+                                    }
+                                }
+                                
+                                filled = true;
+                            }
+
+                            if (GAME_STATUS.user_profile.option.lounge_demo)
+                                item.Name.flag.visible = false;
+                            else
+                                item.Name.flag.visible = true;
+
+                            var code = entry.country_code.upcase();
+                            item.Name.flag.image_path = "/image/race_display/flag/%{code}.dds";
+                        }
+
+                        if (!filled)
+                        {
+                            item.Car.visible = false;
+                            item.Name.label.text = "--";
+                            item.Name.labela.text = "--";
+
+                            if (Time != nil)
+                            {
+                                Time.label.text = "";
+                            }
+                        }
+
+                        item.Name.labela.visible = me;
+                        item.Name.label.visible = !me;
+                        item.Number.active = me;
+                        self.Space.appendChild(context, item);
+                    }
+                }
+            }
+
+            method getItemTemplate()
+            {
+                var name = "ResultItem%dcolumn".format(self.columnNum);
+                return RaceResultRoot::hidden.getObjectAttribute(name);
+            }
+
+            method getTitleString()
+            {
+                return self.titleString;
+            }
+        }
+
+        module ListBase1column
+        {
+            import ListBase::*;
+
+            method onRealize(manager)
+            {
+                self.columnNum = 1;
+            }
+        }
+
+        module ListBase2column
+        {
+            import ListBase::*;
+
+            method onRealize(manager)
+            {
+                self.columnNum = 2;
+            }
+        }
+
+        module ListBase3column
+        {
+            import ListBase::*;
+
+            method onRealize(manager)
+            {
+                self.columnNum = 3;
+            }
+        }
+
+        module ListBase4column
+        {
+            import ListBase::*;
+
+            method onRealize(manager)
+            {
+                self.columnNum = 4;
+            }
+        }
+
+        module ItemBase
+        {
+            attribute columnNum;
+
+            method getTimeObject(paneType)
+            {
+                switch (paneType)
+                {
+                    case PaneType::Point:
+                    case PaneType::DriftTrial:
+                    case PaneType::DriftTrialWithLike:
+                    case PaneType::Endurance:
+                        return nil;
+
+                    default:
+                        return self.Column1;
+                }
+            }
+
+            method getLapObject(paneType)
+            {
+                switch (paneType)
+                {
+                    case PaneType::Endurance:
+                        return self.Column1;
+
+                    default:
+                        return nil;
+                }
+            }
+
+            method getGapObject(paneType)
+            {
+                switch (paneType)
+                {
+                    case PaneType::Race:
+                    case PaneType::RaceWithPoint:
+                    case PaneType::Qualifier:
+                    case PaneType::TimeTrial:
+                    case PaneType::DriftTrial:
+                    case PaneType::Endurance:
+                    case PaneType::EnduranceWithQualifier:
+                        return self.Column2;
+                    case PaneType::Point:
+                        return nil;
+                    case PaneType::DriftTrialWithLike:
+                        return self.Column4;
+                }
+            }
+
+            method getTotalObject(paneType)
+            {
+                switch (paneType)
+                {
+                    case PaneType::DriftTrialWithLike:
+                        return self.Column3;
+
+                    default:
+                        return nil;
+                }
+            }
+
+            method getPointObject(paneType)
+            {
+                switch (paneType)
+                {
+                    case PaneType::RaceWithPoint:
+                        return self.Column3;
+
+                    case PaneType::Point:
+                    case PaneType::DriftTrial:
+                    case PaneType::DriftTrialWithLike:
+                        return self.Column1;
+
+                    default:
+                        return nil;
+                }
+            }
+
+            method getLikeObject(paneType)
+            {
+                switch (paneType)
+                {
+                    case PaneType::DriftTrialWithLike:
+                        return self.Column2;
+
+                    default:
+                        return nil;
+                }
+            }
+        }
+
+        module ResultItem1column
+        {
+            import ItemBase::*;
+
+            method onRealize(manager)
+            {
+                self.columnNum = 1;
+                self.Column1.label.text = "";
+            }
+        }
+
+        module ResultItem2column
+        {
+            import ItemBase::*;
+
+            method onRealize(manager)
+            {
+                self.columnNum = 2;
+                self.Column1.label.text = "";
+                self.Column2.label.text = "";
+            }
+        }
+
+        module ResultItem3column
+        {
+            import ItemBase::*;
+
+            method onRealize(manager)
+            {
+                self.columnNum = 3;
+                self.Column1.label.text = "";
+                self.Column2.label.text = "";
+                self.Column3.label.text = "";
+            }
+        }
+
+        module ResultItem4column
+        {
+            import ItemBase::*;
+
+            method onRealize(manager)
+            {
+                self.columnNum = 4;
+                self.Column1.label.text = "";
+                self.Column2.label.text = "";
+                self.Column3.label.text = "";
+                self.Column4.label.text = "";
+            }
+        }
+    }
+}

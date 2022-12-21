@@ -1,0 +1,217 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module LocalRankingUtil
+{
+
+
+    static TABLE_VERSION = 100;
+
+    static BOARD_DRIFT_SECTOR = 0;
+    static BOARD_DRIFT_FULL_LAP = 1;
+
+    class Data extends System::Object
+    {
+        attribute id;
+        attribute car_code;
+        attribute car_color;
+        attribute datetime;
+        attribute best_score;
+        attribute tire_f;
+        attribute tire_r;
+        attribute physics_pro;
+        attribute local_userid;
+
+        method __init__()
+        {
+            id = Long(-1);
+            car_code = Long(gtengine::MSpecDB::NO_CODE64);
+            car_color = Long(-1);
+            datetime = Long(0);
+            best_score = Long(0);
+            tire_f = Long(-1);
+            tire_r = Long(-1);
+            physics_pro = Long(-1);
+            local_userid = Long(-1);
+        }
+
+        method create(cp, dp, score)
+        {
+            car_code = cp.getCarCode();
+            car_color = cp.color;
+            var now = pdiext::getBetterTime();
+            datetime = now.getBySecond();
+            best_score = score;
+
+
+            [tire_f, tire_r] = cp.getTireCategories();
+
+            physics_pro = dp.physics_pro;
+
+            local_userid = cp.getPaintColor(0);
+        }
+
+        method get_paint_color() {return local_userid;}
+    }
+
+
+
+
+    function get_table_name(course_code, board_type, edit_course_ranking_id)
+    {
+        var course_label = gtengine::MSpecDB::getCourseLabel(course_code);
+        var board_type_code = board_type == BOARD_DRIFT_SECTOR ? "s_" : "f_";
+        var table_postfix = edit_course_ranking_id != nil ? "_0x%08x".format(edit_course_ranking_id) : "";
+
+
+        if (course_label.endWith("_daynight"))
+            course_label = course_label.removeLastOf("_daynight");
+        if (course_label.endWith("_wet"))
+            course_label = course_label.removeLastOf("_wet");
+
+        return "t_local_drift_ranking_" + board_type_code + course_label + table_postfix;
+    }
+
+    function getCreateTableSql(table_name)
+    {
+        var sql = "CREATE TABLE IF NOT EXISTS " + table_name + " ("
+                "id INTEGER, "
+                "car_code INTEGER, "
+                "car_color INTEGER, "
+                "datetime INTEGER, "
+                "best_score INTEGER, "
+                "tire_f INTEGER, "
+                "tire_r INTEGER, "
+                "physics_pro INTEGER, "
+                "local_userid INTEGER, "
+                "PRIMARY KEY (id))";
+        return sql;
+    }
+
+
+
+
+    function initialize(course_code, edit_course_ranking_id)
+    {
+
+        var table_name_s = get_table_name(course_code, BOARD_DRIFT_SECTOR, edit_course_ranking_id);
+        var table_name_f = get_table_name(course_code, BOARD_DRIFT_FULL_LAP, edit_course_ranking_id);
+
+
+        DBUtil::initializeTable(table_name_s, TABLE_VERSION);
+        DBUtil::initializeTable(table_name_f, TABLE_VERSION);
+
+
+
+        var sql = getCreateTableSql(table_name_s);
+        var res = SQLITE.execute0(sql);
+        if (!(res == 0)) { ErrorUtil::abortDiskFull(res, "32MB", "../race_drift/LocalRankingUtil.ad", 121u);
+            return false; }
+
+        sql = getCreateTableSql(table_name_f);
+        res = SQLITE.execute0(sql);
+        if (!(res == 0)) { ErrorUtil::abortDiskFull(res, "32MB", "../race_drift/LocalRankingUtil.ad", 126u);
+            return false; }
+    }
+
+
+
+
+    function getList(course_code, board_type, up_to, edit_course_ranking_id)
+    {
+
+        initialize(course_code, edit_course_ranking_id);
+
+        var query = DBUtil::getSelectQuery(get_table_name(course_code, board_type, edit_course_ranking_id), Data);
+        var cond = " ORDER BY best_score DESC";
+        var res = SQLITE.executeQuery(query + cond);
+        var list = DBUtil::getDataList(Data, res);
+        if (up_to != nil)
+        {
+            for (var i = list.size; i < up_to; ++i)
+                list.push(Data());
+        }
+        return list;
+    }
+
+
+
+
+
+
+    function insert(course_code, board_type, cp, dp, best_score, up_to, edit_course_ranking_id)
+    {
+
+        initialize(course_code, edit_course_ranking_id);
+
+
+        var data = Data();
+        data.create(cp, dp, best_score);
+
+        var table_name = get_table_name(course_code, board_type, edit_course_ranking_id);
+
+
+        DBUtil::insert(table_name, data);
+
+
+
+
+        var sql = "SELECT MAX(id) FROM " + table_name;
+        var res = SQLITE.executeQuery(sql);
+        var id = res.size == 0 ? nil : res[0][0];
+
+
+
+        if (up_to != nil)
+        {
+            sql = "DELETE FROM " + table_name + " WHERE id NOT IN " +
+                "(SELECT id FROM " + table_name + " ORDER BY best_score DESC limit %{up_to})";
+            res = SQLITE.execute(sql);
+        }
+
+
+        var order = -1;
+        var list = getList(course_code, board_type, up_to, edit_course_ranking_id);
+        for (var i = 0; i < list.size; ++i)
+        {
+            if (list[i].id == id)
+            {
+                order = i;
+                break;
+            }
+        }
+        return order;
+    }
+
+
+
+
+    function clear(course_code, board_type, edit_course_ranking_id)
+    {
+        var table_name = get_table_name(course_code, board_type, edit_course_ranking_id);
+        DBUtil::dropTable(table_name);
+        DBUtil::initializeTable(table_name, TABLE_VERSION);
+    }
+
+
+
+
+    function delete(course_code, board_type, edit_course_ranking_id)
+    {
+        var table_name = get_table_name(course_code, board_type, edit_course_ranking_id);
+        DBUtil::dropTable(table_name);
+    }
+}

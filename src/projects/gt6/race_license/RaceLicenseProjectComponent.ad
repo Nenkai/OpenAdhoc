@@ -1,0 +1,758 @@
+module RaceLicenseProjectComponent::Icon::Weather
+{
+    method onRealize(manager)
+    {
+        self.hidden.visible = false;
+        self.icon.image_path = "";
+    }
+        
+    method setIcon(info, hour)
+    {
+        var materials = [];
+        if (info.ChangeWeather)
+            materials.push("random");
+
+        if (nil == hour)
+        {
+            var datetime = pdistd::MTime();
+            datetime.setForCourse(info.StartDateTime);
+            hour = datetime.hour;
+        }
+
+        var is_day = hour >= 6 && hour < 18;
+        if (is_day)
+            materials.push("day");
+        else
+            materials.push("night");
+
+        switch (info.Condition)
+        {
+            case gtengine::CourseCondition::DRY:
+                if (info.ChangeWeather)
+                    materials.push("rain");
+                break;
+
+            case gtengine::CourseCondition::WET:
+                materials.push("rain");
+                break;
+
+            case gtengine::CourseCondition::SNOW:
+                materials.push("snow");
+                break;
+        }
+
+        var icon_name = materials.join("_");
+        self.icon.image_path = "/image/common/weather/%s.dds".format(icon_name);
+    }
+}
+
+module RaceLicenseProjectComponent::Quick::Info2
+{
+    attribute animation_thread;
+    attribute play_module;
+
+    method show()
+    {
+        self.Opacity.reverse = true;
+        self.Opacity.start();
+        var begin = pdistd::GetSystemTimeMicroSecond();
+        while (self.opacity < 1.0)
+        {
+            ORG.setEffectFader(1 - self.opacity);
+
+            var now = pdistd::GetSystemTimeMicroSecond();
+            var diff = (now - begin) / 1000000;
+            if (diff > self.Opacity.total_time)
+                break;
+
+            yield;
+        }
+    }
+
+    method hide()
+    {
+        self.Opacity.reverse = false;
+        self.Opacity.start();
+        var begin = pdistd::GetSystemTimeMicroSecond();
+        while (self.opacity > 0.0)
+        {
+            ORG.setEffectFader(1 - self.opacity);
+
+            var now = pdistd::GetSystemTimeMicroSecond();
+            var diff = (now - begin) / 1000000;
+            if (diff > self.Opacity.total_time)
+                break;
+
+            yield;
+        }
+    }
+
+    method finalize(context)
+    {
+        self.play_module = nil;
+        if (nil != self.animation_thread)
+        {
+            self.animation_thread.terminate();
+            self.animation_thread = nil;
+        }
+
+        Footer.finalize(context);
+    }
+
+    method startAnimation(context, start_duration)
+    {
+        var root = self.root_window;
+        if (nil != root && root.isClosed())
+            return;
+
+        self.animation_thread = Thread((context) => {
+            Thread::Sleep(start_duration);
+            Info2::Header.beginAnimation(context, start_duration);
+        }, context);
+
+        self.animation_thread.start();
+        yield;
+    }
+
+    method rewind(context)
+    {
+        if (nil != self.play_module)
+        {
+            self.play_module.rewind(context);
+        }
+    }
+
+    method fastforward(context)
+    {
+        if (nil != self.play_module)
+        {
+            self.play_module.fastforward(context);
+        }
+    }
+
+    method setPlayModule(p)
+    {
+        self.play_module = p;
+    }
+
+    module Header
+    {
+        attribute next_animation_widget_list;
+
+        function getRaceMenuScalarInterpolator()
+        {
+            if (nil != RaceMenuUtil::sAppendedParent && nil != RaceMenuUtil::sAppendedParent["SBox0"])
+            {
+                return RaceMenuUtil::sAppendedParent::SBox0::ScalarInterpolator;
+            }
+
+            return nil;
+        }
+
+        function disablePadEvent(context)
+        {
+            CursorUtil::setCursor(ContextMain, "wait");
+            ContextMain.event_mask = 5;
+            ContextMain.disableInput();
+            ContextMain.filterKeyEvent();
+
+            var i = getRaceMenuScalarInterpolator();
+            if (nil != i)
+            {
+                i.setStartDuration(0, 1.7);
+                i.setInterpolationPeriod(0, 0.8);
+            }
+        }
+
+        function enablePadEvent(context)
+        {
+            CursorUtil::setCursor(ContextMain, "cursor_chrome");
+            ContextMain.event_mask = 5;
+            ContextMain.enableInput();
+
+            RaceMenuUtil::setEnableButton(true);
+
+            context.cursor_visible = true;
+
+            var i = getRaceMenuScalarInterpolator();
+            if (nil != i)
+            {
+                i.on_effect_end = nil;
+                i.setStartDuration(0, 0);
+                i.setInterpolationPeriod(0, 0.25);
+                i.warp();
+                RaceMenuUtil::sIsActivated = true;
+            }
+        }
+
+        method beginAnimation(context, start_duration)
+        {
+            var list = [
+                self.bg::Opacity,
+                self.Color::Base::EffectWipe::WipeProgress,
+                self.Color::slash_base::EffectWipe::WipeProgress,
+                self.Color::LeftEdge::Opacity,
+                self.InformationTitle::Opacity,
+                self.EventTitle::Opacity,
+                self.ModeLogo::ParallelActor,
+                Body::Stretch_bg.Opacity,
+            ];
+
+            var i = start_duration > 0 ? getRaceMenuScalarInterpolator() : nil;
+            if (nil != i)
+            {
+                disablePadEvent(context);
+                list.push(i);
+            }
+            else
+                enablePadEvent(context);
+
+            foreach (var a in list)
+            {
+                a.restart();
+            }
+
+            Body::Stretch_bg.Opacity.on_effect_end = self.endAnimation;
+            if (nil != i)
+                i.on_effect_end = enablePadEvent;
+        }
+
+        method endAnimation(context)
+        {
+            Body::Stretch_bg.Opacity.on_effect_end = nil;
+            Header.InformationTitle::Opacity.setInterpolationPeriod(0, 0);
+
+            if (nil != self.next_animation_widget_list)
+            {
+                foreach (var w in self.next_animation_widget_list)
+                    w.beginAnimation(context);
+            }
+
+            Footer.beginAnimation(context);
+            Help::Opacity.restart();
+        }
+    }
+
+    module Footer
+    {
+        method beginAnimation(context)
+        {
+            var list = [self.Height];
+            foreach (var a in list)
+            {
+                a.restart();
+            }
+
+            self.Height.on_effect_end = self.endAnimation;
+
+        }
+
+        method endAnimation(context)
+        {
+            self.Height.on_effect_end = nil;
+            var hbox_list = [self.HBox::Tips::HBox];
+
+            if (nil != self.HBox::Tips["HBox2"])
+            {
+                hbox_list.push(self.HBox::Tips::HBox2);
+            }
+
+            foreach (var hbox in hbox_list)
+            {
+                hbox.X.start_value = self.HBox::Tips.w;
+                hbox.X.end_value = -hbox.w;
+            }
+
+            foreach (var hbox in hbox_list)
+            {
+                hbox.X.restart();
+            }
+        }
+
+        method finalize(context)
+        {
+            self.HBox::Tips::HBox.clearChildren(context);
+            if (nil != self.HBox::Tips["HBox2"])
+            {
+                self.HBox::Tips::HBox2.clearChildren(context);
+            }
+        }
+    }
+
+    module Body
+    {
+        module StartingGrid
+        {
+            attribute next_animation_widget;
+            attribute actor_list;
+            attribute first_animation;
+            attribute title_keyword = "STARTING_GRID";
+            attribute thread0;
+
+            method initialize(context, gp, course_info)
+            {
+                var rp = gp.event.race_parameter;
+                var laps = rp.complete_type == gtengine::CompleteType::BYLAPS ? rp.race_limit_laps : 0;
+                self.TextInfo.Lap::Value.text = laps > 0 ? laps : "--";
+                self.TextInfo.StartType::label.text = getRaceTypeName(context, gtengine::StartType, rp.start_type);
+
+                if (course_info.Scenery)
+                {
+                    self.TextInfo.Distance::Value.text = "--";
+                    var me = self;
+
+                    self.thread0 = Thread((context) => 
+                    {
+                        var length = 0.0;
+                        while (length <= 0.0)
+                        {
+                            var length0 = ORG.getCourseLength();
+                            if (length0 != length)
+                                length = length0;
+
+                            Thread::Sleep(1.0);
+                        }
+
+                        me.TextInfo.Distance::Value.text = pdiext::MUnit::GetCourseLengthString(laps * length);
+                    }, context);
+
+                    self.thread0.start();
+                    yield;
+                }
+                else 
+                {
+                    self.TextInfo.Distance::Value.text = laps > 0 ? pdiext::MUnit::GetCourseLengthString(course_info.Length * laps) : "--";
+                }
+                
+                self.TextInfo.Distance::Unit.text = manager.translate("Unit", pdiext::MUnit::GetUnitKeywordOfCourseLength());
+                self.first_animation = true;
+            }
+
+            method beginAnimation(context)
+            {
+                Info2.setPlayModule(nil);
+                Body::Opacity.on_effect_end = nil;
+
+                var title = manager.translate("QuickMenu", title_keyword);
+                var title_changed = Header.InformationTitle.text != title;
+                Header.InformationTitle.text = title;
+                Header.InformationTitle::Opacity.setStartDuration(0, 0);
+                Header.InformationTitle::Opacity.setEndDuration(1, 0);
+
+                var total_time = StartingGrid.Opacity.total_time;
+                var title_time = total_time - (Header.InformationTitle::Opacity.total_time - Header.InformationTitle::Opacity.getEndDuration(0));
+                if (self.first_animation)
+                {
+                    title_time += Stretch_bg.Opacity.total_time;
+                    self.first_animation = false;
+                }
+
+                Header.InformationTitle::Opacity.setEndDuration(0, title_time);
+
+                self.actor_list = [];
+                
+                var list = [
+                    StartingGrid.Opacity,
+                    StartingGrid.TextInfo::Opacity,
+                ];
+
+                var o = Header.InformationTitle::Opacity;
+                self.actor_list.push(o);
+
+                if (title_changed)
+                {
+                    o.restart();
+                }
+                else
+                {
+                    o.start();
+                }
+
+                foreach (var a in list)
+                {
+                    self.actor_list.push(a);
+                    a.restart();
+                }
+
+                StartingGrid.Opacity.on_effect_end = self.endAnimation;
+
+                var start_duration = 0.0;
+                if (StartingGrid.FrameL.defined("Board"))
+                {
+                    var listbox = StartingGrid.FrameL::Board::ListBox;
+                    for (var i = 0; i < listbox.getItemCount(); i++)
+                    {
+                        var w = listbox.getItemWidget(i, context);
+                        w.Actors::Rotate3D.setStartDuration(0, start_duration);
+                        w.Actors::Opacity.setStartDuration(0, start_duration);
+                        self.actor_list.push(w.Actors);
+                        w.Actors.restart();
+                        
+                        start_duration += 0.2;
+                    }
+                }
+
+                if (StartingGrid.FrameR.defined("Board"))
+                {
+                    var listbox = StartingGrid.FrameR::Board::ListBox;
+                    for (var i = 0; i < listbox.getItemCount(); i++)
+                    {
+                        var w = listbox.getItemWidget(i, context);
+                        w.Actors::Rotate3D.setStartDuration(0, start_duration);
+                        w.Actors::Opacity.setStartDuration(0, start_duration);
+                        self.actor_list.push(w.Actors);
+                        w.Actors.restart();
+                        
+                        start_duration += 0.2;
+                    }
+                }
+
+                Info2.setPlayModule(self);
+
+                Body::Opacity.reverse = true;
+                Body::Opacity.start();
+            }
+
+            method endAnimation(context)
+            {
+                StartingGrid.Opacity.on_effect_end = nil;
+                if (nil != self.next_animation_widget)
+                {
+                    self.next_animation_widget.beginAnimation(context);
+                }
+            }
+
+            method rewind(context)
+            {
+                StartingGrid.Opacity.on_effect_end = nil;
+                Body::Opacity.reverse = false;
+                Body::Opacity.start();
+
+                Body::Opacity.on_effect_end = self.beginAnimation;
+            }
+
+            method fastforward(context)
+            {
+                StartingGrid.Opacity.on_effect_end = nil;
+
+                foreach (var a in self.actor_list)
+                    a.warp();
+
+                Body::Opacity.reverse = false;
+                Body::Opacity.start();
+    
+                Body::Opacity.on_effect_end = self.endAnimation;
+            }
+
+            method finalize(context)
+            {
+                if (nil != self.thread0)
+                {
+                    self.thread0.terminate();
+                    self.thread0 = nil;
+                }
+            }
+        }
+
+        module CourseInformation
+        {
+            attribute next_animation_widget;
+            attribute actor_list;
+            attribute course_info;
+            attribute thread0;
+
+            method setCourseMakerTitle(context, course_id, textface)
+            {
+                textface.text = "";
+                if (CourseMakerUtil::isSampleCourse(course_id))
+                {
+                    var ted = MENUDB.executeQuery1R1C("SELECT Ted FROM t_coursemaker_sample WHERE CourseID = ?", [course_id]);
+                    if (ted != nil)
+                    {
+                        textface.text = manager.translate("CourseMaker", "SAMPLE_%{ted.upcase()}_TITLE");
+                    }
+                }
+                else
+                {
+
+                    var user_id = Grim2.getLoginUserId();
+                    var course_list = [];
+
+                    main::Course.requestList(user_id, function(args) 
+                    {
+                        var [context, request] = args;
+                        if (request.isDone())
+                        {
+                            var course_list = main::Course.decodeCourseList(request);
+                            foreach (var course in course_list)
+                            {
+                                if (course["course_id"] == course_id)
+                                {
+                                    textface.text = course["title"];
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+
+            method initialize(context, gp, course_info)
+            {
+                self.course_info = course_info;
+
+                var length_unit = manager.translate("Unit", pdiext::MUnit::GetUnitKeywordOfCourseLength());
+
+                if (nil != self["MapClip"])
+                {
+                    self.MapClip.initialize(context, gp, course_info);
+                }
+
+                self.Logo.image_path = "/piece/gt6/course_logo_L/%{course_info.Logo}.img";
+                if (course_info.Scenery)
+                {
+                    setCourseMakerTitle(context, gp.event.track.generated_course_id, self.Detail::Name::label);
+                }
+                else
+                {
+                    self.Detail.Name::label.text = manager.translate("CourseName", course_info.Name);
+                }
+
+                var flag = course_info.CountryFlag.downcase();
+                self.Detail.Name::Flag.image_path = "/piece/flag_ranking/%{flag}.img";
+
+                if (course_info.Scenery)
+                {
+                    self.Detail.Category::Title.text = manager.translate("QuickMenu", "THEME");
+                    self.Detail.Category::label.text = manager.translate("CourseName", course_info.Name);
+                }
+                else
+                {
+                    self.Detail.Category::label.text = manager.translate("CourseData", "CATEGORY_" + course_info.CourseCategory);
+                }
+
+                self.Detail.Length::HBox::Value.text = SpecDatabaseUtil::Course::getLengthText(course_info, false);
+                self.Detail.Length::HBox::unit.text = length_unit;
+                self.Detail.StraightLength::HBox::Value.text = SpecDatabaseUtil::Course::getLongestStraightText(course_info, false);
+                self.Detail.StraightLength::HBox::unit.text = length_unit;
+                self.Detail.Height::HBox::Value.text = SpecDatabaseUtil::Course::getHeightText(course_info, false);
+                self.Detail.Height::HBox::unit.text = manager.translate("Unit", pdiext::MUnit::GetUnitKeywordOfCourseHeight());
+                self.Detail.Condition::Time_Temp::Time::hours.text = "--";
+                self.Detail.Condition::Time_Temp::Time::minutes.text = "--";
+                self.Detail.Condition::Time_Temp::Temperature::temp.text = "--";
+                self.Detail.Condition::Time_Temp::Temperature::unit.text = "--";
+                self.Detail.Condition::Time_Temp::Temperature::unit.text = manager.translate("Unit", pdiext::MUnit::GetUnitOfTemperature().upcase());
+                self.Detail.Condition::Water::value.text = "--";
+
+                var lang = pdistd::MLocale::getLanguage();
+                if ("TR" == lang)
+                {
+                    self.Detail.Condition::Water.movetoLast(self.Detail.Condition::Water::value);
+                }
+
+                updateWeatherInfo(context);
+
+                if (course_info.Scenery)
+                {
+                    var me = self;
+
+                    self.thread0 = Thread((context) => 
+                    {
+                        var length = SpecDatabaseUtil::INVALID_STRING;
+                        var straight = SpecDatabaseUtil::INVALID_STRING;
+                        var height = SpecDatabaseUtil::INVALID_STRING;
+                        
+                        while (SpecDatabaseUtil::INVALID_STRING == length ||
+                            SpecDatabaseUtil::INVALID_STRING == straight ||
+                            SpecDatabaseUtil::INVALID_STRING == height)
+                        {
+                            var length0 = SpecDatabaseUtil::Course::getLengthText(me.course_info, false);
+                            if (length0 != length)
+                                length = length0;
+
+                            var straight0 = SpecDatabaseUtil::Course::getLongestStraightText(me.course_info, false);
+                            if (straight0 != straight)
+                                straight = straight0;
+
+                            var height0 = SpecDatabaseUtil::Course::getHeightText(me.course_info, false);
+                            if (height0 != height)
+                                height = height0;
+    
+                            Thread::Sleep(1.0);
+                        }
+
+                        me.Detail.Length::HBox::Value.text = length;
+                        me.Detail.StraightLength::HBox::Value.text = straight;
+                        me.Detail.Height::HBox::Value.text = height;
+
+                    }, context);
+
+                    self.thread0.start();
+                    yield;
+                }
+            }
+
+            method finalize(context)
+            {
+                if (nil != self["MapClip"])
+                {
+                    self.MapClip.finalize(context);
+                }
+
+                if (nil != self.thread0)
+                {
+                    self.thread0.terminate();
+                    self.thread0 = nil;
+                }
+            }
+
+            method updateWeatherInfo(context)
+            {
+                var course_condition = self.Detail::Condition;
+                var scene_time = ORG.getRace().getSceneTime();
+
+                if (nil != scene_time)
+                {
+                    var time_s = scene_time.getTime() + scene_time.getTimeAdjust();
+                    if (time_s < 0)
+                        time_s += 60 * 60 * 24;
+
+                    time_s = ((time_s + 59) / 60) * 60;
+
+                    var hour = (time_s / 3600) % 24;
+                    var minute = (time_s % 3600) / 60;
+                    var second = time_s % 60;
+
+                    course_condition.Time_Temp::Time::hours.text = "%02d".format(hour);
+                    course_condition.Time_Temp::Time::minutes.text = "%02d".format(minute);
+
+                    course_condition.WeatherIcon.setIcon(self.course_info, hour);
+                }
+
+                var scene = ORG.getRace().getScene();
+                if (nil != scene)
+                {
+                    var temperature = scene.getTemperature().toInt();
+                    course_condition.Time_Temp::Temperature::temp.text = temperature;
+                    var water = ((scene.getWaterRetentionRate(1) * 100.0) + 0.5).toInt();
+                    course_condition.Water::value.text = water; 
+                }
+            }
+
+            method beginAnimation(context)
+            {
+                Info2.setPlayModule(nil);
+                Body::Opacity.on_effect_end = nil;
+
+                updateWeatherInfo(context);
+
+                var title = manager.translate("QuickMenu", "COURSE_CONDITIONS");
+                var title_changed = Header.InformationTitle.text != title;
+                Header.InformationTitle.text = title;
+                Header.InformationTitle::Opacity.setStartDuration(0, 0);
+
+                var time = Header.InformationTitle::Opacity.getInterpolationPeriod(1);
+                Header.InformationTitle::Opacity.setInterpolationPeriod(0, time);
+                Header.InformationTitle::Opacity.setEndDuration(1, 1.5);
+
+                var total_time = Stretch_bg.Height.total_time;
+                var title_time = total_time - (Header.InformationTitle::Opacity.total_time - Header.InformationTitle::Opacity.getEndDuration(0));
+
+                Header.InformationTitle::Opacity.setEndDuration(0, title_time);
+
+                self.actor_list = [];
+
+                var list = [
+                    Stretch_bg.Height,
+                    self.Opacity,
+                    self.Detail.Name::X,
+                    self.Detail.Condition::Height,
+                    self.Detail.Condition::Time_Temp::Time::Opacity,
+                    self.Detail.Condition::Time_Temp::Temperature::Opacity,
+                    self.Detail.Condition::Water::Opacity,
+                    self.Detail.Condition::WeatherIcon::Opacity,
+                    self.Detail.Category::ParallelActor,
+                    self.Detail.Length::ParallelActor,
+                    self.Detail.StraightLength::ParallelActor,
+                    self.Detail.Height::ParallelActor,
+                ];
+
+                var o = Header.InformationTitle::Opacity;
+                self.actor_list.push(o);
+
+                if (title_changed)
+                    o.restart();
+                else
+                    o.start();
+
+                foreach (var a in list)
+                {
+                    self.actor_list.push(a);
+                    a.restart();
+                }
+
+                Stretch_bg.Height.on_effect_end = self.endAnimation;
+                Info2.setPlayModule(self);
+
+                Body::Opacity.reverse = true;
+                Body::Opacity.start();
+            }
+
+            method endAnimation(context)
+            {
+                Stretch_bg.Height.on_effect_end = nil;
+                if (nil != self.next_animation_widget)
+                {
+                    self.next_animation_widget.beginAnimation(context);
+                }
+            }
+
+            method rewind(context)
+            {
+                Stretch_bg.Height.on_effect_end = nil;
+
+                Body::Opacity.reverse = false;
+                Body::Opacity.start();
+
+                Body::Opacity.on_effect_end = self.beginAnimation;
+            }
+
+            method fastforward(context)
+            {
+                Stretch_bg.Height.on_effect_end = nil;
+
+                foreach (var a in self.actor_list)
+                {
+                    a.warp();
+                }
+
+                Body::Opacity.reverse = false;
+                Body::Opacity.start();
+
+                Body::Opacity.on_effect_end = self.endAnimation;
+            }
+        }
+    }
+}
+
+module RaceLicenseProjectComponent::Quick::CourseLogo
+{
+    method initialize(course_info)
+    {
+        self.image_path = "/piece/gt6/course_logo_L/%{course_info.Logo}.img";
+    }
+
+    method show()
+    {
+        self.Opacity.reverse = false;
+        self.Opacity.setInterpolationPeriod(0, 0.7);
+        self.Opacity.start();
+    }
+
+    method hide()
+    {
+        self.Opacity.reverse = true;
+        self.Opacity.setInterpolationPeriod(0, 0.25);
+        self.Opacity.start();
+    }
+}

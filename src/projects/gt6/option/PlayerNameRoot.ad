@@ -1,0 +1,225 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module PlayerNameRoot
+{
+    attribute thread;
+
+    method open(context)
+    {
+        var remain_count = self.getRemainCountChangePlayerName(context);
+        if (remain_count == nil)
+            return;
+
+        if (remain_count <= 0)
+        {
+            sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate(PlayerNameRoot, "Error_ChangeLimitOver"));
+            return;
+        }
+
+        SettingFrame.appear();
+        SequenceUtil::pushPage(context, self);
+    }
+
+    method close(context)
+    {
+        var delay_time = SettingFrame.hide();
+        SequenceUtil::popPage(context, self, delay_time);
+    }
+
+    method reflect(context)
+    {
+        var residence = GAME_STATUS.user_profile.residence;
+        SettingFrame::Pane::ScrolledBody::clip::space::NameF::Label::TextFace2.text = context.translate(PlayerNameRoot, "Label_CharLimit").build(12);
+        SettingFrame::Pane::ScrolledBody::clip::space::NameF::Text::input.value = residence.getPlayerFirstName();
+        SettingFrame::Pane::ScrolledBody::clip::space::NameL::Label::TextFace2.text = context.translate(PlayerNameRoot, "Label_CharLimit").build(12);
+        SettingFrame::Pane::ScrolledBody::clip::space::NameL::Text::input.value = residence.getPlayerLastName();
+    }
+
+    method apply(context)
+    {
+        if (!self.updatePlayerName(context, getFullNameShort(context)))
+        {
+            sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate("Gallery", "ERROR_UPLOAD"));
+            return false;
+        }
+
+        var residence = GAME_STATUS.user_profile.residence;
+
+        var firstname = SettingFrame::Pane::ScrolledBody::clip::space::NameF::Text::input.value;
+        var lastname = SettingFrame::Pane::ScrolledBody::clip::space::NameL::Text::input.value;
+        residence.setPlayerName(firstname, lastname);
+        GAME_STATUS.user_profile.context.player_name_filtered = false;
+        SaveDataUtilGT6::saveAutoForGame(context);
+        return true;
+    }
+
+    method onInitialize(context)
+    {
+        reflect(context);
+
+        self.thread = Thread(() => 
+        {
+            for (;;)
+            {
+                var residence = GAME_STATUS.user_profile.residence;
+                var current_name_f = residence.getPlayerFirstName();
+                var current_name_l = residence.getPlayerLastName();
+                var new_name_f = SettingFrame::Pane::ScrolledBody::clip::space::NameF::Text::input.value;
+                var new_name_l = SettingFrame::Pane::ScrolledBody::clip::space::NameL::Text::input.value;
+                
+                var not_change = new_name_f == current_name_f && new_name_l == current_name_l;
+                var empty = new_name_f == "" || new_name_l == "";
+                
+                SettingFrame::Pane::Buttons::OK.insensitive = not_change || empty;
+
+                Thread::Sleep(0.1f);
+            }
+        });
+        self.thread.start();
+
+        PlayerNameRoot.setFocus(SettingFrame::Pane::ScrolledBody::clip::space::NameF::Text::input);
+    }
+
+    method onFinalize(context)
+    {
+        if (self.thread != nil)
+        {
+            self.thread.terminate();
+            self.thread = nil;
+        }
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        PlayerNameRoot.setFocus(SettingFrame::Pane::Buttons::Cancel);
+        return 2;
+    }
+
+    method getFullName(context)
+    {
+        var name_f = SettingFrame::Pane::ScrolledBody::clip::space::NameF::Text::input.value;
+        var name_l = SettingFrame::Pane::ScrolledBody::clip::space::NameL::Text::input.value;
+        var full_name = "%{name_f} %{name_l}";
+        return full_name;
+    }
+
+    method getFullNameShort(context)
+    {
+        var name_f = SettingFrame::Pane::ScrolledBody::clip::space::NameF::Text::input.value;
+        var name_l = SettingFrame::Pane::ScrolledBody::clip::space::NameL::Text::input.value;
+        var full_name = "%s. %s".format(name_f[0].upcase(), name_l);
+        return full_name;
+    }
+
+    method makeSureLogin(context)
+    {
+        if (!LoginUtil::makeSureLogin(context, true))
+            return false;
+
+        return true;
+    }
+
+    method getRemainCountChangePlayerName(context)
+    {
+        if (!makeSureLogin(context))
+            return nil;
+
+        ContextMain.disableInput();
+
+        var request = UserProfile2.requestUserProfile(NP.getOnlineId(), (args) => {});
+        if (Grim2Util::join(context, request))
+        {
+            ContextMain.enableInput();
+            var u = UserProfile2.decodeUserProfile(request);
+            return u["nickname_change"];
+        }
+
+        ContextMain.enableInput();
+        return nil;
+    }
+
+    method updatePlayerName(context, player_name)
+    {
+        if (!makeSureLogin(context))
+            return nil;
+
+        ContextMain.disableInput();
+
+        var request = UserProfile2.requestUpdateNickname(player_name, () => {});
+        if (Grim2Util::join(context, request))
+        {
+            ContextMain.enableInput();
+            return main::UserProfile2.decodeResult(request);
+        }
+
+        ContextMain.enableInput();
+        return false;
+    }
+
+    module SettingFrame::Pane::Buttons::OK
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+    
+            var remain_count = PlayerNameRoot.getRemainCountChangePlayerName(context);
+            if (remain_count == nil)
+                return 2;
+    
+            if (remain_count <= 0)
+            {
+                sound.play("disable");
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate(PlayerNameRoot, "Error_ChangeLimitOver"));
+                return 2;
+            }
+    
+            var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, 
+                manager.translate(PlayerNameRoot, "Before_ChangePlayerName").build(remain_count, PlayerNameRoot.getFullName(context), PlayerNameRoot.getFullNameShort(context)));
+            if (res)
+            {
+                if (!PlayerNameRoot.apply(context))
+                    return 2;
+    
+                remain_count--;
+                DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+                    manager.translate(PlayerNameRoot, "After_ChangePlayerName").build(remain_count));
+                PlayerNameRoot.close(context);
+            }
+    
+            return 2;
+        }
+    }
+
+    module SettingFrame::Pane::Buttons::Cancel
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+            PlayerNameRoot.close(context);
+            return 2;
+        }
+
+        method onCancel(context)
+        {
+            main::sound.play("cancel");
+            PlayerNameRoot.close(context);
+            return 2;
+        }
+    }
+}

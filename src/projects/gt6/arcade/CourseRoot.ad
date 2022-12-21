@@ -1,0 +1,590 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CourseRoot
+{
+    hidden.visible = false;
+
+    attribute modal_;
+    attribute result_;
+    attribute courses_;
+    attribute category_;
+    attribute focus_index_ = 0;
+
+    method open(context, category)
+    {
+        CourseRoot.category_ = category;
+
+        var courses;
+        if (GAME_STATUS.user_profile.option.kiosk_limit_course &&
+            GAME_STATUS.user_profile.option.hasLimitedCourse())
+        {
+            courses = GAME_STATUS.user_profile.option.getLimitedCourses();
+        }
+        else if (category == COURSE_CATEGORY::EDIT)
+        {
+            if (!LoginUtil::makeSureLogin(context, true))
+            {
+                LoginUtil::setPresence(false);
+                return nil;
+            }
+
+            LoginUtil::setPresence(true);
+
+            var user_id = Grim2.getLoginUserId();
+
+            var request = main::Course.requestList(user_id, (args) => {});
+            var course_list;
+            if (Grim2Util::join(context, request))
+            {
+                course_list = main::Course.decodeCourseList(request);
+            }
+
+            courses = [];
+            foreach (var course in course_list)
+            {
+                if (course["status"] != 0)
+                    courses.push(course);
+            }
+
+            var samples = CourseMakerUtil::getSampleCourseList(context);
+            courses += samples;
+
+            if (courses == nil || courses.empty())
+            {
+                ERROR(context, "CommonArcadeMode", "USER_CREATE_COURSE_NOT_FOUND");
+                return nil;
+            }
+        }
+        else
+        {
+            var where_clause = "WHERE Category=?";
+            var params = [CourseRoot.category_];
+
+            if (!ArcadeProject::IsDevelop(context) || !KeyValueUtil::isCourseUnlock("goodwood_fos"))
+            {
+                where_clause += " AND Label<>?";
+                params.push("goodwood_fos");
+            }
+
+            if (!KeyValueUtil::isCourseUnlock("andalusia_01"))
+            {
+                where_clause += " AND Label<>?";
+                params.push("andalusia_01");
+            }
+
+            courses = MENUDB.executeQuery1C("SELECT Code FROM t_arcade_course %{where_clause} ORDER BY SortOrder ASC", params);
+        }
+
+        self.courses_ = courses;
+        if (self.courses_ == nil)
+            return nil;
+
+        if (self.courses_.size == 1 && category != COURSE_CATEGORY::EDIT)
+        {
+            if (gSequenceCondition.progression)
+                return self.courses_[0];
+            else
+                return nil;
+        }
+
+        self.result_ = nil;
+        self.modal_ = SequenceUtil::ModalPage(context, self);
+        self.modal_.open();
+        return self.result_;
+    }
+
+    method close(context)
+    {
+        if (self.modal_ != nil)
+        {
+            self.Fade.backward();
+            self.Fade.start();
+            self.modal_.close(self.Fade.total_time);
+            self.modal_ = nil;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        self.Fade.forward();
+        self.Fade.restart();
+
+        var page_count = (self.courses_.size + ((5 * 2) - 1)) / (5 * 2);
+        var x = page_count * 5;
+        var y = 2;
+
+        IconBox.setItemTemplate(context, hidden::Item);
+        IconBox.setItemCount(x, y);
+        IconBox.setPageItemCount(5, 2);
+        IconBox.focus_index = self.focus_index_;
+
+        var adj = main::menu::MAdjustment();
+        
+        HScrollArrow.adjustment = adj;
+        IconBox.h_adjustment = adj;
+        HScrollPointer.setItemCount(context, page_count);
+        HScrollPointer.setPointer(IconBox.getCurrentPageIndex());
+
+        CourseRoot.setFocus(IconBox);
+    }
+
+    module IconBox
+    {
+        method getCurrentPageIndex()
+        {
+            return self.focus_index / (5 * 2);
+        }
+
+        method getInitializedWidget(context, i)
+        {
+            if (i < 0)
+                return nil;
+
+            var w = self.getItemWidget(i);
+            if (w == nil)
+            {
+                w = self.getItemWidget(i, context);
+
+                if (i < CourseRoot.courses_.size)
+                {
+                    if (CourseRoot.category_ == COURSE_CATEGORY::EDIT)
+                    {
+                        var data = CourseRoot.courses_[i];
+                        w.init_edited_course(context, data, i);
+                    }
+                    else
+                    {
+                        var course = CourseRoot.courses_[i];
+                        w.init(context, course, i);
+                    }
+                }
+                else
+                {
+                    w.initBlank(context, i);
+                    return nil;
+                }
+            }
+
+            return w;
+        }
+
+        method onActivate(context)
+        {
+            var w = getInitializedWidget(context, self.focus_index);
+            if (!w.is_initialized_)
+                return 2;
+
+            if (w.is_blank_)
+            {
+                sound.play("disable");
+                return 2;
+            }
+
+            if (w.cannot_select_)
+            {
+                sound.play("disable");
+                return 2;
+            }
+
+            sound.play("ok");
+
+            CourseRoot.focus_index_ = self.focus_index;
+            CourseRoot.result_ = w.info_.ID;
+
+            if (w.edited_course_data_ != nil)
+            {
+                gSequenceCondition.edited_course_data = w.edited_course_data_;
+            }
+
+            CourseRoot.close(context);
+            return 2;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            CourseRoot.focus_index_ = 0;
+            CourseRoot.result_ = nil;
+            CourseRoot.close(context);
+            return 2;
+        }
+
+        method onFocusNotify(context, new_index, old_index)
+        {
+            if (new_index != nil)
+            {
+                var w = self.getInitializedWidget(context, new_index);
+                if (w != nil)
+                    w.focus_enter(context);
+
+                HScrollPointer.setPointer(new_index / (5 * 2));
+            }
+
+            if (old_index != nil)
+            {
+                var w = self.getInitializedWidget(context, old_index);
+                if (w != nil)
+                    w.focus_leave(context);
+            }
+
+            return 1;
+        }
+
+        method onVisibleNotify(context, indexes)
+        {
+            foreach (var i in indexes)
+            {
+                if (self.getItemVisible(i))
+                    self.getInitializedWidget(context, i);
+                else
+                    self.setItemWidget(i, context, nil);
+            }
+        }
+
+        method onKeyPress(context, event)
+        {
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L1: // Go left one page
+                    var index = self.focus_index - (5 * 2);
+                    if (index < 0)
+                        return 2;
+
+                    sound.play("cursor");
+                    self.focus_index = index;
+                    return 2;
+                   
+                case CELL_PAD_CTRL_R1: // Go right one page
+                    var index = self.focus_index + (5 * 2);
+                    var index_max = self.getItemCount() - 1;
+                    if (index > index_max)
+                        return 2;
+
+                    sound.play("cursor");
+                    self.focus_index = index;
+                    return 2;
+            }
+
+            return 0;
+        }
+    }
+
+    module hidden::Item
+    {
+        attribute info_;
+        attribute is_blank_ = false;
+        attribute is_initialized_ = false;
+        attribute cannot_select_ = false;
+        attribute edited_course_data_;
+
+        method getCourseFullName(context, info)
+        {
+            if (self.edited_course_data_ == nil)
+                return SpecDatabaseUtil::getCourseFullName(context, info);
+            else
+            {
+                var data = self.edited_course_data_;
+                var course_name = data["title"];
+                if (course_name == "")
+                    course_name = "--";
+
+                if (info.ChangeWeather)
+                    course_name += " / " + manager.translate("CourseData", "track_change_weather");
+                
+                if (info.ChangeTime)
+                    course_name += " / " + manager.translate("CourseData", "track_change_time");
+
+                return course_name;
+            }
+        }
+
+        method getCourseSpecText(context, info)
+        {
+            if (self.edited_course_data_ == nil)
+                return SpecDatabaseUtil::getCourseSpecText(context, info);
+            else
+            {
+                var course_name = getCourseFullName(context, info);
+                var country_str = info.CountryFlag != "-" ? info.CountryFlag.upcase() : "PDI";
+                var country_txt = manager.translate("Country", country_str);
+                var length_txt = pdiext::MUnit::GetCourseLengthString(self.edited_course_data_["length"], true);
+                var straight_txt = pdiext::MUnit::GetCourseLengthString(self.edited_course_data_["straight"], true);
+                var elevation_txt = pdiext::MUnit::GetCourseHeightString(self.edited_course_data_["height"], true);
+                var corner_txt = self.edited_course_data_["corners"];
+                var format = manager.translate("SpecFormat", "course_spec_gt6");
+                var course_spec = format.build(course_name, 
+                    country_txt, 
+                    length_txt, 
+                    elevation_txt,
+                    straight_txt,
+                    corner_txt);
+
+                return course_spec;
+            }
+        }
+
+        method focus_enter(context)
+        {
+            if (is_blank_)
+            {
+                CourseRoot::ToolTip::tip.value = "";
+                return;
+            }
+
+            var actors = [
+                self.Board::ScaleXY,
+                self.Board::Base::Cover::Fade,
+                self.Board::Base::FocusFrame::Fade,
+                self.Reflect::ScaleX
+            ];
+
+            foreach (var actor in actors)
+            {
+                actor.forward();
+                actor.start();
+            }
+
+            if (self.info_ == nil)
+                return;
+
+            CourseRoot::ToolTip::tip.value = getCourseSpecText(context, self.info_);
+        }
+
+        method focus_leave(context)
+        {
+            if (is_blank_)
+                return;
+
+            var actors = [
+                self.Board::ScaleXY,
+                self.Board::Base::Cover::Fade,
+                self.Board::Base::FocusFrame::Fade,
+                self.Reflect::ScaleX
+            ];
+
+            foreach (var actor in actors)
+            {
+                actor.backward();
+                actor.start();
+            }
+        }
+
+        method setVisibleReflect(item_index)
+        {
+            self.Reflect.visible = item_index % (5 * 2) >= (5 * 2 / 2);
+        }
+
+        method initBlank(context, item_index)
+        {
+            self.Board::Base::Cover.visible = false;
+            self.setVisibleReflect(item_index);
+            self.is_blank_ = true;
+        }
+
+        method onLoad(context)
+        {
+            self.CourseName.text = "";
+            var board = self.Board;
+
+            board.Base::CourseImage.image_path = "";
+            board.Logo.image_path = "";
+            board.Map.image_path = "";
+            board.Map2.image_path = "";
+            board.Length.text = "";
+            board.StartTime.text = "";
+            board.Icons::WeatherS.visible = false;
+            board.Icons::ChangeTimeS.visible = false;
+            board.Icons::Reverse.visible = false;
+            board.Block.visible = false;
+            board.CountryFlag.image_path = "";
+        }
+
+        method onFinalize(context)
+        {
+            var board = self.Board;
+            board.Base::CourseImage.on_delay_load_complete = nil;
+            board.Logo.on_delay_load_complete = nil;
+            board.Map.on_delay_load_complete = nil;
+            board.Map2.on_delay_load_complete = nil;
+        }
+
+        method init(context, course, item_index)
+        {
+            var info = main::SPECDB.query1("SELECT ID, Label, Name, Logo, Map, LoadingBg, StartDateTime, ChangeWeather, ChangeTime, Condition,"
+                                            "Length, Straight, Elevation, Corner, CountryFlag, Reverse, DriftOk FROM COURSE WHERE ID=?", [course]);
+            
+            self.info_ = info;
+            self.CourseName.text = getCourseFullName(context, info);
+
+            var board = self.Board;
+
+            var mtd_end_load_image = method(context) 
+            {
+                if (context == nil)
+                    return;
+
+                board.Base::CourseImage.FadeActor.restart();
+                board.Base::CourseImage.on_delay_load_complete = nil;
+            };
+
+            board.Base::CourseImage.on_delay_load_complete = *(self{mtd_end_load_image});
+            board.Base::CourseImage.image_path = "piece/gt6/course_img/%s.img".format(info.LoadingBg);
+
+            var mtd_end_load_logo = method (context) 
+            {
+                if (context == nil)
+                    return;
+
+                board.Logo.FadeActor.restart();
+                board.Logo.on_delay_load_complete = nil;
+            };
+
+            board.Logo.on_delay_load_complete = *(self{mtd_end_load_logo});
+            board.Logo.image_path = "piece/gt6/course_logo_M/%s.img".format(info.Logo);
+
+            var mtd_end_load_map = method (context)
+            {
+                if (context == nil)
+                    return;
+
+                board.Map.FadeActor.start();
+                board.Map.on_delay_load_complete = nil;
+            };
+
+            board.Map.on_delay_load_complete = *(self{mtd_end_load_map});
+            board.Map.image_path = "piece/course_map_L/%s.img".format(info.Map);
+
+            var datetime = pdistd::MTime();
+            datetime.setForCourse(info.StartDateTime);
+            var hour = datetime.hour;
+            var minute = datetime.minute;
+            board.StartTime.text = "%d:%02d".format(hour, minute);
+            board.StartTime.visible = false;
+            board.Length.text = pdiext::MUnit::GetCourseLengthString(info.Length, true);
+            board.CountryFlag.image_path = "piece/flag_ranking/%s.img".format(info.CountryFlag.downcase());
+            board.Icons::WeatherS.setIcon(info);
+            board.Icons::WeatherS.visible = true;
+            board.Icons::ChangeTimeS.setIcon(info);
+            board.Icons::ChangeTimeS.visible = board.Icons::ChangeTimeS.icon.visible;
+            board.Icons::Reverse.visible = info.Reverse;
+
+            var game_mode = gSequenceCondition.game_mode;
+            if (game_mode == gtengine::GameMode::DRIFT_ATTACK && !info.DriftOk)
+            {
+                board.Block.visible = true;
+                self.cannot_select_ = true;
+            }
+
+            var is_goodwood = info.Label == "goodwood_fos" || info.Label == "goodwood_fos_2014" || info.Label == "goodwood_fos_2015";
+            if (game_mode != gtengine::GameMode::TIME_ATTACK && is_goodwood)
+            {
+                board.Block.visible = true;
+                self.cannot_select_ = true;
+            }
+
+            self.setVisibleReflect(item_index);
+            self.is_blank_ = false;
+            self.is_initialized_ = true;
+        }
+
+        method init_edited_course(context, data, item_index)
+        {
+            self.edited_course_data_ = data;
+
+            var photo_id = data["photo_id"];
+
+            var board = self.Board;
+            var mtd_end_load_map = method (context)
+            {
+                if (context == nil)
+                    return;
+
+                board.Map2.FadeActor.start();
+                board.Map2.on_delay_load_complete = nil;
+            };
+            board.Map2.on_delay_load_complete = *(self{mtd_end_load_map});
+
+            if (CourseMakerUtil::isSampleCourse(data["course_id"]))
+                board.Map2.image_path = "/piece/gt6/coursemaker/%{photo_id}.img";
+            else
+            {
+                var image_path = Photo.getPngImagePath(photo_id);
+                if (pdistd::Exist(image_path))
+                {
+                    board.Map2.image_path = image_path;
+                }
+                else
+                {
+                    Photo.requestPngImage(photo_id, (args) => 
+                    {
+                        var [context, request] = args;
+                        if (request.isDone())
+                            board.Map2.image_path = image_path;
+                    });
+                }
+            }
+
+            board.Length.text = pdiext::MUnit::GetCourseLengthString(data["length"], true);
+            var scenery = data["theme"];
+            if (scenery != "")
+            {
+                var course = gtengine::MSpecDB::getCourseCode(scenery);
+                var info = main::SPECDB.query1("SELECT ID, Label, Logo, LoadingBg, StartDateTime, ChangeWeather, ChangeTime, Condition, CountryFlag"
+                                               " FROM COURSE WHERE ID=?", [course]);
+
+                self.info_ = info;
+                self.CourseName.text = getCourseFullName(context, info);
+
+                var board = self.Board;
+                var mtd_end_load_image = method (context)
+                {
+                    if (context == nil)
+                        return;
+    
+                    board.Base::CourseImage.FadeActor.restart();
+                    board.Base::CourseImage.on_delay_load_complete = nil;
+                };
+                board.Base::CourseImage.on_delay_load_complete = *(self{mtd_end_load_image});
+                board.Base::CourseImage.image_path = "piece/gt6/course_img/%s.img".format(info.LoadingBg);
+
+                var mtd_end_load_logo = method (context)
+                {
+                    if (context == nil)
+                        return;
+    
+                    board.Logo.FadeActor.restart();
+                    board.Logo.on_delay_load_complete = nil;
+                };
+                board.Logo.on_delay_load_complete = *(self{mtd_end_load_logo});
+                board.Logo.image_path = "piece/gt6/course_logo_M/%s.img".format(info.Logo);
+
+                var datetime = pdistd::MTime();
+                datetime.setForCourse(info.StartDateTime);
+                var hour = datetime.hour;
+                var minute = datetime.minute;
+                board.StartTime.text = "%d:%02d".format(hour, minute);
+                board.CountryFlag.image_path = "piece/flag_ranking/%s.img".format(info.CountryFlag.downcase());
+                board.Icons::WeatherS.setIcon(info);
+                board.Icons::WeatherS.visible = true;
+                board.Icons::ChangeTimeS.setIcon(info);
+                board.Icons::ChangeTimeS.visible = board.Icons::ChangeTimeS.icon.visible;
+            }
+
+            self.setVisibleReflect(item_index);
+            self.is_blank_ = false;
+            self.is_initialized_ = true;
+        }
+    }
+}

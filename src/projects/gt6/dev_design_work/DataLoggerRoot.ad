@@ -1,0 +1,639 @@
+
+
+
+
+
+
+
+
+
+
+
+
+static sDataLogger = main::gtengine::MDataLogger();
+static sColorPallet = [];
+
+module DataLoggerRoot
+{
+    hidden.visible = false;
+
+    function setColorPallet()
+    {
+        var color = [0xFA, 0xBA, 0x00];
+        sColorPallet.push(color);
+
+        color = [0x59, 0xE1, 0x83];
+        sColorPallet.push(color);
+
+        color = [0x4B, 0xE1, 0xFF];
+        sColorPallet.push(color);
+    }
+
+    function _exportDatalogger(context, replay_file, logger_file)
+    {
+        var replay_export = main::gtengine::MReplayExport();
+        DialogUtil::setProgress(context, replay_export.exportProgress);
+        replay_export.initialize(replay_file, logger_file);
+
+        foreach (var gps_info in MENUDB.query("SELECT * FROM t_real_course"))
+        {
+            var course_code = gtengine::MSpecDB::getCourseCode(gps_info.label);
+            if (replay_export.getCourseCode() == course_code)
+            {
+                replay_export.setRotateY(gps_info.rotate_y);
+                break;
+            }
+        }
+
+        replay_export.exportReplayData();
+        replay_export.finalize();
+        return true;
+    }
+
+    function _exportDataloggerCallback(context, success)
+    {
+        var skip = false;
+        if (success)
+        {
+            main::sound.play("ok");
+            context.wait(0.5f);
+            skip = true;
+        }
+
+        return skip;
+    }
+
+    function exportDatalogger(context, args)
+    {
+        var [replay, logger] = args;
+        var success = _exportDatalogger(context, replay, logger);
+        return [success, _exportDataloggerCallback];
+    }
+
+    function onInitialize(context)
+    {
+        context.pushEvent(menu::MScriptEvent(context, DataLoggerRoot, "postInitialize"));
+    }
+
+    method postInitialize(context)
+    {
+        var success = sDataLogger.initialize("/APP_DATA/replay/dlog0002DD.dat");
+        if (!success)
+            return;
+
+        var fastest_lap = sDataLogger.getFastestLap();
+        var total_lap_count = sDataLogger.getTotalLapCount();
+        var lap_time_string = [];
+
+        for (var lap_no = 1; lap_no < total_lap_count + 1; lap_no++)
+            lap_time_string.push(pdiext::GetRaceTimeString(sDataLogger.getLapTime(lap_no)));
+        
+        setColorPallet();
+        LapSelect::ListBox.setItemTemplate(context, hidden::Item);
+        LapSelect::ListBox.setItemCount(lap_time_string.size);
+
+        for (var i = 0; i < lap_time_string.size; i++)
+        {
+            var w = LapSelect::ListBox.getItemWidget(i, context);
+            w.TextFace.text = lap_time_string[i];
+
+            if (fastest_lap == i + 1)
+            {
+                w.defineAttribute("display", true);
+                LoggerCourseMap::initialize(context, fastest_lap, i);
+                Scrattergram::initialize(context, fastest_lap, i);
+                LineGraph::initialize(context, fastest_lap, i);
+            }
+            else
+                w.defineAttribute("display", false);
+        }
+
+        CheckBox::vbox.initialize();
+        LoggerCourseMap::startDraw();
+        Scrattergram::startDraw();
+        LineGraph::startDraw();
+        LineGraph::setXAxis(true);
+    }
+
+    function onFinalize(context)
+    {
+        LoggerCourseMap::stopDraw();
+        Scrattergram::stopDraw();
+        LineGraph.stopDraw();
+        sDataLogger.finalize();
+    }
+
+    module LoggerCourseMap
+    {
+        attribute update_watcher_;
+
+        function setLapData(lap_no, index)
+        {
+            dlf1.setLapData(lap_no, 1
+                            dlf1.w, dlf1.h,
+                            sColorPallet[index % 3][0], sColorPallet[index % 3][1], sColorPallet[index % 3][2]);
+        }
+
+        function initialize(context, lap_no, index)
+        {
+            setLapData(lap_no, index);
+        }
+
+        function resetLapData(lap_no)
+        {
+            dlf1.resetLapData(lap_no);
+        }
+
+        function getDisplayLapCount()
+        {
+            return dlf1.getDisplayLapCount();
+        }
+
+        function startDraw()
+        {
+            dlf1.can_draw = true;
+        }
+
+        function stopDraw()
+        {
+            dlf1.can_draw = false;
+        }
+
+        method onActivate(context)
+        {
+            var check = self.active;
+            self.active = !check;
+
+            main::sound.play("checkbox");
+
+            if (self.active)
+            {
+                if (self.update_watcher_ == nil)
+                {
+                    self.update_watcher_ = WatcherUtil::Create(context, self.update_viewpoint);
+                }
+                else if (self.update_watcher_ != nil)
+                {
+                    WatcherUtil::Delete(self.update_watcher_);
+                    self.update_watcher_ = nil;
+                }
+            }
+
+            return 2;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (!self.active)
+                return 0;
+
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L3_UP:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3_DOWN:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3_LEFT:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3_RIGHT:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3:
+                    self.dlf1.resetView();
+                    return 2;
+            }
+
+            return 0;
+        }
+        
+        method update_viewpoint(context)
+        {
+            if (!self.active)
+                return;
+
+            var update_context = context.getUpdateContext();
+            var scroll_speed = [3f, 5f, 10f, 20f, 30f, 40f, 50f];
+
+            var alg_rx = update_context.getPadAnalogChannel(0, 0);
+            var alg_ry = update_context.getPadAnalogChannel(0, 1);
+            var alg_lx = update_context.getPadAnalogChannel(0, 2);
+            var alg_ly = update_context.getPadAnalogChannel(0, 3);
+
+            if (alg_rx == 0 && alg_ry == 0 && alg_lx == 0 && alg_ly == 0)
+                return;
+
+            self.dlf1.zoom(alg_rx, alg_ry);
+            self.dlf1.move(alg_lx, alg_ly);
+        }
+    }
+
+    module Scrattergram
+    {
+        attribute update_watcher_;
+
+        function setLapData(lap_no, index)
+        {
+            dlf2.setLapData(lap_no, 2
+                dlf2.w, dlf2.h,
+                sColorPallet[index % 3][0], sColorPallet[index % 3][1], sColorPallet[index % 3][2]);
+
+        }
+
+        function initialize(context, lap_no, index)
+        {
+            setLapData(lap_no, index);
+        }
+
+        function resetLapData(lap_no)
+        {
+            dlf2.resetLapData(lap_no);
+        }
+
+        function startDraw()
+        {
+            dlf2.can_draw = true;
+        }
+
+        function stopDraw()
+        {
+            dlf2.can_draw = false;
+        }
+
+        method onActivate(context)
+        {
+            var check = self.active;
+            self.active = !check;
+
+            main::sound.play("checkbox");
+
+            if (self.active)
+            {
+                if (self.update_watcher_ == nil)
+                {
+                    self.update_watcher_ = WatcherUtil::Create(context, self.update_viewpoint);
+                }
+                else if (self.update_watcher_ != nil)
+                {
+                    WatcherUtil::Delete(self.update_watcher_);
+                    self.update_watcher_ = nil;
+                }
+            }
+
+            return 2;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (!self.active)
+                return 0;
+
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L3_UP:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3_DOWN:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3_LEFT:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3_RIGHT:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3:
+                    self.dlf2.resetView();
+                    return 2;
+            }
+
+            return 0;
+        }
+
+        method update_viewpoint(context)
+        {
+            if (!self.active)
+                return;
+
+            var update_context = context.getUpdateContext();
+            var scroll_speed = [3f, 5f, 10f, 20f, 30f, 40f, 50f];
+
+            var alg_rx = update_context.getPadAnalogChannel(0, 0);
+            var alg_ry = update_context.getPadAnalogChannel(0, 1);
+            var alg_lx = update_context.getPadAnalogChannel(0, 2);
+            var alg_ly = update_context.getPadAnalogChannel(0, 3);
+
+            if (alg_rx == 0 && alg_ry == 0 && alg_lx == 0 && alg_ly == 0)
+                return;
+
+            self.dlf2.zoom(alg_rx, alg_ry);
+            self.dlf2.move(alg_lx, alg_ly);
+        }
+    }
+
+    module LineGraph
+    {
+        attribute update_watcher_;
+        
+        function setLapData(lap_no, index)
+        {
+            dlf3.setLapData(lap_no, 3
+                dlf3.w, dlf3.h,
+                sColorPallet[index % 3][0], sColorPallet[index % 3][1], sColorPallet[index % 3][2]);
+
+        }
+
+        function initialize(context, lap_no, index)
+        {
+            setLapData(lap_no, index);
+            dlf3.display_speed = true;
+            dlf3.display_engine_rpm = true;
+        }
+
+        function resetLapData(lap_no)
+        {
+            dlf3.resetLapData(lap_no);
+        }
+
+        function startDraw()
+        {
+            dlf3.can_draw = true;
+        }
+
+        function stopDraw()
+        {
+            dlf3.can_draw = false;
+        }
+
+        function getXAxis()
+        {
+            return dlf3.x_axis_v_coord;
+        }
+
+        function setXAxis(x_axis)
+        {
+            dlf3.x_axis_v_coord = x_axis;
+        }
+
+        function setDisplaySpeed(disp)
+        {
+            dlf3.display_speed = disp;
+        }
+
+        function setDisplayEngineRPM(disp)
+        {
+            dlf3.display_engine_rpm = disp;
+        }
+
+        function setDisplayThrottle(disp)
+        {
+            dlf3.display_throttle = disp;
+        }
+
+        function setDisplayBrake(disp)
+        {
+            dlf3.display_brake = disp;
+        }
+
+        method onActivate(context)
+        {
+            var check = self.active;
+            self.active = !check;
+
+            main::sound.play("checkbox");
+
+            if (self.active)
+            {
+                if (self.update_watcher_ == nil)
+                {
+                    self.update_watcher_ = WatcherUtil::Create(context, self.update_viewpoint);
+                }
+                else if (self.update_watcher_ != nil)
+                {
+                    WatcherUtil::Delete(self.update_watcher_);
+                    self.update_watcher_ = nil;
+                }
+            }
+
+            return 2;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (!self.active)
+                return 0;
+
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L3_UP:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3_DOWN:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3_LEFT:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3_RIGHT:
+                    return 2;
+
+                case CELL_PAD_CTRL_L3:
+                    self.dlf3.resetView();
+                    return 2;
+            }
+
+            return 0;
+        }
+
+        method update_viewpoint(context)
+        {
+            if (!self.active)
+                return;
+
+            var update_context = context.getUpdateContext();
+            var scroll_speed = [3f, 5f, 10f, 20f, 30f, 40f, 50f];
+
+            var alg_rx = update_context.getPadAnalogChannel(0, 0);
+            var alg_ry = update_context.getPadAnalogChannel(0, 1);
+            var alg_lx = update_context.getPadAnalogChannel(0, 2);
+            var alg_ly = update_context.getPadAnalogChannel(0, 3);
+
+            if (alg_rx == 0 && alg_ry == 0 && alg_lx == 0 && alg_ly == 0)
+                return;
+
+            self.dlf3.zoom(alg_rx, alg_ry);
+            self.dlf3.move(alg_lx, alg_ly);
+        }
+    }
+
+    module LapSelect::ListBox
+    {
+        method onActivate(context)
+        {
+            sound.play("next");
+
+            var w = self.getItemWidget(self.focus_index);
+            if (!w.display)
+            {
+                var index = self.focus_index;
+                LoggerCourseMap::setLapData(self.focus_index + 1, index);
+                Scrattergram::setLapData(self.focus_index + 1, index);
+                LineGraph::setLapData(self.focus_index + 1, index);
+                w.CheckBox.Check.active = true;
+                w.display = true;
+            }
+            else
+            {
+                if (LoggerCourseMap::getDisplayLapCount() < 2)
+                    return 2;
+
+                LoggerCourseMap::resetLapData(self.focus_index + 1);
+                Scrattergram::resetLapData(self.focus_index + 1);
+                LineGraph::resetLapData(self.focus_index + 1);
+                w.CheckBox.Check.active = false;
+                w.display = false;
+            }
+
+            return 2;
+        }
+    }
+
+    module Pulldown::OptionMenu
+    {   
+        module label
+        {
+            method onRealize()
+            {
+                if (pdiext::MSystemConfiguration::isSDTV())
+                {
+                    self.scale_x = 2.4f;
+                    self.scale_y = 2.4f;
+                }
+            }
+        }
+
+        module label_i
+        {
+            method onRealize()
+            {
+                if (pdiext::MSystemConfiguration::isSDTV())
+                {
+                    self.scale_x = 2.4f;
+                    self.scale_y = 2.4f;
+                }
+            }
+        }
+
+        attribute decide_callback;
+
+        function changeXAxis(context, index, this)
+        {
+            if (index == 0 && LineGraph::getXAxis() == false)
+                LineGraph::setXAxis(true);
+            else if (index == 1 && LineGraph::getXAxis() == true)
+                LineGraph::setXAxis(false);
+        }
+
+        method pulldownValueChanged(context)
+        {
+            var w = self.getItem(self.index);
+            if (w != nil)
+            {
+                var w2 = self;
+                w2.label.text = w.label.text;
+                w2.label.abbreviate = true;
+                if (w2.label_i != nil)
+                {
+                    w2.label_i.text = w.label.text;
+                    w2.label_i.abbreviate = true;
+                }
+            }
+        }
+
+        method onInitialize(context)
+        {
+            self.pulldownValueChanged(context);
+            decide_callback = changeXAxis;
+        }
+
+        method onFinalize(context)
+        {
+            self.decide_callback = nil;
+        }
+
+        method onValueChanged(context)
+        {
+            self.pulldownValueChanged(context);
+            if (self.decide_callback != nil)
+            {
+                decide_callback(context, self.index, self);
+            }
+        }
+    }
+
+    module CheckBox::vbox
+    {
+        function initialize(cotnext)
+        {
+            DisplaySpeed::Check.active = true;
+            DisplayEngineRPM::Check.active = true;
+            DisplayThrottle::Check.active = false;
+            DisplayBrake::Check.active = false;
+        }
+
+        module DisplaySpeed
+        {
+            method onActivate(context)
+            {
+                var check = self.active;
+                self.active = !check;
+
+                LineGraph::setDisplaySpeed(self.active);
+                main::sound.play("checkbox");
+                return 2;
+            }
+        }
+
+        module DisplayEngineRPM
+        {
+            method onActivate(context)
+            {
+                var check = self.active;
+                self.active = !check;
+
+                LineGraph::setDisplayEngineRPM(self.active);
+                main::sound.play("checkbox");
+                return 2;
+            }
+        }
+
+        module DisplayThrottle
+        {
+            method onActivate(context)
+            {
+                var check = self.active;
+                self.active = !check;
+
+                LineGraph::setDisplayThrottle(self.active);
+                main::sound.play("checkbox");
+                return 2;
+            }
+        }
+
+        module DisplayBrake
+        {
+            method onActivate(context)
+            {
+                var check = self.active;
+                self.active = !check;
+
+                LineGraph::setDisplayBrake(self.active);
+                main::sound.play("checkbox");
+                return 2;
+            }
+        }
+    }
+}
+

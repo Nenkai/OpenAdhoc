@@ -1,0 +1,656 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module PhotoViewerRoot
+{
+    module _MODE
+    {
+        static CAR = 0x01;
+        static PHOTO = 0x02;
+        static NEWS = 0x04;
+        static EDIT = 0x100;
+        static VIEW = 0x1000;
+        static EDIT_CAR = EDIT | CAR;
+        static EDIT_PHOTO = EDIT | PHOTO;
+        static VIEW_CAR = VIEW | CAR;
+        static VIEW_PHOTO = VIEW | PHOTO;
+        static VIEW_NEWS = VIEW | NEWS;
+    }
+
+    class Data
+    {
+        method __init__(mode)
+        {
+            self.mode = mode;
+            self.index = 0;
+        }
+
+        attribute mode;
+        attribute report_type;
+        attribute photo_list;
+        attribute photo;
+        attribute index;
+        attribute readonly;
+        attribute news;
+    }
+
+    class Result
+    {
+        method __init__()
+        {
+            self.result = false;
+            self.delete_photo_id;
+        }
+
+        attribute result;
+        attribute delete_photo_id;
+    }
+
+    attribute modal_page;
+    attribute closed;
+    attribute data;
+    attribute result;
+
+    function updateOnlineComment(context, data)
+    {
+        var photo = data.photo_list[data.index];
+        if (photo == nil)
+            return;
+
+        var is_photo = data.mode & _MODE::PHOTO;
+        var comment = PhotoViewerRoot.Body::ToolTip::TextFaceComment.text;
+        var res = PhotoEditRoot.openUpdateComment(context, photo, comment, is_photo);
+        if (res)
+        {
+            PhotoViewerRoot.Body::ToolTip.opacity = 0.0;
+            PhotoViewerRoot.Body::ToolTip::TextFaceComment.text = photo["comment"];
+            PhotoViewerRoot.updateToolTip(context);
+            PhotoViewerRoot.Body::ToolTip::Opacity.restart();
+            PhotoViewerRoot.result.result = true;
+        }
+    }
+
+    function deleteOnlinePhoto(context, data)
+    {
+        var photo = data.photo_list[data.index];
+        if (photo == nil)
+            return;
+
+        if (!QUERY(context, "Community", "QUERY_DELETE"))
+            return;
+
+        var request = main::Photo.requestDeleteImage(photo["photo_id"], (args) => {});
+        var res = Grim2Util::joinAwait(context, request);
+
+        var success = res && main::Photo.decodeResult(request);
+        GENERIC_RESULT(context, success);
+
+        if (success)
+        {
+            PhotoViewerRoot.result.delete_photo_id = photo["photo_id"];
+            PhotoViewerRoot.result.result = true;
+            PhotoViewerRoot.showOnlinePhoto(context);
+            PhotoViewerRoot.close(context);
+        }
+    }
+
+    method _open(context, data)
+    {
+        self.result = Result();
+        self.data = data;
+        self.closed = false;
+        self.modal_page = main::SequenceUtil::ModalPage(context, PhotoViewerRoot);
+        self.modal_page.open();
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method openViewCar(context, photo_list, photo, readonly)
+    {
+        var data = Data(readonly ? _MODE::VIEW_CAR : _MODE::EDIT_CAR);
+        data.photo_list = photo_list;
+        data.photo = photo;
+        data.readonly = readonly;
+        data.report_type = "BEST_CAR";
+        return _open(context, data);
+    }
+
+    method openViewPhoto(context, photo_list, photo, readonly, report_type)
+    {
+        var data = Data(readonly ? _MODE::VIEW_PHOTO : _MODE::EDIT_PHOTO);
+        data.photo_list = photo_list;
+        data.photo = photo;
+        data.readonly = readonly;
+        data.report_type = report_type;
+        return _open(context, data);
+    }
+
+    method openViewNews(context, news)
+    {
+        var image_list = news["images"];
+        if (image_list.size == 0)
+            return;
+
+        foreach (var photo in image_list)
+        {
+            photo["photo_id"] = photo["image_id"];
+        }
+
+        var data = Data(_MODE::VIEW_NEWS);
+        data.photo_list = image_list;
+        data.photo = image_list[0];
+        data.readonly = true;
+        data.news = news;
+        return _open(context, data);
+    }
+
+    method close(context)
+    {
+        UserProfile2.clearCallback();
+
+        self.Body::Car::SceneFace.clearCar(context);
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        PhotoViewerRoot.setFocus(nil);
+
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        if (self.modal_page != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+        }
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        ContextMain.disableInput();
+
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+
+        actor.on_effect_end = (context) =>
+        {
+            actor.on_effect_end = nil;
+            ContextMain.enableInput();
+        };
+
+        self.CloseActor.stop();
+
+        initializeButtonHelp(context);
+
+        self.Body::ImageFace.image_path = "";
+
+        context.pushEvent(main::menu::MScriptEvent(context, self, "on_initialize"));
+        return STATE_YIELD;
+    }
+
+    method initializeButtonHelp(context)
+    {
+        var target = Menu::Bar;
+
+        var circle = pdiext::MSystemConfiguration::GetEnterButtonAssign() == "circle";
+        target.Edit.visible = self.data.mode & _MODE::EDIT;
+        target.View.visible = self.data.mode & _MODE::VIEW;
+
+        var only_one = self.data.photo_list.size < 2;
+
+        if (target.Edit.visible)
+        {
+            target.Edit::Previous.visible = !only_one;
+            target.Edit::Next.visible = !only_one;
+            target.Edit::Close::ImageFaceCircle.visible = !circle;
+            target.Edit::Close::ImageFaceCross.visible = circle;
+        }
+        else if (target.View.visible)
+        {
+            target.View::Previous.visible = !only_one;
+            target.View::Next.visible = !only_one;
+            target.View::Close::ImageFaceCircle.visible = !circle;
+            target.View::Close::ImageFaceCross.visible = circle;
+
+            if (self.data.readonly && self.data.news == nil)
+                SBox::ReportHelp::Opacity.restart();
+        }
+    }
+
+    method on_initialize(context)
+    {
+        if (self.data.photo_list != nil)
+        {
+            if (self.data.photo_list.size > 1)
+            {
+                var i = 0;
+                foreach (var p in self.data.photo_list)
+                {
+                    if (p != nil && p["photo_id"] == self.data.photo["photo_id"])
+                        self.data.index = i;
+
+                    ++i;
+                }
+            }
+        }
+
+        showPhoto(context, 0);
+    }
+
+    method onFinalize(context)
+    {
+        self.data = nil;
+        self.Body::ImageFace.image_path = "";
+        self.Body::ImageFaceTuner.image_path = "";
+
+        menu::FrameInterval = 1;
+        ORG.setEnableStereoRendering(false);
+        context.cursor_visible = true;
+
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    method onActivate(context)
+    {
+        sound.play("ok");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (on_key_press_SELECT(context, event))
+            return STATE_YIELD;
+
+        if (on_key_press_L1R1(context, event))
+            return STATE_YIELD;
+
+        if (on_key_press_TRIANGLE(context, event))
+            return STATE_YIELD;
+
+        return STATE_EXIT;
+    }
+
+    method on_key_press_SELECT(context, event)
+    {
+        if (event.keysym != CELL_PAD_CTRL_SELECT)
+            return false;
+
+        if (self.data.mode & _MODE::EDIT)
+        {
+            if (!PDINetwork.isChatRestricted())
+            {
+                updateOnlineComment(context, self.data);
+            }
+
+            return true;
+        }
+        else if (self.data.mode & _MODE::VIEW)
+        {
+            if (self.data.photo != nil && self.data.news == nil)
+            {
+                var data = nil;
+
+                switch (self.data.report_type)
+                {
+                    case "BEST_CAR":
+                        data = ReportUtil::BestCarData(self.data.photo);
+                        break;
+
+                    case "PHOTO":
+                        data = ReportUtil::PhotoData(self.data.photo);
+                        break;
+
+                    case "FRIEND":
+                        data = ReportUtil::FriendPhotoData(self.data.photo);
+                        break;
+
+                    case "WORLD":
+                        data = ReportUtil::WorldPhotoData(self.data.photo);
+                        break;
+
+                    case "BBS":
+                        data = ReportUtil::BbsCommentData(self.data.photo, true);
+                        break;
+                }
+
+                if (data != nil)
+                    SendReportRoot.open(context, data);
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    method on_key_press_L1R1(context, event)
+    {
+        if (self.data.photo_list.size < 2)
+            return false;
+
+        if (event.keysym == CELL_PAD_CTRL_L1)
+        {
+            showPhoto(context, -1);
+            return true;
+        }
+        else if (event.keysym == CELL_PAD_CTRL_R1)
+        {
+            showPhoto(context, 1);
+            return true;
+        }
+
+        return STATE_EXIT;
+    }
+
+    method on_key_press_TRIANGLE(context, event)
+    {
+        if (event.keysym != CELL_PAD_CTRL_TRIANGLE)
+            return false;
+
+        if (self.data.mode & _MODE::EDIT)
+        {
+            sound.play("ok");
+            deleteOnlinePhoto(context, self.data);
+            return true;
+        }
+
+        return false;
+    }
+
+    method clampIndex()
+    {
+        if (self.data.index < 0)
+        {
+            self.data.index = self.data.photo_list.size - 1;
+        }
+
+        if (self.data.index > self.data.photo_list.size - 1)
+            self.data.index = 0;
+    }
+
+    method fire(context)
+    {
+        self.Body::ToolTip::Opacity.restart();
+    }
+
+    method updateToolTip(context)
+    {
+        context.wait();
+
+        var target = self.Body::ToolTip;
+        var actor = target.X;
+        var width = target.w;
+        if (width > 1920)
+        {
+            actor.end_value = -width;
+            actor.restart();
+        }
+        else
+        {
+            actor.stop();
+            target.x = (1920 - width) / 2
+        }
+
+        context.pushEvent(menu::MFunctionEvent(fire, context));
+    }
+
+    method setupModeNews(context, photo)
+    {
+        var target = self.Body;
+        var image = photo;
+        var news_id = PhotoViewerRoot.data.news["news_id"];
+        var image_id = image["image_id"];
+        target.ToolTip::TextFaceComment.text = image["caption"];
+
+        var image_path = News2.getImagePath(news_id, image_id);
+        if (News2.isExistImage(news_id, image_id))
+            target.ImageFace.image_path = image_path;
+        else
+        {
+            News2.requestImage(news_id, image_id, (args) => 
+            {
+                var [context, request] = args;
+                if (request.isDone())
+                    target.ImageFace.image_path = image_path;
+            })
+        }
+    }
+
+    method setupModePhoto(context, photo)
+    {
+        var target = self.Body;
+        target.ToolTip::TextFaceComment.text = checkText(context, photo["comment"], photo["comment_hidden"], "DELETED_COMMENT");
+        target.ToolTip::TextFaceLabel.text = not_nil(photo["user_id"], "");
+
+        var image_face = target.ToolTip::ImageFace;
+        image_face.image_path = "";
+        var country = photo["_country"];
+
+        if (country != nil)
+        {
+            setFlagImage(image_face, country);
+        }
+        else
+        {
+            
+            UserProfile2.requestUserProfile(photo["user_id"], (args) => 
+            {
+                var [context, request] = args;
+                if (request.isDone())
+                {
+                    var u = UserProfile2.decodeUserProfile(request);
+                    photo["_country"] = u["country"];
+                    setFlagImage(image_face, photo["_country"]);
+                }
+            });
+        }
+
+        setImage(target.ImageFace, photo["photo_id"], photo["status"]);
+    }
+
+    method setupModeCar(context, photo)
+    {
+        var target = self.Body;
+        target.ToolTip::TextFaceComment.text = checkText(context, photo["comment"], photo["comment_hidden"], "DELETED_COMMENT");
+        var [tuner_label, country, encoded_cp] = photo["place"].split(",");
+
+        if (_isHiddenPhoto(photo["photo_id"], photo["status"]))
+            encoded_cp = nil;
+
+        if (encoded_cp == nil)
+        {
+            target.Car::SceneFace.clearCar();
+            menu::FrameInterval = 1;
+            ORG.setEnableStereoRendering(false);
+            setImage(target.ImageFace, photo["photo_id"], photo["status"]);
+        }
+        else
+        {
+            menu::FrameInterval = 2;
+            ORG.setEnableStereoRendering(true);
+        }
+
+        target.ToolTip::TextFaceLabel.text = photo["car_name"];
+        if (tuner_label != nil)
+        {
+            target.ImageFaceTuner.image_path = "/piece/gt6/tunner_logo_L/%s.img".format(tuner_label);
+        }
+
+        if (country != nil)
+        {
+            setFlagImage(target.ToolTip::ImageFace, country);
+        }
+
+        if (encoded_cp != nil)
+        {
+            var blob = pdistd::DecodeBase64(encoded_cp);
+            blob = pdistd::Inflate(blob);
+
+            var cp = gtengine::MCarParameter();
+            cp.deserialize(blob);
+
+            target.Car::SceneFace.loadCar(context, cp);
+            target.Car.visible = true;
+        }
+    }
+
+    method showOnlinePhoto(context)
+    {
+        var target = self.Body;
+        target.ImageFace.image_path = "";
+        target.ImageFaceTuner.image_path = "";
+        target.ToolTip::ImageFace.image_path = "";
+        target.Car.visible = false;
+        target.ToolTip::TextFaceComment.text = "";
+        target.ToolTip::TextFaceLabel.text = "";
+        target.ToolTip.opacity = 0.0;
+
+        var photo = self.data.photo_list[self.data.index];
+        if (photo != nil)
+        {
+            if (self.data.mode & _MODE::NEWS)
+            {
+                setupModeNews(context, photo);
+            }
+            else if (self.data.mode & _MODE::PHOTO)
+            {
+                setupModePhoto(context, photo);
+            }
+            else
+            {
+                setupModeCar(context, photo);
+            }
+        }
+
+        updateToolTip(context);
+    }
+
+    method showPhoto(context, delta)
+    {
+        if (delta != 0 && self.data.mode & _MODE::CAR)
+        {
+            if (menu::FrameInterval == 2 && Body::Car::SceneFace.lock)
+            {
+                sound.play("disable");
+                return;
+            }
+        }
+
+        if (delta != 0)
+        {
+            sound.play("ok");
+        }
+
+        self.data.index += delta;
+        clampIndex();
+        showOnlinePhoto(context);
+    }
+
+    module Body::Car::SceneFace
+    {
+        attribute current_cp_;
+        attribute thread_;
+        attribute lock;
+
+        method onInitialize(context)
+        {
+            self.lock = false;
+            SceneCover::Fade.forward();
+            SceneCover::Fade.reset();
+        }
+
+        method loadCar(context, cp)
+        {
+            clearCar();
+
+            self.thread_ = Thread((context) => 
+            {
+                SceneFace.lock = true;
+                SceneCover::Fade.forward();
+                SceneCover::Fade.start();
+
+                while (true)
+                {
+                    if (SceneCover
+                        ::Fade.ramain_time == 0)
+                        break;
+
+                    Thread::Sleep(0.1);
+                }
+
+                if (gtengine::MSpecDB::checkFlag(cp.getCarCode(), gtengine::GenericFlag::IS_RACING_KART))
+                {
+                    SceneFaceUtil::loadScene(self, "steamBG_kart", cp);
+                }
+                else
+                {
+                    SceneFaceUtil::loadScene(self, "steamBG", cp);
+                }
+
+                SceneFace.current_cp_ = cp;
+                while (true)
+                {
+                    if (!self.isUnderSetup())
+                        break;
+
+                    Thread::Sleep(0.1);
+                }
+                
+                SceneCover::Fade.backward();
+                SceneCover::Fade.start();
+                SceneFace.lock = false;
+            }, context);
+
+            self.thread_.start();
+        }     
+
+        method clearCar()
+        {
+            if (self.current_cp_ != nil)
+            {
+                self.execCommandImmidiate("clearEntity car0");
+                self.current_cp_ = nil;
+            }
+
+            if (self.thread_ != nil)
+            {
+                self.thread_.terminate();
+                self.thread_ = nil;
+            }
+        }
+    }
+}

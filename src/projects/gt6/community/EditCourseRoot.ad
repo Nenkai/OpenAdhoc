@@ -1,0 +1,270 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module EditCourseRoot
+{
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute course;
+    
+    method open(context, course)
+    {
+        self.course = course;
+        self.closed = false;
+        self.result = false;
+        self.popup = SequenceUtil::ModalPage(context, EditCourseRoot);
+        self.popup.open();
+        
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        Community.clearCallback();
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        
+        FadeActor.out = true;
+
+        if (self.popup != nil)
+        {
+            self.popup.close(FadeActor.period);
+            self.popup = nil;
+        }
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.setFocus(Body::R::Body::Cancel);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        var course = self.course;
+        var title = checkText(context, course["title"], course["title_hidden"], "DELETED_TITLE");
+        Body::L::InputTextBoxTitle::Text::input.value = title;
+
+        Body::L::InputTextBoxTitle::Text::input.value.setCount(context, title.length);
+
+        var comment = checkText(context, course["comment"], course["comment_hidden"], "DELETED_COMMENT");
+        Body::L::InputTextBoxComment::Text::input.value = comment;
+        Body::L::InputTextBoxComment::Text::input.value.setCount(context, comment.length);
+
+        Body::R::Body::Ok.insensitive = title.length == 0;
+       
+        EditCourseRoot.setFocus(Body::R::Body::Cancel);
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    module Body::L
+    {
+        module InputTextBoxTitle::Text::input
+        {
+            method setCount(context, count)
+            {
+                InputTextBoxTitle::Count.text = "%d / %d".format(count, self.max_input_length);
+                Body::R::Body::Ok.insensitive = count == 0;
+            }
+    
+            method onTextClose(context, event)
+            {
+                setCount(context, self.value.length);
+                return 0;
+            }
+    
+            method onKeyRelease(context, event)
+            {
+                if (event.keysym == CELL_PAD_CTRL_SQUARE || event.keysym == KEY_BACKSPACE || event.keysym == KEY_DELETE)
+                {
+                    setCount(context, self.value.length);
+                }
+    
+                return 0;
+            }
+        }
+
+        module InputTextBoxComment::Text::input
+        {
+            method setCount(context, count)
+            {
+                InputTextBoxComment::Count.text = "%d / %d".format(count, self.max_input_length);
+            }
+    
+            method onTextClose(context, event)
+            {
+                setCount(context, self.value.length);
+                return 0;
+            }
+    
+            method onKeyRelease(context, event)
+            {
+                if (event.keysym == CELL_PAD_CTRL_SQUARE || event.keysym == KEY_BACKSPACE || event.keysym == KEY_DELETE)
+                {
+                    setCount(context, self.value.length);
+                }
+    
+                return 0;
+            }
+        }
+    }
+
+    module Body::R::Body
+    {
+        module Ok
+        {
+            method vulgarity(context, text)
+            {
+                VulgarityFilterUtil::begin();
+                var res = VulgarityFilterUtil::check(text);
+                VulgarityFilterUtil::end();
+                return res;
+            }
+
+            method updateImpl(context)
+            {
+                var course = EditCourseRoot.course;
+                var title_org = checkText(context, course["title"], course["title_hidden"], "DELETED_TITLE");
+                var comment_org = checkText(context, course["comment"], course["comment_hidden"], "DELETED_COMMENT");
+                
+                var title_new = trim(Body::L::InputTextBoxTitle::Text::input.value);
+                var comment_new = trim(Body::L::InputTextBoxComment::Text::input.value);
+
+                if (title_new == "")
+                {
+                    ERROR(context, "Community", "ERROR_NO_COURSE_NAME");
+                    Body::L::InputTextBoxTitle::Text::input.value = "";
+                    Body::L::InputTextBoxTitle::Text::input.setCount(context, 0);
+                    EditCourseRoot.setFocus(Cancel);
+                    return false;
+                }
+
+                var updated = false;
+                var failed = false;
+
+                if (title_org != title_new)
+                {
+                    var failed0 = true;
+                    var [res, sanitized_text] = vulgarity(context, title_new);
+
+                    if (res)
+                    {
+                        var request = main::Course.requestUpdateTitle(course["course_id"], sanitized_text, (args) => {});
+                        if (Grim2Util::joinAwait(context, request))
+                        {
+                            res = main::Course.decodeResult(request);
+                            if (res > 0)
+                            {
+                                updated = true;
+                                failed0 = true;
+                                EditCourseRoot.course["title"] = sanitized_text;
+                            }
+                        }
+                    }
+
+                    if (failed0)
+                        failed = true;
+                }
+
+                if (comment_org != comment_new)
+                {
+                    var failed0 = true;
+                    var [res, sanitized_text] = vulgarity(context, comment_new);
+
+                    if (res)
+                    {
+                        var request = main::Course.requestUpdateComment(course["course_id"], sanitized_text, (args) => {});
+                        if (Grim2Util::joinAwait(context, request))
+                        {
+                            res = main::Course.decodeResult(request);
+                            if (res > 0)
+                            {
+                                updated = true;
+                                failed0 = true;
+                                EditCourseRoot.course["comment"] = sanitized_text;
+                            }
+                        }
+                    }
+
+                    if (failed0)
+                        failed = true;
+                }
+
+                if (updated)
+                {
+                    EditCourseRoot.result = true;
+                    GENERIC_RESULT(context, true);
+                }
+                else if (failed)
+                {
+                    GENERIC_RESULT(context, false);
+                }
+
+                return true;
+            }
+
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var res = updateImpl(context);
+                if (res)
+                {
+                    EditCourseRoot.close(context);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Cancel
+        {
+            method onCancel(context)
+            {
+                sound.play("cancel");
+                EditCourseRoot.close(context);
+                return STATE_YIELD;
+            }
+
+            method onActivate(context)
+            {
+                sound.play("ok");
+                EditCourseRoot.close(context);
+                return STATE_YIELD;
+            }
+        }
+    }
+}

@@ -1,0 +1,714 @@
+
+
+
+
+
+
+
+
+
+
+
+module CommunityProject
+{
+    #include "ReportUtil.ad"
+    #include "OnlineRoomUtil.ad"
+    #include "CommunityCache.ad"
+
+    static sHealthCheck;
+    static sPreviousSetPresence;
+
+    module VulgarityFilterUtil
+    {
+        import __projects__::GTModeProject::VulgarityFilterUtil::*;
+    }
+
+    module LobbyUtil
+    {
+        import __projects__::GTModeProject::LobbyUtil::*;
+    }
+
+    method onRealize(manager)
+    {
+        sHealthCheck = true;
+        
+        var context = manager.getUpdateContext().getRenderContext();
+        OnlineRoomUtil::load(context);
+    }
+
+    method onDestroy(manager)
+    {
+        sHealthCheck = nil;
+        OnlineRoomUtil::unload();
+    }
+
+    function checkGrimSession(context)
+    {
+        var request = Grim2.requestExtendSession((args) => {});
+        var success = false;
+
+        if (Grim2Util::joinAwait(context, request))
+        {
+            if (Grim2.decodeResult(request))
+                success = true;
+        }
+
+        if (!success)
+            Grim2.setInitialize(false);
+    }
+
+    function setPresenceIf(context)
+    {
+        var threshold = Grim2.getServerOptionToInt("network", "community.presence", 180);
+        var current = pdiext::getBetterTime().getBySecond();
+
+        if (sPreviousSetPresence == nil || current > sPreviousSetPresence + threshold)
+        {
+            LoginUtil::setPresence(true);
+            sPreviousSetPresence = current;
+        }
+    }
+
+    function healthCheck()
+    {
+        return sHealthCheck;
+    }
+
+    function showTutorialIf(context, keyword)
+    {
+        if (TutorialUtil::isDone("community", keyword))
+            return;
+
+        var tutorial_key = "community_%{keyword}";
+        TutorialUtil::message(context, tutorial_key, [:]);
+        TutorialUtil::done("community", keyword);
+    }
+
+    function distanceText(running_km)
+    {
+        var km_mile;
+
+        if (GAME_STATUS.user_profile.option.unit_velocity)
+        {
+            km_mile = running_km / 1.6;
+        }
+        else
+        {
+            km_mile = running_km;
+        }
+
+        if (km_mile > 999999.9)
+            km_mile = 999999.94;
+
+        return pdiext::GetNumberString(10 * km_mile, 1) + " " + pdiext::MUnit::GetUnitOfDistance();
+    }
+
+    function not_nil(a, b)
+    {
+        return a != nil ? a : b;
+    }
+
+    function trim(s)
+    {
+        var ws = " \n\t\v\r\f";
+        ws += "　"; // IDEOGRAPHIC SPACE U+3000
+        s = s.trim(ws);
+        return s;
+    }
+
+    function nolinebreak(text)
+    {
+        var s = text.replaceAll("\r\n", "");
+        s = s.replaceAll("\n", "");
+        return s;
+    }
+
+    function chatRestrictedFilter(context, text)
+    {
+        var default_text = "";
+        return PDINetwork.isChatRestricted() ? default_text : text;
+    }
+
+    function checkText(context, text, hidden_flag, deleted_text)
+    {
+        if (hidden_flag)
+            return manager.translate("Community", deleted_text);
+        else
+            return chatRestrictedFilter(context, text);
+    }
+
+    function checkNickName(context, user_profile)
+    {
+        return checkText(context, user_profile["nickname"], user_profile["nickname_hidden"], "DELETED_NICKNAME");
+    }
+
+    function filterText(context, s, show_error)
+    {
+        VulgarityFilterUtil::begin();
+        var [res, sanitized_text] = VulgarityFilterUtil::check(s);
+        VulgarityFilterUtil::end();
+
+        if (!res && show_error)
+            OK(context, "Community", "ERROR_VULGARITY_FILTER");
+
+        return [res, sanitized_text];
+    }
+
+    function sortCreateTime(a, b)
+    {
+        return a["create_time"] > b["create_time"];
+    }
+
+    function sortClubList(club_a, club_b)
+    {
+        var user_id = Grim2.getLoginUserId();
+        var owner_a = club_a["user_id_list"].indexOf(user_id) != -1;
+        var owner_b = club_b["user_id_list"].indexOf(user_id) != -1;
+        if (owner_a == owner_b)
+            return club_a["create_time"] > club_b["create_time"];
+        else
+            return owner_a;
+    }
+
+    function sortEventList(a, b)
+    {
+        var event_a = a[1];
+        var event_b = b[1];
+        
+        var status_a = eventStatus(localtime(event_a["start_time"]), localtime(event_a["end_time"]));
+        var status_b = eventStatus(localtime(event_b["start_time"]), localtime(event_b["end_time"]));
+        if (status_a == status_b)
+            return event_a["start_time"] > event_b["start_time"];
+
+        var map = [
+            "open" : 3,
+            "notice" : 2,
+            "end" : 1
+        ];
+
+        return map[status_a] > map[status_b];
+    }
+
+    function regulation2gp(regulation)
+    {
+        return EventSettingUtil::loadSettingFromXml(regulation);
+    }
+
+    function dateTimeString(time)
+    {
+        if (time.year < 2000)
+            return "";
+
+        var format = manager.translate("DateTime", "FORMAT_DATE");
+        var d0 = format.build("%04d".format(time.year),
+            "%02d".format(time.month),
+            "%02d".format(time.day));
+
+        var d1 = "%02d:%02d".format(time.hour, time.minute);
+        return "%{d0} %{d1}";
+    }
+
+    function eventStatus(start_time, end_time)
+    {
+        var now = pdiext::getBetterTimeLocal();
+        if (now < start_time)
+            return "notice";
+        else if (end_time < now)
+            return "end";
+        else
+            return "open";
+    }
+
+    function localtime(d)
+    {
+        return d == nil ? nil : d.toLocal();
+    }
+
+    function list2text(l)
+    {
+        return l.size > 0 ? l[0] : "";
+    }
+
+    function getFriendList(context, need_np_presence)
+    {
+        var presence_list = [];
+        var request = UserProfile2.requestGetPresence("", (args) => {});
+        if (Grim2Util::joinAwait(context, request))
+            presence_list = UserProfile2.decodePresenceList(request);
+
+        var my_user_id = Grim2.getLoginUserId();
+        var user_profile_list = [];
+
+        request = UserProfile2.requestUserProfileListFriend(my_user_id, (args) => {});
+        if (Grim2Util::joinAwait(context, request))
+            user_profile_list = UserProfile2.decodeUserProfileList(request);
+
+        var friend_list = [];
+        var np_friend_list = [];
+
+        if (need_np_presence != nil && need_np_presence)
+            np_friend_list = OnlineUtility.getFriendPresenceList();
+
+        foreach (var u in user_profile_list)
+        {
+            var user_id = u["user_id"];
+            var my_presence_list = [];
+            foreach (var p in presence_list)
+            {
+                if (user_id == p["user_id"])
+                    my_presence_list.push(p);
+            }
+
+            if (!my_presence_list.size)
+            {
+                var p = [
+                    "user_id" : user_id,
+                    "stats" : "",
+                    "type" : 0
+                ];
+
+                my_presence_list.push(p);
+            }
+
+            var np_presence = nil;
+            foreach (var f in np_friend_list)
+            {
+                var u = f["id"].toString();
+                if (user_id == u)
+                {
+                    np_presence = f;
+                    break;
+                }
+            }
+            friend_list.push([u, my_presence_list, np_presence]);
+        }
+
+        return friend_list;
+    }
+
+    function _presenceScore(presence_list, np_presence)
+    {
+        var score = 0;
+        foreach (var p in presence_list)
+        {
+            var stats = p["stats"];
+            if (stats == "ENTER COMMUNITY WEB")
+                score += 1;
+        }
+
+        if (np_presence != nil)
+        {
+            if (np_presence["presenceState"] == pdistd::PresenceState::SameContext)
+                score += 2;
+        }
+
+        return score;
+    }
+
+    function getFriendListByPresence(context)
+    {
+        var friend_list = getFriendList(context, true);
+        friend_list.sort((a, b) => 
+        {
+            var [uA, pA, npA] = a;
+            var [uB, pB, npB] = b;
+            var scoreA = _presenceScore(pA, npA);
+            var scoreB = _presenceScore(pB, npB);
+            if (scoreA == scoreB)
+                return uA["user_id"].upcase() < uB["user_id"].upcase();
+            else
+                return scoreA > scoreB;
+        });
+
+        return friend_list;
+    }
+
+    function getPresenceInfo(context, presence_list, np_presence)
+    {
+        var gtcom_online = false;
+        foreach (var presence in presence_list)
+        {
+            var stats = presence["stats"];
+            if (stats == "ENTER COMMUNITY WEB")
+                gtcom_online = true;
+        }
+
+        var gt6_online = false;
+        if (np_presence != nil)
+            gt6_online = np_presence["presenceState"] == pdistd::PresenceState::SameContext;
+        
+        var online = gt6_online || gtcom_online;
+        var text = "";
+        if (gt6_online && gtcom_online)
+            text = manager.translate("Community", "PRESENCE_GT6_GTCOM");
+        else if (gt6_online)
+            text = manager.translate("Community", "PRESENCE_GT6");
+        else if (gtcom_online)
+            text = manager.translate("Community", "PRESENCE_GTCOM");
+        else
+            text = manager.translate("Community", "OFFLINE");
+
+        return [online, text];
+    }
+
+    function OK(context, page, keyword, args)
+    {
+        var s = manager.translate(page, keyword);
+        if (args != nil)
+            s = s.build(args);
+        
+        DialogUtil::openConfirmDialog(context, DialogUtil::OK, s);
+    }
+
+    function ERROR(context, page, keyword, args)
+    {
+        var s = manager.translate(page, keyword);
+        if (args != nil)
+            s = s.build(args);
+        
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, s);
+    }
+
+    function QUERY(context, page, keyword, args)
+    {
+        var s = manager.translate(page, keyword);
+        if (args != nil)
+            s = s.build(args);
+        
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, s);
+        return res && LoginUtil::isOnline();
+    }
+
+    function QUERY_D_NO(context, page, keyword)
+    {
+        var s = manager.translate(page, keyword);
+        return DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, s);
+    }
+
+    function REQUEST_ERROR(context, page, keyword, request)
+    {
+        var text = manager.translate(page, keyword);
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+            Grim2Util::makeRequestError(context, text, request));
+    }
+
+    function GENERIC_RESULT(context, res)
+    {
+        if (res)
+            OK(context, "Community", "GENERIC_SUCCESS");
+        else
+            ERROR(context, "Community", "GENERIC_FAIL")
+    }
+
+    function _isHiddenPhoto(photo_id, status)
+    {
+        var hidden_flag = photo_id == "-" || photo_id.beginWith("_") || (status != nil && status == 2);
+        return hidden_flag;
+    }
+
+    function setImage(image_face, photo_id, status)
+    {
+        if (photo_id == nil || photo_id == "" || PDINetwork.isChatRestricted())
+        {
+            image_face.image_path = "";
+            return;
+        }
+
+        if (_isHiddenPhoto(photo_id, status))
+        {
+            image_face.image_path = "/piece/gt6/profile/deleted.img";
+            return;
+        }
+
+        var image_path = Photo.getImagePath(photo_id);
+        if (pdistd::Exist(image_path))
+        {
+            image_face.image_path = image_path;
+            return;
+        }
+
+        Photo.requestImage(photo_id, (args) => 
+        {
+            var [context, request] = args;
+            if (request.isDone())
+                image_face.image_path = image_path;
+        });
+    }
+
+    function setThumbnailImage(image_face, photo_id, status)
+    {
+        if (photo_id == "")
+        {
+            image_face.image_path = "";
+            return;
+        }
+
+        if (_isHiddenPhoto(photo_id, status))
+        {
+            image_face.image_path = "/piece/gt6/profile/deleted.img";
+            return;
+        }
+
+        var image_path = Photo.getThumbnailPath(photo_id);
+        if (pdistd::Exist(image_path))
+        {
+            image_face.image_path = image_path;
+            return;
+        }
+
+        Photo.requestThumbnail(photo_id, (args) => 
+        {
+            var [context, request] = args;
+            if (request.isDone())
+                image_face.image_path = image_path;
+        });
+    }
+
+    function setPngImage(image_face, photo_id, status)
+    {
+        if (photo_id == "")
+        {
+            image_face.image_path = "";
+            return;
+        }
+
+        if (_isHiddenPhoto(photo_id, status))
+        {
+            image_face.image_path = "/piece/gt6/profile/deleted.img";
+            return;
+        }
+
+        var image_path = Photo.getPngImagePath(photo_id);
+        if (pdistd::Exist(image_path))
+        {
+            image_face.image_path = image_path;
+            return;
+        }
+
+        Photo.requestPngImage(photo_id, (args) => 
+        {
+            var [context, request] = args;
+            if (request.isDone())
+                image_face.image_path = image_path;
+        });
+    }
+
+    function setFlagImage(image_face, country)
+    {
+        image_face.image_path = "/piece/gt6/flag_S/%{country.upcase()}.img";
+    }
+
+    function LoadProject(project_file, project_name)
+    {
+        if (__projects__.defined(project_name))
+            return nil;
+
+        var project_path = "%s/%s/%s".format(main::PROJECT_ROOT_DIR, project_file, project_file);
+        return manager.loadProject(project_path);
+    }
+
+    function UnloadProject(project)
+    {
+        if (project == nil)
+            return;
+
+        manager.unloadProject(project);
+    }
+
+    function markAsReturnProject(rootName = "CommunityRoot", args)
+    {
+        GTModeProject.history[$"LastPageProject"] = CommunityProject.name;
+        GTModeProject.history[$"LastPageName"] = rootName;
+        GTModeProject.history[$"LastPageArg1"] = args;
+    }
+
+    function IsDevelop(context)
+    {
+        var is_debug = false; // Compile time?
+        return pdiext::isQABuild() || is_debug;
+    }
+
+    module PUTLOG_LOCAL
+    {
+        function user()
+        {
+            return PDINetwork.getClientName();
+        }
+
+        function putlog(log)
+        {
+            Grim2.requestPutLog(log);
+        }
+
+        function club(action, club_id, open, tag_id_list_csv)
+        {
+            var type = [
+                "create" : "CC",
+                "delete" : "CD",
+                "join" : "CJ",
+                "leave" : "CL",
+                "update" : "CU"
+            ][action];
+
+            var log = "JU=%{user()}:JA=%{type}:JB=%{club_id}:JD=%{open}";
+            if (tag_id_list_csv != nil)
+                log += ":JE=%{tag_id_list_csv}";
+
+            putlog(log);
+        }
+
+        function event(action, club_id, club_event_id)
+        {
+            var type = [
+                "create" : "EC",
+                "delete" : "ED",
+                "join" : "EJ",
+                "leave" : "EL",
+            ][action];
+
+            var log = "JU=%{user()}:JA=%{type}:JB=%{club_id}:JC=%{club_event_id}";
+
+            putlog(log);
+        }
+
+        function room(action, club_id, club_event_id)
+        {
+            var type = [
+                "create" : "RC",
+                "join" : "RJ",
+            ][action];
+
+            var log = "JU=%{user()}:JA=%{type}:JB=%{club_id}";
+            if (club_event_id != nil)
+                log += ":JC=%{club_event_id}";
+
+            putlog(log);
+        }
+
+        function profile(action, tag_id_list_csv)
+        {
+            var type = [
+                "update" : "PU"
+            ][action];
+
+            var log = "JU=%{user()}:JA=%{type}:JE=%{tag_id_list_csv}";
+            putlog(log);
+        }
+    }
+
+    module LocalCourseMakerUtil
+    {
+        function freeRun(context, course)
+        {
+            var course_id = course["course_id"];
+            var ted_path = main::Course.getTedPath(course_id);
+            if (!pdistd::Exist(ted_path))
+            {
+                var request = main::Course.requestTed(course_id, (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                    ;
+            }
+
+            if (!pdistd::Exist(ted_path))
+                return;
+
+            var fst = pdistd::ReadFile(ted_path);
+            var course_code = gtengine::MSpecDB::getCourseCode("coursemaker");
+            var gp = GameParameterUtil::createFreeRun(course_code);
+            var event = gp.events[0];
+
+            var rp = event.race_parameter;
+            rp.course_maker_source_type = gtengine::CourseMakerSourceType::TED;
+            
+            if (course["one_way"])
+            {
+                rp.start_type = gtengine::StartType::GRID;
+                rp.complete_type = gtengine::CompleteType::BYLAPS;
+            }
+            else
+            {
+                rp.start_type = gtengine::StartType::ATTACK;
+                rp.complete_type = gtengine::CompleteType::NONE;
+            }
+
+            event.race_parameter = rp;
+            
+            var track = event.track;
+            track.course_code = course_code;
+
+            var data = CourseMakerUtil::decrypt(fst["buffer"]);
+            track.edit_data = data;
+            track.generated_course_id = course_id;
+            
+            GAME_STATUS.user_profile.context.coursemaker_course_id = course_id;
+            GAME_STATUS.user_profile.context.coursemaker_user_id = course["user_id"];
+
+            var gd = ORG.setGenerateData(data);
+            rp.course_code = gd;
+
+            var lang = pdistd::Language[pdistd::MLocale::getLanguage()];
+            event.information.title.setText(lang, course["title"]);
+
+            LaunchRaceUtil::setupWeatherFix(rp);
+
+            markAsReturnProject();
+
+            GameParameterUtil::executeEvent(context, gp, GAME_STATUS);
+        }
+
+        function changeState(context, course)
+        {
+            var status = course["status"];
+            var res0 = QUERY(context, "Community", status == 1 ? "QUERY_UPLOAD_COURSE" : "QUERY_UNUPLOAD_COURSE");
+            if (!res0)
+                return res0;
+
+            var course_id = course["course_id"];
+            var request;
+            if (status == 1)
+            {
+                request = main::Course.requestStatusPublic(course_id, (args) => {});
+            }
+            else if (status == 2)
+            {
+                request = main::Course.requestStatusComplete(course_id, (args) => {});
+            }
+
+            var res = 0;
+            if (Grim2Util::joinAwait(context, request))
+            {
+                res = main::Course.decodeResult(request);
+                GENERIC_RESULT(context, res);
+
+                if (res)
+                    course["status"] = status == 1 ? 2 : 1;
+            }
+            else
+            {
+                GENERIC_RESULT(context, false);
+            }
+
+            return res;
+        }
+
+        function remove(context, course)
+        {
+            var request = main::Course.requestDelete(course["course_id"], (args) => {});
+            if (!Grim2Util::joinAwait(context, request))
+                return false;
+
+            var res = main::Course.decodeResult(request);
+            return res > 0;
+        }
+
+        function save(context, course)
+        {
+            var request = main::Course.requestCopy(course["user_id"], course["course_id"], (args) => {});
+            if (!Grim2Util::joinAwait(context, request))
+                return false;
+
+            var res = main::Course.decodeResult(request);
+            return res;
+        }
+    }
+}

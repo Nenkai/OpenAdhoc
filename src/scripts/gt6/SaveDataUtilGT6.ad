@@ -1,0 +1,893 @@
+
+
+//---------------------------------------------------------------------------------------
+// SaveDataUtilGT6.ad
+//
+// Utility module for saving (GT6 specifics)
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module SaveDataUtilGT6
+{
+    static sSaveBGIssued = false;
+
+    function get_text(context, key)
+    {
+        return manager.translate("SaveData", key);
+    }
+
+    function get_textGT6(context, key)
+    {
+        if (GetVersionBranch() == "academy")
+            return manager.translate("SaveDataAcademy", key);
+        else
+            return manager.translate("SaveDataGT6", key);
+    }
+
+    function getLocalizedCourseName(context, course_code, scenery_code)
+    {
+        var course_code0 = course_code == gtengine::COURSE_CODE_GENERATED ? scenery_code : course_code;
+        var course_info = SPECDB.query1("SELECT Name, Reverse FROM COURSE WHERE ID=?", [course_code0]);
+
+        if (course_info.Reverse)
+        {
+            return "%s / %s".format(
+                manager.translate("CourseName", course_info.Name)
+                manager.translate("CourseData", "direction_reverse")
+            );
+        }
+        else
+        {
+            return manager.translate("CourseName", course_info.Name);
+        }
+    }
+
+    function getDateTime(context, d)
+    {
+        var time = main::pdistd::MTime();
+        time.setBySecond(d);
+
+        var local_time = time.toLocal();
+
+        return manager.translate("DateTime", "FORMAT_DATE_TIME").build(
+            local_time.year,
+            "%02d".format(local_time.month),
+            "%02d".format(local_time.day),
+            "%02d".format(local_time.hour),
+            "%02d".format(local_time.minute)
+        );
+    }
+
+    function getDriverInfo(context, replay)
+    {
+        var header = ORG.getReplayHeaderFromPath(replay.filename);
+        var info = gtengine::MReplayInfo();
+        info.initialize(header);
+
+        var dp = info.getDriverParameter();
+        var format = manager.translate("SaveData", "FORMAT_VALUE");
+        var display_name = dp.display_name;
+        var rp = info.getRaceParameter();
+
+        if (rp.enable_pilot_commander)
+            display_name += " (%s)".format(manager.translate("QuickMenu", "caption_START_BSPEC"));
+
+        return format.build(manager.translate("SaveData", "DRIVER"), display_name);
+    }
+
+    function getReplayInfo(context, replay)
+    {
+        var description = manager.translate("GameModeName", replay.title);
+        if (replay.onelap > 0)
+            description += " %s".format(manager.translate("SaveData", "BEST_LAP_REPLAY"));
+
+        if (replay.event_id > 0)
+        {
+            if (replay.title == "EVENT_RACE" || replay.title == "MISSION" ||
+                replay.title == "LICENSE" || replay.title == "COFFEE_BREAK" || 
+                replay.title == "PRACTICE")
+                description += ": %s".format(replay.subtitle);
+        }
+        else
+            ;
+
+        description += "\n";
+        
+        if (replay.course_name == "")
+            description += getLocalizedCourseName(context, replay.course_code, replay.scenery_code);
+        else
+        {
+            var format = manager.translate("SaveData", "FORMAT_VALUE");
+            description += format.build(getLocalizedCourseName(context, replay.course_code, replay.scenery_code), replay.course_name);
+        }
+
+        description += "\n";
+
+        if (replay.course_code == gtengine::COURSE_CODE_GENERATED)
+        {
+            description += replay.subtitle;
+            description += "\n";
+        }
+
+        description += gtengine::MSpecDB::getCarName(replay.target_car_code);
+        description += "\n";
+
+        description += getDriverInfo(context, replay);
+        description += "\n";
+
+        description += getDateTime(context, replay.datetime);
+        description += "\n";
+
+        return description;
+    }
+
+    function check_file_access_result(context, result, size)
+    {
+        if (result != pdistd::FileError::OK)
+        {
+            if (result == pdistd::FileError::DEVICEFULL)
+            {
+                var need_space = size - pdistd::GetDiskFreeSize("/APP_CACHE");
+                need_space /= 1024;
+
+                pdistd::MSystemDialog::open("NN", get_text(context, "ERROR_SAVE_NO_SPACE").build(need_space));
+            }
+            else
+            {
+                pdistd::MSystemDialog::open("NN", get_text(context, "ERROR_SAVE_FATAL_ERROR"));
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    async function game_first_cb(context, data, use_tsm)
+    {
+        var size;
+        var buf = GlobalStatus::beginSave(&size, main::GAME_STATUS);
+        if (buf == nil)
+            return false;
+
+        var res = await () => pdistd::WriteFile("/APP_CACHE/tmp_save_work.dat", buf, size);
+        if (!check_file_access_result(context, res, size))
+            return false;
+
+        res = await () => pdistd::CopyFile(GlobalStatus::DB_PATH, "/APP_CACHE/tmp_db_work.dat");
+        var st = await () => pdistd::GetFileStatus(GlobalStatus::DB_PATH);
+
+        var size = st["size"];
+        if (!check_file_access_result(context, res, size))
+            return false;
+
+        res = await () => pdistd::CopyFile(UserProfile::GARAGE_PATH, "/APP_CACHE/tmp_garage_work.dat");
+        st = await () => pdistd::GetFileStatus(UserProfile::GARAGE_PATH);
+        size = st["size"];
+        if (!check_file_access_result(context, res, size))
+            return false;
+
+        GlobalStatus::endSave(main::GAME_STATUS);
+        return true;
+    }
+
+    async function game_first_cb_all_data(context, data, use_tsm)
+    {
+        var size;
+        var buf = GlobalStatus::beginSave(&size, main::GAME_STATUS);
+        if (buf == nil)
+            return false;
+
+        var res = await () => pdistd::WriteFile("/APP_CACHE/tmp_save_work.dat", buf, size);
+        if (!check_file_access_result(context, res, size))
+            return false;
+    
+        res = await () => pdistd::CopyFile(GlobalStatus::DB_PATH, "/APP_CACHE/tmp_db_work.dat");
+        var st = await () => pdistd::GetFileStatus(GlobalStatus::DB_PATH);
+    
+        var size = st["size"];
+        if (!check_file_access_result(context, res, size))
+            return false;
+    
+        res = await () => pdistd::CopyFile(UserProfile::GARAGE_PATH, "/APP_CACHE/tmp_garage_work.dat");
+        st = await () => pdistd::GetFileStatus(UserProfile::GARAGE_PATH);
+        size = st["size"];
+        if (!check_file_access_result(context, res, size))
+            return false;
+
+        if (pdistd::Exist(UserProfile::GARAGE_PAD_STOCKYARD_PATH))
+        {
+            res = await () => pdistd::CopyFile(UserProfile::GARAGE_PAD_STOCKYARD_PATH, "/APP_CACHE/tmp_garage_pad_stockyard.dat");
+            st = await () => pdistd::GetFileStatus(UserProfile::GARAGE_PAD_STOCKYARD_PATH);
+            size = st["size"];
+            if (!check_file_access_result(context, res, size))
+                return false;
+            else
+                ;
+        }
+
+        if (pdistd::Exist(UserProfile::GARAGE_STOCKYARD_PATH))
+        {
+            res = await () => pdistd::CopyFile(UserProfile::GARAGE_STOCKYARD_PATH, "/APP_CACHE/tmp_garage_stockyard.dat");
+            st = await () => pdistd::GetFileStatus(UserProfile::GARAGE_STOCKYARD_PATH);
+            size = st["size"];
+            if (!check_file_access_result(context, res, size))
+                return false;
+            else
+                ;
+        }
+
+        GlobalStatus::endSave(main::GAME_STATUS);
+        return true;
+    }
+
+    function game_last_cb(context, data)
+    {
+
+    }
+
+    function getGT6GameForSave(context)
+    {
+        var user_profile = GAME_STATUS.user_profile;
+
+        var data = SaveDataUtil::DataForSave();
+        data.firstCB = game_first_cb;
+        data.lastCB = game_last_cb;
+        
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BG;
+        data.canCopy = true;
+        data.bindCheck = true;
+        data.makeBackup = false;
+        data.compress = true;
+        data.abort_request = false;
+        data.create_new = false;
+        data.saveFileName = "GT6_1.DAT";
+        data.inputFileName = ["/APP_CACHE/tmp_save_work.dat", "/APP_CACHE/tmp_db_work.dat", "/APP_CACHE/tmp_garage_work.dat"];
+        data.dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-GAME6";
+        data.listParam = "GAMEDAT";
+        data.iconTitle = get_text(context, "GAME_ICONTITLE_WITHIN_128BYTES");
+        data.title = get_textGT6(context, "GAME_TITLE_WITHIN_128BYTES");
+        data.subtitle = get_textGT6(context, "GAME_SUBTITLE_WITHIN_128BYTES");
+
+        var cp = user_profile.garage.getRidingCar();
+        if (GetVersionBranch() == "demo")
+        {
+            var tuner = GAME_STATUS.user_profile.option.kiosk_limit_tuner;
+            if (tuner != gtengine::MSpecDB::NO_CODE)
+            {
+                var tuner_label = SPECDB.executeQuery1R1C("SELECT TunerString FROM TUNER WHERE ID=?", [tuner]);
+                var tuner_name = manager.translate("TunerName", tuner_label);
+                data.description = "%{tuner_name} Version";
+            }
+            else
+                data.description = "";
+        }
+        else
+        {
+            data.description = get_textGT6(context, "GAME_DESCRIPTION_WITHIN_1024BYTES").build(
+                user_profile.gameday,
+                pdiext::GetMoneyString(user_profile.cash),
+                cp == nil ? "--" : gtengine::MSpecDB::getCarName(cp.getCarCode())
+            );
+        }
+
+        data.iconPngName = "icon/gt6/game_icon.png";
+        data.bgPngName = "icon/gt6/game_bg.png";
+        data.indicatorMessage = get_text(context, "INDICATOR_SAVING");
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+        return data;
+    }
+
+    function getGT6AllForSave(context)
+    {
+        var data = getGT6GameForSave();
+        data.firstCB = game_first_cb_all_data;
+        data.inputFileName = ["/APP_CACHE/tmp_save_work.dat", "/APP_CACHE/tmp_db_work.dat", 
+                              "/APP_CACHE/tmp_garage_work.dat", "/APP_CACHE/tmp_garage_pad_stockyard.dat", "/APP_CACHE/tmp_garage_stockyard.dat"];
+        return data;
+    }
+
+    function getGT6BackupGameForSave(context)
+    {
+        var user_profile = GAME_STATUS.user_profile;
+
+        var data = getGT6AllForSave(context);
+
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BACKUP;
+        data.firstCB = nil;
+        data.canCopy = false;
+        data.bindCheck = true;
+        data.inputFileName = nil;
+        data.dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-BKUP6";
+        data.iconTitle = get_text(context, "BACKUP_GAME_ICONTITLE_WITHIN_128BYTES");
+        data.title = get_textGT6(context, "BACKUP_GAME_TITLE_WITHIN_128BYTES");
+        data.subtitle = get_textGT6(context, "BACKUP_GAME_SUBTITLE_WITHIN_128BYTES");
+
+        var cp = user_profile.garage.getRidingCar();
+        if (GetVersionBranch() == "demo")
+            data.description = "";
+        else
+        {
+            data.description = get_textGT6(context, "BACKUP_GAME_DESCRIPTION_WITHIN_1024BYTES").build(
+                user_profile.gameday,
+                pdiext::GetMoneyString(user_profile.cash),
+                cp == nil ? "--" : gtengine::MSpecDB::getCarName(cp.getCarCode())
+            );
+        }
+
+        data.indicatorMessage = "";
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+        return data;
+    }
+
+    function get_gt6_game_for_load(backup)
+    {
+        if (backup == nil)
+            backup = false;
+
+        var context = manager.getUpdateContext().getRenderContext();
+        var project = context.getCursorProject();
+
+        var data = SaveDataUtil::DataForLoad();
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BACKUP;
+        data.bindCheck = true;
+        data.compress = true;
+
+        if (!backup)
+            data.dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-GAME6";
+        else
+            data.dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-BKUP6";
+
+        if (backup)
+        {
+            data.outputFileName = ["/APP_CACHE/tmp_save_work.dat", "/APP_CACHE/tmp_db_work.dat", 
+            "/APP_CACHE/tmp_garage_work.dat", "/APP_CACHE/tmp_garage_pad_stockyard.dat", "/APP_CACHE/tmp_garage_stockyard.dat"];
+        }
+        else
+        {
+            data.outputFileName = ["/APP_CACHE/tmp_save_work.dat", "/APP_CACHE/tmp_db_work.dat", 
+            "/APP_CACHE/tmp_garage_work.dat"];
+        }
+
+        return data;
+    }
+
+    function getGT6GameForLoad(backup)
+    {
+        if (backup == nil)
+            backup = false;
+
+        var data = get_gt6_game_for_load(backup);
+        data.loadFileName = "GT6_1.DAT";
+        for (var i = 0; i < data.outputFileName.size; i++)
+            pdistd::RemoveFile(data.outputFileName[i]);
+        return data;
+    }
+
+    function getGT6StockyardForLoad()
+    {
+        var data = get_gt6_game_for_load(false);
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BG;
+        data.loadFileName = "GT6_1.DAT";
+        data.outputFileName = ["/APP_CACHE/tmp_garage_pad_stockyard.dat", "/APP_CACHE/tmp_garage_stockyard.dat"];
+        for (var i = 0; i < data.outputFileName.size; i++)
+            pdistd::RemoveFile(data.outputFileName[i]);
+        return data;
+    }
+
+    function getGT6ReplayForSave(context, replay)
+    {
+        var header = ORG.getReplayHeaderFromPath(replay.filename);
+        var info = gtengine::MReplayInfo();
+        info.initialize(header);
+
+        var data = SaveDataUtil::DataForSave();
+        data.firstCB = nil;
+        data.lastCB = nil;
+        
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_LIST;
+        data.canCopy = true;
+        data.bindCheck = false;
+        data.makeBackup = false;
+        data.compress = false
+        data.abort_request = false;
+        data.create_new = false;
+        data.dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-RPLY";
+        data.saveFileName = "REPLAY.DAT";
+        data.inputFileName = [replay.filename];
+        data.listParam = "REPLAY";
+        data.iconTitle = get_text(context, "REPLAY_ICONTITLE_WITHIN_128BYTES");
+        data.title = get_textGT6(context, "REPLAY_TITLE_WITHIN_128BYTES");
+        data.subtitle = get_textGT6(context, "REPLAY_SUBTITLE_WITHIN_128BYTES");
+        data.description = getReplayInfo(context, replay);
+
+        
+        data.bgPngName = "icon/gt6/replay_sr_bg.png";
+        data.iconPngName = "icon/gt6/replay_sr_icon.png";
+        data.indicatorMessage = "";
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+
+        var st = pdistd::GetFileStatus(replay.filename);
+        if (st["size"] > 104857600)
+            data = nil;
+        return data;
+    }
+
+    function getGT6ReplayForLoad(context, dir, output_filename)
+    {
+        if (dir == nil)
+            dir = pdiext::MProductInformation::GetSaveDataDirectory() + "-RPLY";
+
+        var data = SaveDataUtil::DataForLoad();
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_LIST;
+        data.bindCheck = false;
+        data.compress = false;
+        data.dirName = dir;
+        data.loadFileName = "REPLAY.DAT";
+        data.outputFileName = [output_filename];
+        data.indicatorMessage = "";
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+
+        for (var i = 0; i < data.outputFileName.size; i++)
+            pdistd::RemoveFile(data.outputFileName[i]);
+        return data;
+    }
+
+    function snapGT6ReplayFile(context, path)
+    {
+        if (pdistd::Exist("/APP_DATA/replay/tmp_replay_work.dat"))
+        {
+            var st = pdistd::CopyFile("/APP_DATA/replay/tmp_replay_work.dat", path);
+            var success = st == pdistd::FileError::OK; // Is this even correct? Not reverse wise, code wise
+            if (!success)
+                return false;
+        }
+        else
+            return false;
+
+        return true;
+    }
+
+    function issuedBackgroundSave()
+    {
+        var state = true;
+        while (state)
+        {
+            state = SaveDataUtil::checkBackgroundStatus();
+        }
+
+        if (sSaveBGIssued)
+        {
+            var res = main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BUSY;
+            while (res == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BUSY)
+            {
+                res = checkSaveEveryWhere();
+            }
+        }
+    }
+
+    function syncBackgroundSave()
+    {
+        issuedBackgroundSave();
+    }
+
+    function saveEveryWhere(context)
+    {
+        issuedBackgroundSave();
+
+        var data = SaveDataUtilGT6::getGT6GameForSave(context);
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_OVERWRITE;
+
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        SaveDataUtil::save(context, data, use_tsm);
+
+        sSaveBGIssued = true;
+        return true;
+    }
+
+    function saveAllDataEveryWhere(context, make_backup = false)
+    {
+        issuedBackgroundSave();
+
+        var data = SaveDataUtilGT6::getGT6AllForSave(context);
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_OVERWRITE;
+
+        if (make_backup == true)
+            data.makeBackup = true;
+
+        data.abort_request = true;
+
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        SaveDataUtil::save(context, data, use_tsm);
+
+        sSaveBGIssued = true;
+        return true;
+    }
+
+    function createSaveDataEveryWhere(context)
+    {
+        issuedBackgroundSave();
+
+        var data = SaveDataUtilGT6::getGT6AllForSave(context);
+
+        data.abort_request = true;
+        data.create_new = true;
+
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        SaveDataUtil::save(context, data, use_tsm);
+
+        sSaveBGIssued = true;
+        return true;
+    }
+
+    function saveBackupEveryWhere(context)
+    {
+        issuedBackgroundSave();
+
+        var data = SaveDataUtilGT6::getGT6BackupGameForSave(context);
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        SaveDataUtil::save(context, data, use_tsm);
+
+        sSaveBGIssued = true;
+        return true;
+    }
+
+    function saveRecoveryEveryWhere(context)
+    {
+        issuedBackgroundSave();
+
+        var data = SaveDataUtilGT6::getGT6BackupGameForSave(context);
+        data.canCopy = true;
+        data.bindCheck = false;
+        data.dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-GAME6";
+        data.iconTitle = get_text(context, "GAME_ICONTITLE_WITHIN_128BYTES");
+        data.title = get_textGT6(context, "GAME_TITLE_WITHIN_128BYTES");
+        data.subtitle = get_textGT6(context, "GAME_SUBTITLE_WITHIN_128BYTES");
+        data.abort_request = true;
+
+        var user_profile = GAME_STATUS.user_profile;
+        var cp = user_profile.garage.getRidingCar();
+        if (GetVersionBranch() == "demo")
+        {
+            var tuner = GAME_STATUS.user_profile.option.kiosk_limit_tuner;
+            if (tuner != gtengine::MSpecDB::NO_CODE)
+            {
+                var tuner_label = SPECDB.executeQuery1R1C("SELECT TunerString FROM TUNER WHERE ID=?", [tuner]);
+                var tuner_name = manager.translate("TunerName", tuner_label);
+                data.description = "Goodwood festival of speed / %{tuner_name} Version";
+            }
+            else
+                data.description = "";
+        }
+        else
+        {
+            data.description = get_textGT6(context, "GAME_DESCRIPTION_WITHIN_1024BYTES").build(
+                user_profile.gameday,
+                pdiext::GetMoneyString(user_profile.cash),
+                cp == nil ? "--" : gtengine::MSpecDB::getCarName(cp.getCarCode())
+            );
+        }
+
+        data.indicatorMessage = get_text(context, "INDICATOR_SAVING");
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        SaveDataUtil::save(context, data, use_tsm);
+
+        sSaveBGIssued = true;
+        return true;
+    }
+
+    function saveOverwriteEveryWhere(context, file_name)
+    {
+        issuedBackgroundSave();
+
+        var data = SaveDataUtilGT6::getGT6GameForSave(context);
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_OVERWRITE;
+        data.inputFileName = [file_name];
+
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        SaveDataUtil::save(context, data, use_tsm);
+
+        sSaveBGIssued = true;
+        return true;
+    }
+
+    function saveGarageData(context)
+    {
+        return saveOverwriteEveryWhere(context, UserProfile::GARAGE_PATH);
+    }
+
+    function saveStockyardData(context)
+    {
+        issuedBackgroundSave();
+
+        SaveDataUtilGT6::saveAllDataEveryWhere(context, false);
+        
+        var state;
+        do 
+        {
+            state = SaveDataUtil::checkBackgroundStatus();
+        } while (state)
+
+        var res;
+        do
+        {
+            res = SaveDataUtilGT6::checkSaveEveryWhere();
+        }
+        while (res == pdiext::SaveDataUtilError::SAVEDATAUTIL_BUSY);
+
+        return true;
+    }
+
+    function loadStockyardData(context)
+    {
+        issuedBackgroundSave();
+
+        var success;
+        var result;
+        do
+        {
+            SaveDataUtilGT6::loadEveryWhereForStockyard(nil);
+            [success, result] = SaveDataUtilGT6::getBackgroundLoadResultFromFileForStockyard(context);
+        } while (result == pdiext::SaveDataUtilError::SAVEDATAUTIL_NEED_RETRY_LOAD);
+
+        return [success, result];
+    }
+
+    function saveRecreateEveryWhere(context)
+    {
+        var data = SaveDataUtilGT6::getGT6StockyardForLoad();
+        data.bindCheck = false;
+
+        SaveDataUtil::load(context, data);
+        var [success, result] = SaveDataUtilGT6::getBackgroundLoadResultFromFileForStockyard(context);
+        data = SaveDataUtilGT6::getGT6AllForSave(context);
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_RECREATE;
+        SaveDataUtil::save(context, data);
+    }
+
+    function saveMigration(context)
+    {
+        var data = SaveDataUtilGT6::getGT6GameForSave(context);
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_MIGRATION;
+        data.saveFileName = "GT6_1.DAT";
+        data.inputFileName = ["GT6.DAT"];
+
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        SaveDataUtil::save(context, data, use_tsm);
+
+        return true;
+    }
+
+    function checkSaveEveryWhere()
+    {
+        var res = SaveDataUtil::getBackgroundSaveResult();
+        if (res == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS)
+            sSaveBGIssued = false;
+        return res;
+    }
+
+    function saveAutoForGame(context)
+    {
+        var state = true;
+        while (state)
+            state = SaveDataUtil::checkBackgroundStatus();
+        
+        var res = main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BUSY;
+        while (res == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BUSY)
+            res = checkSaveEveryWhere();
+
+        
+        var data = SaveDataUtilGT6::getGT6GameForSave(context);
+        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO;
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        return SaveDataUtil::save(context, data, use_tsm);
+    }
+
+    function saveListForReplay(context, replay)
+    {
+        var data = SaveDataUtilGT6::getGT6ReplayForSave(context, replay);
+        return SaveDataUtil::save(context, data);
+    }
+
+    function loadEveryWhereForGame(context, old)
+    {
+        var data = SaveDataUtilGT6::getGT6GameForLoad();
+        if (old)
+            data.loadFileName = "GT6.DAT";
+        return SaveDataUtil::load(context, data);
+    }
+
+    function loadEveryWhereForStockyard(context)
+    {
+        var data = SaveDataUtilGT6::getGT6StockyardForLoad();
+        return SaveDataUtil::load(context, data);
+    }
+
+    function loadBackupEveryWhereForGame(context, old)
+    {
+        var data = SaveDataUtilGT6::getGT6GameForLoad(true);
+        if (old)
+            data.loadFileName = "GT6.DAT";
+        return SaveDataUtil::load(context, data);
+    }
+
+    function isExistSaveData(context)
+    {
+        var result = isExistMainSaveData(context);
+        if (result == true)
+            return true;
+
+        // Try backup
+        var dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-BKUP6";
+        var result = SaveDataUtil::isExistLoadFile(dirName);
+
+        if (result == false)
+            return false;
+        return true;
+    }
+
+    function isExistMainSaveData(context)
+    {
+        var dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-GAME6";
+        return SaveDataUtil::isExistLoadFile(dirName);
+    }
+
+    function isExistCurrentSaveData(context)
+    {
+        var dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-GAME6";
+        var fileName = "GT6_1.DAT";
+        return SaveDataUtil::isExistLoadDirAndFile(dirName, fileName);
+    } 
+
+    function isExistCurrentBackupSaveData(context)
+    {
+        var dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-BKUP6";
+        var fileName = "GT6_1.DAT";
+        return SaveDataUtil::isExistLoadDirAndFile(dirName, fileName);
+    } 
+
+    function getBackgroundLoadResultFromFile(context)
+    {
+        var buf = nil;
+        var [result] = SaveDataUtil::getBackgroundLoadResult(context);
+        buf = snapGameStatusFile(context, result);
+        return [result, buf];
+    }
+
+    function getBackgroundLoadResultFromAllFile(context)
+    {
+        var buf = nil;
+        var [result] = SaveDataUtil::getBackgroundLoadResult(context);
+        buf = snapGameStatusFile(context, result);
+        if (!snapStockyardFile(context, result))
+            buf = nil;
+
+        return [result, buf];
+    }
+
+    function getBackgroundLoadResultFromFileForStockyard(context)
+    {
+        var [result] = SaveDataUtil::getBackgroundLoadResult(context, false);
+        var success = snapStockyardFile(context, result);
+        return [success, result];
+    }
+
+    function snapGameStatusFile(context, result)
+    {
+        var buf = nil;
+
+        if (result == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS ||
+            result == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BIND_NEED_RECREATE)
+        {
+            if (pdistd::Exist("/APP_CACHE/tmp_save_work.dat"))
+            {
+                var st = pdistd::ReadFile("/APP_CACHE/tmp_save_work.dat", true);
+                if (st["result"] == pdistd::FileError::OK)
+                    buf = st["buffer"];
+                else
+                    buf = nil;
+            }
+            else
+            {
+                buf = nil;
+            }
+
+            if (pdistd::Exist("/APP_CACHE/tmp_db_work.dat"))
+            {
+                var st = pdistd::CopyFile("/APP_CACHE/tmp_db_work.dat", GlobalStatus::DB_PATH);
+                var success = st == pdistd::FileError::OK;
+                if (!success)
+                {
+                    var st_size = pdistd::GetFileStatus("/APP_CACHE/tmp_db_work.dat");
+                    var size = st_size["size"];
+                    check_file_access_result(context, st, size);
+                    buf = nil;
+                }
+            }
+            else
+                buf = nil;
+                
+            if (pdistd::Exist("/APP_CACHE/tmp_garage_work.dat"))
+            {
+                var st = pdistd::CopyFile("/APP_CACHE/tmp_garage_work.dat", UserProfile::GARAGE_PATH);
+                var success = st == pdistd::FileError::OK;
+                if (!success)
+                {
+                    var st_size = pdistd::GetFileStatus("/APP_CACHE/tmp_garage_work.dat");
+                    var size = st_size["size"];
+                    check_file_access_result(context, st, size);
+                    buf = nil;
+                }
+            }
+            else
+                buf = nil;
+        }
+        else
+            buf = nil;
+
+        return buf;
+    }
+
+    function snapStockyardFile(context, result)
+    {
+        var success = false;
+
+        if (result == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS ||
+            result == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BIND_NEED_RECREATE)
+        {
+            success = true;
+
+            if (pdistd::Exist("/APP_CACHE/tmp_garage_pad_stockyard.dat"))
+            {
+                var st = pdistd::CopyFile("/APP_CACHE/tmp_garage_pad_stockyard.dat", UserProfile::GARAGE_PAD_STOCKYARD_PATH);
+                if (st != pdistd::FileError::OK)
+                {
+                    var st_size = pdistd::GetFileStatus("/APP_CACHE/tmp_garage_pad_stockyard.dat");
+                    var size = st_size["size"];
+                    check_file_access_result(context, st, size);
+                    success = false;
+                }
+            }
+            else
+                success = false;
+                
+            if (pdistd::Exist("/APP_CACHE/tmp_garage_stockyard.dat"))
+            {
+                var st = pdistd::CopyFile("/APP_CACHE/tmp_garage_stockyard.dat", UserProfile::GARAGE_STOCKYARD_PATH);
+                if (st != pdistd::FileError::OK)
+                {
+                    var st_size = pdistd::GetFileStatus("/APP_CACHE/tmp_garage_stockyard.dat");
+                    var size = st_size["size"];
+                    check_file_access_result(context, st, size);
+                    success = false;
+                }
+            }
+            else
+                success = false;
+        }
+
+        return success;
+    }
+
+    // Do NOT call this
+    function getLocalizePage()
+    {
+        return sLocalizePage; // Doesn't even exist
+    }
+}

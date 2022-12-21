@@ -1,0 +1,322 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static sCurrentRootForNetworkEvent = nil;
+static sNetworkDisconnectDialogOpening = false;
+static sIsChatRestricted = PDINetwork.isChatRestricted() || GAME_STATUS.user_profile.option.lounge_chat_disabled;
+
+function setCurrentRootForNetworkEvent(root)
+{
+    sCurrentRootForNetworkEvent = root;
+}
+
+function putSystemChatMessage(context, type, message, lifetime = -1)
+{
+    UIKitProject::MessengerRoot.putSystemChatMessage(context, type, message, lifetime);
+}
+
+function putRoomChatMessage(context, from, message)
+{
+    if (sIsChatRestricted)
+        return;
+
+    sNoticeList.addNotice(gtengine::NoticeType::RoomChat, from, message, 600, true);
+}
+
+function putAutoMessage(context, from, message)
+{
+    if (sIsChatRestricted)
+        return;
+
+    sNoticeList.addNotice(gtengine::NoticeType::AutoMessage, from, message, 600, true);
+}
+
+function putLobbyChatMessage(context, from, message)
+{
+    if (sIsChatRestricted)
+        return;
+
+    UIKitProject::MessengerRoot.putLobbyChatMessage(context, from, message);
+}
+
+function putWhisperMessage(context, from, to, message)
+{
+    if (sIsChatRestricted)
+        return;
+
+    UIKitProject::MessengerRoot.putWhisperChatMessage(context, from, to, message);
+}
+
+function sendAutoMessage(message, targetOnlineId)
+{
+    if (sIsChatRestricted)
+        return;
+
+    if (targetOnlineId == nil)
+    {
+        Lobby.sendRoomBinaryMessageAsync(pdistd::BinaryMessageType::AutoMessage, message);
+    }
+    else
+    {
+        Lobby.sendRoomBinaryMessageAsync(pdistd::BinaryMessageType::AutoMessage, message,
+            pdistd::ChatMessageType::WHISPER, targetOnlineId);
+    }
+}
+
+function broadcastSystemMessage(messageType, args)
+{
+    if (args == nil)
+        args = [];
+
+    args.unshift(messageType);
+    Lobby.sendRoomBinaryMessageAsync(pdistd::BinaryMessageType::SystemMessage, args.serialize());
+}
+
+function amIEntried()
+{
+    var my_slot_id = main::RaceOperator.getAccountSlotID(0);
+    if (RaceOperator.checkCompleteRebuildSequence() == 0)
+        return false;
+
+    if (my_slot_id == -1)
+        return false;
+
+    if (main::ORG.getRidingSlotID(my_slot_id) != my_slot_id)
+        return true;
+
+    return main::ORG.getEntryState(my_slot_id) == main::gtengine::EntryLevel::RACER;
+}
+
+function amIDrivingMyself()
+{
+    var my_slot_id = main::RaceOperator.getAccountSlotID(0);
+    var driving_slot = main::ORG.getDrivingSlotID(my_slot_id);
+    return my_slot_id == driving_slot;
+}
+
+function onRoomJoined(context, myMemberId, members) {}
+
+function onRoomMemberJoined(context, name, roomMemberId, teamId)
+{
+    var root = sCurrentRootForNetworkEvent;
+    if (root == nil)
+        return;
+
+    if (gSequenceCondition.enable_room_notification && !PDINetwork.getUseNickname())
+    {
+        var message = manager.translate("OnlineMessage", "ROOM_MEMBER_JOINING").build(name);
+        putSystemChatMessage(context, gtengine::NoticeType::RoomMemberJoin, message, 30);
+    }
+
+    sCurrentRootForNetworkEvent.onRoomMemberJoinedForRace(context, name, roomMemberId, teamId);
+}
+
+function onRoomMemberLeft(context, name, displayName, roomMemberId, teamId, cause)
+{
+    var root = sCurrentRootForNetworkEvent;
+    if (root == nil || displayName == "")
+        return;
+
+    if (gSequenceCondition.enable_room_notification)
+    {
+        var message = manager.translate("OnlineMessage", "ROOM_MEMBER_LEFT").build(displayName);
+        putSystemChatMessage(context, gtengine::NoticeType::RoomMemberLeft, message, 30);
+    }
+
+    sCurrentRootForNetworkEvent.onRoomMemberLeftForRace(context, name, roomMemberId, teamId, cause);
+}
+
+function onRoomBinaryMessage(context, type, message, name, cast)
+{
+    var root = sCurrentRootForNetworkEvent;
+    if (root == nil)
+        return;
+
+    if (root.defined("onRoomBinaryMessage"))
+    {
+        root.onRoomBinaryMessage(context, type, message, name, cast);
+    }
+}
+
+function onPrepareRace(context, senderName, communicatorIndex, timeout, byAlarm)
+{
+    if (Lobby.isRoomOwner())
+    {
+        Lobby.setRoomClosed(true, true);
+        broadcastSystemMessage(gtengine::NoticeType::PrepareRace, [byAlarm, senderName]);
+        OnlineRaceUtil::Log::onPrepareRace(OnlineSession.getRoomConfig(), byAlarm);
+    }
+
+    var root = sCurrentRootForNetworkEvent;
+    if (root == nil)
+        return;
+
+    root.onPrepareRaceNotification(context);
+}
+
+function onResultOfRace(context, result_list)
+{
+    for (var i = 0; i < result_list.size; i++)
+    {
+        var user_number = result_list[i];
+
+        var request1 = main::UserProfile2.requestUserProfile(user_number, function(args)
+        {
+            var [context, request] = args;
+            if (request.isDone())
+            {
+                var user_profile = main::UserProfile2.decodeUserProfile(request);
+                var online_id = user_profile["user_id"];
+            }
+        })
+    }
+}
+
+function onRoomKickedOut(context, by, cause)
+{
+    onNetworkDisconnect(context, 0, cause);
+}
+
+function abortSystemDialogs(context)
+{
+    DialogUtil::cancelConfirmDialog(context);
+    OSKUtil::closeChatDialog(context);
+    OSKUtil::abort();
+    PDINetwork.abortShowProfile(true);
+    NP.abortGui(true);
+}
+
+function openNetworkErrorDialog(context, text)
+{
+    context.dumpTraceInfo();
+    abortSystemDialogs(context);
+    pdistd::MSystemDialog::open("EN", text);
+}
+
+function onNetworkDisconnect(context, reason = 0, cause = pdistd::EventCause::Unknown)
+{
+    main::ORG.pauseHandleAvailable = false;
+    if (sNetworkDisconnectDialogOpening == true)
+        return;
+
+    sNetworkDisconnectDialogOpening = true;
+
+    if (cause == nil)
+        cause = pdistd::EventCause::Unknown;
+
+    gSequenceCondition.is_fatal_error_happened = true;
+    ORG.disableRenderingRace();
+
+    main::RaceOperator.checkOut();
+    if (main::AVChat.isJoined())
+    {
+        main::AVChat.stopStreaming();
+        main::AVChat.leave();
+    }
+
+    if (main::Lobby.isJoinedRoom())
+        main::Lobby.leaveRoom();
+
+    var message = "";
+    if (cause != pdistd::EventCause::Unknown && cause != pdistd::EventCause::LeaveNormally)
+    {
+        switch (cause)
+        {
+            case pdistd::EventCause::ConnectionError:
+                message = manager.translate("OnlineMessage", "DISCONNECTED_FROM_LOBBY_SERVER");
+                break;
+
+            case pdistd::EventCause::KickedOut:
+                message = manager.translate("OnlineMessage", "KICKED_OUT");
+                break;
+
+            default:
+                message = manager.translate("OnlineMessage", "DISCONNECTED");
+        }
+    }
+    else
+    {
+        switch (reason)
+        {
+            case 2:
+                message = manager.translate("OnlineMessage", "DISCONNECTED_DUE_TO_NETWORK_DETERIORATION");
+                break;
+            
+            default:
+                message = manager.translate("OnlineMessage", "DISCONNECTED");
+        }
+    }
+
+    var lastError = PDINetwork.getLastError();
+    if (lastError == -1010)
+    {
+        message = manager.translate("OnlineMessage", "DISCONNECTED_FROM_GT_SERVER");
+    }
+    else if (lastError == -1011)
+    {
+        message = manager.translate("OnlineMessage", "DISCONNECTED_DUE_TO_INACTIVITY_DETECTED");
+    }
+    else if (lastError == -1012)
+    {
+        message = manager.translate("OnlineMessage", "RACE_HAS_BEEN_CANCELED");
+    }
+    else if (lastError == pdistd::NetworkError::MigrationCandidateNotFound)
+    {
+        message = manager.translate("OnlineMessage", "NEW_ROOM_OWNER_NOT_FOUND");
+    }
+
+    var showDialog = true;
+
+    if (showDialog)
+    {
+        if (pdiext::isQABuild())
+            message += "\n[%{reason}:%{cause}:%{lastError}]";
+        
+        openNetworkErrorDialog(context, message);
+    }
+    else
+    {
+        abortSystemDialogs(context);
+    }
+
+    var root = sCurrentRootForNetworkEvent;
+    if (root != nil)
+    {
+        if (root.defined("afterNetworkDisconnect"))
+        {
+            root.afterNetworkDisconnect(context);
+        }
+        else
+            ;
+    }
+    else
+        ;
+
+    main::ORG.pauseHandleAvailable = true;
+}
+
+function onRoomDestroyed(context, cause)
+{
+    onNetworkDisconnect(context, 0, cause);
+}
+
+method onChangeRemoteView(context, name, numeralId, target, cameraType, mount)
+{
+    RaceRoot.kbdswSetCameraTarget(0, target, cameraType, mount);
+}
+
+method onBinaryMessageReceived(context, name, userId, bytedata)
+{
+    
+}

@@ -1,0 +1,194 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CarDisplayRoot
+{
+    static sIsDisplay = false;
+
+    attribute cp_;
+    attribute frame_interval;
+    attribute enable_stereo_rendering;
+
+    method display(context, cp)
+    {
+        if (sIsDisplay)
+            return;
+
+        self.cp_ = cp;
+
+        self.frame_interval = menu::FrameInterval;
+        menu::FrameInterval = 2; // 30fps? Why PDI?
+
+        sIsDisplay = true;
+
+        context.pushPage(self);
+    }
+
+    method hide(context)
+    {
+        if (!sIsDisplay)
+            return;
+
+        Display::Fade.backward();
+        Display::Fade.start();
+
+        SceneFace.clearCar(context);
+
+        if (self.enable_stereo_rendering != nil)
+        {
+            ORG.setEnableStereoRendering(self.enable_stereo_rendering);
+            self.enable_stereo_rendering = nil;
+        }
+
+        PageUtil::visibleUnderPages(context, self);
+
+        while (Display::Fade.ramain_time)
+            context.wait(0.1);
+
+        if (self.frame_interval != nil)
+        {
+            menu::FrameInterval = self.frame_interval;
+            self.frame_interval = nil;
+        }
+
+        sIsDisplay = false;
+
+        context.closePage(self);
+    }
+
+    method isDisplay()
+    {
+        return sIsDisplay;
+    }
+
+    method setCarColor(context, color)
+    {
+        SceneFace.setCarVariation(color);
+        var color_name = gtengine::MSpecDB::getCarColorName(self.cp_.getCarCode(), color).trim();
+        Display::CarColor.text = color_name != "" ? color_name : "---";
+        Display::CarColor::Fade.restart();
+    }
+
+    method setupDisplay(context, car_code, car_color)
+    {
+        var info = SPECDB.query1("SELECT Tuner, CountryFlag FROM CAR_VIEW WHERE ID=?", [car_code]);
+
+        Display::CarName.text = SpecDatabaseUtil::getAlphabetCarName(context, car_code);
+
+        var mtd_end_load_flag = method (context) 
+        {
+            if (context == nil)
+                return;
+
+            Display::Info::Flag::Fade.restart();
+            Display::Info::Flag.on_delay_load_complete = nil;
+        };
+
+        Display::Info::Flag.on_delay_load_complete = *self{mtd_end_load_flag};
+
+        var country_flag = info.CountryFlag != "-" ? info.CountryFlag.downcase() : "pdi";
+        Display::Info::Flag.image_path = "piece/flag_ranking/%s.img".format(country_flag);
+
+        var country_name = info.CountryFlag != "-" ? info.CountryFlag.upcase() : "PDI";
+        Display::Info::Country.text = manager.translate("Country", country_name);
+        Display::Info::Manufacturer.text = manager.translate("TunerName", info.Tuner);
+
+        var mtd_end_load_logo = method (context)
+        {
+            if (context == nil)
+                return;
+
+            Display::Logo::Fade.restart();
+            Display::Logo.on_delay_load_complete = nil;
+        };
+
+        Display::Logo.on_delay_load_complete = *self{mtd_end_load_logo};
+        Display::Logo.image_path = "piece/gt6/tunner_logo_L/%s.img".format(info.Tuner);
+    }
+
+    method onInitialize(context)
+    {
+        SceneFace.loadCar(context, self.cp_);
+        setupDisplay(context, self.cp_.getCarCode(), self.cp_.color);
+
+        Display::Fade.forward();
+        Display::Fade.restart();
+
+        PageUtil::invisibleUnderPages(context, self);
+
+        self.enable_stereo_rendering = ORG.getEnableStereoRendering();
+        ORG.setEnableStereoRendering(true);
+    }
+
+    module SceneFace
+    {
+        attribute current_cp_;
+        attribute thread_;
+
+        method onInitialize(context)
+        {
+            SceneCover::Fade.forward();
+            SceneCover::Fade.reset();
+        }
+
+        method loadCar(context, cp)
+        {
+            self.thread_ = Thread((context) => 
+            {
+                SceneCover::Fade.forward();
+                SceneCover::Fade.reset();
+                SceneFaceUtil::loadScene(SceneFace, "arcade_bg", cp);
+                SceneFace.current_cp_ = cp;
+
+                while (true)
+                {
+                    if (!self.isUnderSetup())
+                        break;
+
+                    Thread::Sleep(0.5);
+                }
+
+                SceneCover::Fade.forward();
+                SceneCover::Fade.start();
+            }, context);
+
+            self.thread_.start();
+        }
+
+        method setCarVariation(car_color)
+        {
+            self.execCommand("setCarVariation %{car_color} car0");
+        }
+
+        method clearCar(context)
+        {
+            if (self.thread_ != nil)
+            {
+                self.thread_.terminate();
+                self.thread_ = nil;
+            }
+
+            SceneCover::Fade.backward();
+            SceneCover::Fade.start();
+
+            while (SceneCover::Fade.ramain_time)
+                context.wait(0.1);
+
+            if (self.current_cp_ != nil)
+                self.execCommandImmidiate("clearEntity car0");
+
+            self.current_cp_ = nil;
+        }
+    }
+}

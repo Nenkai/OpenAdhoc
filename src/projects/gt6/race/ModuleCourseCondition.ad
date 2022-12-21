@@ -1,0 +1,305 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CourseConditionRoot
+{
+    attribute popup;
+    attribute result;
+    attribute race_parameter;
+
+    method open(context, race_parameter)
+    {
+        self.race_parameter = gtengine::MRaceParameter();
+        self.race_parameter.deepCopy(race_parameter);
+
+        self.result = nil;
+
+        SettingFrame.appear();
+        self.popup = SequenceUtil::ModalPage(context, CourseConditionRoot);
+        self.popup.open();
+
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        if (self.popup != nil)
+        {
+            self.popup.close();
+            self.popup = nil;
+        }
+    }
+
+
+    method abort(context)
+    {
+        close(context);
+        self.result = nil;
+    }
+
+    method reflect(context)
+    {
+        var course_info = RaceProject::getCurrentCourseInfo();
+        var snow_situation = course_info.ChangeWeather && course_info.CelsiusBase0 < 0;
+        var basetime_min = course_info.BaseTimeMin;
+        var basetime_max = course_info.BaseTimeMax;
+        var time_changeable = course_info.ChangeTime;
+        var weather_changeable = course_info.ChangeWeather || snow_situation;
+
+        if (self.race_parameter.decisive_weather == gtengine::DecisiveWeather::RAINY ||
+            self.race_parameter.decisive_weather == gtengine::DecisiveWeather::SNOWY || 
+            self.race_parameter.decisive_weather == gtengine::DecisiveWeather::SUNNY)
+            weather_changeable = false;
+
+        var cp = getPlayerCar();
+
+        var hour = self.race_parameter.datetime.hour;
+        var _24h_sec = 24 * 3600;
+        if (_24h_sec <= basetime_max)
+        {
+            var datetime_sec = (self.race_parameter.datetime.hour * 3600) + (self.race_parameter.datetime.minute * 60);
+            if (datetime_sec < basetime_min)
+                hour += 24;
+        }
+
+        var index = hour * (60 / 5) + (self.race_parameter.datetime.minute / 5); 
+        var min, max;
+        if (time_changeable)
+        {
+            min = basetime_min / 60 / 5;
+            max = basetime_max / 60 / 5;
+            if (min == 0 && max == 0)
+            {
+                min = 0;
+                max = ((24 * 60) - 10) / 5;
+            }
+        }
+        else
+        {
+            min = max = index;
+        }
+
+        var slider = SettingFrame::Pane::ScrolledBody::clip::space::BaseTime::slider;
+        slider.range = [min, max];
+        slider.format_callback = (context, value, slider0) => 
+        {
+            var v = value.toInt() * 5;
+            var minute = v % 60;
+            var hour = v / 60;
+            if (hour >= 24)
+                hour -= 24;
+
+            return "%d:%02d".format(hour, minute);
+        }
+
+        slider.index = index;
+        slider.setup(context);
+        slider.insensitive = !time_changeable;
+        
+
+        slider = SettingFrame::Pane::ScrolledBody::clip::space::TimeScale::slider;
+        slider.index = self.race_parameter.time_progress_speed;
+        slider.setup(context);
+        slider.insensitive = !time_changeable;
+
+
+        slider = SettingFrame::Pane::ScrolledBody::clip::space::Probability::slider;
+        slider.format_callback = (context, value, slider0) 
+            => context.translate(CourseConditionRoot, "Unit", "PERCENT").build(25 * value.toInt());
+
+        var value0 = self.race_parameter.weather_value0 * 10.0;
+        index = 0;
+        if (value0 > 0.0)
+            index = (value0 + 0.4).toInt();
+
+        if (value0 < 0.0)
+            index = (value0 - 0.4).toInt();
+
+        switch (index)
+        {
+            case 10:
+            case 9:
+            case 8:
+            case 7:
+            case 6:
+                slider.index = 0;
+                break;
+            
+            case 5:
+            case 4:
+            case 3:
+            case 2:
+            case 1:
+                slider.index = 1;
+                break;
+                            
+            case 0:
+                slider.index = 2;
+                break;
+
+            case -1:
+            case -2:
+            case -3:
+            case -4:
+            case -5:
+                slider.index = 3;
+                break;
+
+            case -6:
+            case -7:
+            case -8:
+            case -9:
+            case -10:
+                slider.index = 4;
+                break;
+        }
+
+        slider.setup(context);
+        slider.insensitive = !weather_changeable;
+
+
+        slider = SettingFrame::Pane::ScrolledBody::clip::space::WeatherAccel::slider;
+        if (self.race_parameter.weather_accel10 >= 10)
+            slider.index = self.race_parameter.weather_accel10 / 10;
+        else
+            slider.index = 0;
+        slider.setup(context);
+        slider.insensitive = !weather_changeable;
+
+        
+        slider = SettingFrame::Pane::ScrolledBody::clip::space::InitialRetention::slider;
+        slider.format_callback = (context, value, slider0) 
+            => context.translate(CourseConditionRoot, "Unit", "PERCENT").build(10 * value.toInt());
+        slider.index = self.race_parameter.initial_retention10;
+        slider.setup(context);
+        slider.insensitive = !weather_changeable || snow_situation || course_info.NoPrecipitation;
+
+        SettingFrame::Pane::ScrolledBody::clip::space::LowMuType::OptionMenu.setIndex(context, 
+            self.race_parameter.low_mu_type == gtengine::LowMuType::MODERATE ? 0 : 1);
+    }
+
+    method apply(context)
+    {
+        var course_info = RaceProject::getCurrentCourseInfo();
+
+        if (course_info.ChangeTime)
+        {
+            var minutes = SettingFrame::Pane::ScrolledBody::clip::space::BaseTime::slider.index * 5;
+            var mtime = self.race_parameter.datetime;
+            mtime.minute = minutes % 60;
+
+            var hour = (minutes - mtime.minute) / 60;
+            if (hour >= 24)
+                hour -= 24;
+            mtime.hour = hour;
+
+            self.race_parameter.datetime = mtime;
+            self.race_parameter.time_progress_speed = SettingFrame::Pane::ScrolledBody::clip::space::TimeScale::slider.index;
+        }
+
+        if (course_info.ChangeWeather)
+        {
+            self.race_parameter.decisive_weather = gtengine::DecisiveWeather::NONE;
+            self.race_parameter.weather_no_schedule = false;
+            self.race_parameter.weather_random = true;
+            
+            var index = SettingFrame::Pane::ScrolledBody::clip::space::Probability::slider.index;
+            var weather_value = 0.0;
+
+            switch (index)
+            {
+                case 0:
+                    weather_value = 1.0;
+                    break;
+
+                case 1:
+                    weather_value = 0.5;
+                    break;
+
+                case 2:
+                    weather_value = 0.0;
+                    break;
+
+                case 3:
+                    weather_value = -0.5;
+                    break;
+
+                case 4:
+                    weather_value = -1.0;
+                    break;
+            }
+
+            self.race_parameter.weather_point_num = 2;
+            self.race_parameter.weather_total_sec = 300;
+            self.race_parameter.setWeatherValue(0, 0, weather_value, weather_value);
+            self.race_parameter.setWeatherValue(1, 1.0, -1.0, 1.0);
+            self.race_parameter.weather_no_precipitation = course_info.NoPrecipitation;
+
+            var slider = SettingFrame::Pane::ScrolledBody::clip::space::WeatherAccel::slider;
+            if (slider.index > 0)
+                self.race_parameter.weather_accel10 = slider.index * 10;
+            else
+            {
+                self.race_parameter.weather_accel10 = 0;
+                self.race_parameter.setWeatherValue(0, 0, weather_value, weather_value);
+                self.race_parameter.setWeatherValue(1, 1.0, weather_value, weather_value);
+            }
+
+            self.race_parameter.weather_accel_water_retention10 = self.race_parameter.weather_accel10;
+            self.race_parameter.initial_retention10 = SettingFrame::Pane::ScrolledBody::clip::space::InitialRetention::slider.index;
+        }
+
+        self.race_parameter.low_mu_type = SettingFrame::Pane::ScrolledBody::clip::space::LowMuType::OptionMenu.index == 0 ?
+                            gtengine::LowMuType::MODERATE :
+                            gtengine::LowMuType::REAL;
+
+        self.result = self.race_parameter;
+    }
+
+    method onInitialize(context)
+    {
+        if (true)
+        {
+            SettingFrame::Pane::Foot.visible = false;
+        }
+
+        SettingFrame.adjust_scrolled_body();
+        reflect(context);
+
+        CourseConditionRoot.setFocus(SettingFrame::Pane::ScrolledBody::clip::space::BaseTime::slider);
+    }
+
+    method onFinalize(context) // Fixed typo "onFinalzie(context)"
+    {
+        self.race_parameter = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        if (true)
+        {
+            apply();
+            close(context);
+        }
+        else
+        {
+            CourseConditionRoot.setFocus(SettingFrame::Pane::Foot::Cancel);
+        }
+
+        return STATE_YIELD;
+    }
+}

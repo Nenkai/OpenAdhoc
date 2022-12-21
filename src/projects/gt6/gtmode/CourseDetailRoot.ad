@@ -1,0 +1,521 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CourseDetailRoot
+{
+    attribute course;
+    attribute result;
+    attribute play_course;
+    attribute ref_removed;
+
+    function checkLogin(context)
+    {
+        var course = CourseDetailRoot.course;
+        if (CourseMakerUtil::isSampleCourse(course["course_id"]))
+            return true;
+
+        var res = LoginUtil::makeSureLogin(context, true);
+        LoginUtil::setPresence(res);
+
+        if (!res)
+            sound.play("disable");
+
+        return res;
+    }
+
+    function trim(s)
+    {
+        if (s == nil)
+            return s;
+
+        var ws = " \n\t\v\r\f";
+        ws += "　"; // IDEOGRAPHIC SPACE U+3000
+        s = s.trim(ws);
+        return s;
+    }
+
+    method open(context, course, ref_removed)
+    {
+        self.result = false;
+        self.play_course = false;
+        self.course = course;
+        self.ref_removed = ref_removed;
+
+        SettingFrame2.appear();
+        SequenceUtil::pushPage(context, self);
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        var delay_time = SettingFrame2.hide();
+        SequenceUtil::popPage(context, self, delay_time);
+    }
+
+    method playCourse(context, course)
+    {
+        CourseDetailRoot.play_course = true;
+        CourseDetailRoot.result = false;
+        CourseDetailRoot.close(context);
+    }
+
+    method onRealize(manager)
+    {
+        var L = SettingFrame2::Pane::Left;
+        L.Event.text = "";
+        L.CourseImage.image_path = "";
+        L.Datetime.text = "";
+
+        var R = SettingFrame2::Pane::Right::ScrolledBody::clip::space;
+        R.CourseID::TextFace.text = "";
+        R.Comment::TextFace.text = "";
+        R.Theme::TextFace.text = "";
+        R.Length::TextFace.text = "";
+        R.Corner::TextFace.text = "";
+        R.User::TextFace.text = "";
+    }
+
+    method onInitialize(context)
+    {
+        var L = SettingFrame2::Pane::Left;
+        L.Event.text = self.course["title"];
+        
+        var photo_id = self.course["photo_id"];
+        if (CourseMakerUtil::isSampleCourse(self.course["course_id"]))
+        {
+            L.CourseImage.image_path = "/piece/gt6/coursemaker/%{photo_id}.img";
+        }
+        else
+        {
+            var image_path = Photo.getPngImagePath(photo_id);
+            if (pdistd::Exist(image_path))
+                L.CourseImage.image_path = image_path;
+            else
+            {
+                Photo.requestPngImage(photo_id, (args) => 
+                {
+                    var [context, request] = args;
+                    if (request.isDone())
+                        L.CourseImage.image_path = image_path;
+                })
+            }
+        }
+
+        var local_time = self.course["create_time"].toLocal();
+        if (local_time.year < 2015)
+            L.Datetime.text = "---";
+        else
+        {
+            L.Datetime.text = manager.translate("DateTime", "FORMAT_DATE_TIME")
+                .build(local_time.year,
+                    "%02d".format(local_time.month),
+                    "%02d".format(local_time.day),
+                    "%02d".format(local_time.hour),
+                    "%02d".format(local_time.minute),
+                );
+        }
+
+        var sample = self.course["status"] == 0;
+        var editable = self.course["user_id"] == self.course["source_user_id"];
+
+        L.Buttons::vbox::ChangeStatus.insensitive = sample;
+        L.Buttons::vbox::ChangeStatus::label.text = manager.translate("Community", sample || self.course["status"] == 1 ? "Label_Upload" : "Label_UploadCancel");
+        L.Buttons::vbox::ChangeStatus::label_i.text = L.Buttons::vbox::ChangeStatus::label.text;
+        L.Buttons::vbox::EditTitle.insensitive = sample || !editable;
+        L.Buttons::vbox::EditComment.insensitive = sample || !editable;
+        L.Buttons::vbox::Remove.insensitive = sample;
+
+        // Right Pane
+        var R = SettingFrame2::Pane::Right::ScrolledBody::clip::space;
+
+        R.Theme::TextFace.text = manager.translate("CourseName", self.course["theme"]);
+        R.Length::TextFace.text = manager.translate("SaveData", "FORMAT_NAME").build(
+            pdiext::MUnit::GetCourseLengthString(self.course["length"], true),
+            manager.translate("CourseMaker", self.course["one_way"] ? "COURSE_ONEWAY" : "COURSE_LOOP"),
+        );
+        R.Corner::TextFace.text = self.course["corners"];
+        R.User::TextFace.text = self.course["source_user_id"];
+        R.CourseID::TextFace.text = "%d (status %d)".format(self.course["course_id"], self.course["status"]);
+
+        var is_debug = IsDevelop(context);
+        R.CourseID.visible = is_debug;
+
+        var adj = main::menu::MAdjustment();
+        SettingFrame2::Pane::RSide::VScrollbar.adjustment = adj;
+
+        var target = SettingFrame2::Pane::Right::ScrolledBody;
+        target.can_focus = false;
+        target.clip.v_adjustment = adj;
+        target.clip.scroll_mode = 2;
+        target.clip.space.y = 0.0;
+        target.clip.manual_target_y = 0.0;
+
+        setComment(context, self.course["comment"]);
+
+        CourseDetailRoot.setFocus(L.Buttons::vbox::Play);
+    }
+
+    method setComment(context, comment)
+    {
+        var R = SettingFrame2::Pane::Right::ScrolledBody::clip::space;
+        R.Comment::TextFace.text = comment;
+        self.course["comment"] = comment;
+
+        context.pushEvent(menu::MScriptEvent(context, self, "on_setcomment"));
+    }
+
+    method on_setcomment(context)
+    {
+        context.wait();
+
+        var clip = SettingFrame2::Pane::Right::ScrolledBody::clip;
+        SettingFrame2::Pane::Right::ScrolledBody.can_focus = clip.h < clip.space.h;
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        self.close(context);
+        return STATE_YIELD;
+    }
+
+    module SettingFrame2::Pane::Left::Buttons::vbox
+    {
+        module Play
+        {
+            method onActivate(context)
+            {
+                if (!checkLogin(context))
+                    return STATE_YIELD;
+
+                if (!isRidingCar())
+                {
+                    sound.play("disable");
+                    ERROR(context, "CommonGTMode", "Message_PleaseSelectCar");
+                    return STATE_YIELD;
+                }
+
+                sound.play("next");
+                playCourse(context, CourseDetailRoot.course);
+                return STATE_YIELD;
+            }
+        }
+
+        module EditComment
+        {
+            method updateComment(context, course, sanitized_text)
+            {
+                var request = main::Course.requestUpdateComment(course["course_id"], sanitized_text, (args) => {});
+                if (!Grim2Util::joinAwait(context, request))
+                    return false;
+    
+                var res = main::Course.decodeResult(request);
+                return true;
+            }
+
+            method onActivate(context)
+            {
+                if (!checkLogin(context))
+                    return 2;
+
+                if (PDINetwork.isChatRestricted())
+                {
+                    sound.play("disable");
+                    ERROR(context, "OnlineMessage", "ERROR_CHAT_RESTRICTED_FUNCTION");
+                    return 2;
+                }
+
+                sound.play("ok");
+
+                var course = CourseDetailRoot.course;
+                var config = [
+                    "limit_length" : 140,
+                    "no_return" : false
+                ];
+
+                var text = course["comment"];
+
+                var message = OSKUtil::open(context, text, CourseDetailRoot, config);
+                message = trim(message);
+
+                if (message == nil || message == text)
+                    return 2;
+
+                VulgarityFilterUtil::begin();
+                var [res, sanitized_text] = VulgarityFilterUtil::check(message);
+                VulgarityFilterUtil::end();
+
+                if (!res)
+                {
+                    GENERIC_RESULT(context, false);
+                    return 2;
+                }
+
+                var res0 = updateComment(context, course, sanitized_text);
+                if (res0)
+                {
+                    CourseDetailRoot.setComment(context, sanitized_text);
+                }
+
+                GENERIC_RESULT(context, res0);
+                return 2;
+            }
+        }
+
+        module EditTitle
+        {
+            method updateTitle(context, course, sanitized_text)
+            {
+                var request = main::Course.requestUpdateTitle(course["course_id"], sanitized_text, (args) => {});
+                if (!Grim2Util::joinAwait(context, request))
+                    return false;
+    
+                var res = main::Course.decodeResult(request);
+                return true;
+            }
+
+            method onActivate(context)
+            {
+                if (!checkLogin(context))
+                    return 2;
+
+                if (PDINetwork.isChatRestricted())
+                {
+                    sound.play("disable");
+                    ERROR(context, "OnlineMessage", "ERROR_CHAT_RESTRICTED_FUNCTION");
+                    return 2;
+                }
+
+                sound.play("ok");
+
+                var course = CourseDetailRoot.course;
+                var config = [
+                    "limit_length" : 30,
+                ];
+
+                var text = course["title"];
+
+                var message = OSKUtil::open(context, text, CourseDetailRoot, config);
+                message = trim(message);
+
+                if (message == nil || message == text || message == "")
+                    return STATE_YIELD;
+
+                VulgarityFilterUtil::begin();
+                var [res, sanitized_text] = VulgarityFilterUtil::check(message);
+                VulgarityFilterUtil::end();
+
+                if (!res)
+                {
+                    GENERIC_RESULT(context, false);
+                    return 2;
+                }
+
+                var res0 = updateTitle(context, course, sanitized_text);
+                if (res0)
+                {
+                    var L = SettingFrame2::Pane::Left;
+                    L.Event.text = sanitized_text;
+                    course["title"] = sanitized_text;
+                }
+
+                GENERIC_RESULT(context, res0);
+                return 2;
+            }
+        }
+
+        module Remove
+        {
+            method deleteImpl(context, course)
+            {
+                var request = main::Course.requestDelete(course["course_id"], (args) => {});
+                if (!Grim2Util::joinAwait(context, request))
+                    return false;
+    
+                var res = main::Course.decodeResult(request);
+                return res > 0;
+            }
+
+            function canRemove(context, course)
+            {
+                var myclub = nil;
+                var user_id = Grim2.getLoginUserId();
+                var request = Community.requestClubListByUser(user_id, (args) => {});
+
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    var club_list = Community.decodeClubList(request);
+
+                    foreach (var club in club_list)
+                    {
+                        var user_id_list = club["user_id_list"];
+                        var owner = user_id_list.indexOf(user_id) != -1;
+                        if (owner)
+                        {
+                            myclub = club;
+                            break;
+                        }
+                    }
+                }
+
+                if (myclub == nil)
+                    return true;
+
+                var course_in_use = false;
+                var course_id = course["course_id"];
+                request = Community.requestEventListByClub(myclub["club_id"], (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    var event_list = Community.decodeEventList(request);
+
+                    foreach (var event in event_list)
+                    {
+                        var xml = event["regulation"];
+                        var gp = EventSettingUtil::loadSettingFromXml(xml);
+                        if (gp != nil)
+                        {
+                            if (gp.event.track.generated_course_id == course_id)
+                            {
+                                course_in_use = true;
+                                break;
+                            } 
+                        } 
+                    }
+                }
+
+                return !course_in_use;
+            }
+
+            method onActivate(context)
+            {
+                if (!checkLogin(context))
+                    return 2;
+
+                sound.play("ok");
+                
+                if (!QUERY(context, "Community", "QUERY_REMOVE_COURSE"))
+                    return 2;
+
+                if (!checkLogin(context))
+                    return 2;
+
+                var course = CourseDetailRoot.course;
+                if (!canRemove(context, course))
+                {
+                    ERROR(context, "Community", "ERROR_CANT_DELETE_COUSE_IN_USE");
+                    return 2;
+                }
+
+                var res = deleteImpl(context, course);
+                GENERIC_RESULT(context, res);
+
+                if (res)
+                {
+                    &CourseDetailRoot.ref_removed = true;
+                    CourseDetailRoot.result = true;
+                    CourseDetailRoot.close(context);
+                }
+
+                return 2;
+            }
+        }
+
+        module ChangeStatus
+        {
+            method onActivate(context)
+            {
+                if (!checkLogin(context))
+                return 2;
+
+                if (PDINetwork.isChatRestricted())
+                {
+                    sound.play("disable");
+                    ERROR(context, "OnlineMessage", "ERROR_CHAT_RESTRICTED_FUNCTION");
+                    return 2;
+                }
+
+                var course = CourseDetailRoot.course;
+                var status = course["status"];
+
+                if (status == 0)
+                {
+                    sound.play("disable");
+                    return 2;
+                }
+
+                var res0 = QUERY(context, "Community", status == 1 ? "QUERY_UPLOAD_COURSE" : "QUERY_UNUPLOAD_COURSE");
+                if (!res0)
+                    return res0;
+
+                var course_id = course["course_id"];
+                var request;
+                if (status == 1)
+                    request = main::Course.requestStatusPublic(course_id, (args) => {});
+                else if (status == 2)
+                    request = main::Course.requestStatusComplete(course_id, (args) => {});
+                
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    var res = main::Course.decodeResult(request);
+                    GENERIC_RESULT(context, res);
+
+                    if (res)
+                    {
+                        course["status"] = status == 1 ? 2 : 1;
+                        self.label.text = manager.translate("Community", course["status"] == 1 ? "Label_Upload" : "Label_UploadCancel");
+                        self.label_i.text = self.label.text;
+                    }
+                }
+                else
+                {
+                    GENERIC_RESULT(context, false);
+                }
+
+                return 2;
+            }
+        }
+    }
+
+    module SettingFrame2::Pane::Right::ScrolledBody
+    {
+        method onFocusEnter(context)
+        {
+            context.target_widget = RSide::VScrollbar::pinch::pointer;
+            return 2;
+        }
+
+        method onKeyPress(context, event)
+        {
+            var scrollclip = self.clip;
+            var line_height = scrollclip.space.Comment.TextFace.line_height;
+            var status = 0;
+
+            if (event.keysym == CELL_PAD_CTRL_L3_UP)
+            {
+                if (scrollclip.manualTargetIncY(line_height))
+                    status = 1;
+            }
+    
+            if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+            {
+                if (scrollclip.manualTargetIncY(-line_height))
+                    status = 1;
+            }
+
+            return 0;
+        }
+    }
+}

@@ -1,0 +1,2880 @@
+
+
+
+
+
+
+
+
+
+
+
+
+// Menu Definition & Main Root methods are locatated at the bottom of this file
+
+module SoundRoot
+{
+    #include "projects/gt6/dev_sound/RunviewerUtil.ad";
+
+    method onLoad(context)
+    {
+        if (main::pdiext::MSystemConfiguration::isSDTV())
+        {
+            hidden::Item::label.original_scale_x = 2.8;
+            hidden::Item::label.original_scale_y = 2.8;
+            hidden::Item::value.original_scale_x = 2.8;
+            hidden::Item::value.original_scale_y = 2.8;
+        }
+    }
+
+    static black = main::menu::MColorObject(0.05f, 0.05f, 0.05f);
+    static red = main::menu::MColorObject(0.1f, 0.05f, 0.05f);
+    static blue = main::menu::MColorObject(0.05f, 0.05f, 0.1f);
+    static purple = main::menu::MColorObject(0.075f, 0.05f, 0.1f);
+    static green = main::menu::MColorObject(0.05f, 0.1f, 0.05f);
+    static yellow = main::menu::MColorObject(0.1f, 0.1f, 0.05f);
+    static cyan = main::menu::MColorObject(0.05f, 0.1f, 0.1f);
+    static gray = main::menu::MColorObject(0.1f, 0.1f, 0.1f);
+    static orange = main::menu::MColorObject(0.1f, 0.075f, 0.05f);
+
+    static engine_file_size = nil;
+    static sCloseMethod = nil;
+    static sUnloadThisProject = true;
+    static mstream_player_instance = nil;
+    static sysbgm_mmusic_instance = nil;
+    
+    attribute modal_page = nil;
+
+    hidden.visible = false;
+    hidden::Item::value.visible = false;
+    hidden::Item::slider.visible = false;
+
+    method open(context, close_method)
+    {
+        sCloseMethod = close_method;
+
+        self.modal_page = main::SequenceUtil::ModalPage(context, SoundRoot);
+        self.modal_page.open();
+    }
+
+    function half_adjust(value, adjust)
+    {
+        return value + (value >= 0.0 ? adjust : -adjust);
+    }
+
+    function atodb(amp)
+    {
+        return 20.0 * Math::log10(amp);
+    }
+
+    function dbtoa(db)
+    {
+        return 10.0 ** (db / 20.0);
+    }
+
+    function on_select_music_previewer(context, index, menuitem, item, menu)
+    {
+        var opt = main::GAME_STATUS.user_profile.option;
+        opt.menu_bgm_volume = 100;
+        opt.apply();
+
+        var entries = main::sound.default.getGroups();
+        entries.sort();
+
+        var items = Array();
+
+        entries.each(entry => {
+            var entries = main::sound.default.getMusics(entry);
+            var tip = "group \"{0}\" : {1} tracks".build(entry, entries.size);
+
+            var menu = MenuItem(MenuItemTEXT, entry, tip, on_init_music_group_item, nil, on_select_music_group);
+            menu.arg = menuitem.label;
+            items.push(menu);
+        });
+
+        open_menu(context, menuitem.label, items, index, 0);
+    }
+
+    function on_init_music_group_item(context, menuitem, item)
+    {
+        menuitem.on_keypress_func = on_keypress_music_group_item;
+    }
+
+    function on_select_music_group(context, index, menuitem, item, menu)
+    {
+        var entries = main::sound.default.getMusics(menuitem.label);
+        var items = Array();
+        items.push(MenuItem(MenuItemTEXT, "[PAUSE ON]", nil, nil, nil, (context, menuitem, item) => 
+        {
+            SoundUtil::BGMPause(true);
+        }));
+
+        items.push(MenuItem(MenuItemTEXT, "[PAUSE OFF]", nil, nil, nil, (context, menuitem, item) => 
+        {
+            SoundUtil::BGMPause(false);
+        }));
+
+        items.push(MenuItem(MenuItemTEXT, "[STOP]", nil, nil, nil, (context, menuitem, item) => 
+        {
+            SoundUtil::BGMStop();
+        }));
+
+        items.push(MenuItem(MenuItemTEXT, "[FADEOUT]", nil, nil, nil, (context, menuitem, item) => 
+        {
+            SoundUtil::BGMFadeout();
+        }));
+
+        entries.each(entry => {
+            var tip = "#{0} : {1} / {2} / {3}".build(entry["index"], entry["title"], entry["artist"], entry["genre"]);
+
+            var menu = MenuItem(MenuItemTEXT, entry["code"], tip, on_init_music_item, nil, nil);
+            menu.arg = menuitem.label;
+            items.push(menu);
+        });
+
+        open_menu(context, menuitem.label, items, index, 0);
+    }
+
+    function on_init_music_item(context, menuitem, item)
+    {
+        menuitem.on_keypress_func = on_keypress_music_item;
+    }
+
+    function on_keypress_music_group_item(context, event, index, menuitem, item, arg)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_CROSS:
+                return STATE_EXIT;
+
+            case CELL_PAD_CTRL_START:
+                SoundUtil::BGMPlayGroup(SoundUtil::SCENE_MENU, menuitem.label);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_SELECT:
+                SoundUtil::BGMStop();
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_TRIANGLE:
+                SoundUtil::BGMFadeout();
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_SQUARE:
+                SoundUtil::BGMPlayGroup(SoundUtil::SCENE_MENU, menuitem.label, SoundUtil::REPEAT_GROUP, 3.0, 3.0);
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    function on_keypress_music_item(context, event, index, menuitem, item, arg)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_CROSS:
+                SoundUtil::BGMPlayDirect(SoundUtil::SCENE_MENU, menuitem.label, SoundUtil::REPEAT_OFF);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_START:
+                SoundUtil::BGMPause(!SoundUtil::BGMGetPause());
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_SELECT:
+                SoundUtil::BGMStop();
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_TRIANGLE:
+                SoundUtil::BGMFadeout();
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_SQUARE:
+                SoundUtil::BGMPlayDirect(SoundUtil::SCENE_MENU, menuitem.label, SoundUtil::REPEAT_OFF, 3.0, 3.0);
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    function on_select_se_player(context, index, menuitem, item, arg)
+    {
+        var entries = nil;
+        if (arg == nil)
+            entries = main::sound.getEffectCodeList("system");
+        else
+            entries = arg();
+
+        if (entries == nil)
+            return;
+
+        entries.sort();
+        var items = Array();
+
+        entries.each(entry => {
+            var menu = MenuItem(MenuItemTEXT, entry, "", on_init_se_item, nil, nil);
+            menu.arg = menuitem.label;
+            items.push(menu);
+        });
+
+        open_menu(context, menuitem.label, items, index, 0);
+    }
+    
+    function on_init_se_item(context, menuitem, item)
+    {
+        menuitem.on_keypress_func = on_keypress_se_item;
+    }
+
+    function on_keypress_se_item(context, event, index, menuitem, item, arg)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_CROSS:
+                main::sound.playSingle(menuitem.label);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_SELECT:
+                main::sound.playSingle(nil);
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    ////////////////////////////////////
+    // Menu: SGXD Previewer
+    ////////////////////////////////////
+    function on_select_load_sgxd(context, index, menuitem, item, arg)
+    {
+        var path = arg;
+        var items = Array();
+        var entries = pdistd::GetFileEntries(path);
+
+        if (entries != nil)
+        {
+            var init_func = (context, menuitem, item) => { menuitem.on_keypress_func = on_keypress_load_sgxd_item; };
+            entries.sort((a, b) => a[$"name"] < b[$"name"]);
+            entries.each(entry => 
+            {
+                if ((entry["type"] == "REGULAR" || entry["type"] == "COMPRESSED") && 
+                     entry["name"].endsWith(".sgd"))
+                {
+                    items.push(MenuItem(MenuItemTEXT, entry["name"], nil, init_func, nil, nil, nil, arg));
+                }
+            })
+        }
+
+        open_menu(context, menuitem.label, items, index, 0);
+    }
+
+    function on_keypress_load_sgxd_item(context, event, index, menuitem, item, arg)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_CROSS:
+                var path = arg;
+                msoundeffect_instance = nil;
+                msoundeffect_instance = main::pdiext::MSoundEffect(path + "/" + menuitem.label);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_SELECT:
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    ////////////////////////////////////
+    // Menu: Stream Previewer (.at3/.sgd)
+    ////////////////////////////////////
+    function on_select_stream_previewer(context, index, menuitem, item, arg)
+    {
+        var path = arg;
+        var items = Array();
+        var entries = pdistd::GetFileEntries(path);
+
+        if (entries != nil)
+        {
+            var init_func = (context, menuitem, item) => { menuitem.on_keypress_func = on_keypress_stream_item; };
+            entries.sort((a, b) => a[$"name"] < b[$"name"]);
+            entries.each(entry => 
+            {
+                if (entry["type"] == "REGULAR" && entry["name"].endsWith(".at3"))
+                {
+                    var menu = MenuItem(MenuItemTEXT, entry["name"], nil, init_func, nil, nil, nil, arg);
+                    items.push(menu);
+                }
+
+                if ((entry["type"] == "REGULAR" || entry["type"] == "COMPRESSED") && 
+                     entry["name"].endsWith(".sgd"))
+                {
+                    var menu = MenuItem(MenuItemTEXT, entry["name"], nil, init_func, nil, nil, nil, arg);
+                    items.push(menu);
+                }
+            })
+        }
+
+        open_menu(context, menuitem.label, items, index, 0);
+    }
+
+    function on_keypress_stream_item(context, event, index, menuitem, item, arg)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_CROSS:
+                if (mstream_player_instance == nil)
+                {
+                    mstream_player_instance = main::pdiext::MStreamPlayer();
+                    var result = mstream_player_instance.load("SGX");
+                }
+
+                var path = arg;
+                var result = mstream_player_instance.start(path + "/" + menuitem.label);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_SELECT:
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    ////////////////////////////////////
+    // Menu: Sound Debug Mode selection
+    ////////////////////////////////////
+    static sound_debug_mode_map = [
+        0 : "OFF",
+        1 : "INFO",
+        2 : "LEVEL",
+        3 : "3D",
+        4 : "DEBUG",
+        16 : "RACE",
+        17 : "BGM",
+    ];
+
+    static sound_debug_mode_list = [
+        0, 
+        1,
+        2,
+        3,
+        4,
+        16,
+        17
+    ];
+
+    function on_update_sound_debug_mode(context, index, menuitem, item)
+    {
+        var mode = pdistd::MDynRes::importInt32("SoundDebugMode");
+        var name = sound_debug_mode_map[mode];
+        item["value"].text = name != nil ? name : "-";
+    }
+
+    function on_activate_sound_debug_mode(context, index, menuitem, item, arg)
+    {
+        var mode = pdistd::MDynRes::importInt32("SoundDebugMode");
+        if (mode == nil)
+            return;
+
+        var i = sound_debug_mode_list.indexOf(mode);
+        mode = sound_debug_mode_list[(i + 1) % sound_debug_mode_list.size];
+
+        pdistd::MDynRes::setInt32("SoundDebugMode", mode);
+        on_update_sound_debug_mode(context, index, menuitem, item);
+    }
+
+    ////////////////////////////////////
+    // Menu: Distance filter select
+    ////////////////////////////////////
+    static distance_filter_type_map = [
+        11 : "1-pole (-6dB/oct)",
+        12 : "2-pole (-12dB/oct)"
+    ];
+
+    static distance_filter_type_list = [
+        11,
+        12
+    ];
+
+    function on_update_distance_filter_type(context, index, menuitem, item)
+    {
+        var sctx = main::sound_context;
+        var type = sctx.distance_filter_type;
+        
+        var name = distance_filter_type_map[type];
+        item["value"].text = name != nil ? name : "-";
+    }
+
+    function on_activate_distance_filter_type(context, index, menuitem, item, arg)
+    {
+        var sctx = main::sound_context;
+        var type = sctx.distance_filter_type;
+        if (type == nil)
+            return;
+
+        var i = distance_filter_type_list.indexOf(type);
+        type = distance_filter_type_list[(i + 1) % distance_filter_type_list.size];
+        sctx.distance_filter_type = type;
+        on_update_distance_filter_type(context, index, menuitem, item);
+    }
+
+    ////////////////////////////////////
+    // Menu: Audio Output mode select
+    ////////////////////////////////////
+    class AudioOutputMode
+    {
+        attribute output_channel;
+        attribute process_channel;
+        attribute option;
+        attribute name;
+
+        method __init__(och, pch, opt, nm)
+        {
+            self.output_channel = och;
+            self.process_channel = pch;
+            self.option = opt;
+            self.name = nm;
+        }
+    }
+
+    static audio_output_mode = [
+        AudioOutputMode(6, 6, pdiext::OUTPUTSURROUNDMODE::SURROUND_NORMAL, "Auto Select"),
+        AudioOutputMode(1, 6, pdiext::OUTPUTSURROUNDMODE::SURROUND_MONO, "Mono"),
+        AudioOutputMode(2, 6, pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO, "Stereo"),
+        AudioOutputMode(6, 6, pdiext::OUTPUTSURROUNDMODE::SURROUND_DOLBY_PL2, "Dolby Pro Logic II"),
+        AudioOutputMode(6, 6, pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R_NC, "4.1ch Surround 2/2.1"),
+        AudioOutputMode(6, 6, pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R, "5.1ch Surround 3/2.1"),
+        AudioOutputMode(8, 6, pdiext::OUTPUTSURROUNDMODE::SURROUND_DOLBY_PL2X, "6.1ch Surround 3/2/1.1"),
+        AudioOutputMode(8, 6, pdiext::OUTPUTSURROUNDMODE::SURROUND_DOLBY_DIGITAL_EX, "7.1ch Surround 3/2/2.1"),
+    ];
+
+    function on_update_audio_output_mode(context, index, menuitem, item)
+    {
+        var [ch, opt] = main::pdiext::MSystemConfiguration::GetSystemAudioOutputMode();
+        var label = "-";
+        
+        for (var i = 0; i < audio_output_mode.size; i++)
+        {
+            if ((audio_output_mode[i].process_channel == ch && audio_output_mode[i].option == opt) ||
+                (audio_output_mode[i].process_channel >= 6 && ch >= 6 && audio_output_mode[i].option == opt))
+            {
+                label = audio_output_mode[i].name;
+                break;
+            }
+        }
+
+        item["value"].text = label;
+    }
+
+    function on_activate_audio_output_mode(context, index, menuitem, item, arg)
+    {
+        var [ch, opt] = main::pdiext::MSystemConfiguration::GetSystemAudioOutputMode();
+        var focus = 0;
+        var items = [];
+
+        for (var i = 0; i < audio_output_mode.size; i++)
+        {
+            var item = MenuItem(MenuItemTEXT, audio_output_mode[i].name, "", nil, nil, on_activate_audio_output_mode_item);
+            items.push(item);
+
+            if (audio_output_mode[i].process_channel <= ch && audio_output_mode[i].option == opt)
+                focus = i;
+        }
+
+        open_menu(context, menuitem.label, items, index, focus);
+    }
+
+    function on_activate_audio_output_mode_item(context, index, menuitem, item, arg)
+    {
+        var och = audio_output_mode[index].output_channel;
+        var pch = audio_output_mode[index].process_channel;
+        var opt = audio_output_mode[index].option;
+
+        pdiext::MSystemConfiguration::SetSystemAudioOutputFormat(och);
+        pdiext::MSystemConfiguration::SetSystemAudioOutputMode(pch, opt);
+
+        close_menu(context);
+    }
+
+    ////////////////////////////////////
+    // Menu: Speaker Layout Mode select
+    ////////////////////////////////////
+    class SpeakerLayoutMode
+    {
+        attribute channel;
+        attribute value;
+        attribute name;
+
+        method __init__(ch, opt, nm)
+        {
+            self.channel = ch;
+            self.value = opt;
+            self.name = nm;
+        }
+    }
+
+    static speaker_layout_list = [
+        SpeakerLayoutMode(1, 0, "Auto Select"),
+        SpeakerLayoutMode(2, SpeakerBits::L_R, "2ch Stereo"),
+        SpeakerLayoutMode(6, SpeakerBits::L_R | SpeakerBits::LS_RS | SpeakerBits::LFE, "4.1ch 2/2/1"),
+        SpeakerLayoutMode(6, SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::LFE, "5.1ch 3/2/1"),
+        SpeakerLayoutMode(8, SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::CB | SpeakerBits::LFE, "6.1ch 3/3/1"),
+        SpeakerLayoutMode(8, SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::LB_RB | SpeakerBits::LFE, "7.1ch 3/4/1"),
+        SpeakerLayoutMode(6, SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::LFE, "Virtual Surround System"),
+    ];
+
+    function on_update_speaker_layout(context, index, menuitem, item)
+    {
+        var option = GAME_STATUS.user_profile.option;
+        item["value"].text = speaker_layout_list[option.speaker_layout].name;
+    }
+
+    function on_activate_speaker_layout(context, index, menuitem, item, arg)
+    {
+        var focus = 0;
+        var items = [];
+
+        for (var i = 0; i < speaker_layout_list.size; i++)
+        {
+            var item = MenuItem(MenuItemTEXT, speaker_layout_list[i].name, "", nil, nil, on_activate_speaker_layout_item);
+            items.push(item);
+        }
+
+        var option = GAME_STATUS.user_profile.option;
+        var focus = option.speaker_layout;
+        open_menu(context, menuitem.label, items, index, focus);
+    }
+
+    function on_activate_speaker_layout_item(context, index, menuitem, item, arg)
+    {
+        var option = GAME_STATUS.user_profile.option;
+        option.speaker_bits = speaker_layout_list[index].value;
+        option.speaker_layout = index;
+        option.bgm_upmix_enable = option.speaker_layout == 6 ? 0 : 1;
+        option.apply();
+
+        close_menu(context);
+    }
+
+    ////////////////////////////////////
+    // Menu: SE/BGM Volume defaulting
+    ////////////////////////////////////
+    function on_set_bgm_as_default()
+    {
+        var opt = main::GAME_STATUS.user_profile.option;
+        opt.menu_bgm_volume = 100;
+        opt.menu_se_volume = 100;
+        opt.race_bgm_volume = 90;
+        opt.race_se_volume = 90;
+        opt.replay_bgm_volume = 90;
+        opt.replay_se_volume = 90;
+        opt.user_bgm_volume = 90;
+        opt.slide_bgm_volume = 100;
+        opt.menu_bgm = 1;
+        opt.menu_se = 1;
+        opt.race_bgm = 1;
+        opt.race_se = 1;
+        opt.replay_bgm = 1;
+        opt.replay_se = 1;
+        opt.apply();
+    }
+
+    function on_set_bgm_disable()
+    {
+        var opt = main::GAME_STATUS.user_profile.option;
+        opt.menu_bgm_volume = 0;
+        opt.menu_se_volume = 100;
+        opt.race_bgm_volume = 0;
+        opt.race_se_volume = 90;
+        opt.replay_bgm_volume = 0;
+        opt.replay_se_volume = 90;
+        opt.user_bgm_volume = 90;
+        opt.slide_bgm_volume = 0;
+        opt.menu_bgm = 1;
+        opt.menu_se = 1;
+        opt.race_bgm = 1;
+        opt.race_se = 1;
+        opt.replay_bgm = 1;
+        opt.replay_se = 1;
+        opt.apply();
+    }
+
+    ////////////////////////////////////
+    // Menu: Dynamic Range Settings
+    ////////////////////////////////////
+    function on_update_dynamic_range(context, index, menuitem, item)
+    {
+        var drc_name = ["LIVING", "SMALL THEATER", "LARGE THEATER"];
+        item["value"].text = drc_name[main::GAME_STATUS.user_profile.option.sound_dynamic_range];
+    }
+
+    function on_activate_dynamic_range(context, index, menuitem, item, arg)
+    {
+        var opt = main::GAME_STATUS.user_profile.option;
+        opt.sound_dynamic_range = (opt.sound_dynamic_range + 1) % 3;
+        on_update_dynamic_range(context, index, menuitem, item);
+        opt.apply();
+
+        main::SoundUtil::SetupSound(main::sound_runtime_parameter.scene, true);
+    }
+
+    ////////////////////////////////////
+    // Menu: Car Sound Mode Settings
+    ////////////////////////////////////
+    function on_update_carsoundmode(context, index, menuitem, item)
+    {
+        var modename = ["View Dependent", "Driver View", "Cockpit View", "Bonnet View", "Chase View", "(Outside)"];
+        item["value"].text = modename[main::race_sound.force_innerlv + 1];
+    }
+
+    function on_activate_carsoundmode(context, index, menuitem, item, arg)
+    {
+        main::race_sound.force_innerlv = (main
+            ::race_sound.force_innerlv + 2) % 6 - 1;
+        on_update_carsoundmode(context, index, menuitem, item);
+    }
+
+    ////////////////////////////////////
+    // Menu: Reverb Type settings
+    ////////////////////////////////////
+    static tverb_types = [
+        "POST-M",
+        "STUDIO-M",
+        "ROOM-M",
+        "SMALL_HALL-M",
+        "LARGE_HALL-M",
+        "PLATE-M",
+        "CHURCH-M",
+        "CHURCH_EXTRA-M",
+        "CATHEDRAL-M",
+        "CATHEDRAL_EXTRA-M",
+        "POST-S",
+        "STUDIO-S",
+        "ROOM-S",
+        "SMALL_HALL-S",
+        "LARGE_HALL-S",
+        "PLATE-S",
+        "CHURCH-S",
+        "CHURCH_EXTRA-S",
+        "CATHEDRAL-S",
+        "CATHEDRAL_EXTRA-S",
+    ];
+
+    function getreverb_type(arg)
+    {
+        var a = main::sound_context.getReverb(arg[$"ename"])["type"];
+        var type = a == nil ? "-" : a;
+        return type;
+    }
+
+    function setreverb_type(v, arg)
+    {
+        main::sound_context.setReverb(arg[$"ename"], ["type" : v]);
+    }
+
+    ////////////////////////////////////
+    // Menu: World EQ settings
+    ////////////////////////////////////
+    function on_init_world_eq(context, menuitem, item)
+    {
+        var arg = menuitem.arg;
+        var band = arg[$"band"];
+        var step = 0.5;
+        var scale = 1.0;
+        var min = -40.0;
+        var max = 40.0;
+        var unit = "dB";
+
+        var slider = item.slider;
+        slider.range = [min, max];
+        slider.step = 1;
+
+        var gain = main::sound_context.getWorldEQ(band);
+        slider.value = Math::round((gain * scale) / step).toInt();
+        slider.format_function = (value, scale, range, format, zero_text) => 
+        {
+            var v = scale * value;
+            return "%+.1t".format((v * 10.0).toInt());
+        };
+        slider.setup(context, step, nil, unit);
+        slider.decide_cb = menuitem.on_activate_func;
+        slider.arg = arg;
+    }
+
+    function on_activate_world_eq(context, index, slider)
+    {
+        var arg = slider.arg;
+        var band = arg[$"band"];
+        var step = 0.5;
+        var scale = 1.0;
+        var value = (index.toFloat() * step) / scale;
+        main::sound_context.setWorldEQ(band, value);
+    }
+
+    ////////////////////////////////////
+    // Menu: GetSet Type
+    ////////////////////////////////////
+    function on_update_getset_type(context, index, menuitem, item)
+    {
+        item["value"].text = menuitem.arg[$"get"](menuitem.arg);
+    }
+
+    function on_activate_getset_type(context, index, menuitem, item)
+    {
+        var arg = menuitem.arg;
+        var list = arg[$"types"];
+        var current = arg[$"get"](arg);
+        var index = list.indexOf(current);
+        
+        if (index < 0)
+            index = 0;
+        else
+            index++;
+
+        var next = list[index % list.size];
+        arg[$"set"](next, arg);
+        on_update_getset_type(context, index, menuitem, item);
+    }
+
+    ////////////////////////////////////
+    // Menu: BUS Eq Types
+    ////////////////////////////////////
+    static sgx_eq_types = [
+        "none",
+        "lpf",
+        "hpf",
+        "bpf",
+        "bpf2",
+        "peaking",
+        "lowshelf",
+        "highshelf"
+    ];
+
+    function getbuseq_type(arg)
+    {
+        var a = main::sound_context.getBusEqualizer(arg[$"ename"], arg[$"band"]);
+        var type = a == nil ? "-" : a[0];
+        return type;
+    }
+
+    function setbuseq_type(v, arg)
+    {
+        var a = main::sound_context.getBusEqualizer(arg[$"ename"], arg[$"band"]);
+        a[0] = v;
+        main::sound_context.setBusEqualizer(arg[$"ename"], arg[$"band"], a);
+    }
+
+    function getbuseq(arg)
+    {
+        var a = main::sound_context.getBusEqualizer(arg[$"ename"], arg[$"band"]);
+        var value = a[arg[$"pid"]];
+        value == nil; // Normal
+        return value;
+    }
+
+    function setbuseq(v, arg)
+    {
+        var a = main::sound_context.getBusEqualizer(arg[$"ename"], arg[$"band"]);
+        a[arg[$"pid"]] = v;
+        main::sound_context.setBusEqualizer(arg[$"ename"], arg[$"band"], a);
+    }
+
+    function getbuseq_db(arg)
+    {
+        return atodb(getbuseq(arg));
+    }
+
+    function setbuseq_db(v, arg)
+    {
+        setbuseq(dbtoa(v), arg);
+    }
+
+    function on_init_user_option_value(context, menuitem, item)
+    {
+        var arg = menuitem.arg;
+        var min = arg[$"min"] / arg[$"step"];
+        var max = arg[$"max"] / arg[$"step"];
+        var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+        var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+        var unit = arg[$"unit"] != nil ? arg[$"unit"] : "";
+
+        var slider = item.slider;
+        slider.range = [min, max];
+        slider.step = 1;
+        slider.value = main::GAME_STATUS.user_profile.option[arg[$"attr"]] * scale / step;
+        slider.setup(context, step, nil, unit);
+        slider.decide_cb = menuitem.on_activate_func;
+        slider.arg = arg;
+
+        var v = slider.bias * slider.value;
+        slider.label.text = v <= 0 ? "OFF" : "%d%% (%.1fdB)".format(v, 20.0 * Math::log10((v / 100.0) ** 1.6666666));
+    }
+
+    function on_activate_user_option_value(context, index, slider)
+    {
+        var arg = slider.arg;
+        var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+        var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+        var value = index.toFloat() / scale * step;
+
+        var opt = main::GAME_STATUS.user_profile.option;
+        opt[arg[$"attr"]] = value;
+        opt.apply();
+
+        SoundUtil::UpdateBGMVolume();
+        var v = slider.bias * slider.value;
+        slider.label.text = v <= 0 ? "OFF" : "%d%% (%.1fdB)".format(v, 20.0 * Math::log10((v / 100.0) ** 1.6666666));
+    }
+
+    function getuoptp(arg)
+    {
+        var opt = main::GAME_STATUS.user_profile.option;
+        var attr = arg[$"attr"];
+        var value = opt[attr];
+        value == nil;
+        return value;
+    }
+
+    function setuoptp(v, arg)
+    {
+        var opt = main::GAME_STATUS.user_profile.option;
+        var attr = arg[$"attr"];
+        opt[attr] = v;
+        opt.apply();
+    }
+
+    ////////////////////////////////////
+    // Menu: Dynamic range compression (DRC) Settings
+    ////////////////////////////////////
+    function getdrcp(arg)
+    {
+        var pid = arg[$"pid"];
+        var attr = arg[$"attr"];
+        var value = main::drc_preset[pid][attr];
+        value == nil;
+        return value;
+    }
+
+    function setdrcp(v, arg)
+    {
+        var pid = arg[$"pid"];
+        var attr = arg[$"attr"];
+        main::drc_preset[pid][attr] = v;
+        main::GAME_STATUS.user_profile.option.apply();
+    }
+
+    function getdrcp_db(arg)
+    {
+        return atodb(getdrcp(arg));
+    }
+
+    function setdrcp_db(v, arg)
+    {
+        setdrcp(dbtoa(v), arg);
+    }
+
+    ////////////////////////////////////
+    // Menu: Effector Parameter Settings
+    ////////////////////////////////////
+    function getefxp(arg)
+    {
+        var map = main::sound_context.getEffectorParameter(arg[$"ename"]);
+        var value = map[arg[$"pname"]];
+        value == nil;
+        return value;
+    }
+
+    function setefxp(v, arg)
+    {
+        var map = [arg[$"pname"] : v];
+        main::sound_context.setEffectorParameter(arg[$"ename"], map);
+    }
+
+    function getsctxp(arg)
+    {
+        var value = *main::sound_context{arg[$"attr"]};
+
+        value == nil;
+        return value;
+    }
+
+    function setsctxp(v, arg)
+    {
+        main::sound_context{arg[$"attr"]} = v;
+    }
+
+    function getengp(arg)
+    {
+        var value = (*main::race_sound{arg[$"attr"]})[arg[$"pid"]];
+        value == nil;
+        return value;
+    }
+
+    function setengp(v, arg)
+    {
+        var data = *main::race_sound{arg[$"attr"]};
+        data[arg[$"pid"]] = v;
+
+        main::race_sound{arg[$"attr"]} = data;
+    }
+
+    ////////////////////////////////////
+    // Menu: Engine ID Volume
+    ////////////////////////////////////
+    function getegidvol(arg)
+    {
+        return atodb(main::CarSound::sound_id_volume[arg[$"lv"]][arg[$"col"]]);
+    }
+
+    function setegidvol(v, arg)
+    {
+        main::CarSound::sound_id_volume[arg[$"lv"]][arg[$"col"]] = dbtoa(v);
+        pdistd::MDynRes::setInt32("SoundDebugReload", 1);
+    }
+
+    ////////////////////////////////////
+    // Menu: CarSound Global Parameter
+    ////////////////////////////////////
+    function getcgp(arg)
+    {
+        var master = gtengine::MRaceSound::getCarSoundGlobalParameter();
+        var target_member = pdistd::MPseudoReflectionObject::parseObjectPath(master, arg[$"attr"]);
+        return target_member.getValue();
+    }
+
+    function setcgp(v, arg)
+    {
+        var master = gtengine::MRaceSound::getCarSoundGlobalParameter();
+        var target_member = pdistd::MPseudoReflectionObject::parseObjectPath(master, arg[$"attr"]);
+        target_member.setValue(v);
+        pdistd::MDynRes::setInt32("SoundDebugReload", 1);
+    }
+
+    function on_init_getset_value(context, menuitem, item)
+    {
+        var arg = menuitem.arg;
+        var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+        var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+        var min = arg[$"min"] / step;
+        var max = arg[$"max"] / step;
+
+        var slider = item.slider;
+        slider.range = [min, max];
+        slider.step = 1;
+        slider.value = arg[$"get"](arg) * scale / step;
+        slider.format_function = (value, scale, range, format, zero_text) => 
+        {
+            var v = scale * value;
+            var p = Math::floor(Math::log10(step));
+            if (p >= 0.0)
+            {
+                return "%d".format(v.toInt());
+            }
+            else
+            {
+                var fmt = "%%.%df".format(-(p.toInt()));
+                return fmt.format(half_adjust(v, 10.0 ** p / 2.0))
+            }
+        };
+
+        slider.setup(context, step, nil, arg[$"unit"]);
+        slider.decide_cb = menuitem.on_activate_func;
+        slider.arg = arg;
+    }
+
+    function on_activate_getset_value(context, index, slider)
+    {
+        var arg = slider.arg;
+        var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+        var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+        var value = index.toFloat() / scale * step;
+        arg[$"set"](value, arg);
+    }
+
+    function on_update_getset_switch(context, index, menuitem, item)
+    {
+        var v = menuitem.arg[$"get"](menuitem.arg);
+        item["value"].text = v ? "ON" : "OFF";
+    }
+
+    function on_activate_getset_switch(context, index, menuitem, item, arg)
+    {
+        var v = menuitem.arg[$"get"](menuitem.arg);
+        menuitem.arg[$"set"](!v, menuitem.arg);
+        on_update_getset_switch(context, index, menuitem, item);
+    }
+
+    function on_init_engine_filter_db_value(context, menuitem, item)
+    {
+        var arg = menuitem.arg;
+        var pid = arg[$"pid"];
+        var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+        var min = arg[$"min"] / step;
+        var max = arg[$"max"] / step;
+        var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+        var unit = arg[$"unit"] != nil ? arg[$"unit"] : "";
+
+        var data = *main::race_sound
+            {arg[$"attr"]};
+
+        var slider = item.slider;
+        slider.range = [min, max];
+        slider.step = 1;
+        slider.value = half_adjust(data[pid] * arg[$"scale"] / arg[$"step"], 0.5).toInt();
+        slider.format_function = (value, scale, range, format, zero_text) => 
+        {
+            var v = scale * value;
+            return "%.1f".format(half_adjust(v, 0.05));
+        };
+
+        slider.setup(context, step, nil, unit);
+        slider.decide_cb = menuitem.on_activate_func;
+        slider.arg = arg;
+    }
+
+    function on_activate_engine_filter_db_value(context, index, slider)
+    {
+        var arg = slider.arg;
+        var pid = arg[$"pid"];
+        var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+        var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+        var value = index.toFloat() / scale * step;
+        
+        var data = *main::race_sound
+            {arg[$"attr"]};
+        data[pid] = value;
+        main::race_sound{arg[$"attr"]} = data;
+    }
+
+    function on_update_value_select_item(context, index, menuitem, item)
+    {
+        var arg = menuitem.arg;
+        var attr = arg[$"attr"];
+        item["value"].text = *main::race_sound{attr};
+    }
+
+    function on_activate_value_select_item(context, index, menuitem, item, arg)
+    {
+        var arg = menuitem.arg;
+        var attr = arg[$"attr"];
+        var values = arg[$"values"];
+        var current = *main::race_sound{attr};
+        var index = values.indexOf(current);
+
+        if (index < 0)
+            index = 0;
+        else
+            index++;
+
+        var next = values[index % values.size];
+        main::race_sound{attr} = next;
+        on_update_value_select_item(context, index, menuitem, item);
+    }
+
+    function on_select_race_se_volume_editor(context, index, menuitem, item, menu)
+    {
+        context.closePage(SoundRoot);
+        context.pushPage(RaceSoundRoot2);
+    }
+
+    function on_select_se_control_save(context, index, menuitem, item, arg)
+    {
+        var path = "road_sound_autogen.ad";
+        if (arg != nil)
+            path = arg;
+
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, "セーブしてよろしいですか？" + "\n" + path);
+        if (!res)
+            return;
+
+        var writer = IO::FileWriter();
+        var ok = writer.open(path);
+        if (ok)
+        {
+            writer.writeLine("// $" + "Id$");
+            writer.writeLine("// auto generated by dev2/sound/SoundRoot.ad\n");
+            writer.writeLine("main::CarSound::road_attribute_sound_parameter = [\n");
+
+            var target = main::CarSound::road_attribute_sound_parameter;
+            foreach (var roadattr in target)
+            {
+                var write_soundeffect_func = function(soundeffect, comment)
+                {
+                    writer.writeLine("  SoundEffect( // " + comment);
+                    writer.writeLine("    [");
+
+                    for (var i = 0; i < 2; i++)
+                    {
+                        var a = soundeffect.appearances[i];
+                        writer.writeLine("      SoundEffectAppearance(SoundEffectInstrument(%d /*type*/, \"%s\", %f /*pitch*/, %f /*gain*/, %f /*gain_hf*/), %d /*category*/),".format(
+                            a.instrument.type, a.instrument.name, a.instrument.pitch, a.instrument.gain, a.instrument.gain_hf, a.category
+                        ));
+                    }
+
+                    writer.writeLine("    ],");
+                    writer.writeLine("    [");
+
+                    foreach (var control in soundeffect.controls)
+                    {
+                        writer.writeLine("      SoundEffectControl([ // %d of %d".format(soundeffect.controls.indexOf(control), soundeffect.controls.size));
+                        foreach (var point in control.graph)
+                        {
+                            writer.writeLine("        [%f, %f],".format(point[0], point[1]));
+                        }
+
+                        writer.writeLine("      ], %d /*type*/, %d /*extrapolate*/, %d, %d /*in/out*/),".format(control.type, control.extrapolate, control.input, control.output));
+                    }
+
+                    writer.writeLine("    ])");
+                };
+
+
+                writer.writeLine("RoadAttributeSoundParameter([ // %d of %d".format(target.indexOf(roadattr), target.size));
+                write_soundeffect_func(roadattr.effects[0], "ch-0");
+                writer.writeLine("  ,");
+                write_soundeffect_func(roadattr.effects[1], "ch-1");
+                writer.writeLine("  ,");
+                write_soundeffect_func(roadattr.effects[2], "ch-2");
+                writer.writeLine("  ]),");
+            }
+
+            writer.writeLine("];");
+            writer.close();
+        }
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::OK, ok ? "成功しました" : "失敗しました");
+    }
+
+    function on_select_se_control_edit(context, index, menuitem, item, arg)
+    {
+        SoundEffectControlRoot::setRange(arg[1][0], arg[1][1]);
+        SoundEffectControlRoot::setSoundEffect(arg[0]);
+        SoundEffectControlRoot::open(context);
+    }
+
+    function on_select_load_car_sound_gt5_pmf(context, index, menuitem, item, arg)
+    {
+        var path = "car_sound_gt5.pmf";
+        if (arg != nil)
+            path = arg;
+
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, "ロードしてよろしいですか？" + "\n" + path);
+        if (!res)
+            return;
+
+        var results = main::pdistd::ReadFile(path);
+        var retcode = results["result"];
+        if (retcode == 0)
+        {
+            var bytedata = results["buffer"];
+            var master = main::gtengine::MRaceSound::getCarSoundGlobalParameter();
+            retcode = master.setPmfByteData(bytedata) ? 0 : 1;
+        }
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::OK, retcode == 0 ? "成功しました" : "失敗しました");
+        if (retcode == 0)
+        {
+            main::pdistd::MDynRes::setInt32("SoundDebugReload", 1);
+            main::gtengine::MRaceSound::initializeGlobalParameter();
+            main::CarSound::ReflectRoadAttributeSoundParameter();
+        }
+    }
+
+    function on_select_save_car_sound_gt5_pmf(context, index, menuitem, item, arg)
+    {
+        var path = "car_sound_gt5.pmf";
+        if (arg != nil)
+            path = arg;
+
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, "セーブしてよろしいですか？" + "\n" + path);
+        if (!res)
+            return;
+
+        var master = main::gtengine::MRaceSound::getCarSoundGlobalParameter();
+        var bytedata = master.getPmfByteData(false);
+        var retcode = main::pdistd::WriteFile(path, bytedata);
+        
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::OK, retcode == 0 ? "成功しました" : "失敗しました");
+    }
+
+    ////////////////////////////////////
+    // 
+    // All Menu Definitions goes here
+    // 
+    ////////////////////////////////////
+
+    ////////////////////////////////////
+    // Volume Slider SUB-MENU
+    ////////////////////////////////////
+    static user_sound_option_menu = [
+        gray,
+        MenuItem(MenuItemTEXT, "Dynamic Range", nil, nil, on_update_dynamic_range, on_activate_dynamic_range),
+        MenuItem(MenuItemTEXT, "Speaker Layout", nil, nil, on_update_speaker_layout, on_activate_speaker_layout),
+        MenuItem(MenuItemTEXT, "Car Sound Mode", nil, nil, on_update_carsoundmode, on_activate_carsoundmode),
+        MenuItem(MenuItemTEXT, "メニュー BGM 有効", nil, nil, on_update_getset_switch, on_activate_getset_switch, nil, [$"get": getuoptp, $"set": setuoptp, $"attr": "menu_bgm"]),
+        MenuItem(MenuItemSLIDER, "メニュー BGM 音量", "ゲームオプションの設定項目。50% で -10dB, 25% で -20dB となります", on_init_user_option_value, nil, on_activate_user_option_value, nil, 
+            [$"attr": "menu_bgm_volume", $"min": 0.0, $"max": 200.0, $"step": 5.0, $"unit": "%"]),
+
+        MenuItem(MenuItemTEXT, "レース BGM 有効", nil, nil, on_update_getset_switch, on_activate_getset_switch, nil, [$"get": getuoptp, $"set": setuoptp, $"attr": "race_bgm"]),
+        MenuItem(MenuItemSLIDER, "レース BGM 音量", "ゲームオプションの設定項目。50% で -10dB, 25% で -20dB となります", on_init_user_option_value, nil, on_activate_user_option_value, nil, 
+            [$"attr": "race_bgm_volume", $"min": 0.0, $"max": 200.0, $"step": 5.0, $"unit": "%"]),
+
+        MenuItem(MenuItemTEXT, "リプレイ BGM 有効", nil, nil, on_update_getset_switch, on_activate_getset_switch, nil, [$"get": getuoptp, $"set": setuoptp, $"attr": "replay_bgm"]),
+        MenuItem(MenuItemSLIDER, "リプレイ BGM 音量", "ゲームオプションの設定項目。50% で -10dB, 25% で -20dB となります", on_init_user_option_value, nil, on_activate_user_option_value, nil, 
+            [$"attr": "replay_bgm_volume", $"min": 0.0, $"max": 200.0, $"step": 5.0, $"unit": "%"]),
+    
+        MenuItem(MenuItemSLIDER, "メニュー SE 音量", "ゲームオプションの設定項目。50% で -10dB, 25% で -20dB となります", on_init_user_option_value, nil, on_activate_user_option_value, nil, 
+            [$"attr": "menu_se_volume", $"min": 0.0, $"max": 200.0, $"step": 5.0, $"unit": "%"]),
+       
+        MenuItem(MenuItemTEXT, "レース SE 有効", nil, nil, on_update_getset_switch, on_activate_getset_switch, nil, [$"get": getuoptp, $"set": setuoptp, $"attr": "race_se"]),
+        MenuItem(MenuItemSLIDER, "レース SE 音量", "ゲームオプションの設定項目。50% で -10dB, 25% で -20dB となります", on_init_user_option_value, nil, on_activate_user_option_value, nil, 
+            [$"attr": "race_se_volume", $"min": 0.0, $"max": 200.0, $"step": 5.0, $"unit": "%"]),
+        
+        MenuItem(MenuItemTEXT, "リプレイ SE 有効", nil, nil, on_update_getset_switch, on_activate_getset_switch, nil, [$"get": getuoptp, $"set": setuoptp, $"attr": "replay_se"]),
+        MenuItem(MenuItemSLIDER, "リプレイ SE 音量", "ゲームオプションの設定項目。50% で -10dB, 25% で -20dB となります", on_init_user_option_value, nil, on_activate_user_option_value, nil, 
+            [$"attr": "replay_se_volume", $"min": 0.0, $"max": 200.0, $"step": 5.0, $"unit": "%"]),
+    
+        MenuItem(MenuItemSLIDER, "User BGM Volume", "", on_init_user_option_value, nil, on_activate_user_option_value, nil, 
+            [$"attr": "user_bgm_volume", $"min": 0.0, $"max": 200.0, $"step": 5.0, $"unit": "%"]),
+    ];
+
+    ////////////////////////////////////
+    // Sound Reverb MENU
+    ////////////////////////////////////
+    static global_reverb_menu = [
+        black, 
+        MenuItem(MenuItemSLIDER, "World Master Reverb Level", "3D ワールド効果音の初期反射、反響のマスターレベル。ディレイとリバーブへのセンドレベルです", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get" : function()  { return atodb(main::sound_context.reverb_master); },
+            $"set" : function(v) { main::sound_context.reverb_master = dbtoa(v); },
+            $"min": -40.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB",
+        ]),
+
+        gray,
+        MenuItem(MenuItemSLIDER, "World SE Delay Time", "3D ワールド効果音の初期反射の遅延時間（現在 130ms に固定で変えられません）", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get" : function()  { return main::sound_context.getDelay("world_aux0_delay1")["time"]; },
+            $"set" : function(v) { main::sound_context.setDelay("world_aux0_delay1", ["time": v]); },
+            $"min": 10.0, $"max": 600.0, $"step": 10.0, $"scale": 1000.0, $"unit": "msec",
+        ]),
+
+        MenuItem(MenuItemSLIDER, "World SE Delay LPF Fc", "3D ワールド効果音の初期反射のカットオフ周波数（ディレイの LPF 周波数です）", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get" : function()  { return main::sound_context.getDelay("world_aux0_delay1")["cutoff"]; },
+            $"set" : function(v) { main::sound_context.setDelay("world_aux0_delay1", ["cutoff": v]); },
+            $"min": 500.0, $"max": 24000.0, $"step": 500.0, $"scale": 1.0, $"unit": "Hz",
+        ]),
+
+        MenuItem(MenuItemTEXT, "World SE Reverb Type", nil, nil, on_update_getset_type, on_activate_getset_type, nil, [
+            $"get" : getreverb_type,
+            $"set" : setreverb_type,
+            $"ename": "world_aux0_reverb", $"types": tverb_types,
+        ]),
+
+        MenuItem(MenuItemSLIDER, "World SE Reverb Depth", nil, on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get" : function()  { return atodb(main::sound_context.late_reverb_master); },
+            $"set" : function(v) { main::sound_context.late_reverb_master = dbtoa(v); },
+            $"min": -40.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB",
+        ]),
+
+        MenuItem(MenuItemTEXT, "UI Reverb Type", nil, nil, on_update_getset_type, on_activate_getset_type, nil, [
+            $"get" : getreverb_type,
+            $"set" : setreverb_type,
+            $"ename": "system_reverb", $"types": tverb_types,
+        ]),
+
+        MenuItem(MenuItemSLIDER, "UI Reverb Depth", "メニュー SE のリバーブレベル（開発時の調整用。製品では固定）", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get" : function()  { return atodb(main::sound_context.getReverb("system_reverb")["depth"]); },
+            $"set" : function(v) { main::sound_context.setReverb("system_reverb", ["depth" : dbtoa(v)]); },
+            $"min": -60.0, $"max": 0.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB",
+        ]),
+    ];
+
+    ////////////////////////////////////
+    // Dynamic range compression SUB-MENU
+    ////////////////////////////////////
+    static drc_menu = [
+        black,
+        MenuItem(MenuItemSLIDER, "BGM Master Vol (LIVING)", "BGM 全体の音量を調整する内部パラメータ。50% で -10dB, 25% で -20dB となります", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getdrcp_db, $"set": setdrcp_db, $"pid": 0, $"attr": "bgm_master_volume", $"min": -48.0, $"max": 48.0, $"step": 0.1, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "UI Master Vol (LIVING)", "メニュー SE の音量を調整する内部パラメータ。50% で -10dB, 25% で -20dB となります", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getdrcp_db, $"set": setdrcp_db, $"pid": 0, $"attr": "menu_se_master_volume", $"min": -48.0, $"max": 48.0, $"step": 0.1, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "BGM Master Vol (SMALL)", "BGM 全体の音量を調整する内部パラメータ。50% で -10dB, 25% で -20dB となります", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getdrcp_db, $"set": setdrcp_db, $"pid": 1, $"attr": "bgm_master_volume", $"min": -48.0, $"max": 48.0, $"step": 0.1, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "UI Master Vol (SMALL)", "メニュー SE の音量を調整する内部パラメータ。50% で -10dB, 25% で -20dB となります", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getdrcp_db, $"set": setdrcp_db, $"pid": 1, $"attr": "menu_se_master_volume", $"min": -48.0, $"max": 48.0, $"step": 0.1, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "BGM Master Vol (LARGE)", "BGM 全体の音量を調整する内部パラメータ。50% で -10dB, 25% で -20dB となります", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getdrcp_db, $"set": setdrcp_db, $"pid": 2, $"attr": "bgm_master_volume", $"min": -48.0, $"max": 48.0, $"step": 0.1, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "UI Master Vol (LARGE)", "メニュー SE の音量を調整する内部パラメータ。50% で -10dB, 25% で -20dB となります", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getdrcp_db, $"set": setdrcp_db, $"pid": 2, $"attr": "menu_se_master_volume", $"min": -48.0, $"max": 48.0, $"step": 0.1, $"unit": "dB"]),
+
+        gray,
+        MenuItem(MenuItemSLIDER, "DEQ Gain", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "output_gain", $"min": -40.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "DEQ Loudness Correction", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "playback_spl_gain", $"min": -60.0, $"max": 0.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "DEQ Comp Target Level", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "comp_target_loudness_level", $"min": 50.0, $"max": 120.0, $"step": 1.0, $"scale": 1.0, $"unit": "phon"]),
+        MenuItem(MenuItemSLIDER, "DEQ Comp Ratio", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "comp_ratio", $"min": 1.0, $"max": 20.0, $"step": 0.1, $"scale": 1.0, $"unit": ""]),
+        MenuItem(MenuItemSLIDER, "DEQ Comp Gain Max", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "comp_gain_max", $"min": 0.0, $"max": 120.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "DEQ Comp Attack Time", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "comp_attack_time", $"min": 0.0, $"max": 1000.0, $"step": 5.0, $"scale": 1000.0, $"unit": "ms"]),
+        MenuItem(MenuItemSLIDER, "DEQ Comp Release Time", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "comp_release_time", $"min": 0.0, $"max": 1000.0, $"step": 5.0, $"scale": 1000.0, $"unit": "ms"]),
+        MenuItem(MenuItemSLIDER, "DEQ AGC Target Level", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "agc_target_level", $"min": -40.0, $"max": 0.0, $"step": 1.0, $"scale": 1.0, $"unit": "LKFS"]),
+        MenuItem(MenuItemSLIDER, "DEQ AGC Min Gain", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "agc_min_gain", $"min": -40.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "DEQ AGC Max Gain", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "agc_max_gain", $"min": -40.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "DEQ AGC Attack Time", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "agc_attack_time", $"min": 0.0, $"max": 10000.0, $"step": 100.0, $"scale": 1000.0, $"unit": "ms"]),
+        MenuItem(MenuItemSLIDER, "DEQ AGC Release Time", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "agc_release_time", $"min": 0.0, $"max": 10000.0, $"step": 100.0, $"scale": 1000.0, $"unit": "ms"]),
+        MenuItem(MenuItemSLIDER, "DEQ AGC Hold Time", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "agc_hold_time", $"min": 0.0, $"max": 10000.0, $"step": 100.0, $"scale": 1000.0, $"unit": "ms"]),
+        MenuItem(MenuItemSLIDER, "DEQ AGC Limiter Level", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "agc_limiter_level", $"min": -40.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "LKFS"]),
+        MenuItem(MenuItemSLIDER, "DEQ AGC Loudness Det Lowcut Fc", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "loudness_det_lowcut_fc", $"min": 0.0, $"max": 1000.0, $"step": 10.0, $"scale": 1.0, $"unit": "Hz"]),
+
+        gray,
+        MenuItem(MenuItemSLIDER, "Voice AGC Exp", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getsctxp, $"set": setsctxp, $"attr": &pdiext::MSoundContext::voice_agc_exp, $"min": 0.0, $"max": 10.0, $"step": 0.01, $"scale": 1.0, $"unit": ""]),
+        MenuItem(MenuItemSLIDER, "Voice AGC Gain", "", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": function(arg) { return atodb(getsctxp(arg)); }, 
+            $"set": function(v, arg) { setsctxp(dbtoa(v), arg); }, 
+            $"attr": &main::pdiext::MSoundContext::voice_agc_gain, $"min": -48.0, $"max": 48.0, $"step": 0.5, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "Voice AGC Comp Rate", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getsctxp, $"set": setsctxp, $"attr": &pdiext::MSoundContext::voice_agc_comp_rate, $"min": 0.0, $"max": 20.0, $"step": 0.1, $"scale": 1.0, $"unit": ""]),
+        MenuItem(MenuItemSLIDER, "Voice AGC Exp Rate", "", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getsctxp, $"set": setsctxp, $"attr": &pdiext::MSoundContext::voice_agc_exp_rate, $"min": 0.0, $"max": 20.0, $"step": 0.1, $"scale": 1.0, $"unit": ""]),
+    ];
+
+    ////////////////////////////////////
+    // Cockpit View Volume MENU
+    ////////////////////////////////////
+    static cockpitview_menu = [
+        MenuItem(MenuItemTEXT, "コックピット視点 EQ 1 Type", nil, nil, on_update_getset_type, on_activate_getset_type, nil, 
+            [$"get": getbuseq_type, $"set": setbuseq_type, $"ename": "world_post1_eq", $"band": 0, $"types": sgx_eq_types]),
+        MenuItem(MenuItemSLIDER, "  Fc", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq, $"set": setbuseq, $"ename": "world_post1_eq", $"band": 0, $"pid": 1, $"min": 0.0, $"max": 24000.0, $"step": 25.0, $"unit": "Hz"]),
+        MenuItem(MenuItemSLIDER, "  Q", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq, $"set": setbuseq, $"ename": "world_post1_eq", $"band": 0, $"pid": 2, $"min": 0.0, $"max": 1.0, $"step": 0.05, $"unit": ""]),
+        MenuItem(MenuItemSLIDER, "  Gain", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq_db, $"set": setbuseq_db, $"ename": "world_post1_eq", $"band": 0, $"pid": 3, $"min": -24.0, $"max": 12.0, $"step": 0.5, $"unit": "dB"]),
+
+        MenuItem(MenuItemTEXT, "コックピット視点 EQ 2 Type", nil, nil, on_update_getset_type, on_activate_getset_type, nil, 
+            [$"get": getbuseq_type, $"set": setbuseq_type, $"ename": "world_post1_eq", $"band": 1, $"types": sgx_eq_types]),
+        MenuItem(MenuItemSLIDER, "  Fc", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq, $"set": setbuseq, $"ename": "world_post1_eq", $"band": 1, $"pid": 1, $"min": 0.0, $"max": 24000.0, $"step": 25.0, $"unit": "Hz"]),
+        MenuItem(MenuItemSLIDER, "  Q", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq, $"set": setbuseq, $"ename": "world_post1_eq", $"band": 1, $"pid": 2, $"min": 0.0, $"max": 1.0, $"step": 0.05, $"unit": ""]),
+        MenuItem(MenuItemSLIDER, "  Gain", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq_db, $"set": setbuseq_db, $"ename": "world_post1_eq", $"band": 1, $"pid": 3, $"min": -24.0, $"max": 12.0, $"step": 0.5, $"unit": "dB"]),
+   
+        MenuItem(MenuItemTEXT, "コックピット視点 EQ 3 Type", nil, nil, on_update_getset_type, on_activate_getset_type, nil, 
+            [$"get": getbuseq_type, $"set": setbuseq_type, $"ename": "world_post1_eq", $"band": 2, $"types": sgx_eq_types]),
+        MenuItem(MenuItemSLIDER, "  Fc", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq, $"set": setbuseq, $"ename": "world_post1_eq", $"band": 2, $"pid": 1, $"min": 0.0, $"max": 24000.0, $"step": 25.0, $"unit": "Hz"]),
+        MenuItem(MenuItemSLIDER, "  Q", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq, $"set": setbuseq, $"ename": "world_post1_eq", $"band": 2, $"pid": 2, $"min": 0.0, $"max": 1.0, $"step": 0.05, $"unit": ""]),
+        MenuItem(MenuItemSLIDER, "  Gain", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq_db, $"set": setbuseq_db, $"ename": "world_post1_eq", $"band": 2, $"pid": 3, $"min": -24.0, $"max": 12.0, $"step": 0.5, $"unit": "dB"]),
+
+        MenuItem(MenuItemTEXT, "コックピット視点 EQ 4 Type", nil, nil, on_update_getset_type, on_activate_getset_type, nil, 
+            [$"get": getbuseq_type, $"set": setbuseq_type, $"ename": "world_post1_eq", $"band": 3, $"types": sgx_eq_types]),
+        MenuItem(MenuItemSLIDER, "  Fc", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq, $"set": setbuseq, $"ename": "world_post1_eq", $"band": 3, $"pid": 1, $"min": 0.0, $"max": 24000.0, $"step": 25.0, $"unit": "Hz"]),
+        MenuItem(MenuItemSLIDER, "  Q", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq, $"set": setbuseq, $"ename": "world_post1_eq", $"band": 3, $"pid": 2, $"min": 0.0, $"max": 1.0, $"step": 0.05, $"unit": ""]),
+        MenuItem(MenuItemSLIDER, "  Gain", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getbuseq_db, $"set": setbuseq_db, $"ename": "world_post1_eq", $"band": 3, $"pid": 3, $"min": -24.0, $"max": 12.0, $"step": 0.5, $"unit": "dB"]),
+        
+        MenuItem(MenuItemTEXT, "コックピット視点リバーブタイプ", nil, nil, on_update_getset_type, on_activate_getset_type, nil, 
+            [$"get": getreverb_type, $"set": setreverb_type, $"ename": "world_post1_reverb", $"types": tverb_types]),
+
+        MenuItem(MenuItemSLIDER, "コックピット視点リバーブ Dry", nil, on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": function() { return atodb(main::sound_context.getReverb("world_post1_reverb")["dry"]); }, 
+            $"set": function(v) { main::sound_context.setReverb("world_post1_reverb", ["dry" : dbtoa(v)]); }, 
+            $"min": -60.0, $"max": 0.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+    
+        MenuItem(MenuItemSLIDER, "コックピット視点リバーブ Depth", nil, on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": function() { return atodb(main::sound_context.getReverb("world_post1_reverb")["depth"]); }, 
+            $"set": function(v) { main::sound_context.setReverb("world_post1_reverb", ["depth" : dbtoa(v)]); }, 
+            $"min": -60.0, $"max": 0.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+    ];
+
+    ////////////////////////////////////
+    // Sound Equalizer SUB-MENU
+    ////////////////////////////////////
+    static equalizer_menu = [
+        black,
+        MenuItem(MenuItemTEXT, "EQ Enable", "", nil, on_update_getset_switch, on_activate_getset_switch, nil, 
+            [$"get": getefxp, $"set": setefxp, $"ename": "world_deq", $"pname": "eq_enable"]),
+        MenuItem(MenuItemSLIDER, "  100Hz (93.75)", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 20]),
+        MenuItem(MenuItemSLIDER, "  200Hz (187.5)", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 23]),
+        MenuItem(MenuItemSLIDER, "  250Hz (281.25)", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 24]),
+        MenuItem(MenuItemSLIDER, "  400Hz (375)", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 26]),
+        MenuItem(MenuItemSLIDER, "  500Hz (468.75)", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 27]),
+        MenuItem(MenuItemSLIDER, "  630Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 28]),
+        MenuItem(MenuItemSLIDER, "  800Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 29]),
+        MenuItem(MenuItemSLIDER, " 1000Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 30]),
+        MenuItem(MenuItemSLIDER, " 1250Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 31]),
+        MenuItem(MenuItemSLIDER, " 1600Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 32]),
+        MenuItem(MenuItemSLIDER, " 2000Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 33]),
+        MenuItem(MenuItemSLIDER, " 2500Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 34]),
+        MenuItem(MenuItemSLIDER, " 3150Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 35]),
+        MenuItem(MenuItemSLIDER, " 4000Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 36]),
+        MenuItem(MenuItemSLIDER, " 5000Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 37]),
+        MenuItem(MenuItemSLIDER, " 6300Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 38]),
+        MenuItem(MenuItemSLIDER, " 8000Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 39]),
+        MenuItem(MenuItemSLIDER, "10000Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 40]),
+        MenuItem(MenuItemSLIDER, "12500Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 41]),
+        MenuItem(MenuItemSLIDER, "16000Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 42]),
+        MenuItem(MenuItemSLIDER, "20000Hz", nil, on_init_world_eq, nil, on_activate_world_eq, nil, [$"band": 43]),
+    ];
+
+    ////////////////////////////////////
+    // Engine Effects SUB-MENU
+    ////////////////////////////////////
+    static global_engine_effect_menu = [
+        red,
+        MenuItem(MenuItemSLIDER, "エンジン音 LPF 基本周波数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_lpf_freq, $"pid": 0, $"min": 0.0, $"max": 24000.0, $"step": 25.0, $"unit": "Hz"]),
+         MenuItem(MenuItemSLIDER, "エンジン音 LPF エンジン基本周波数の倍数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_lpf_freq, $"pid": 1, $"min": 0.0, $"max": 32.0, $"step": 1.0, $"unit": "x"]),
+
+        blue,
+        MenuItem(MenuItemSLIDER, "エンジン音 LPF Gain 定数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_lpf_gain, $"pid": 0, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音 LPF Gain 負荷マイナス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_lpf_gain, $"pid": 1, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音 LPF Gain 負荷プラス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_lpf_gain, $"pid": 2, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音 LPF Gain 最小", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_lpf_gain, $"pid": 4, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音 LPF Gain 最大", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_lpf_gain, $"pid": 5, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+
+        red,
+        MenuItem(MenuItemSLIDER, "エンジン音 HPF 基本周波数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_hpf_freq, $"pid": 0, $"min": 0.0, $"max": 24000.0, $"step": 100.0, $"unit": "Hz"]),
+         MenuItem(MenuItemSLIDER, "エンジン音 HPF エンジン基本周波数の倍数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_hpf_freq, $"pid": 1, $"min": 0.0, $"max": 32.0, $"step": 1.0, $"unit": "x"]),
+    
+        blue,
+        MenuItem(MenuItemSLIDER, "エンジン音 HPF Gain 定数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_hpf_gain, $"pid": 0, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音 HPF Gain 負荷マイナス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_hpf_gain, $"pid": 1, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音 HPF Gain 負荷プラス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_hpf_gain, $"pid": 2, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音 HPF Gain 最小", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_hpf_gain, $"pid": 4, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音 HPF Gain 最大", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_hpf_gain, $"pid": 5, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+
+        MenuItem(MenuItemTEXT, "エンジン音 HPF タイプ", nil, nil, on_update_value_select_item, on_activate_value_select_item, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_hpf_type , $"values": [
+                "none", "peaking", "lowshelf", "highshelf"
+            ]]),
+
+        red,
+        MenuItem(MenuItemSLIDER, "エンジン音高調波 2nd Gain 定数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_harmonics, $"pid": 3, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音高調波 2nd Gain 負荷マイナス", nil, on_init_getset_value, nil, on_activate_getset_value, nil,
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_harmonics, $"pid": 4, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音高調波 2nd Gain 負荷プラス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_harmonics, $"pid": 5, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "エンジン音高調波 2nd 最大", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::engine_harmonics, $"pid": 8, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+
+        blue,
+        MenuItem(MenuItemSLIDER, "排気音分数調波 1/2 Gain 定数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::exhaust_subharmonics, $"pid": 3, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音分数調波 1/2 Gain 負荷マイナス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::exhaust_subharmonics, $"pid": 4, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音分数調波 1/2 Gain 負荷プラス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::exhaust_subharmonics, $"pid": 5, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音分数調波 1/2 最大", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::exhaust_subharmonics, $"pid": 8, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+
+        // Muffler Low Pass Filter
+        red,
+        MenuItem(MenuItemSLIDER, "排気音 LPF 周波数定数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_lpf_freq, $"pid": 0, $"min": 0.0, $"max": 24000.0, $"step": 25.0, $"unit": "Hz"]),
+        MenuItem(MenuItemSLIDER, "排気音 LPF エンジン回転数の倍数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_lpf_freq, $"pid": 1, $"min": 0.0, $"max": 32.0, $"step": 1.0, $"unit": "x"]),
+    
+        blue,
+        MenuItem(MenuItemSLIDER, "排気音 LPF Gain 定数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_lpf_gain, $"pid": 0, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音 LPF Gain 負荷マイナス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_lpf_gain, $"pid": 1, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音 LPF Gain 負荷プラス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_lpf_gain, $"pid": 2, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音 LPF Gain 最小", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_lpf_gain, $"pid": 4, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音 LPF Gain 最大", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_lpf_gain, $"pid": 5, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+
+        // Muffler High Pass Filter
+        red,
+        MenuItem(MenuItemSLIDER, "排気音 HPF 周波数定数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_hpf_freq, $"pid": 0, $"min": 0.0, $"max": 24000.0, $"step": 100.0, $"unit": "Hz"]),
+        MenuItem(MenuItemSLIDER, "排気音 HPF エンジン回転数の倍数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_hpf_freq, $"pid": 1, $"min": 0.0, $"max": 32.0, $"step": 1.0, $"unit": "x"]),
+    
+        blue,
+        MenuItem(MenuItemSLIDER, "排気音 HPF Gain 定数", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_hpf_gain, $"pid": 0, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音 HPF Gain 負荷マイナス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_hpf_gain, $"pid": 1, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音 HPF Gain 負荷プラス", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_hpf_gain, $"pid": 2, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音 HPF Gain 最小", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_hpf_gain, $"pid": 4, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "排気音 HPF Gain 最大", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_hpf_gain, $"pid": 5, $"min": -20.0, $"max": 20.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+
+        MenuItem(MenuItemTEXT, "排気音 HPF タイプ", nil, nil, on_update_value_select_item, on_activate_value_select_item, nil, 
+            [$"get": getengp, $"set": setengp, $"attr": &gtengine::MRaceSound::muffler_hpf_type , $"values": [
+                "none", "peaking", "lowshelf", "highshelf"
+            ]]),
+
+
+        // Other stuff
+        MenuItem(MenuItemSLIDER, "N0/T0 エンジン音音量", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getegidvol, $"set": setegidvol, $"lv": 0, $"col": 0, $"min": 0.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "N0/T0 排気音音量", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getegidvol, $"set": setegidvol, $"lv": 0, $"col": 1, $"min": 0.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "N1/T1 エンジン音音量", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getegidvol, $"set": setegidvol, $"lv": 1, $"col": 0, $"min": 0.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "N1/T1 排気音音量", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getegidvol, $"set": setegidvol, $"lv": 1, $"col": 1, $"min": 0.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "N2/T2 エンジン音音量", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getegidvol, $"set": setegidvol, $"lv": 2, $"col": 0, $"min": 0.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "N2/T2 排気音音量", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getegidvol, $"set": setegidvol, $"lv": 2, $"col": 1, $"min": 0.0, $"max": 40.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "N3/T3 エンジン音音量", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getegidvol, $"set": setegidvol, $"lv": 3, $"col": 0, $"min": 0.0, $"max": 80.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+        MenuItem(MenuItemSLIDER, "N3/T3 排気音音量", nil, on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getegidvol, $"set": setegidvol, $"lv": 3, $"col": 1, $"min": 0.0, $"max": 80.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB"]),
+    ];
+
+    ////////////////////////////////////
+    // Save/Load PMF SUB-MENU
+    ////////////////////////////////////
+    static global_loadsave_menu = [
+        MenuItem(MenuItemTEXT, "gt/gt6/src/sound/etcからロード(pmf)", nil, nil, nil, on_select_load_car_sound_gt5_pmf, nil, "/app_home/gt/gt6/src/sound/etc/car_sound_gt5.pmf"),
+        MenuItem(MenuItemTEXT, "gt/gt6/src/sound/etcにセーブ(pmf)", nil, nil, nil, on_select_save_car_sound_gt5_pmf, nil, "/app_home/gt/gt6/src/sound/etc/car_sound_gt5.pmf"),
+        MenuItem(MenuItemTEXT, "カレントからロード(pmf)", nil, nil, nil, on_select_load_car_sound_gt5_pmf, nil, "car_sound_gt5.pmf"),
+        MenuItem(MenuItemTEXT, "カレントにセーブ(pmf)", nil, nil, nil, on_select_save_car_sound_gt5_pmf, nil, "car_sound_gt5.pmf"),
+    ];
+
+    ////////////////////////////////////
+    // Tire/Surface SFX SUB-MENU
+    ////////////////////////////////////
+    static global_tire_effect_menu = [
+        gray,
+        MenuItem(MenuItemTEXT, "TARMAC／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[0].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "TARMAC／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[0].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "TARMAC／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[0].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[1].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[1].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[1].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GREEN／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[2].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GREEN／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[2].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "SAND／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[3].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "SAND／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[3].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GRAVEL／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[4].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GRAVEL／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[4].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "DIRT／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[5].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "DIRT／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[5].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "WATER／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[6].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "WATER／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[6].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "WATER／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[6].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "STONE／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[7].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "STONE／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[7].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "STONE／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[7].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "WOOD／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[8].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "WOOD／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[8].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "WOOD／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[8].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "PAVE／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[9].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "PAVE／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[9].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "PAVE／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[9].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE1／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[10].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE1／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[10].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE1／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[10].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE2／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[11].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE2／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[11].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE2／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[11].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE3／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[12].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE3／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[12].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "GUIDE3／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[12].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "PEBBLE／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[13].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "PEBBLE／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[13].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "SNOW／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[15].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "SNOW／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::road_attribute_sound_parameter[15].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+    ];
+
+    function on_select_tire_edit(context, index, menuitem, item, arg)
+    {
+        SoundEffectControlRoot::setRange(arg[1][0], arg[1][1]);
+        SoundEffectControlRoot::setSoundEffect(arg[0]);
+        SoundEffectControlRoot::open(context);
+    }
+
+    ////////////////////////////////////
+    // Tarmac Tire SFX MENU
+    ////////////////////////////////////
+    static global_tarmac_tire_effect_menu = [
+        gray,
+        MenuItem(MenuItemTEXT, "COMFORT／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[0].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "COMFORT／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[0].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "COMFORT／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[0].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "SPORTS／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[1].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "SPORTS／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[1].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "SPORTS／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[1].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "RACING／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[2].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "RACING／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[2].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "RACING／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[2].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "KART／速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[3].effects[0], [[0.0, 0.0], [5.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "KART／すべり速度依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[3].effects[1], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+        MenuItem(MenuItemTEXT, "KART／摩擦係数依存成分", "", nil, nil, on_select_se_control_edit, nil, [
+            main::CarSound::tarmac_tire_sound_parameter[3].effects[2], [[0.0, 0.0], [1.0, 1.0]],
+        ]),
+    ];
+
+    ////////////////////////////////////
+    // Miscellaneous SUB-MENU
+    ////////////////////////////////////
+    var global_etc_menu = [
+        MenuItem(MenuItemTEXT, "Audio Output Mode", "", nil, on_update_audio_output_mode, on_activate_audio_output_mode),
+        MenuItem(MenuItemSLIDER, "ワールド SE インテリアパン距離", "3D 効果音がスピーカーの内側に定位する最大距離（cm）。これより近い音源は音に囲まれるように聞こえます", on_init_getset_value, nil, on_activate_getset_value, nil, 
+            [$"get": getsctxp, $"set": setsctxp, $"attr": &pdiext::MSoundContext::interior_pan_distance, $"min": 0.1, $"max": 10.0, $"step": 0.1, $"scale": 1.0, $"unit": "m"]),
+        
+        MenuItem(MenuItemSLIDER, "観客 SE 音量", "観客効果音の音量。リニアなので 50% で -6dB、10% で -20dB となります。", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": function(arg) { 
+                return *main::race_sound
+                {arg[$"attr"]};
+            },
+            $"set": function(v, arg) {
+                main::race_sound
+                {arg[$"attr"]} = v;
+            },
+            $"attr": &main::gtengine::MRaceSound::audience_volume, $"min": 0.0, $"max": 100.0, $"step": 5.0, $"scale": 100.0, $"unit": "%",
+        ]),
+
+        MenuItem(MenuItemSLIDER, "環境音 SE 音量", "環境音の音量。リニアなので 50% で -6dB、10% で -20dB となります。", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": function(arg) { 
+                return *main::race_sound
+                {arg[$"attr"]};
+            },
+            $"set": function(v, arg) {
+                main::race_sound
+                {arg[$"attr"]} = v;
+            },
+            $"attr": &main::gtengine::MRaceSound::ambience_volume, $"min": 0.0, $"max": 100.0, $"step": 5.0, $"scale": 100.0, $"unit": "%",
+        ]),
+
+        MenuItem(MenuItemSLIDER, "観客 SE 基準距離", nil, on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": function(arg) { 
+                return *main::race_sound
+                {arg[$"attr"]};
+            },
+            $"set": function(v, arg) {
+                main::race_sound
+                    {arg[$"attr"]} = v;
+            },
+            $"attr": &main::gtengine::MRaceSound::audience_ref_distance, $"min": 1.0, $"max": 100.0, $"step": 1.0, $"scale": 1.0, $"unit": "m",
+        ]),
+
+        MenuItem(MenuItemSLIDER, "環境音 SE 基準距離", nil, on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": function(arg) { 
+                return *main::race_sound
+                    {arg[$"attr"]};
+            },
+            $"set": function(v, arg) {
+                main::race_sound
+                    {arg[$"attr"]} = v;
+            },
+            $"attr": &main::gtengine::MRaceSound::ambience_ref_distance, $"min": 1.0, $"max": 100.0, $"step": 1.0, $"scale": 1.0, $"unit": "m",
+        ]),
+
+        MenuItem(MenuItemSLIDER, "Distortion % Low Threshold", "", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": function(arg) { return getefxp(arg) + 120.0; },
+            $"set": function(v, arg) { setefxp(v - 120.0, arg)},
+            $"ename": "world_dist", $"pname": "dist_th1", $"min": 0.0, $"max": 150.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB",
+        ]),
+
+        MenuItem(MenuItemSLIDER, "Distortion % Max Threshold", "", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": function(arg) { return getefxp(arg) + 120.0; },
+            $"set": function(v, arg) { setefxp(v - 120.0, arg)},
+            $"ename": "world_dist", $"pname": "dist_th2", $"min": 0.0, $"max": 150.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB",
+        ]),
+
+        MenuItem(MenuItemSLIDER, "Distortion % Control Ratio", "", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": getefxp, $"set": setefxp,
+            $"ename": "world_dist", $"pname": "dist_ratio", $"min": 0.0, $"max": 100.0, $"step": 5.0, $"scale": 100.0, $"unit": "%",
+        ]),
+
+        MenuItem(MenuItemSLIDER, "Distortion Knee", "", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": getefxp, $"set": setefxp,
+            $"ename": "world_dist", $"pname": "dist_knee", $"min": 0.0, $"max": 100.0, $"step": 1.0, $"scale": 1.0, $"unit": "dB",
+        ]),
+
+        MenuItem(MenuItemSLIDER, "Distortion Symmetry", "", on_init_getset_value, nil, on_activate_getset_value, nil, [
+            $"get": getefxp, $"set": setefxp,
+            $"ename": "world_dist", $"pname": "dist_sym", $"min": 0.0, $"max": 100.0, $"step": 5.0, $"scale": 100.0, $"unit": "%",
+        ]),
+
+        MenuItem(MenuItemTEXT, "Distortion Enable", "", nil, on_update_getset_switch, on_activate_getset_switch, nil, [
+            $"get": getefxp, $"set": setefxp,
+            $"ename": "world_dist", $"pname": "dist_enable",
+        ]),
+
+        MenuItem(MenuItemTEXT, "BGM Surround Upmix Preset", "", nil, 
+            function(context, index, menuitem, item) { 
+                item["value"].text = main::sound_context.bgm_upmix_preset;
+            }, 
+            function (context, index, menuitem, item, arg) {
+                var types = [
+                    "NONE",
+                    "VOCAL",
+                    "INST",
+                    "AMB",
+                    "SOFT",
+                    "FLAT",
+                    "WIDE",
+                    "REAR_U",
+                    "REAR_D"
+                ];
+
+                var current = main::sound_context.bgm_upmix_preset;
+                var index = types.indexOf(current);
+                if (index < 0)
+                    index = 0;
+                else
+                    index++;
+
+                var next = types[index % types.size];
+                main::sound_context.bgm_upmix_preset = next;
+                item["value"].text = next;
+            }
+        ),
+
+        MenuItem(MenuItemSLIDER, "Force Engine Sound ID", "",
+            function(context, menuitem, item) { 
+                var arg = menuitem.arg;
+                var attr = arg[$"attr"];
+                var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+                var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+                var min = arg[$"min"] / step;
+                var max = arg[$"max"] / step;
+                var unit = arg[$"unit"] != nil ? arg[$"unit"] : "";
+                var slider = item.slider;
+                var value = pdistd::MDynRes::importInt32(attr);
+                
+                slider.range = [min, max];
+                slider.step = 1;
+                slider.value = (((value * scale) / step) + 0.5).toInt();
+                slider.format_function = (value, scale, range, format, zero_text) => {
+                    var v = scale * value;
+                    return "%d".format(v.toInt());
+                };
+
+                slider.setup(context, step, nil, unit, true, 100);
+                slider.decide_cb = menuitem.on_activate_func;
+                slider.arg = arg;
+            }, 
+            nil, 
+            function (context, index, slider) {
+                var arg = slider.arg;
+                var attr = arg[$"attr"];
+                var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+                var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+                var value = (index.toFloat() / scale) * step;
+                pdistd::MDynRes::setInt32(attr, value);
+            },
+            nil, 
+            [$"attr": "SoundDebugForceEngineID", $"min": 50000.0, $"max": 60199.0, $"step": 1.0, $"scale": 1.0, $"unit": ""],
+        ),
+
+        // 99900 -> 99999
+        MenuItem(MenuItemSLIDER, "Force Engine Sound ID", "",
+            function(context, menuitem, item) { 
+                var arg = menuitem.arg;
+                var attr = arg[$"attr"];
+                var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+                var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+                var min = arg[$"min"] / step;
+                var max = arg[$"max"] / step;
+                var unit = arg[$"unit"] != nil ? arg[$"unit"] : "";
+                var slider = item.slider;
+                var value = pdistd::MDynRes::importInt32(attr);
+                
+                slider.range = [min, max];
+                slider.step = 1;
+                slider.value = (((value * scale) / step) + 0.5).toInt();
+                slider.format_function = (value, scale, range, format, zero_text) => {
+                    var v = scale * value;
+                    return "%d".format(v.toInt());
+                };
+
+                slider.setup(context, step, nil, unit, true, 100);
+                slider.decide_cb = menuitem.on_activate_func;
+                slider.arg = arg;
+            }, 
+            nil, 
+            function (context, index, slider) {
+                var arg = slider.arg;
+                var attr = arg[$"attr"];
+                var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+                var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+                var value = (index.toFloat() / scale) * step;
+                pdistd::MDynRes::setInt32(attr, value);
+            },
+            nil, 
+            [$"attr": "SoundDebugForceEngineID", $"min": 99900.0, $"max": 99999.0, $"step": 1.0, $"scale": 1.0, $"unit": ""],
+        ),
+
+        MenuItem(MenuItemTEXT, "Force Engine Sound ID Reset", "", nil, nil,
+            function (context, index, menuitem, item, arg)
+            {
+                pdistd::MDynRes::setInt32("SoundDebugForceEngineID", 0);
+                main::sound.play("ok");
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Transmission Noise Sound Select", "", nil,
+            function (context, index, menuitem, item) {
+                var i = main::pdistd::MDynRes::importInt32("SoundDebugTMNoise");
+                var codes = [
+                    "mission_noise1",
+                    "mission_noise2",
+                    "mission_noise3",
+                    "mission_noise4",
+                    "mission_noise5",
+                    "mission_race",
+                ];
+
+                item["value"].text = codes[i];
+            },
+            function (context, index, menuitem, item, arg) {
+                var codes = [
+                    "mission_noise1",
+                    "mission_noise2",
+                    "mission_noise3",
+                    "mission_noise4",
+                    "mission_noise5",
+                    "mission_race",
+                ];
+
+                var i = main::pdistd::MDynRes::importInt32("SoundDebugTMNoise");
+                i = (i + 1) % codes.size;
+
+                main::pdistd::MDynRes::setInt32("SoundDebugTMNoise", i);
+                main::pdistd::MDynRes::setInt32("SoundDebugReload", 1);
+                item["value"].text = codes[i];
+            }
+        ),
+
+        MenuItem(MenuItemSLIDER, "Transmission Noise Transpose", "",
+            function(context, menuitem, item) { 
+                var arg = menuitem.arg;
+                var attr = arg[$"attr"];
+                var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+                var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+                var min = arg[$"min"] / step;
+                var max = arg[$"max"] / step;
+                var unit = arg[$"unit"] != nil ? arg[$"unit"] : "";
+                var slider = item.slider;
+                var value = main::pdistd::MDynRes::importInt32(attr);
+                
+                slider.range = [min, max];
+                slider.step = 1;
+                slider.value = (((value * scale) / step) + 0.5).toInt();
+                slider.format_function = (value, scale, range, format, zero_text) => {
+                    var v = scale * value;
+                    return "%+d".format(v.toInt());
+                };
+
+                slider.setup(context, step, nil, unit);
+                slider.decide_cb = menuitem.on_activate_func;
+                slider.arg = arg;
+            },
+            nil,
+            function (context, index, slider) {
+                var arg = slider.arg;
+                var attr = arg[$"attr"];
+                var step = arg[$"step"] != nil ? arg[$"step"] : 1.0;
+                var scale = arg[$"scale"] != nil ? arg[$"scale"] : 1.0;
+                var value = (index.toFloat() / scale) * step;
+                main::pdistd::MDynRes::setInt32(attr, value);
+            },
+            nil,
+            [$"attr": "SoundDebugTMNoisePitch", $"min": -12.0, $"max": 12.0, $"step": 1.0, $"scale": 1.0, $"unit": ""]
+        ),
+
+        MenuItem(MenuItemTEXT, "ボイス音量強制100%モード", "BGM, SE の音量を、原音の 100% の音量で出力するテストモードです（開発時の確認用）", nil, on_update_getset_switch, on_activate_getset_switch, nil, [
+            $"get": function(arg) { return pdistd::MDynRes::importBool("AudioDeviceVolumeMode", false); }, 
+            $"set": function(v, arg) { pdistd::MDynRes::setBool("AudioDeviceVolumeMode", v); },
+        ]),
+
+        MenuItem(MenuItemTEXT, "Voice Filter Disable", nil, nil, on_update_getset_switch, on_activate_getset_switch, nil, [
+            $"get": function(arg) { return pdistd::MDynRes::importBool("SoundVoiceFilterDisable", false); }, 
+            $"set": function(v, arg) { pdistd::MDynRes::setBool("SoundVoiceFilterDisable", v); },
+        ]),
+
+        MenuItem(MenuItemTEXT, "Engine Effect Bypass", nil, nil, on_update_getset_switch, on_activate_getset_switch, nil, [
+            $"get": function(arg) { return pdistd::MDynRes::importBool("EngineSoundEffectBypass", false); }, 
+            $"set": function(v, arg) { 
+                pdistd::MDynRes::setBool("EngineSoundEffectBypass", v); 
+                pdistd::MDynRes::setInt32("SoundDebugReload", 1); 
+            },
+        ]),
+
+        MenuItem(MenuItemTEXT, "Distance Filter", nil, nil, on_update_distance_filter_type, on_activate_distance_filter_type),
+
+        MenuItem(MenuItemTEXT, "Reload Car Sound", "", nil,
+            function (context, index, menuitem, item) { },
+            function (context, index, menuitem, item, arg) {
+                main::pdistd::MDynRes::setInt32("SoundDebugReload", 1);
+            }
+        ),
+    ];
+
+    function play_testsignal(context, index, menuitem, item, arg)
+    {
+        if (msoundeffect_instance == nil)
+            msoundeffect_instance = pdiext::MSoundEffect("sound_gt/se/testsignal.sgd");
+
+        var bus = arg.size >= 5 ? arg[4] : 0;
+        main::sound.playSingle(arg[0], arg[1], arg[2], arg[3], bus);
+    }
+
+    function key_testsignal(context, event, index, menuitem, item, arg)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_SELECT:
+                main::sound.playSingle(nil);
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    ////////////////////////////////////
+    // Test Signals SUB-MENU
+    ////////////////////////////////////
+    var global_testsignal_menu = [
+        MenuItem(MenuItemTEXT, "Stop", "", nil, nil, 
+            function(context, index, menuitem, item, arg) {
+                msoundeffect_instance = nil;
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Reset World SE", "", nil, nil, 
+            function(context, index, menuitem, item, arg) {
+                var rs = main["race_sound"];
+                if (rs != nil)
+                {
+                    rs.world_se_volume = 1.0;
+                    rs.start = true;
+                }
+
+                main::sound_context.master_output_gain = 1.0;
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "1kHz  +3dB/120dB SPL Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.4142135, -1.0, 1.0, 3]),
+        MenuItem(MenuItemTEXT, "1kHz   0dB/117dB SPL Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.0, -1.0, 1.0, 3]),
+        MenuItem(MenuItemTEXT, "1kHz -10dB/107dB SPL Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 0.31622776, -1.0, 1.0, 3]),
+        MenuItem(MenuItemTEXT, "1kHz -20dB/ 97dB SPL Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 0.1, -1.0, 1.0, 3]),
+        MenuItem(MenuItemTEXT, "1kHz -30dB/ 87dB SPL Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 0.03162278, -1.0, 1.0, 3]),
+        MenuItem(MenuItemTEXT, "1kHz -40dB/ 77dB SPL Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 0.01, -1.0, 1.0, 3]),
+        MenuItem(MenuItemTEXT, "1kHz -47dB/ 70dB SPL Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 0.004466836, -1.0, 1.0, 3]),
+        MenuItem(MenuItemTEXT, "1kHz 0dB L", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.0, -30.0 / 90.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz 0dB C", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.0, 0.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz 0dB R", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.0, +30.0 / 90.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz 0dB LS", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.0, -110.0 / 90.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz 0dB RS", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.0, +110.0 / 90.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz -4dB L", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 0.631, -30.0 / 90.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz -4dB R", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 0.631, +30.0 / 90.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz -60dB L", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 0.001, -30.0 / 90.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz -60dB R", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 0.001, +30.0 / 90.0, 1.0]),
+        MenuItem(MenuItemTEXT, "50Hz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_100Hz_0dB", 1.0, 0.0, 0.5]),
+        MenuItem(MenuItemTEXT, "50Hz 0dB Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_100Hz_0dB", 1.0, -1.0, 0.5]),
+        MenuItem(MenuItemTEXT, "50Hz 0dB Right", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_100Hz_0dB", 1.0, +1.0, 0.5]),
+        MenuItem(MenuItemTEXT, "50Hz 0dB Back", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_100Hz_0dB", 1.0, +2.0, 0.5]),
+        MenuItem(MenuItemTEXT, "100Hz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_100Hz_0dB", 1.0, 0.0, 1.0]),
+        MenuItem(MenuItemTEXT, "100Hz 0dB Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_100Hz_0dB", 1.0, -1.0, 1.0]),
+        MenuItem(MenuItemTEXT, "100Hz 0dB Right", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_100Hz_0dB", 1.0, +1.0, 1.0]),
+        MenuItem(MenuItemTEXT, "100Hz 0dB Back", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_100Hz_0dB", 1.0, +2.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.0, 0.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz 0dB Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.0, -1.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz 0dB Right", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.0, +1.0, 1.0]),
+        MenuItem(MenuItemTEXT, "1kHz 0dB Back", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_1kHz_0dB", 1.0, +2.0, 1.0]),
+        MenuItem(MenuItemTEXT, "10kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 1.0]),
+        MenuItem(MenuItemTEXT, "10kHz 0dB Left", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, -1.0, 1.0]),
+        MenuItem(MenuItemTEXT, "10kHz 0dB Right", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, +1.0, 1.0]),
+        MenuItem(MenuItemTEXT, "10kHz 0dB Back", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, +2.0, 1.0]),
+        MenuItem(MenuItemTEXT, "500Hz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 0.05]),
+        MenuItem(MenuItemTEXT, " 1kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 0.1, 0]),
+        MenuItem(MenuItemTEXT, " 2kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 0.2, 0]),
+        MenuItem(MenuItemTEXT, " 4kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 0.4, 0]),
+        MenuItem(MenuItemTEXT, " 5kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 0.5, 0]),
+        MenuItem(MenuItemTEXT, " 6kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 0.6, 0]),
+        MenuItem(MenuItemTEXT, " 7kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 0.7, 0]),
+        MenuItem(MenuItemTEXT, " 8kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 0.8, 0]),
+        MenuItem(MenuItemTEXT, " 9kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 0.9, 0]),
+        MenuItem(MenuItemTEXT, "15kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 1.5, 0]),
+        MenuItem(MenuItemTEXT, "16kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 1.6, 0]),
+        MenuItem(MenuItemTEXT, "17kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 1.7, 0]),
+        MenuItem(MenuItemTEXT, "20kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 2.0, 0]),
+        MenuItem(MenuItemTEXT, "22kHz 0dB Front", "", nil, nil, play_testsignal, key_testsignal, ["sinewave_10kHz_0dB", 1.0, 0.0, 2.2, 0]),
+        MenuItem(MenuItemTEXT, "Pink Noise -15dB Front", "", nil, nil, play_testsignal, key_testsignal, ["pinknoise_-15dBrms", 1.0, 0.0, 1.0, 0]),
+        MenuItem(MenuItemTEXT, "Pink Noise -15dB Left", "", nil, nil, play_testsignal, key_testsignal, ["pinknoise_-15dBrms", 1.0, -1.0, 1.0, 0]),
+        MenuItem(MenuItemTEXT, "Pink Noise -15dB Right", "", nil, nil, play_testsignal, key_testsignal, ["pinknoise_-15dBrms", 1.0, +1.0, 1.0, 0]),
+        MenuItem(MenuItemTEXT, "Pink Noise -15dB Back", "", nil, nil, play_testsignal, key_testsignal, ["pinknoise_-15dBrms", 1.0, +2.0, 1.0, 0]),
+        MenuItem(MenuItemTEXT, "TSP -6dB Front (Bus 4)", "", nil, nil, play_testsignal, key_testsignal, ["tsp_131072", 0.5, 0.0, 1.0, 4]),
+        MenuItem(MenuItemTEXT, "TSP  0dB Front (Bus 4)", "", nil, nil, play_testsignal, key_testsignal, ["tsp_131072", 1.0, 0.0, 1.0, 4]),
+        MenuItem(MenuItemTEXT, "TSP +6dB Front (Bus 4)", "", nil, nil, play_testsignal, key_testsignal, ["tsp_131072", 2.0, 0.0, 1.0, 4]),
+        MenuItem(MenuItemTEXT, "TSP +12dB Front (Bus 4)", "", nil, nil, play_testsignal, key_testsignal, ["tsp_131072", 4.0, 0.0, 1.0, 4]),
+        MenuItem(MenuItemTEXT, "TSP +12dB Front (Bus 0)", "", nil, nil, play_testsignal, key_testsignal, ["tsp_131072", 4.0, 0.0, 1.0, 0]),
+    ];
+
+    ////////////////////////////////////
+    // System BGM SUB-MENU
+    ////////////////////////////////////
+    var global_system_bgm_menu = [
+        MenuItem(MenuItemTEXT, "Enable System BGM", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                SoundUtil::SetSystemBGMEnable(nil, true);
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Disable System BGM", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                SoundUtil::SetSystemBGMEnable(context, false, 1.0);
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Menu BGM Select", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                var pair = SoundUtil::OpenSystemBGMDialog(context);
+                if (pair != nil)
+                {
+                    var [result, bytedata] = pair;
+                    if (bytedata != nil)
+                    {
+                        var group = "menu";
+                        var sysbgm_index = SoundUtil::SystemBGMGroupToIndex(group);
+                        var opt = main::GAME_STATUS.user_profile.option;
+                        opt.sysbgm_context[sysbgm_index] = pair[1];
+                        opt.sysbgm_valid[sysbgm_index] = true;
+                    }
+                }
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Race BGM Select", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                var pair = SoundUtil::OpenSystemBGMDialog(context);
+                if (pair != nil)
+                {
+                    var [result, bytedata] = pair;
+                    if (bytedata != nil)
+                    {
+                        var group = "racing";
+                        var sysbgm_index = SoundUtil::SystemBGMGroupToIndex(group);
+                        var opt = main::GAME_STATUS.user_profile.option;
+                        opt.sysbgm_context[sysbgm_index] = bytedata;
+                        opt.sysbgm_valid[sysbgm_index] = true;
+                    }
+                }
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Load Menu BGM Context", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                var group = "menu";
+                var sysbgm_index = SoundUtil::SystemBGMGroupToIndex(group);
+                var opt = main::GAME_STATUS.user_profile.option;
+                if (opt.sysbgm_valid[sysbgm_index])
+                {
+                    var result = main::pdiext::MSystemBGM::setContext(opt.sysbgm_context[sysbgm_index]);
+                }
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Load Race BGM Context", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                var group = "racing";
+                var sysbgm_index = SoundUtil::SystemBGMGroupToIndex(group);
+                var opt = main::GAME_STATUS.user_profile.option;
+                if (opt.sysbgm_valid[sysbgm_index])
+                {
+                    var result = main::pdiext::MSystemBGM::setContext(opt.sysbgm_context[sysbgm_index]);
+                }
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Save Menu BGM Context", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                var [result, bytedata] = main::pdiext::MSystemBGM::getContext();
+                if (bytedata != nil)
+                {
+                    var group = "menu";
+                    var sysbgm_index = SoundUtil::SystemBGMGroupToIndex(group);
+                    var opt = main::GAME_STATUS.user_profile.option;
+                    opt.sysbgm_context[sysbgm_index] = bytedata;
+                    opt.sysbgm_valid[sysbgm_index] = true;
+                }
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Save Race BGM Context", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                var [result, bytedata] = main::pdiext::MSystemBGM::getContext();
+                if (bytedata != nil)
+                {
+                    var group = "racing";
+                    var sysbgm_index = SoundUtil::SystemBGMGroupToIndex(group);
+                    var opt = main::GAME_STATUS.user_profile.option;
+                    opt.sysbgm_context[sysbgm_index] = bytedata;
+                    opt.sysbgm_valid[sysbgm_index] = true;
+                }
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "PLAY", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                var opt = main::sound_runtime_parameter;
+                main::pdiext::MSystemBGM::setVolume(opt.menu_bgm_gain * opt.user_bgm_gain);
+                main::pdiext::MSystemBGM::play();
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "STOP", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                main::pdiext::MSystemBGM::stop();
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "PAUSE", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                main::pdiext::MSystemBGM::pause();
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "NEXT", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                main::pdiext::MSystemBGM::next();
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "PREV", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                main::pdiext::MSystemBGM::prev();
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "FADEOUT 1 sec.", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                main::pdiext::MSystemBGM::fadeout(1.0);
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "FADEOUT 3 sec.", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                main::pdiext::MSystemBGM::fadeout(3.0);
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "BGMPlayGroup 'menu'", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                SoundUtil::BGMPlayGroup(SoundUtil::SCENE_MENU, "menu");
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "BGMPlayGroup 'racing'", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                SoundUtil::BGMPlayGroup(SoundUtil::SCENE_RACE, "racing");
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "BGMStop", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                SoundUtil::BGMStop();
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "MMusic PLAY 'menu'", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                sysbgm_mmusic_instance = main::pdistd::MMusic();
+                sysbgm_mmusic_instance.load("system");
+
+                var opt = main::sound_runtime_parameter;
+                sysbgm_mmusic_instance.volume = opt.menu_bgm_gain * opt.user_bgm_gain;
+                sysbgm_mmusic_instance.play("menu");
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "MMusic STOP", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                if (sysbgm_mmusic_instance != nil)
+                    sysbgm_mmusic_instance.stop();
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "MMusic FADEOUT", "", nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                if (sysbgm_mmusic_instance != nil)
+                    sysbgm_mmusic_instance.fadeout(3.0);
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Custom BGM (Menu)", nil, nil, 
+            function (context, index, menuitem, item) {
+                var group = "menu";
+                var sysbgm_index = SoundUtil::SystemBGMGroupToIndex(group);
+                var opt = main::GAME_STATUS.user_profile.option;
+                item["value"].text = opt.sysbgm_use[sysbgm_index] ? "はい" : "いいえ";
+            },
+            function (context, index, menuitem, item, arg) {
+                var group = "menu";
+                var sysbgm_index = SoundUtil::SystemBGMGroupToIndex(group);
+                var opt = main::GAME_STATUS.user_profile.option;
+                opt.sysbgm_use[sysbgm_index] = opt.sysbgm_use[sysbgm_index] ? 0 : 1;
+                item["value"].text = opt.sysbgm_use[sysbgm_index] ? "はい" : "いいえ";
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "Custom BGM (Race)", nil, nil, 
+            function (context, index, menuitem, item) {
+                var group = "racing";
+                var sysbgm_index = SoundUtil::SystemBGMGroupToIndex(group);
+                var opt = main::GAME_STATUS.user_profile.option;
+                item["value"].text = opt.sysbgm_use[sysbgm_index] ? "はい" : "いいえ";
+            },
+            function (context, index, menuitem, item, arg) {
+                var group = "racing";
+                var sysbgm_index = SoundUtil::SystemBGMGroupToIndex(group);
+                var opt = main::GAME_STATUS.user_profile.option;
+                opt.sysbgm_use[sysbgm_index] = opt.sysbgm_use[sysbgm_index] ? 0 : 1;
+                item["value"].text = opt.sysbgm_use[sysbgm_index] ? "はい" : "いいえ";
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "MSystemBGM initialize", nil, nil, 
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                var result = main::pdiext::MSystemBGM::initialize();
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "MSystemBGM finalize", nil, nil,
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                main::pdiext::MSystemBGM::finalize();
+            }
+        ),
+
+        MenuItem(MenuItemTEXT, "SystemBGM stress test", nil, nil,
+            function (context, index, menuitem, item) {
+
+            },
+            function (context, index, menuitem, item, arg) {
+                for (var i = 0; i < 100; i++)
+                {
+                    SoundUtil::BGMPlayGroup(SoundUtil::SCENE_MENU, "menu");
+                    context.wait(pdistd::MRandom::GetValue(0.0, 2.0));
+                }
+            }
+        ),
+    ];
+
+    ////////////////////////////////////
+    // System Effect Miscellaneous SUB-MENU
+    ////////////////////////////////////
+    var global_se_misc_menu = [
+        MenuItem(MenuItemTEXT, "追加 SE をロード >>", nil, nil, nil, on_select_load_sgxd, nil, "/sound_gt/se"),
+        MenuItem(MenuItemTEXT, "追加 SE をアンロード", "", nil, nil, 
+            function(context, index, menuitem, item, menu) {
+                msoundeffect_instance = nil;
+            }
+        ),
+        MenuItem(MenuItemTEXT, "追加 SE プレイヤー >>", "", nil, nil, on_select_se_player, nil,
+            function() {
+                if (msoundeffect_instance == nil)
+                    return nil;
+
+                var list = msoundeffect_instance.getEffectCodeList();
+                list == nil; // Intended
+                return list;
+            }
+        ),
+        MenuItem(MenuItemTEXT, "ストリーム SE (sound_gt/se) >>", nil, nil, nil, on_select_stream_previewer, nil, "/sound_gt/se"),
+        MenuItem(MenuItemTEXT, "ストリーム SE (guide/gt6/moon) >>", nil, nil, nil, on_select_stream_previewer, nil, "/sound_gt/guide/gt6/moon"),
+    ];
+
+    // Holds engine static data until finalized
+    static msoundeffect_instance = nil;
+
+    ////////////////////////////////////
+    // TOP MENU Definition
+    ////////////////////////////////////
+    static sound_previewer_top_menu = [
+        gray,
+        MenuItem(MenuItemTEXT, "BGM VOL Default", "", nil, nil, on_set_bgm_as_default),
+        MenuItem(MenuItemTEXT, "BGM OFF", "", nil, nil, on_set_bgm_disable),
+        MenuItem(MenuItemTEXT, "Music Player >>", "", nil, nil, on_select_music_previewer),
+        MenuItem(MenuItemTEXT, "SE Player >>", "", nil, nil, on_select_se_player, nil, nil),
+        MenuItem(MenuItemTEXT, "Extra SE >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, global_se_misc_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "Race SE Volume Edit >>", "", nil, nil, on_select_race_se_volume_editor),
+        MenuItem(MenuItemTEXT, "User Options >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, user_sound_option_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "DRC >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, drc_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "EQ >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, equalizer_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "Reverb >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, global_reverb_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "Engine EFX >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, global_engine_effect_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "Tire EFX >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, global_tire_effect_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "Tire EFX (Tarmac) >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, global_tarmac_tire_effect_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "Load/Save Engine/Tire EFX >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, global_loadsave_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "Cockpit EFX >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, cockpitview_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "ETC >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, global_etc_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "Test Signal >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, global_testsignal_menu, index, 0);
+        }),
+        MenuItem(MenuItemTEXT, "System BGM >>", "", nil, nil, function(context, index, menuitem, item, menu) {
+            open_menu(context, menuitem.label, global_system_bgm_menu, index, 0);
+        }),
+
+        red,
+        MenuItem(MenuItemTEXT, "Sound Debug Mode", "サウンドのデバッグ用にビジュアライザを表示します", nil, on_update_sound_debug_mode, on_activate_sound_debug_mode),
+    ];
+
+    ////////////////////////////////////
+    // 
+    // Root methods
+    // 
+    ////////////////////////////////////
+
+    method onInitialize(context)
+    {
+        context.pushEvent(main::menu::MScriptEvent(context, self, "on_initialize"));
+        context.cursor = "normal";
+        context.cursor_visible = true;
+    }
+
+    method on_initialize(context)
+    {
+        if (!close_menu(context))
+        {
+            open_menu(context, "", sound_previewer_top_menu, 0, 0);
+        }
+    }
+
+    method onFinalize(context)
+    {
+        if (main::GAME_STATUS.defined("branch") && main::GAME_STATUS.branch.defined("show_meters") && main::GAME_STATUS.branch.show_meters != 0)
+            main::pdiext::SetDrawPerfMeter(true);
+    }
+
+    class StackUnit
+    {
+        attribute title = nil;
+        attribute menuitem_list = nil;
+        attribute prev_focus_index = nil;
+
+        method __init__(title, menuitem_list, prev_focus_index)
+        {
+            self.title = title;
+            
+            var items = [];
+            var current_col = gray;
+            if (menuitem_list != nil)
+            {
+                foreach (var item in menuitem_list)
+                {
+                    if (item.isInstanceOf(main::menu::MColorObject))
+                        current_col = item;
+                    else
+                    {
+                        if (item.base_color == nil)
+                            item.base_color = current_col;
+                        items.push(item);
+                    }
+                }
+
+                self.menuitem_list = items;
+            }
+            else
+            {
+                self.menuitem_list = nil;
+                self.prev_focus_index = prev_focus_index;
+            }
+        }
+    }
+
+    class Stack
+    {
+        attribute index = nil;
+        attribute stack_array = nil;
+
+        method __init__()
+        {
+            self.stack_array = [];
+            self.index = 0;
+        }
+
+        method isVacant() 
+        { 
+            return self.stack_array.size == 0; 
+        }
+
+        method push(unit)
+        {
+            self.stack_array.push(unit);
+            self.index++;
+        }
+
+        method pop() 
+        {
+            if (self.index >= 1)
+            {
+                self.index--;
+                return self.stack_array.pop();
+            }
+            else
+                return nil;
+        }
+
+        method getCurrent()
+        {
+            if (self.stack_array.size == 0)
+                return nil;
+
+            var idx = self.stack_array.size - 1;
+            return self.stack_array[idx];
+        }
+    }
+
+    static sStack = Stack();
+
+    function start_menu(context, stack_unit, focus_index)
+    {
+        var list = stack_unit.menuitem_list;
+
+        var listbox = Menu.ListBox;
+
+        listbox.setItemCount(0);
+
+        listbox.setItemTemplate(context, hidden::Item);
+        listbox.setItemCount(list.size);
+        if (focus_index != nil)
+            listbox.focus_index = focus_index;
+    }
+
+    function open_menu(context, title, list, prev_focus_index, focus_index)
+    {
+        var stack_unit = StackUnit(title, list, prev_focus_index);
+        sStack.push(stack_unit);
+        start_menu(context, stack_unit, focus_index);
+    }
+
+    function close_menu(context)
+    {
+        var prev_stack_unit = sStack.pop();
+        if (prev_stack_unit == nil) 
+        {
+            return false;
+        }
+        else 
+        {
+            var stack_unit = sStack.getCurrent();
+            if (stack_unit == nil)
+                return false;
+
+            start_menu(context, stack_unit, prev_stack_unit.prev_focus_index);
+            return true;
+        }
+    }
+
+    function push_menu_stack(context, prev_focus_index)
+    {
+        sStack.push(StackUnit("dummy", nil, prev_focus_index));
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+
+        var res = close_menu(context);
+        if (!res)
+        {
+            close(context);
+        }
+        return STATE_YIELD;
+    }
+
+    function close_callback_caller(context, close_method, do_unload)
+    {
+        if (close_method[1].isInstanceOf(FunctionObject))
+        {
+            close_method[1](context, close_method[0], do_unload);
+        }
+        else
+        {
+            (*close_method[0]{close_method[1]})(context, do_unload);
+        }
+    }
+
+    method close(context)
+    {
+        if (self.modal_page != nil)
+        {
+            self.modal_page.close();
+            self.modal_page = nil;
+        }
+
+        if (sCloseMethod != nil)
+        {
+            context.pushEvent(menu::MFunctionEvent(close_callback_caller, context, sCloseMethod, sUnloadThisProject));
+        }
+    }
+}
+
+module SoundRoot::Menu::ListBox
+{
+    method onVisibleNotify(context, indexes)
+    {
+        if (sStack.isVacant())
+            return;
+
+        var menu_items = sStack.getCurrent().menuitem_list;
+        if (menu_items == nil)
+            return;
+
+        foreach (var i in indexes)
+        {
+            if (i >= menu_items.size)
+                continue;
+            if (self.getItemVisible(i))
+            {
+                var item = self.getItemWidget(i);
+                if (item == nil)
+                    item = self.getItemWidget(i, context);
+
+                if (item != nil)
+                {
+                    var menuitem = menu_items[i];
+                    
+                    var init_func = menuitem.on_init_func;
+                    if (init_func != nil)
+                        init_func(context, menuitem, item);
+                    
+                    item.value.visible = menuitem.type == MenuItemTEXT;
+                    item.slider.visible = menuitem.type == MenuItemSLIDER;
+
+                    item.label.text = menu_items[i].label;
+                    var func = menuitem.on_update_func;
+                    if (func != nil)
+                        func(context, i, menuitem, item);
+
+                    item.base.setColor(menuitem.base_color);
+                }
+            }
+        }
+    }        
+
+    method onFocusNotify(context, new_index, old_index)
+    {
+        if (sStack.isVacant())
+            return;
+        
+        var menu_items = sStack.getCurrent().menuitem_list;
+        var new_menuitem = menu_items[new_index];
+
+        switch (new_menuitem.type)
+        {
+            case MenuItemTEXT:
+                SoundRoot.setFocus(Menu.ListBox);
+                break;
+
+            case MenuItemSLIDER:
+                var item = self.getItemWidget(new_index, context);
+                SoundRoot.setFocus(item.slider);
+                break;
+        }
+    }
+
+    method onActivate(context, event)
+    {
+        if (sStack.isVacant())
+            return 0;
+        
+        var menu_items = sStack.getCurrent().menuitem_list;
+        var index = self.focus_index;
+        var menuitem = menu_items[index];
+
+        var func = menuitem.on_activate_func;
+        if (func != nil)
+        {
+            var item = Menu.ListBox.getItemWidget(index, context);
+            var arg = menuitem.arg;
+            func(context, index, menuitem, item, arg);
+        }
+        return 1;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (sStack.isVacant())
+            return 0;
+
+        var menu_items = sStack.getCurrent().menuitem_list;
+        var list = menu_items;
+
+        var index = self.focus_index;
+        var menuitem = index >= 0 && index < menu_items.size ? menu_items[index] : nil;
+        if (menuitem != nil)
+        {
+            var func = menuitem.on_keypress_func;
+            if (func != nil)
+            {
+                var item = Menu.ListBox.getItemWidget(index, context);
+                var arg = menuitem.arg;
+                var result = func(context, event, index, menuitem, item, arg);
+                if (result != 0)
+                {
+                    return result;
+                }
+            }
+        }
+
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_START:
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_SELECT:
+                return STATE_YIELD;
+            
+            case CELL_PAD_CTRL_L1:
+                return STATE_YIELD;
+            
+            case CELL_PAD_CTRL_L3_UP:
+                return 0;
+            
+            case CELL_PAD_CTRL_L3_DOWN:
+                return 0;
+
+            case CELL_PAD_CTRL_L3_LEFT:
+                self.focus_index -= 10;
+                return STATE_YIELD;
+            
+            case CELL_PAD_CTRL_L3_RIGHT:
+                self.focus_index += 10;
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_L2:
+                self.focus_index = 0;
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_R2:
+                self.focus_index = list.size;
+                return 2;
+        }
+        return 0;
+    }
+}

@@ -1,0 +1,510 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module GarageRoot
+{
+    static sGarageId;
+    static sCP;
+
+    method open(context, focused_menu)
+    {
+        if (focused_menu != nil)
+        {
+            var w = Garage::Menus::vbox[focused_menu];
+            if (w != nil)
+                GarageRoot.setFocus(w);
+        }
+
+        SequenceUtil::enableStartMenuRoot();
+        SequenceUtil::startPageSimple(context, self);
+    }
+
+    method close(context)
+    {
+        GTModeRoot.open(context);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.close(context);
+        return 2;
+    }
+
+    method onInitialize(context)
+    {
+        ORG.setEnableStereoRendering(true);
+    }
+
+    method onFinalize(context)
+    {
+        ORG.setEnableStereoRendering(false);
+        SceneFace.clearCar();
+
+        sCP = nil;
+        sGarageId = nil;
+    }
+
+    module Garage
+    {
+        method setupDisplay(context, garage_id)
+        {
+            if (garage_id == nil)
+                return;
+
+            var mgarage_car = GAME_STATUS.user_profile.garage.referGarageCar(garage_id);
+            var cp = GAME_STATUS.user_profile.garage.getCar(garage_id);
+            var car_code = cp.getCarCode();
+            var car_label = cp.getCarLabel();
+
+            cp.beginInfo();
+            CarName.text = SpecDatabaseUtil::getAlphabetCarName(context, car_code);
+            CarColor::Chip::ColorChipFace.setGarageCar(mgarage_car);
+            CarColor::Name.text = SpecDatabaseUtil::getCarColorName(cp);
+           
+            var country_str = gtengine::MSpecDB::getCountryString(gtengine::MSpecDB::getCarCountry(car_code));
+            Class_and_PP::Country::NationalFlag.image_path = "piece/gt6/flag_menu/%s.img".format(country_str);
+            Class_and_PP::Country::Name.text = manager.translate("Country", country_str);
+
+            var category = gtengine::MSpecDB::getCarCategory(car_code);
+            var category_label;
+
+            switch (category)
+            {
+                case gtengine::CarCategory::NORMAL:
+                    category_label = "car_category_normal";
+                    break;
+    
+                case gtengine::CarCategory::RACING:
+                    category_label = "car_category_racing";
+                    break;
+    
+                case gtengine::CarCategory::TUNING:
+                    category_label = "car_category_tuning";
+                    break;
+    
+                case gtengine::CarCategory::CONCEPT:
+                    category_label = "car_category_concept";
+                    break;
+            }
+
+            Class_and_PP::Class.text = manager.translate("SpecFormat", category_label);
+            Manufacturer.text = manager.translate("TunerName", gtengine::MSpecDB::getTunerLabel(car_code));
+            CarStatus::Distance::Value.text = GTModeProject.GetDistanceText(context, cp.odometer * 0.001);
+            CarStatus::Changes::Value.text = mgarage_car.ride_count;
+            CarStatus::Wins::Value.text = cp.win_count;
+            CarStatus::DateAcquired::Value.text = GTModeProject.GetDateText(context, cp.obtain_date);
+
+            var catalog = gtengine::MSpecDB::getCatalogSpec(car_code);
+            var displacement = catalog.displacement;
+            if (!displacement.beginWith("---") && displacement.find("x") == -1)
+                displacement = pdistd::TextConv("<#%{displacement}>");
+    
+            CarPerformance::Displacement::Value.text = displacement;
+    
+            var drivetrain_label = manager.translate(GarageRoot, "Label_Drivetrain");
+            var aspiration_label = manager.translate("Regulation", "aspiration");
+            var drivetrain_txt = manager.translate("DriveTrainName", catalog.DriveTypeName);
+            var aspiration_txt = LocalizeUtil::GetAspirationText(mgarage_car.aspiration_type);
+    
+            CarPerformance::Drivetrain::Label.text = "%{drivetrain_label}/%{aspiration_label}";
+            CarPerformance::Drivetrain::Value.text = "%{drivetrain_txt}/%{aspiration_txt}";
+            CarPerformance::Length::Value.text = catalog.length;
+            CarPerformance::Width::Value.text = catalog.width;
+            CarPerformance::Height::Value.text = catalog.height;
+
+            var logo = MENUDB.executeQuery1R1C("SELECT Logo FROM t_award_car WHERE CarLabel=?", [car_label]);
+            if (logo != nil)
+                AwardLogo.image_path = "piece/award_logo/%s.img".format(logo);
+            else
+                AwardLogo.image_path = "";
+    
+            cp.endInfo();
+            self.setupDisplayCarActualSpec(context, cp);
+        }
+
+        method setupDisplayCarActualSpec(context, cp)
+        {
+            cp.beginInfo();
+            var pp = cp.getPP1000();
+            var unit_pp = manager.translate("Unit", "PERFORMANCE_POINT");
+
+            Class_and_PP::PP.text = "%s %d".format(unit_pp, pp);
+            CarPerformance::MaxPower::Value.text = cp.getPowerString(true);
+            if (cp.getCarLabel() == "chaparral_vision_gt_14")
+            {
+                CarPerformance::MaxTorque::Value.text = "--- %s/--- %s".format(
+                    pdiext::MUnit::GetUnitOfTorque(), pdiext::MUnit::GetUnitOfRpm())
+            }
+            else
+            {
+                CarPerformance::MaxTorque::Value.text = cp.getTorqueString(true);
+            }
+
+            CarPerformance::Weight::Value.text = cp.getWeightString(true);
+
+            cp.endInfo();
+        }
+
+        method checkEnableGalleryView(context, cp)
+        {
+            var is_premium = gtengine::MSpecDB::checkFlag(cp.getCarCode(), gtengine::GenericFlag::USE_PREMIUM_MODEL);
+            Menus::vbox::GalleryView.insensitive = !is_premium;
+        }
+
+        method checkEnableSticker(context, cp)
+        {
+            var car_code = cp.getCarCode();
+            var has_default_decken = gtengine::MSpecDB::checkFlag(car_code, gtengine::GenericFlag::CAN_CHANGE_DECKEN);
+            var can_custom_decken = SPECDB.executeQuery1R1C("SELECT CanCustomDecken FROM GENERIC_CAR WHERE ID=?", [car_code]);
+            var can_change_decken = has_default_decken || can_custom_decken;
+            Menus::vbox::Sticker.insensitive = !can_change_decken;
+        }
+
+        method onInitialize(context)
+        {
+            CursorProject::StartMenuRoot::StartMenu.appear();
+
+            self.FadeOut.forward();
+            self.FadeOut.reset();
+
+            var riding_cp = GAME_STATUS.user_profile.garage.getRidingCar();
+            var riding_garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+
+            sCP = riding_cp;
+            sGarageId = riding_garage_id;
+
+            self.setupDisplay(context, riding_garage_id);
+            SceneFace.loadCar(context, riding_cp);
+
+            checkEnableGalleryView(context, riding_cp);
+            checkEnableSticker(context, riding_cp);
+
+            GAME_STATUS.user_profile.context.garage_new_mark = false;
+
+            GTModeProject.PlayMenuBGM(context, GarageRoot);    
+        }
+
+        method onKeyPress(context, event)
+        {
+            var preopen_garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+
+            if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+            {
+                var riding_cp = GAME_STATUS.user_profile.garage.getRidingCar();
+                var riding_garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+
+                if (preopen_garage_id != riding_garage_id)
+                {
+                    sCP = riding_cp;
+                    sGarageId = riding_garage_id;
+
+                    self.checkEnableGalleryView(context, riding_cp);
+                    self.checkEnableSticker(context, riding_cp);
+                    self.setupDisplay(context, riding_garage_id);
+                }
+                else
+                    self.setupDisplayCarActualSpec(context, riding_cp);
+
+                SceneFace.loadCar(context, riding_cp);
+                return STATE_YIELD;
+            }
+
+            return STATE_EXIT;
+        }
+
+        module Menus::vbox
+        {
+            module CarSelect
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+
+                    var project = GTModeProject.LoadProject("garage", "GarageProject");
+
+                    var car_changed = GarageProject::CarSelectPopup.open(context);
+                    if (car_changed)
+                    {
+                        var riding_cp = GAME_STATUS.user_profile.garage.getRidingCar();
+                        var riding_garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+
+                        sCP = riding_cp;
+                        sGarageId = riding_garage_id;
+
+                        self.setupDisplay(context, riding_garage_id);
+                        SceneFace.loadCar(context, riding_cp); 
+                        Garage.checkEnableGalleryView(context, riding_cp);
+                        Garage.checkEnableSticker(context, riding_cp);   
+                    }
+
+                    CursorProject::StartMenuRoot::StartMenu.reflectCurrentStatus(context);
+                    GTModeProject.UnloadProject(project);
+                    return STATE_YIELD;
+                }
+            }
+
+            module Tuning
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+
+                    var riding_cp = GAME_STATUS.user_profile.garage.getRidingCar();
+                    SettingProject::SettingRoot.open(context, riding_cp);
+
+                    CursorProject::StartMenuRoot::StartMenu.reflectCurrentStatus(context);
+
+                    self.setupDisplayCarActualSpec(context, riding_cp);
+                    SceneFace.loadCar(context, riding_cp);
+                    return STATE_YIELD;
+                }
+            }
+
+            module FreeRun
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+                    FreeRunRoot.open(context);
+                    return STATE_YIELD;
+                }
+            }
+
+            module AboutCar
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+                    var rtext = main::pdistd::MRTextDB();
+                    rtext.load("/description/gt6/%s.rt2".format(pdistd::MLocale::getLanguage()));
+                    var car_label = sCP.getCarLabel();
+                    var car_description = rtext.get("CarDescription", car_label);
+                    rtext.unload();
+
+                    DialogUtil::openTextReaderDialog(context,
+                        gtengine::MSpecDB::getCarShortName(sCP.getCarCode()), [pdistd::TextConv(car_description)]);
+
+                    return STATE_YIELD;
+                }
+            }
+
+            module GalleryView
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+
+                    CursorProject::StartMenuRoot::StartMenu.hide();
+
+                    GalleryViewRoot.open(context, GalleryViewRoot::OPEN_MODE::GARAGE, sCP);
+                    CursorProject::StartMenuRoot::StartMenu.appear();
+
+                    return STATE_YIELD;
+                }
+            }
+
+            module RacingGear
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+                    Menus.insensitive = true;
+
+                    CursorProject::StartMenuRoot::StartMenu.hide();
+
+                    var dp = GAME_STATUS.user_profile.residence.getPlayer(0);
+                    RacingGear2Root.open(context, dp);
+
+                    SceneFace.reloadDefaultDriver(dp);
+                    CursorProject::StartMenuRoot::StartMenu.appear();
+
+                    Menus.insensitive = false;
+                    return STATE_YIELD;
+                }
+            }
+
+            module Sticker
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+    
+                    self.FadeOut.forward();
+                    self.FadeOut.start();
+    
+                    CursorProject::StartMenuRoot::StartMenu.hide();
+    
+                    SceneCover2::Fade.forward();
+                    SceneCover2::Fade.start();
+                    context.wait(SceneCover2::Fade.total_time);
+    
+                    SceneFace.setVisibleDriver(false);
+    
+                    SceneCover2::Fade.backward();
+                    SceneCover2::Fade.start();
+                    context.wait(SceneCover2::Fade.total_time);
+    
+                    StickerRoot.open(context, sCP, SceneFace);
+                    GAME_STATUS.user_profile.garage.updateCar(sCP);
+    
+                    SceneCover2::Fade.forward();
+                    SceneCover2::Fade.start();
+                    context.wait(SceneCover2::Fade.total_time);
+                    SceneFace.setVisibleDriver(true);
+                    SceneCover2::Fade.backward();
+                    SceneCover2::Fade.start();
+    
+                    context.wait(SceneCover2::Fade.total_time);
+                    CursorProject::StartMenuRoot::StartMenu.appear();
+    
+                    self.FadeOut.backward();
+                    self.FadeOut.start();
+
+                    return STATE_YIELD;
+                }
+            }
+        }
+    }
+
+    module SceneFace
+    {
+        attribute current_cp_;
+        attribute thread_;
+        attribute pre_load_ = false;
+        attribute command_queue_ = [];
+
+        method onInitialize(context)
+        {
+            SceneCover::Fade.forward();
+            SceneCover::Fade.reset();
+            SceneCover2::Fade.forward();
+            SceneCover2::Fade.reset();
+        }
+
+        method loadCar(context, cp)
+        {
+            self.pre_load_ = true;
+            if (self.thread_ != nil)
+            {
+                self.thread_.terminate();
+                self.thread_ = nil;
+            }
+
+            self.thread_ = Thread((context) => 
+            {
+                SceneCover::Fade.forward();
+                SceneCover::Fade.start();
+                
+                while (true)
+                {
+                    if (SceneCover::Fade.ramain_time == 0)
+                        break;
+
+                    Thread::Sleep(0.1);
+                }
+
+                if (self.current_cp_ != nil)
+                {
+                    self.execCommandImmidiate("clearEntity car0");
+                    self.current_cp_ = nil;
+                }
+
+                self.current_cp_ = cp;
+                var dp = GAME_STATUS.user_profile.residence.getPlayer(0);
+                self.setDefaultDriver(dp);
+
+                SceneFaceUtil::loadScene(SceneFace, "garage", cp);
+                self.pre_load_ = false;
+                self.execCommandQueue();
+
+                while (true)
+                {
+                    if (!self.isUnderSetup())
+                        break;
+                        
+                    Thread::Sleep(0.1);
+                }
+
+                SceneCover::Fade.backward();
+                SceneCover::Fade.start();
+            }, context);
+
+            self.thread_.start();
+        }
+
+        method setCarVariation(car_color)
+        {
+            self.execCommand("setCarVariation %{car_color} car0");
+        }
+
+        method clearCar()
+        {
+            if (self.current_cp_ != nil)
+            {
+                self.execCommandImmidiate("clearEntity car0");
+                self.current_cp_ = nil;
+            }
+
+            if (self.thread_ != nil)
+            {
+                self.thread_.terminate();
+                self.thread_ = nil;
+            }
+
+            self.pre_load_ = false;
+            self.command_queue_ = [];
+        }
+
+        method setDefaultDriver(dp)
+        {
+            self.execCommand("setDefaultDriver %s %s %s %s 1".format(
+                dp.head_code, dp.body_code, dp.head_color_code, dp.body_color_code
+            ));
+        }
+
+        method setVisibleDriver(visible)
+        {
+            if (visible)
+            {
+                self.command_queue_.push("setVisible true driver1");
+                self.command_queue_.push("resetSchedule");
+            }
+            else
+                self.command_queue_.push("setVisible false driver1");
+
+            self.execCommandQueue();
+        }
+
+        method execCommandQueue()
+        {
+            if (!self.pre_load_)
+            {
+                foreach (var command in self.command_queue_)
+                    self.execCommand(command);
+            }
+
+            self.command_queue_ = [];
+        }
+
+        method reloadDefaultDriver(dp)
+        {
+            setDefaultDriver(dp);
+            self.execCommand("reloadDefaultDriverModel    1      -1       driver1    true   false     .      driver2    .          %FACEHANS");
+        }
+
+    }
+}

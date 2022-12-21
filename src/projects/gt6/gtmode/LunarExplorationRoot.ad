@@ -1,0 +1,346 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module LunarExplorationRoot
+{
+    hidden.visible = false;
+
+    attribute gp;
+
+    method open(context)
+    {
+        SequenceUtil::enableStartMenuRoot(false);
+        SequenceUtil::startPageSimple(context, self);
+    }
+
+    method close(context)
+    {
+        GTModeRoot.open(context);
+    }
+
+    method initializeGameRecord(folder_info)
+    {
+        var event_id_list = folder_info["event_id_list"];
+        var event_type = folder_info["event_type"];
+        var folder_id = folder_info["id"];
+        var category = 0;
+        var is_online = false;
+
+        if (folder_info["championship"])
+        {
+            var championship_event_id = folder_id;
+            event_id_list.push(championship_event_id);
+        }
+
+        GAME_STATUS.user_profile.record.event_record.initializeRecord(event_id_list, event_type, folder_id, category, is_online);        
+    }
+
+    method checkTrophyUnlock(folder_id)
+    {
+        if (GAME_STATUS.user_profile.record.event_record.isFolderCleared(folder_id, nil))
+            PDINetwork.unlockTrophyAsync(gtengine::TrophyType::SPECIAL_TOUR_MOON);
+    }
+
+    method getFolderInfo(context, event_name)
+    {
+        var xml = "/game_parameter/gt6/event/%s.xml".format(event_name);
+        var folder_info_list = EventRace2.decodeOfflineEventList(xml);
+        
+        if (folder_info_list.size == 0)
+            return nil;
+
+        return folder_info_list[0];
+    }
+
+    method getGP(context, folder_id)
+    {
+        var xml = "/game_parameter/gt6/event/r%03d.xml".format(folder_id);
+        return GameParameterUtil::createFromFile(xml);
+    }
+
+    method playMovie(context, event)
+    {
+        Map::FadeActor.forward();
+        Map::FadeActor.reset();
+
+        var course = SPECDB.query1("SELECT Name, Logo, Label FROM COURSE WHERE ID=?", [event.track.course_code]);
+        var movie_file = "PHOTO_%{course.Name}".upcase();
+
+        var movie = MENUDB.query1("SELECT * FROM t_movie WHERE Name = ?", [movie_file]);
+        if (movie == nil)
+            return;
+
+        var key = Tv2.decodeContentsKey(movie.Key);
+        Movie::MovieFace.unload();
+        Movie::MovieFace.setVideoSize(movie.Width, movie.Height);
+        Movie::MovieFace.audio_level = SoundUtil::GetMovieVolume();
+        Movie::MovieFace.audio_track = -1;
+        Movie::MovieFace.setKey(key);
+
+        var file = "/movies/%{movie.FileName}";
+        context.addTimeOut("play_movie", function() 
+        {
+            Movie::MovieFace.load(context, file);
+            Movie::MovieFace.setFrameHook(0, "onMovieStart");
+        });
+
+        context.setTimeOut("play_movie", 1.5);
+    }
+
+    method setInfo(context, event)
+    {
+        Info::Name::Label.text = RaceEventUtil::getOneLineTitleText(event);
+
+        var course_code = event.track.course_code;
+        var country_flag = main::SPECDB.executeQuery1R1C("SELECT CountryFlag FROM COURSE WHERE ID=?", [course_code]);
+
+        Info::Country::flag.image_path = "piece/flag_ranking/%s.img".format(country_flag.downcase());
+        Info::Country::label.text= manager.translate("Country", country_flag.upcase());
+
+        var scroll_clip = Info::Description::ScrolledWindow::clip;
+        scroll_clip.space::Text.text = RaceEventUtil::getDescriptionText(event);
+        scroll_clip.manual_target_y = 0.0;
+        scroll_clip.space.y = 0.0;
+    }
+
+    method onLoad(context)
+    {
+        Info::Country::label.text = "";
+        Info::Name::Label.text = "";
+        Info::Description::ScrolledWindow::clip::space::Text.text = "";
+    }
+
+    method onInitialize(context)
+    {
+        var folder_info = self.getFolderInfo(context, "moon");
+        if (folder_info == nil)
+        {
+            self.close(context);
+            return false;
+        }
+
+        var gp = self.getGP(context, folder_info["id"]);
+        if (gp == nil)
+        {
+            self.close(context);
+            return false;
+        }
+
+        self.gp = gp;
+
+        initializeGameRecord(folder_info);
+        checkTrophyUnlock(folder_info["id"]);
+        KeyValueUtil::set("new_flag", "moon", false);
+
+        hidden::Item::ImageFace.image_path = "";
+
+        ListBox.setItemTemplate(context, hidden::Item);
+        ListBox.setItemCount(gp.events.size);
+
+        var focus_index = 0;
+        var last_index = GTModeProject.history[$"LunarExplorationRoot::LastFocus"];
+        GTModeProject.history[$"LunarExplorationRoot::LastFocus"] = nil;
+
+        for (var i = 0; i < ListBox.getItemCount(); i++)
+        {
+            var event = gp.events[i];
+            var w = ListBox.getItemWidget(i, context);
+            w.init(context, event);
+            if (last_index == i)
+                focus_index = i;
+        }
+
+        ListBox.focus_index = focus_index;
+
+        var adj = main::menu::MAdjustment();
+        Info::Description::Scrollbar::VScrollbar.adjustment = adj;
+
+        var scroll_clip = Info::Description::ScrolledWindow::clip;
+        scroll_clip.scroll_mode = SCROLL_MODE_MANUAL;
+        scroll_clip.v_adjustment = adj;
+        scroll_clip.space.y = 0.0;
+        scroll_clip.manual_target_y = 0.0;
+
+        GTModeProject.PlayMenuBGM(context, LunarExplorationRoot);
+        LunarExplorationRoot.setFocus(ListBox);
+    }
+
+    method onFinalize(context)
+    {
+        context.removeTimeOut("play_movie");
+    }
+
+    method onActivate(context)
+    {
+        sound.play("next");
+        
+        var event_index = ListBox.focus_index;
+        LunarExplorationRoot.gp.event_index = event_index;
+        GTModeProject.history[$"LastPageName"] = LunarExplorationRoot.name;
+        GTModeProject.history[$"LunarExplorationRoot::LastFocus"] = event_index;
+
+        var cp = gtengine::MCarParameter("lunar_roving_vehicle_71");
+        var dp = GAME_STATUS.user_profile.residence.getArcadePlayer(0);
+        GameParameterUtil::execute(context, LunarExplorationRoot.gp, [cp], [dp]);
+
+        return STATE_YIELD;
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        self.close(context);
+
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        var scroll_clip = Info::Description::ScrolledWindow::clip;
+        var line_height = scroll_clip.space::Text.line_height;
+
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_L3_UP:
+                scroll_clip.manualTargetIncY(line_height);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_L3_DOWN:
+                scroll_clip.manualTargetIncY(-line_height);
+                return STATE_YIELD;
+        }
+
+        if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+            return STATE_YIELD;
+
+        return STATE_EXIT;
+    }
+
+    module Movie::MovieFace
+    {
+        method onMovieStart(context)
+        {
+            LunarExplorationRoot::Map::FadeActor.restart();
+        }
+    }
+
+    module ListBox
+    {
+        method onFocusNotify(context, new_index, old_index)
+        {
+            if (new_index != nil)
+            {
+                var w = self.getItemWidget(new_index, context);
+                if (w != nil && w.defined("on_focus_enter"))
+                    w["on_focus_enter"](context);
+
+                var event = LunarExplorationRoot.gp.events[new_index];
+                LunarExplorationRoot.setInfo(context, event);
+                LunarExplorationRoot.playMovie(context, event);
+            }
+            
+            if (old_index != nil)
+            {
+                var w = self.getItemWidget(old_index, context);
+                if (w != nil && w.defined("on_focus_leave"))
+                    w["on_focus_leave"](context);
+            }
+
+            return 1;
+        }
+
+        method onKeyPress(context, key_event)
+        {
+            switch (key_event.keysym)
+            {
+                case CELL_PAD_CTRL_SELECT:
+                    if (GTModeProject::IsDevelop(context))
+                    {
+                        var w = self.getItemWidget(self.focus_index);
+                        if (w != nil)
+                        {
+                            var event = LunarExplorationRoot.gp.events[self.focus_index];
+                            var eventId = event.event_id;
+                            var result = GAME_STATUS.user_profile.record.event_record.getEventResult(eventId);
+                            if (--result < 0)
+                                result = 2;
+
+                            GAME_STATUS.user_profile.record.event_record.updateResultOnly(eventId, result);
+                            w.init(context, event);
+                            return STATE_YIELD;
+                        }
+                    }
+
+                default: 
+                    break;
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module hidden::Item
+    {
+        attribute course_label = "";
+
+        method init(context, event)
+        {
+            var course_code = event.track.course_code;
+            self.ImageFace.image_path = "";
+
+            var course = SPECDB.query1("SELECT Name, Logo, Label FROM COURSE WHERE ID=?", [course_code]);
+            self.Name.text = manager.translate("CourseName", course.Name);
+            self.Logo.image_path = "piece/gt6/course_logo_M/%s.img".format(course.Logo);
+
+            var image_face = self.ImageFace;
+
+            var end_load_img = method (context)
+            {
+                image_face.FadeActor.restart();
+                image_face.on_delay_load_complete = nil;
+            };
+
+            image_face.on_delay_load_complete = *self{end_load_img};
+            image_face.image_path = "piece/gt6/grandtour/%s.img".format(course.Label);
+
+            var result = RaceEventUtil::getResult(event.event_id);
+            if (result >= 0 && result < 3)
+            {
+                var rank = ["gold", "silver", "bronze"][result];
+                self.Trophy.image_path = "/image/gt6/event/trophy_%{rank}.dds";
+            }
+            else
+            {
+                self.Trophy.image_path = "";
+            }
+
+            self.course_label = course.Label;
+        }
+
+        method on_focus_enter(context)
+        {
+            var w = LunarExplorationRoot::Map[self.course_label];
+            w.active = true;
+            w.Text::Mission::EffectWipe::ScalarInterpolator.restart();
+            w.Text::StartFinish::Start::EffectWipe::ScalarInterpolator.restart();
+            w.Text::StartFinish::Finish::EffectWipe::ScalarInterpolator.restart();
+        }
+
+        method on_focus_leave(context)
+        {
+            var w = LunarExplorationRoot::Map[self.course_label];
+            w.active = false;
+        }
+    }
+}

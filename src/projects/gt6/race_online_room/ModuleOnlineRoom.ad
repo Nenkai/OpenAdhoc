@@ -1,0 +1,1128 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+if (GAME_STATUS.user_profile.option.lounge_demo)
+    UIKitProject::MessengerRoot.visible = false;
+
+static sEventSetting;
+static sGarage;
+
+function onLoad(update_context)
+{
+    if (!__projects__.defined("EventSettingProject"))
+    {
+        sEventSetting = manager.loadProject("/%{PROJECT_ROOT_DIR}/event_setting/event_setting");
+    }
+
+    if (!__projects__.defined("GarageProject"))
+    {
+        sGarage = manager.loadProject("/%{PROJECT_ROOT_DIR}/garage/garage");
+    }
+
+    var render_context = update_context.getRenderContext();
+    RaceProject::RaceRoot::Info.appendChild(RaceOnlineRoomProject::PaddockRoot::CountDown.doCopy());
+    RaceOperator.checkIn(false);
+
+    sInRaceRoot = false;
+    var stopWatch = StopWatchUtil::Cls.new();
+
+    var success = true;
+
+    while (!RaceOperator.hasEntryDone())
+    {
+        Thread::Sleep(1);
+        if (stopWatch.elapsed() > 40)
+        {
+            success = false;
+            break;
+        }
+
+        if (!OnlineSession.isJoined())
+        {
+            success = false;
+            break;
+        }
+    }
+
+    if (!success)
+    {
+        var message = manager.translate("OnlineMessage", Lobby.isJoinedRoom() ? "DISCONNECTED" : "DISCONNECTED_FROM_LOBBY_SERVER");
+        if (AVChat.isJoined())
+        {
+            AVChat.stopStreaming();
+            AVChat.leave();
+        }
+
+        if (Lobby.isJoinedRoom())
+            Lobby.leaveRoom();
+
+        // Jump if true? - Added ! for now
+        if (!GAME_STATUS.user_profile.option.bot_on)
+            pdistd::MSystemDialog::open("EN", message);
+
+        SequenceUtil::startSequence(render_context, GameSequence::MENU);
+        return;
+    }
+
+    ORG.setApplicationEndSessionSecond(0);
+    gSequenceCondition.enable_restart = false;
+    gSequenceCondition.disable_end_session = true;
+
+    OnlineSession.setNetworkEventCallback(render_context, RaceProject);
+    ORG.setEventCallbackBackupWidget(RaceOnlineRoomProject::PaddockRoot);
+    ORG.setWait0EntryEvent(false);
+
+    RaceOnlineRoomProject::Reward::initialize();
+
+    if (!DriftModule::isDriftAttack() || DriftModule::isFirstRacer)
+    {
+        CursorProject::LoadingRaceRoot::sync();
+        RaceOnlineRoomProject::PaddockRoot.enter(render_context);
+    }
+
+    ORG.setDisableSelectTarget(true);
+    ORG.setProvidePointList(RaceOnlineRoomProject::PaddockRoot.sProvidePointList);
+    render_context.addTimeOut("OpenRoomRequest", openRoom);
+    render_context.addTimeOut("CheckRegulationRequest", checkRegulationRequestEntry, render_context);
+    render_context.addTimeOut("UpdateRoomInformationRequest", updateRoomInformation);
+
+    if (!OnlineUtility.isLanMode())
+    {
+        sGrimKeepAliveThread = Thread(grimKeepAliveEntry, render_context);
+        sGrimKeepAliveThread.start();
+    }
+
+    var rc = OnlineSession.getRoomConfig();
+    if (rc.isGeneratedCourse())
+    {
+        var courseInfo = CourseList::getCourse(rc.scenery_course_code);
+        if (courseInfo.generated_course_id > 0)
+            __projects__::EventSettingProject::setTargetCourseInfo(courseInfo);
+    }
+}
+
+function onUnload(update_context)
+{
+    if (sGrimKeepAliveThread != nil)
+    {
+        sGrimKeepAliveThread.terminate();
+        sGrimKeepAliveThread = nil;
+    }
+
+    if (sThread != nil)
+    {
+        sThread.terminate();
+        sThread = nil;
+    }
+
+    var render_context = update_context.getRenderContext();
+    if (render_context != nil)
+    {
+        var context = render_context;
+        context.removeTimeOut("OpenRoomRequest");
+        context.removeTimeOut("CheckRegulationRequest");
+        context.removeTimeOut("UpdateRoomInformationRequest");
+
+        context.flushEvent((e) => 
+        {
+            if (e.isInstanceOf(menu::MScriptEvent))
+                return true;
+            else
+                return false;
+        });
+
+        yield;
+
+        MiniNoticeUtil::hide(context);
+    }
+
+    Community.clearCallback();
+    Grim2.clearCallback();
+    RaceOperator.checkOut();
+    ORG.enableUpdateManagement(false);
+    ORG.setRaceSubMode(nil);
+    
+    Thread::Sleep(0.2);
+
+    while (ORG.inCourse())
+    {
+        ORG.exitCourse();
+        if (ORG.inCourse())
+        {
+            pdiext::ProcessUpdateIteration(1000 * 100);
+        }
+    }
+
+    destroyRaceSync();
+    OnlineSession.clearNetworkEventCallback();
+    ORG.setEventCallbackBackupWidget();
+
+    if (OnlineUtility.isLanMode())
+    {
+        Lobby.leaveRoom();
+        OnlineUtility.finalizeLobby();
+    }
+
+    OnlineUtility.endSession();
+    OnlineUtility.finalizeVoiceChat();
+    Lobby.leaveRoom();
+    OnlineUtility.finalizeLobby();
+
+    clearResource();
+    RaceOperator.clear();
+    ORG.force30fps_mode = false;
+    ORG.setProvidePointList();
+
+    RaceOnlineRoomProject::updateGarageCar();
+    if (sEventSetting != nil)
+    {
+        manager.unloadProject(sEventSetting);
+        sEventSetting = nil;
+    }
+
+    if (sGarage != nil)
+    {
+        manager.unloadProject(sGarage);
+        sGarage = nil;
+    }
+
+    render_context.filterEvent(() => true);
+    OnlineUtil::releaseTrackEditData();
+}
+
+function onPrepareRaceRequest(context)
+{
+    var root = context.getCurrentPage();
+    if (!RaceMenuUtil::activated())
+        return STATE_YIELD;
+
+    ORG.pauseHandleAvailable = false;
+
+    RaceOnlineRoomProject::openDoYouStartRaceDialog(context);
+    RaceMenuUtil::closeAction(context);
+
+    ORG.pauseRace = false;
+
+    OnboardMeterRoot.appearPanel();
+    root.setFocus(nil);
+
+    main::sound.stream.pause(false);
+
+    ORG.pauseHandleAvailable = true;
+    return STATE_YIELD;
+}
+
+function onTimeout(context)
+{
+    if (RaceOnlineRoomProject::PaddockRoot.sCurrentState == gtengine::RoomState::VoteCourseCountDown)
+        ;
+    else if (RaceOnlineRoomProject::PaddockRoot.sCurrentState == gtengine::RoomState::PrepareRaceCountDown)
+    {
+        ORG.pauseHandleAvailable = false;
+        main::sound.stream.stop();
+        main::sound.stream.pause(false);
+
+        if (RaceMenuUtil::activated())
+        {
+            main::sound.play("ok");
+            RaceMenuUtil::closeAction(context);
+        }
+
+        ORG.pauseRace = false;
+
+        OnlineSession.updateMemberState(gtengine::RoomMemberState::Pause, false);
+        OnboardMeterRoot.appearPanel();
+        RaceRoot.setFocus(nil);
+        DriftModule::isFreeRun = false;
+
+        restart_to_race(context);
+        ORG.pauseHandleAvailable = true;
+    }
+    else
+        ;
+}
+
+static sThread;
+
+function on_tick(context)
+{
+    if (!PDINetwork.isOnline(true) || !Lobby.isJoinedRoom())
+    {
+        onNetworkDisconnect(context);
+        return false;
+    }
+	
+	var arg0;
+	var arg1;
+	var arg2;
+    var state = OnlineSession.getRoomState(&arg0, &arg1, &arg2);
+    var prev_state = RaceOnlineRoomProject::PaddockRoot.sCurrentState;
+
+    var state_changed = prev_state != state;
+    RaceOnlineRoomProject::PaddockRoot.sCurrentState = state;
+
+    if (state_changed)
+    {
+        switch (state)
+        {
+            case gtengine::RoomState::Creating:
+                break;
+
+            case gtengine::RoomState::Idle:
+                break;
+
+            case gtengine::RoomState::VoteCourseCountDown:
+                RaceOnlineRoomProject::PaddockRoot.sCurrentState = prev_state;
+                context.pushEvent(menu::MScriptEvent(context, RaceRoot, "quit"));
+                return false;
+                break;
+
+            case gtengine::RoomState::PrepareRaceCountDown:
+                var limit_msec = arg1;
+                OnlineSession.setTimeoutLimit(limit_msec.toFloat() / 1000.0); 
+                abortCancelableDialog(context);
+                break;
+
+            case gtengine::RoomState::PrepareChangeCourse:
+                doLeaveEntry(context, true);
+                break;
+        }
+    }
+
+    if (state == gtengine::RoomState::PrepareRaceCountDown && 
+        OnlineSession.getRemainUntilTimeoutLimit() < RaceOnlineRoomProject::sBgmStartCount &&
+        OnlineSession.getRemainUntilTimeoutLimit() > RaceOnlineRoomProject::sBgmStartCount - 10)
+    {
+        SoundUtil::BGMPlayGroup(SoundUtil::SCENE_MENU, "before_race", SoundUtil::REPEAT_OFF);
+    }
+
+    if (OnlineSession.hasTimeoutLimit())
+    {
+        var rest = OnlineSession.getRemainUntilTimeoutLimit();
+        rest -= 10 + 0.5;
+        if (rest > 0.0)
+        {
+            if (rest < sEntryTimeLimitWhileCountDown - 10)
+            {
+                OSKUtil::closeChatDialog(context);
+                abortCancelableDialog(context);
+                ORG.pauseHandleAvailable = false;
+                QuickOptionRoot.abort(context);
+
+                if (RaceMenuUtil::activated())
+                    RaceRoot.deactivatePauseMenu(context);
+            }
+
+            var labelText = RaceOnlineRoomProject::ModeTextUtil::getNextEventText("ModeText_EVENT_START_COUNTDOWN");
+            OnboardMeterRoot.CountDownStart(context, rest, labelText);
+        }
+        else
+        {
+            onTimeout(context);
+            OnlineSession.setTimeoutLimit(nil);
+            OnboardMeterRoot.CountDownEnd(context);
+        }
+    }
+    else
+    {
+        if (Lobby.isRoomOwner() && state == gtengine::RoomState::PrepareRaceCountDown &&
+            !OnlineSession.isOperationLimited() && OnlineSession.getRemainUntilTimeoutLimit() < -20 &&
+            ORG.isFreeRun())
+        {
+            OnlineSession.setRoomState(gtengine::RoomState::Idle);
+        }
+    }
+
+    OnlineSession.onTick();
+    return true;
+}
+
+function on_tick2(context)
+{
+    var added = UIKitProject::MessengerRoot.refreshMessageList(context);
+    if (added)
+    {
+        if (RaceRoot::LTBase.defined("View"))
+            RaceRoot::LTBase.View.notifyMessageAdded();
+    }
+}
+
+function onTick(context)
+{
+    var counter = 0;
+    while (true)
+    {
+        if (!on_tick(context))
+            break;
+
+        if (counter % 4 == 0)
+            on_tick2(context);
+
+        Thread::Sleep(0.5);
+        ++counter;
+    }
+}
+
+function refresh_periodically(context) { }
+
+function onBeforeSession(context)
+{
+    RaceProject::sNetworkDisconnectDialogOpening = false;
+    RaceProject::setCurrentRootForNetworkEvent(RaceRoot);
+    context.resumeEventLoop();
+}
+
+function onRaceRootInitialize(context)
+{
+    sToPaddockState = 0;
+    sInRaceRoot = true;
+
+    var slot_id = RaceOperator.getAccountSlotID(0);
+    var target_slot_id = ORG.getRidingSlotID(slot_id);
+
+    pdistd::MGamePort::SetWheelAssignMode(pdistd::WheelAssignMode::SDK);
+
+    if (!gSequenceCondition.is_spectator_mode && amIEntried())
+    {
+        ORG.force30fps_mode = false;
+        ORG.setCameraWindowControllerPort(0, 0);
+        RaceProject::setTarget(target_slot_id, 0);
+
+        if (ORG.getCurrentCameraType(0) != gtengine::CameraType::WAIT_RACER ||
+            ORG.getCameraType() != gtengine::CameraType::ONBOARD)
+            ORG.setCameraWithMount(gtengine::CameraType::WAIT_RACER, 1);
+
+        OnlineSession.updateMemberState(gtengine::RoomMemberState::Running, true);
+    }
+    else
+    {
+        OnlineSession.updateMemberState(gtengine::RoomMemberState::RaceView, true);
+    }
+
+    sThread = Thread(onTick, context);
+    sThread.start();
+
+    if (slot_id != -1 && ORG.inSession())
+        ORG.setReadyEntry(slot_id, true);
+
+    if (checkSpectatorMode(context))
+    {
+        ORG.setRejectRideRequestMode(false);
+        var target = RaceProject::getTarget();
+        if (target < 0 || ORG.getEntryState(target) != gtengine::EntryLevel::RACER)
+        {
+            for (var slot_id = 0; slot_id < ORG.getEntryMaxAtCurrentRace(); ++slot_id)
+            {
+                if (ORG.getEntryState(slot_id) == gtengine::EntryLevel::RACER)
+                {
+                    RaceProject::setTarget(slot_id);
+                    break;
+                }
+            }
+        }
+    }
+
+    var CountDown = RaceRoot::Info::CountDown0;
+    CountDown.labelEvent.text = RaceOnlineRoomProject::ModeTextUtil::getNextEventText("ModeText_EVENT_START_COUNTDOWN");
+    CountDown.labelEvent.visible = true;
+    CountDown.labelVote.visible = false;
+    CountDown.active = false;
+    CountDown.ParallelActor.reverse = false;
+    CountDown.ParallelActor.reset();
+    CountDown.ParallelActor.reverse = true;
+    
+    var lt = ORG.getLiveTimingRecord();
+    var best_entry = lt.getBestLapEntry();
+    setOverallBest(context, best_entry, sRoomGameMode == gtengine::RoomGameMode::DRIFT_TRIAL);
+}
+
+function onRaceRootFinalize(context)
+{
+    RaceProject::setCurrentRootForNetworkEvent(nil);
+    if (sThread != nil)
+    {
+        sThread.terminate();
+        sThread = nil;
+    }   
+
+    context.cursor_visible = true;
+}
+
+function onClosePauseMenu(context)
+{
+    OnlineSession.updateMemberState(gtengine::RoomMemberState::Pause, false);
+}
+
+function onQuitRace(context)
+{
+    context.suspendEventLoop();
+
+    sInRaceRoot = false;
+
+    ORG.setRejectRideRequestMode(true);
+    if (RaceRoot.sNormalFinish)
+        return;
+
+    if (checkSpectatorMode(context))
+        return;
+
+    var myslot = RaceOperator.getAccountSlotID(0);
+    var cslot = ORG.getRidingSlotID(myslot);
+    if ( (cslot != -1 && myslot != cslot) || gSequenceCondition.is_riding_car == false)
+    {
+        if (myslot != cslot)
+        {
+            ORG.dropRequest(myslot, cslot, false);
+        } 
+    }
+    else if (ORG.isFreeRun())
+    {
+        RaceOperator.returnToPaddock();
+    }
+}
+
+function onAfterRace(context)
+{
+    sInRaceRoot = false;
+}
+
+method onEmptyEntries(context)
+{
+    empty_restart(context);
+}
+
+function onResultFinish(context)
+{
+
+}
+
+method afterNetworkDisconnect(context)
+{
+    self.quit(context);
+    RaceOnlineRoomProject::PaddockRoot.return_to_online_top(context);
+}
+
+method onSpectatorExit(context)
+{
+    if (OnlineSession.isOperationLimited() || 
+        RaceOnlineRoomProject::PaddockRoot.sCurrentState == gtengine::RoomState::PrepareRaceCountDown &&
+        OnlineSession.getRemainUntilTimeoutLimit() <= sEntryTimeLimitWhileCountDown)
+    {
+        main::sound.play("disable");
+    }
+    else
+    {
+        self.quit(context);
+    }
+}
+
+function onGoToNextSequence(context)
+{
+    ORG.setWait0EntryEvent(true);
+
+    sInRaceRoot = false;
+
+    if (ORG.isOnline())
+    {
+        if (sRoomGameMode == gtengine::RoomGameMode::DRIFT_TRIAL)
+        {
+            DriftModule::onGoToNextSequence(context);
+        }
+
+        if (sToPaddockState == 2)
+        {
+            onFinishToRestartCommon(context, true);
+        }
+        else if (sToPaddockState == 1)
+        {
+            return;
+        }
+    }
+
+    RaceProject::PitRoot.abort(context, false);
+    if (RaceProject::ResultRoot != nil)
+    {
+        RaceProject::ResultRoot.close(context);
+    }
+
+    LiveTimingRoot.finalize(context);
+
+    RaceOnlineRoomProject::PaddockRoot.open(context, gSequenceCondition.is_fatal_error_happened);
+}
+
+function onBinaryMessage(context, name, userId, message)
+{
+    DriftModule::onBinaryMessage(context, name, userId, message);
+}
+
+function onEntryRace(context, slot_id, is_remote, car_code, name)
+{
+    if (sRoomGameMode == gtengine::RoomGameMode::DRIFT_TRIAL)
+    {
+        DriftModule::onEntryRace(context, slot_id);
+    }
+}
+
+function onPressTriangle(context)
+{
+    if (DriftModule::isDriftAttack())
+        DriftModule::onPressTriangle(context);
+}
+
+function onGamePause(context, pause)
+{
+    OnlineSession.updateMemberState(gtengine::RoomMemberState::Pause, pause);
+}
+
+function onGamePauseBeforePauseMenuActivated(context, pause)
+{
+    if (pause && RaceMenuUtil::created())
+    {
+        RaceRoot.removePauseMenu(context);
+        RaceRoot.createPauseMenu(context);
+    }
+}
+
+function onLeaveRace(context, slot_id, is_remote, car_code, name, is_force)
+{
+    var my_slot_id = RaceOperator.getAccountSlotID(0);
+    if (slot_id == my_slot_id)
+        writebackAndUpdateGarageCar(slot_id);
+
+    if (is_force && ORG.isFreeRun())
+    {
+        var message = manager.translate("OnlineMessage", "ENTRY_CANCELED");
+        putSystemChatMessage(context, gtengine::NoticeType::ForceEntryCanceled, message, 30);
+    }
+
+    if (ORG.getRideSlotCheck(slot_id, my_slot_id))
+        gSequenceCondition.is_riding_car = false;
+
+    if (gSequenceCondition.is_riding_car == false)
+    {
+        RaceRoot.visible = false;
+        OnboardMeterRoot.visible = false;
+        
+        if (!gSequenceCondition.disable_pause_menu && slot_id == RaceOperator.getAccountSlotID(0))
+            context.wait(1.0);
+    }
+
+    SoundUtil::BGMFadeout(1.0);
+
+    RaceRoot.quit(context);
+}
+
+function onButtonEvent(context, slot_id, event_type)
+{
+    var messages = GAME_STATUS.user_profile.messages;
+    if (event_type < messages.size)
+    {
+        var text = messages[event_type];
+        if (text != "")
+        {
+            main::sound.play("chat_trans");
+        }
+
+        Lobby.sendRoomChatMessageAsync(text);
+    }
+}
+
+function onStartRaceRequest(context, starttime)
+{
+    OSKUtil::closeChatDialog(context);
+    QuickOptionRoot.abort(context);
+
+    if (RaceMenuUtil::activated())
+    {
+        ORG.pauseRace = false;
+        OnboardMeterRoot.appearPanel();
+        RaceRoot.deactivatePauseMenu(context);
+    }
+
+    openRoomRequest(context, 20);
+
+    gSequenceCondition.finish_result = gtengine::FinishResult::NONE;
+
+    OnboardMeterRoot.visible= true;
+
+    if (!checkSpectatorMode(context))
+    {
+        var slot_id = RaceOperator.getAccountSlotID(0);
+        if (slot_id != -1)
+        {
+            ORG.setReadyEntry(slot_id, true);
+            var rp = ORG.getCurrentRaceParameter();
+
+            if (rp.session_type != gtengine::SessionType::PRACTICE &&
+                rp.start_type == gtengine::StartType::PIT)
+            {
+                ORG.startVehicleInSession(slot_id);
+            }
+        }
+    }
+}
+
+function onStartSession(context)
+{
+    onStartSessionCommon(context);
+
+    OnlineSession.updateExternalRoomInformation();
+    
+    var [rc, sinfo] = OnlineSession.getRoomConfig(true);
+    if (DriftModule::isDriftAttack())
+        DriftModule::onStartSession(context);
+
+    var rp = ORG.getCurrentRaceParameter();
+    if (rp.session_type == gtengine::SessionType::QUALIFY)
+    {
+        var root = RaceProject::RaceRoot;
+        var sep_type = context.translate(root, rp.attack_separate_type == gtengine::AttackSeparateType::ALONE ? "SINGLE_ATTACK" : "ATTACK_ALL");
+        var msg = context.translate(root, "START_QUALIFY_MIN").build(rp.race_limit_minute, sep_type, 20);
+        putSystemChatMessage(context, gtengine::NoticeType::Unknown, msg, 20);
+    }
+
+    if (rc.hasQualifier() && rp.session_type == gtengine::SessionType::FINAL)
+        gSequenceCondition.enable_starting_grid = true;
+}
+
+function onEndSession(context)
+{
+    OnboardMeterRoot.visible = false;
+
+    PitRoot.forceMenuClose(context);
+}
+
+function onCountDown(context, count)
+{
+    RaceRoot.onCountDownDefault(context, count, true);
+    if (DriftModule::isDriftAttack())
+        DriftModule::onCountDown(context, count);
+}
+
+function onStartVehicle(context, slot_id, at_start_time, disp_start, start_sound, target)
+{
+    RaceRoot.onStartVehicleDefault(context, slot_id, disp_start, start_sound, target);
+    if (DriftModule::isDriftAttack())
+        DriftModule::onStartVehicle(context, slot_id, disp_start, start_sound, target);
+
+    if (slot_id == RaceOperator.getPlayerSlot())
+        updatePitConstraint(context, slot_id);
+}
+
+function onRestartSession(context, change_course, course_code, failure)
+{
+    OnboardMeterRoot.visible = false;
+    OnboardMeterRoot::GT6::Common::OverallBest.visible = false;
+}
+
+function onFinishRace(context, condition_satisfied, buggy_result)
+{
+    var to_paddock = onFinishRaceCommon(context, condition_satisfied);
+    if (DriftModule::isDriftAttack())
+        DriftModule::onFinishRace(context);
+
+    SoundUtil::BGMFadeout(1.0);
+    sToPaddockState = to_paddock ? 2 : 1;
+
+    if (to_paddock)
+    {
+        RaceRoot.quit(context);
+    }
+    else
+    {
+        onFinishToRestartCommon(context, false);
+        RaceRoot.restart(context);
+    }
+}
+
+function onRaiseFlag(context, slot_id, flag_type, raise)
+{
+
+}
+
+function updatePitConstraint(context, slot_id)
+{
+    var target = OnboardMeterRoot::GT6::Common::PitConstraint;
+    if (checkSpectatorMode(context))
+    {
+        target.visible = false;
+        return;
+    }
+
+    var rp = ORG.getCurrentRaceParameter();
+    var need_pitin = rp.pit_constraint;
+
+    if (rp.session_type != gtengine::SessionType::FINAL)
+        return;
+
+    if (need_pitin == 0)
+        return;
+
+    var pit_num = ORG.getNumberOfPitIn(slot_id);
+    var remain_pitin = pit_num < need_pitin ? need_pitin - pit_num : 0;
+    
+    var footer = OnboardMeterRoot::GT6::Common::PitConstraint::Footer;
+    var root = RaceProject::RaceRoot;
+
+    var msg = context.translate(root, "REMAIN_PITIN_NUM").build(remain_pitin);
+    footer.PitStops.text = msg;
+    if (target.visible == false)
+    {
+        target.Fade.initialize();
+        target.Fade.reset();
+        target.Fade.start();
+        target.visible = true;
+    }
+}
+
+function onUpdateScore(context, slot_id, update_best)
+{
+    if (RaceOnlineRoomProject::PaddockRoot.sRoomGameMode == gtengine::RoomGameMode::DRIFT_TRIAL)
+    {
+        DriftModule::onUpdateScore(context, slot_id, update_best);
+        var lt = ORG.getLiveTimingRecord();
+        var best_entry = lt.getBestLapEntry();
+        setOverallBest(context, best_entry, true);
+    }
+}
+
+function setOverallBest(context, entry, is_point)
+{
+    var target = OnboardMeterRoot::GT6::Common::OverallBest;
+    if (checkSpectatorMode(context))
+    {
+        target.visible = false;
+        return;
+    }
+
+    var footer = OnboardMeterRoot::GT6::Common::OverallBest::Footer;
+    var disp = false;
+
+    if (!is_point)
+    {
+        if (entry.best_lap_time != pdiext::MAX_LAPTIME1000)
+        {
+            footer.Best.text = pdiext::GetRaceTimeString(entry.best_lap_time);
+            disp = true;
+        }
+    }
+    else if (entry.best_lap_time > 0)
+    {
+        footer.Best.text = pdiext::GetNumberString(entry.best_lap_time) + manager.translate("Unit", "DRIFT_POINT");
+        disp = true;
+    }
+
+    if (disp)
+    {
+        footer.Best.DriverName.text = entry.driver_name;
+        if (target.visible == false)
+        {
+            target.Fade.initialize();
+            target.Fade.reset();
+            target.Fade.start();
+            target.visible = true;
+        }
+    }
+}
+
+function onLapCount(context, slot_id, laps, laptime, is_penalty_lap)
+{
+    var lt = ORG.getLiveTimingRecord();
+    if (OnlineSession.isRoomOwner())
+    {
+        if (laps > 1 && !is_penalty_lap && 
+            laptime != pdiext::MAX_LAPTIME1000 && 
+            RaceOnlineRoomProject::PaddockRoot.sRoomGameMode == gtengine::RoomGameMode::TIME_TRIAL)
+        {
+            var entries = lt.getEntries(true, 0);
+            var overallBestLap = pdiext::MAX_LAPTIME1000;
+            var entry;
+
+            foreach (var e in entries)
+            {
+                if (e.best_lap_time < overallBestLap)
+                    overallBestLap = e.best_lap_time;
+
+                if (e.entry_id != slot_id)
+                    continue;
+
+                if (entry == nil)
+                    entry = e;
+            }
+
+            if (entry != nil)
+            {
+                if (entry.best_lap_time == laptime)
+                {
+                    var isOverallBest = overallBestLap == laptime;
+                    broadcastSystemMessage(gtengine::NoticeType::BestRecordUpdated, [gtengine::RoomGameMode::TIME_TRIAL, entry.driver_name, laptime, isOverallBest]);
+                }
+                else
+                    ;
+            }
+        }
+    }
+
+    if (RaceOnlineRoomProject::PaddockRoot.sRoomGameMode != gtengine::RoomGameMode::DRIFT_TRIAL)
+    {
+        var best_entry = lt.getBestLapEntry();
+        setOverallBest(context, best_entry, false);
+    }
+}
+
+function onSectionTime(context, window, sectime, difftime, difflaps)
+{
+    var rc = OnlineSession.getRoomConfig();
+    if (rc.room_game_mode != gtengine::RoomGameMode::DRIFT_TRIAL)
+        RaceRoot.onSectionTimeDefault(context, window, sectime, difftime, difflaps);
+}
+
+function onNetworkLapCount(context, slot_id, laps)
+{
+    notifyIfFinalLap(context, slot_id, laps);
+    OnlineSession.updateExternalRoomInformation();
+}
+
+function onPlayMusicWhenComplete(context, result)
+{
+    gRaceBGM.onCompleteRaceDefault(result, gSequenceCondition.isDemo());
+}
+
+function onNetworkWinnerDecideEvent(context, winner_slot_id)
+{
+    var my_slot_id = RaceOperator.getAccountSlotID(0);
+    if (my_slot_id == winner_slot_id)
+    {
+        var msg = GAME_STATUS.user_profile.context.auto_message.win;
+        if (msg != "")
+            sendAutoMessage(msg, nil);
+        else
+            ;
+    }
+    else
+        ;
+
+    if (DriftModule::isDriftAttack())
+    {
+        Reward::onFinishRace();
+        return;
+    }
+
+    if (!RaceProject::RaceRoot::sAlreadyQuited && !OnlineRaceUtil::isPageSwitching() && checkSpectatorMode(context))
+    {
+        RaceRoot.playMusicWhenComplete(context, 0);
+        ResultRoot.open(context, true);
+
+        var rp = ORG.getCurrentRaceParameter();
+        if (rp.session_type == gtengine::SessionType::FINAL)
+        {
+            RaceRoot.GoalMessage(true, false, false, false, false);
+            ResultRoot.updateBoard(context);
+        }
+    }
+    else
+    {
+        Reward::onFinishRace();
+        ResultRoot.updateBoard(context);
+    }
+}
+
+async function onComplete(context, slot_id, result, is_forced, is_target)
+{
+    onCompleteCommon(context);
+
+    if (DriftModule::isDriftAttack())
+    {
+        DriftModule::onComplete(context, slot_id, result, is_forced, is_target);
+        return;
+    } 
+
+    var show_result = false;
+    if (!is_forced && !gSequenceCondition.isDemo())
+    {
+        if (is_target)
+            show_result = true;
+    }
+
+    if (show_result)
+    {
+        PitRoot.forceMenuClose(context);
+        if (ORG.getEntryControlType(slot_id) == gtengine::ControlType::LOCAL)
+        {
+            if (OnlineRaceUtil::isPageSwitching())
+                return;
+
+            RaceRoot.playMusicWhenComplete(context, result);
+            ORG.force30fps_mode = true;
+            ResultRoot.open(context, true, result);
+
+            if (RaceOperator.getPlayerSlot() == slot_id)
+            {
+                await () => { writebackAndUpdateGarageCar(slot_id); }
+            }
+        }
+
+        RaceRoot.GoalMessage(false, false, false, false, false);
+    }
+
+    if (!is_forced)
+        ResultRoot.updateBoard(context);
+}
+
+function onExit(context)
+{
+    if (RaceOnlineRoomProject::PaddockRoot.sCurrentState == gtengine::RoomState::PrepareRaceCountDown && OnlineSession.getRemainUntilTimeoutLimit() <= sEntryTimeLimitWhileCountDown)
+    {
+        main::sound.play("disable");
+        return;
+    }
+
+    if (!RaceMenuUtil::activated())
+    {
+        main::sound.play("disable");
+        return;
+    }
+
+    var slot_id = RaceOperator.getAccountSlotID(0);
+    if (amIEntried() && ORG.isOnline())
+    {
+        if (slot_id != -1 && ORG.isCompleteSlot(slot_id))
+        {
+            main::sound.play("disable");
+            return;
+        }
+
+        var rp = ORG.getCurrentRaceParameter();
+        if (rp.session_type == gtengine::SessionType::QUALIFY)
+        {
+            main::sound.play("ok");
+
+            var root = RaceProject::RaceRoot;
+            if (DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, context.translate(root, "DO_YOU_LEAVE_QUALIFY")) == false)
+            {
+                main::sound.play("disable");
+                return;
+            }
+        }
+    }
+
+    main::sound.play("ok");
+
+    OnboardMeterRoot::RaceDisplayFace.toStop();
+    RaceMenuUtil::closeAction(context);
+
+    if (!ORG.isFreeRun() && main::ORG.isOnline())
+    {
+        if (slot_id != -1)
+        {
+            ORG.leaveRace(slot_id);
+        }
+    }
+
+    RaceRoot.quit(context);
+}
+
+function onPitIn(context, slot_id, stop_pit, pit_strategy)
+{
+    if (!stop_pit)
+        return;
+
+    var my_slot_id = RaceOperator.getAccountSlotID(0);
+    var control_slot = ORG.getDrivingSlotID(slot_id);
+
+    var local_check = false;
+    var pit_check = false;
+
+    if (ORG.getEntryControlType(slot_id) == gtengine::ControlType::LOCAL)
+    {
+        if (my_slot_id == slot_id)
+        {
+            local_check = true;
+            pit_check = true;
+        }
+        else if (my_slot_id != slot_id || control_slot == -1)
+        {
+            local_check = true;
+        }
+        else if (ORG.getEntryControlType(control_slot) == gtengine::ControlType::LOCAL)
+        {
+            local_check = true;
+        }
+    }
+    else if (my_slot_id == control_slot)
+    {
+        local_check = true;
+    }
+
+    if (local_check)
+    {
+        var rp = main::ORG.getCurrentRaceParameter();
+        var autocruise = true;
+        var pitwork = rp.enable_pit;
+
+        if (GAME_STATUS.user_profile.option.bot_on)
+            pit_strategy.driver_index = 1;
+
+        ORG.setPitMode(slot_id, autocruise, pitwork);
+        if (pit_check && pitwork)
+        {
+            var use_menu = my_slot_id == slot_id;
+
+            ORG.pauseHandleAvailable = false;
+
+            if (ORG.pauseForOnline)
+            {
+                use_menu = false;
+                pit_strategy.driver_index = -1;
+            }
+
+            if (sInRaceRoot == true)
+            {
+                determinatePitWork(context, slot_id, use_menu, pit_strategy);
+            }
+            else
+            {
+                ORG.startVehiclePitWork(slot_id, pit_strategy);
+            }
+
+            ORG.pauseHandleAvailable = true;
+        }
+    }
+}
+
+function notifyRemainingPitStopCount(context, slotId, pit_constraint)
+{
+    var pit_in_num = ORG.getNumberOfPitIn(slotId);
+    updatePitConstraint(context, slotId);
+}
+
+function onPitOut(context, slot_id)
+{
+    if (slot_id == RaceOperator.getPlayerSlot())
+    {
+        forceClosePitMenu(context, slot_id);
+
+        var rp = ORG.getCurrentRaceParameter();
+        if (rp.pit_constraint > 0 && rp.session_type == gtengine::SessionType::FINAL)
+            notifyRemainingPitStopCount(context, slot_id, rp.pit_constraint);
+
+        return;
+    }
+}
+
+function onPitStop(context, slot_id) { }
+
+method onPitWorkFinish(context, slot_id)
+{
+    ORG.releasePitVehicle(slot_id);
+}

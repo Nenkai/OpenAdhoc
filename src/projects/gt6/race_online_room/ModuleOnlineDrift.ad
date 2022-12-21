@@ -1,0 +1,346 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module DriftModule
+{
+    class PlayerData
+    {
+        attribute slot_id;
+        attribute status;
+        attribute bonus;
+
+        method __init__(slot_id)
+        {
+            self.slot_id = slot_id;
+            self.status = 1;
+            self.bonus = Map();
+        }
+
+        method getBonusScore()
+        {
+            var sum = 0;
+            foreach (var [k, v] in self.bonus)
+                sum += v;
+
+            return sum;
+        }
+    }
+
+    static sDriftMode = gtengine::MDriftMode();
+    static players = Map();
+    static bonusTip;
+    static isContest = true;
+    static isFirstRacer = true;
+    static isFreeRun = true;
+
+    function isDriftAttack()
+    {
+        var rc = OnlineSession.getRoomConfig();
+        var ret = rc.trackday_mode == gtengine::TrackDayMode::DRIFT && !isFreeRun;
+        return ret;
+    }
+
+    function isMyTurn()
+    {
+        var slot_id = RaceOperator.getAccountSlotID(0);
+        return players[slot_id].status == 2;
+    }
+
+    function getCurrentRacer()
+    {
+        if (!isContest)
+            return RaceOperator.getAccountSlotID(0);
+
+        var slot = -1;
+        foreach (var [k, v] in players)
+        {
+            if (v.status == 2)
+                slot = v.slot_id;
+        }
+
+        return slot;
+    }
+
+    function updateStatus(slot_id, status)
+    {
+        var message= "T:%{slot_id}:%{status}";
+        var res = OnlineSession.sendBinaryMessage(message, "onBinaryMessage");
+        !res;
+    }
+
+    function sendBonus()
+    {
+        var my_slot = RaceOperator.getAccountSlotID(0);
+        var target_slot = getCurrentRacer();
+        var message = "B:%{my_slot}:%{target_slot}";
+        var res = OnlineSession.sendBinaryMessage(message, "onBinaryMessage");
+        !res;
+    }
+
+    function receiveBonus(context, send_slot, target_slot)
+    {
+        players[target_slot].bonus[send_slot] += 100;
+        var parent = OnboardMeterRoot::GT6::Common;
+
+        if (bonusTip != nil)
+            parent.removeChild(context, bonusTip);
+
+        bonusTip = OnboardMeterRoot::hidden::Like.doCopy();
+        parent.appendChild(context, bonusTip);
+        bonusTip.FadeInterpolator.restart();
+    }
+
+    function initDriftMode()
+    {
+        var rc = OnlineSession.getRoomConfig();
+        isContest = rc.attack_separate_type == gtengine::AttackSeparateType::ALONE_SEQUENCE;
+        if (!gSequenceCondition.is_spectator_mode)
+        {
+            var my_slot = RaceOperator.getAccountSlotID(0);
+            sDriftMode.setMySlotID(my_slot);
+        }
+    }
+
+    function execDriftSequence(context)
+    {
+        initDriftMode();
+        sDriftMode.connect(ORG);
+    }
+
+    function attachDriftMode(ml)
+    {
+        if (ml[0] != gtengine::RaceSubModeTypes::DriftMode)
+        {
+            sDriftMode.setLapMode(true);
+            initDriftMode();
+            sDriftMode.connect(ORG);
+            ResultRoot.registerUpdateCallback(updateResultEntry);
+        }
+    }
+
+    function detachDriftMode()
+    {
+        sDriftMode.disconnect(ORG);
+        ResultRoot.unregisterUpdateCallback();
+    }
+
+    async function returnToPaddock(context)
+    {
+        var my_slot = RaceOperator.getAccountSlotID(0);
+        if (my_slot != -1 && ORG.getEntryState(my_slot) == gtengine::EntryLevel::RACER)
+        {
+            ORG.leaveRace(my_slot);
+
+            var stime = pdistd::GetSystemTimeMicroSecond();
+            var dtime = 10 * 1000000;
+
+            while (amIEntried())
+            {
+                yield;
+
+                var ctime = pdistd::GetSystemTimeMicroSecond();
+                if (ctime - stime > dtime)
+                    break;
+            }
+        }
+
+        if (Lobby.isRoomOwner())
+        {
+            var rp = OnlineSession.getRaceParameterForTrackDay(ORG.getBackRaceParameter(), true);
+            await() => { ORG.restartNetworkRace(rp); }
+        }
+
+        var stime = pdistd::GetSystemTimeMicroSecond();
+        var dtime = 10 * 1000000;
+        
+        while (!ORG.isRestartSequence())
+        {
+            yield;
+
+            var ctime = pdistd::GetSystemTimeMicroSecond();
+            if (ctime - stime > dtime)
+                break;
+        }
+
+        sDriftMode.disconnect(ORG);
+        RaceOnlineRoomProject::PaddockRoot.open(context, gSequenceCondition.is_fatal_error_happened);
+    }
+
+    function onEntryRace(context, entry_slot) { }
+
+    function onStartSession(context) { }
+
+    function onCountDown(context, count) { }
+
+    function onStartVehicle(context, slot_id, disp_start, start_sound, target) { }
+
+    function onComplete(context, slot_id, result, is_forced, is_target)
+    {
+        var my_slot = RaceOperator.getAccountSlotID(0);
+        if (!isContest && slot_id == my_slot)
+        {
+            RaceRoot.playMusicWhenComplete(context, result);
+            ResultRoot.open(context, true);
+        }
+    }
+
+    function onFinishRace(context) { }
+
+    function onGoToNextSequence(context)
+    {
+        sDriftMode.clearStatus();
+        return false;
+    }
+
+    function onPressTriangle(context)
+    {
+        if (!isMyTurn())
+            sendBonus();
+    }
+
+    function onBinaryMessage(context, name, userId, message)
+    {
+        var data = message.toString().split(":");
+        var slot = data[1].toInt();
+        switch (data[0])
+        {
+            case "B":
+                receiveBonus(context, slot, data[2].toInt());
+                break;
+        }
+    }
+
+    function onUpdateScore(context, slot_id, update_best)
+    {
+        if (OnlineSession.isRoomOwner())
+        {
+            var score = sDriftMode.getSessionBestScore(slot_id);
+            var dp = ORG.getEntriedDriverParameter(slot_id);
+
+            if (dp != nil)
+            {
+                broadcastSystemMessage(gtengine::NoticeType::BestRecordUpdated, 
+                    [gtengine::RoomGameMode::DRIFT_TRIAL, dp.display_name, score, update_best]);
+            }
+        } 
+    }
+
+    async method updateResultEntry(context, item, order, slot_id, initializing)
+    {
+        var odd = order & 1;
+        foreach (var name in ["Driver", "Flag", "Car", "Time", "Gap"])
+        {
+            item[name].bg0.visible = !odd;
+            item[name].bg1.visible = odd;
+        }
+
+        var gp = gSequenceCondition.gp;
+        var color = "gray";
+        foreach (var c in ["red", "gray", "basic_black"])
+        {
+            item.No[c].visible = c == color;
+        }
+
+        if (slot_id == nil || slot_id == -1)
+        {
+            foreach (var name in ["No", "Driver", "Car", "Time", "Gap"])
+            {
+                item[name].label.text = "--";
+                item[name].label.opacity = 0.6;
+            }
+
+            item.Car::Chip.visible = false;
+            return;
+        }
+
+        var race = ORG.getRace();
+        var event = gSequenceCondition.gp.event;
+        var car = race.getCar(slot_id);
+        var driver = race.getDriver(slot_id);
+        if (car == nil || driver == nil)
+            return;
+
+        var cp = car.getParameter();
+        var dp = driver.getParameter();
+
+        await () => 
+        {
+            if (driver != nil)
+            {
+                item.Driver.label.text = dp.display_name;
+                item.Driver.labela.text = item.Driver.label.text;
+
+                if (car != nil)
+                {
+                    item.Car.label.text = gtengine::MSpecDB::getCarShortName(cp.getCarCode());
+                    item.Car.Chip.color.setCarParameter(cp);
+                    item.Car.Chip.visible = true;
+                }
+                else
+                {
+                    item.Car.label.text = "-";
+                    item.Car.Chip.visible = false;
+                }
+            }
+            else
+            {
+                item.Driver.label.text = "-";
+                item.Driver.labela.text = item.Driver.label.text;
+                item.Car.label.text = "-";
+                item.Car.Chip.visible = false;
+            }
+
+            var flag_visible = false;
+            if (driver != nil)
+            {
+                var flag = dp.region != "" ? dp.region.downcase() : "unknown";
+                item.Flag.image.image_path = "/piece/flag_ranking/%{flag}.img";
+                flag_visible = true;
+            }
+
+            item.Flag.image.visible = flag_visible;
+            
+            var score = sDriftMode.getSessionBestScore(slot_id);
+            var diff_str = "--";
+
+            if (order != 0 && gSequenceCondition.result_rank_list != nil)
+            {
+                var diff = score - sDriftMode.getSessionBestScore(gSequenceCondition.result_rank_list[0]);
+                diff_str =  pdiext::GetNumberString(diff);
+            }
+
+            item.time_active = true;
+            item.Time.label.text = pdiext::GetNumberString(score);
+
+            if (order == 0)
+            {
+                item.Gap.label.text = "";
+            }
+            else
+            {
+                item.Gap.label.text = diff_str;
+            }
+
+            var target = cp != nil && cp.isTargetLocal();
+            item.Driver.active = target;
+            item.Flag.active = target;
+            item.Car.active = target;
+            item.Time.active = target;
+            item.Gap.active = target;
+        };
+
+        yield;
+    }
+    
+}

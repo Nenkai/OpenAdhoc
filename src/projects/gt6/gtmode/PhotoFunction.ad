@@ -1,0 +1,340 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static exporter = nil;
+
+function getCarName(photo)
+{
+    var car_label = photo.car_label;
+    if (car_label == nil || car_label == "")
+        return "---";
+
+    return gtengine::MSpecDB::getCarShortName(photo.car_label);
+}
+
+function resizeForOnline(context, photo)
+{
+    context.beginImageRender();
+    context.loadImage(photo.filename);
+    var w = context.getImageWidth();
+    var h = context.getImageHeight();
+
+    var scale = 1.0;
+    if (w > h)
+        scale = 1024.0 / w.toFloat();
+    else
+        scale = 768.0 / h.toFloat();
+
+    if (scale > 1.0)
+        return photo.filename;
+
+    context.scaleImage(scale);
+
+    var output_file = "/APP_DATA_RAW/photo/test.jpg";
+    context.saveImage(output_file);
+    context.endImageRender();
+
+    return output_file;
+}
+
+class BaseImageUploader extends UIKitProject::ProgressRoot::GrimHttp
+{
+    attribute photo;
+
+    method __init__(photo)
+    {
+        self.photo = photo;
+        self.auto_mode = true;
+    }
+
+    method begin_message(context)
+    {
+        return manager.translate("Gallery", "MSG_UPLOADING");
+    }
+
+    method failed_message(context)
+    {
+        return manager.translate("Gallery", "MSG_UPLOAD_FAILED");
+    }
+}
+
+class ImageUploader extends BaseImageUploader
+{
+    method success_message(context)
+    {
+        return manager.translate("Gallery", "MSG_FRIEND_OPEN");
+    }
+
+    method cancel_message(context)
+    {
+        return manager.translate("Gallery", "QUERY_UPLOAD_CANCEL");
+    }
+
+    method beginImpl(context)
+    {
+        VulgarityFilterUtil::begin();
+        var [res, sanitized_text] = VulgarityFilterUtil::check(self.photo.description);
+        VulgarityFilterUtil::end();
+
+        if (!res)
+            return false;
+
+        var comment = sanitized_text;
+        var resized_jpg_file = resizeForOnline(context, self.photo);
+
+        var jpg = pdistd::ReadFile(resized_jpg_file);
+        self.request = Photo.requestUploadImage(jpg["buffer"], self.photo.title, getCarName(self.photo), 
+            comment, self.photo.position_x, self.photo.position_y, self.photo.position_z,
+            (args) => { });
+
+        if (resized_jpg_file != self.photo.filename)
+            pdistd::RemoveFile(resized_jpg_file);
+
+        return true;
+    }
+}
+
+function setOnlineImpl(photo, value)
+{
+    PhotoFileUtil::setOnline(photo.id, value);
+    photo.online = value;
+}
+
+function setFavoriteImpl(photo, value)
+{
+    PhotoFileUtil::setFavorite(photo.id, value);
+    photo.favorite = value;
+}
+
+function getTitle(photo)
+{
+    if (photo.genre == PhotoFileUtil::GENRE::PHOTO_TRAVEL)
+    {
+        return manager.translate("PhotoMode", photo.title);
+    }   
+    else if (photo.genre == PhotoFileUtil::GENRE::PHOTO_RACE)
+    {
+        return manager.translate("CourseName", photo.title);
+    }
+    else
+    {
+        return manager.translate("PhotoMode", "PROFILE_PHOTO_TITLE");
+    }
+}
+
+class Waiting extends UIKitProject::ProgressRoot::ThreadData
+{
+    method __init__(exec_func, args)
+    {
+        __super__::__init__(exec_func, args);
+    }
+
+    method begin_message(context)
+    {
+        return manager.translate("Gallery", "MSG_EXPORTING");
+    }
+
+    method success_message(context)
+    {
+        return manager.translate("Gallery", "MSG_EXPORT");
+    }
+
+    method failed_message(context)
+    {
+        return manager.translate("Gallery", "MSG_FAILED");
+    }
+}
+
+function finalize()
+{
+
+}
+
+function setFavorite(context, photo_list, flag)
+{
+    foreach (var photo in photo_list)
+    {
+        if (flag)
+        {
+            if (PhotoFileUtil::getFavoriteCount() < PhotoFileUtil::getFavoriteMax())
+                setFavoriteImpl(photo, true);
+            else
+            {
+                ERROR(context, "Gallery", "ERROR_FAVORITE_IS_FULL");
+                break;
+            }
+        }
+        else
+        {
+            setFavoriteImpl(photo, false);
+        }
+
+    }
+
+    OK(context, "Gallery", flag ? "MSG_ADD_FAVORITE" : "MSG_REMOVE_FAVORITE");
+}
+
+function export(context, photo_list)
+{
+    var space = pdistd::GetDiskFreeSize("/APP_DATA");
+    var need_size = 500 * 1024 * 1024;
+    foreach (var photo in photo_list)
+        need_size += photo.filesize;
+
+    var need_size_mb = (need_size + (1024 * 1024) - 1) / 1024 / 1024;
+    if (!QUERY(context, "Gallery", "QUERY_PHOTO_EXPORT", need_size_mb))
+        return;
+
+    if (space < need_size)
+    {
+        sound.play("disable");
+        var threshold = "%d%s".format(need_size_mb, manager.translate("Unit", "MEGA_BYTE"));
+        ERROR(context, "SystemMessage", "DISKFULL_ERROR", threshold);
+        return;
+    }
+
+    var updater = Waiting(function(args, progress) 
+    {
+        var context = args;
+        var exporter = pdiext::MPhotoSysUtil();
+        exporter.load();
+
+        while (!exporter.isFinalizeFinished())
+            yield;
+
+        exporter.initialize();
+
+        var index = 0;
+        foreach (var photo in photo_list)
+        {
+            ++index;
+            if (!pdistd::Exist(photo.filename))
+                continue;
+
+            var extension = IO::Path::GetExtension(photo.filename);
+            var tmp_path = "/APP_CACHE_RAW/tmp_photo_export" + extension;
+
+            if (pdistd::Exist(tmp_path))
+                pdistd::RemoveFile(tmp_path);
+
+            var file_result = pdistd::CopyFile(photo.filename, tmp_path);
+            if (file_result != 0)
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, main::manager.translate("Gallery", "MSG_FAILED"));
+                break;
+            }
+
+            var file_name = pdistd::ConvertSystemPath(tmp_path);
+            var last_slash = file_name.rfind("/", file_name.size - 1);
+            var dir = file_name.substr(0, last_slash + 1);
+            var file = file_name.substr(last_slash + 1);
+
+            do { } while (!exporter.isReady());
+
+            var res = exporter.export(dir, file, getTitle(photo), 
+                "© 2013 Sony Computer Entertainment Inc. Developed by Polyphony Digital Inc.");
+
+            if (!res)
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, main::manager.translate("Gallery", "MSG_FAILED"));
+                break;
+            }
+
+            do { } while (exporter.isWaitExport() > 0);
+
+            if (exporter.isWaitExport() != 0)
+                break;
+
+            progress.value = index.toFloat() / photo_list.size;
+        }
+
+        while (!exporter.isReady())
+            yield;
+
+        exporter.finalize();
+        progress.value = 1.0;
+    }, context);
+
+    updater.can_cancel = false;
+    var result = UIKitProject::ProgressRoot.open(context, [updater]);
+
+    pdiext::MPhotoSysUtil().unload();
+}
+
+function remove(context, photo_list)
+{
+    if (!QUERY_D_NO(context, "Gallery", "QUERY_REMOVE_FILE"))
+        return false;
+
+    PhotoFileUtil::removeByList(photo_list);
+    OK(context, "Gallery", "MSG_DELETE");
+    return true;
+}
+
+function setOnline(context, photo_list, flag)
+{
+    if (flag)
+    {
+        if (photo_list.size + PhotoFileUtil::getOnlineCount() < PhotoFileUtil::getOnlineMax())
+        {
+            if (QUERY(context, "Gallery", "QUERY_SET_ONLINE_PHOTO"))
+            {
+                var uploader_list = [];
+                foreach (var photo in photo_list)
+                {
+                    var uploader = ImageUploader(photo);
+                    uploader_list.push(uploader);
+                }
+
+                if (UIKitProject::ProgressRoot.open(context, uploader_list))
+                {
+                    for (var i = 0; i < photo_list.size; ++i)
+                    {
+                        var uploader = uploader_list[i];
+                        if (!uploader.request.isDone())
+                            continue;
+
+                        var photo = photo_list[i];
+                        setOnlineImpl(photo, true);
+                        photo.grim_photo_id = Photo.decodeResultString(uploader.request);
+                        PhotoFileUtil::updateGrimPhotoId(photo.id, photo.grim_photo_id);
+                    }
+                }
+            }
+        }
+        else
+        {
+            ERROR(context, "Gallery", "ERROR_ONLINE_IS_FULL");
+        }
+    }
+    else if (QUERY(context, "Gallery", "QUERY_SET_OFFLINE"))
+    {
+        foreach (var photo in photo_list)
+        {
+            var request = Photo.requestDeleteImage(photo.grim_photo_id, (args) => { });
+            if (Grim2Util::join(context, request))
+            {
+                if (Photo.decodeResult(request))
+                    setOnlineImpl(photo, false);
+            }
+            else
+            {
+                REQUEST_ERROR(context, "Gallery", "ERROR_UPLOAD", request);
+                break;
+            }
+        }
+    }
+}
+
+

@@ -1,0 +1,938 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module SoundEffectControlRoot
+{
+    function default_format_func(x, y, dydx)
+    {
+        return "%.2f, %.2f, dy/dx=%.2f".format(x + 1E-08, y + 1E-08, dydx);
+    }
+
+    static eventloop = nil;
+    static modal_page;
+    static target_object;
+    static work_object;
+    static min = [0.0, 0.0];
+    static max = [1.0, 1.0];
+    static scale = [1.0, -1.0];
+    static offset = [0.0, 1.0];
+    static x_scale = 0;
+    static y_scale = 0;
+    static grab;
+    static format_func = default_format_func;
+    static enable_update_view = true;
+    static clipboard;
+    static input_defines = [
+        ["0: DEFAULT", 0, [0.0, 1.0], ""],
+        ["1: Skid Velocity", 1, [-1.0, 2.0], "m/s"],
+        ["2: Slip Index", 1, [-2.0, 2.0], "Mu Peak=1.0"],
+        ["3: Slip Index Dir", 1, [-2.0, 2.0], "Mu Peak=1.0"],
+        ["4: Slip Index Side", 1, [-2.0, 2.0], "Mu Peak=1.0"],
+        ["5: Ground Speed", 1, [-1.0, 2.0], "m/s"],
+        ["6: Load", 1, [1.0, 4.0], "N"],
+        ["7: Contact Pressure", 1, [2.0, 5.0], "N/m^2"],
+        ["8: Temperature", 0, [-40.0, 400.0], "C"],
+        ["9: Rolling Tread Speed", 1, [0.0, 3.0], "m/s"],
+    ];
+
+    static output_defines = [
+        ["0: None", 0, [0.0, 1.0], ""],
+        ["1: Gain (Add)", 1, [-2.0, 2.0], ""],
+        ["2: Gain (Multiply)", 1, [-2.0, 2.0], ""],
+        ["3: Pitch", 1, [-1.0, 1.0], ""],
+        ["4: Crossfade RPM", 1, [1.0, 4.0], "RPM"],
+        ["5: Crossfade RPM(Squeal Side)", 1, [1.0, 4.0], "RPM"],
+    ];
+
+    function open(context)
+    {
+        grab = nil;
+
+        context.pushPage(SoundEffectControlRoot);
+        eventloop = main::menu::EventLoop(context);
+        eventloop.enter();
+    }
+
+    function close(context)
+    {
+        if (eventloop != nil)
+        {
+            eventloop.leave();
+            eventloop = nil;
+        }
+
+        context.closePage(SoundEffectControlRoot);
+    }
+
+    function onInitialize(context)
+    {
+        context.cursor = "normal";
+        context.cursor_visible = true;
+        Dialog::View::HBox::SBox::axis.type = "break_line";
+        Dialog::View::HBox::SBox::axis.line_width = 0.0;
+        Dialog::View::HBox::SBox::graph.type = "line";
+        Dialog::View::HBox::SBox::graph.line_width = 0.0;
+
+        var vbox = Dialog::View::HBox::ScrolledWindow::ScrollClip::space;
+        var inst_labels = main::sound.getEffectCodeList();
+        inst_labels.push("");
+        inst_labels.sort();
+
+        var category_labels = [
+            "エンジン",
+            "マフラー",
+            "タービン",
+            "ブローオフバルブ",
+            "ミッションノイズ",
+            "衝突",
+            "縁石",
+            "室内音",
+            "風切り音",
+            "ロードノイズ",
+            "ウェット路面ノイズ",
+            "スキール音（舗装路）",
+            "ダートすべり",
+            "スキール音（その他）",
+            "ダート（砂利道?）",
+            "タイヤ着地",
+            "サス突き上げ",
+            "エンジン/二輪",
+            "マフラー/二輪",
+            "室内音/二輪",
+            "風切り音/二輪",
+            "ロードノイズ/二輪",
+            "予備22",
+            "予備23",
+        ];
+
+        for (var group = 0; group < 2; group++)
+        {
+            var appearance = work_object.appearances[group];
+
+            // Line
+            var w = hidden::GroupItems::line.doCopy();
+            vbox.VBox.appendChild(context, w);
+            w.label.text = "Group %{group}";
+
+            // Instrument Type
+            w = hidden::GroupItems::InstrumentType.doCopy();
+            w.defineAttribute("group", group);
+            vbox.VBox.appendChild(context, w);
+            main::OptionMenuUtil::initialize(context, SoundEffectControlRoot, w.OptionMenu, hidden::PulldownItem, 
+                ["NORMAL", "CROSSFADE"]);
+            
+            w.OptionMenu.setIndex(context, appearance.instrument.type);
+            w.OptionMenu.on_value_changed = method (context)
+            {
+                self.pulldownValueChanged(context);
+                work_object.appearances[self.group].instrument.type = self.index;
+            }
+
+            // Instrument List
+            var w1 = hidden::GroupItems::InstrumentList.doCopy();
+            var w2 = hidden::GroupItems::InstrumentInput.doCopy();
+            w1.defineAttribute("group", group);
+            w2.defineAttribute("group", group);
+            w1.defineAttribute("input_widget", w2);
+
+            vbox.VBox.appendChild(context, w1);
+            vbox.VBox.appendChild(context, w2);
+
+            var instname = appearance.instrument.name;
+            main::OptionMenuUtil::initialize(context, SoundEffectControlRoot, w1.OptionMenu, hidden::PulldownItem, inst_labels);
+
+            var index = inst_labels.indexOf(instname);
+            w1.OptionMenu.setIndex(context, index >= 0 ? index : 0);
+            index < 0;
+
+            w1.OptionMenu.on_value_changed = method (context)
+            {
+                var w = self.getItem();
+                var name = w != nil ? w.label.text : "";
+
+                self.input_widget.Composite.InputTextFace.value = name;
+                self.pulldownValueChanged(context);
+                work_object.appearances[self.group].instrument.name = name;
+            }
+
+            w2.Composite.InputTextFace.value = instname;
+            appearance.instrument.name = instname;
+
+            ctor w2.Composite.InputTextFace 
+            {
+                method onConfirmed(context, text)
+                {
+                    work_object.appearances[self.group].instrument.name = text;
+                }
+            }
+
+            w = hidden::GroupItems::Category.doCopy();
+            w.defineAttribute("group", group);
+            vbox.VBox.appendChild(context, w);
+            main::OptionMenuUtil::initialize(context, SoundEffectControlRoot, w.OptionMenu, hidden::PulldownItem, category_labels);
+            w.OptionMenu.setIndex(context, appearance.category);
+            w.OptionMenu.on_value_changed = method(context)
+            {
+                self.pulldownValueChanged(context);
+                work_object.appearances[self.group].category = self.index;
+            }
+
+            w = hidden::GroupItems::GainSlider.doCopy();
+            w.defineAttribute("group", group);
+            vbox.VBox.appendChild(context, w);
+            w.slider.value = Math::round(Math::log10(appearance.instrument.gain) * 20.0);
+            w.slider.unit_text = "dB";
+            w.slider.zero_text = "OFF";
+            w.slider.decide_callback = function(context, value, widget)
+            {
+                work_object.appearances[widget.group].instrument.gain = value < -49.5 ? 0.0 : (10.0 ** (value / 20.0));
+            }
+            w.slider.is_zero_callback = function(value, slider)
+            {
+                return value < -49.5;
+            }
+            w.slider.setup(context);
+            
+            w = hidden::GroupItems::GainHFSlider.doCopy();
+            w.defineAttribute("group", group);
+            vbox.VBox.appendChild(context, w);
+            w.slider.value = Math::round(Math::log10(appearance.instrument.gain_hf) * 20.0);
+            w.slider.unit_text = "dB";
+            w.slider.zero_text = "OFF";
+            w.slider.decide_callback = function(context, value, widget)
+            {
+                work_object.appearances[widget.group].instrument.gain_hf = value < -49.5 ? 0.0 : (10.0 ** (value / 20.0));
+            }
+            w.slider.is_zero_callback = function(value, slider)
+            {
+                return value < -49.5;
+            }
+            w.slider.setup(context);
+
+            w = hidden::GroupItems::PitchSlider.doCopy();
+            w.slider.defineStatic("group", group);
+            vbox.VBox.appendChild(context, w);
+            w.slider.index = appearance.instrument.pitch;
+            w.slider.decide_callback = function(context, index, slider)
+            {
+                work_object.appearances[slider.group].instrument.pitch = slider.value * slider.parent.PitchScaleSlider.slider.value;
+            }
+            w.slider.setup(context);
+
+            w = hidden::GroupItems::PitchScaleSlider.doCopy();
+            w.visible = false;
+            w.slider.defineStatic("group", group);
+            vbox.VBox.appendChild(context, w);
+            w.slider.decide_callback = function(context, index, slider)
+            {
+                work_object.appearances[slider.group].instrument.pitch = slider.value * slider.parent.PitchSlider.slider.value;
+            }
+            w.slider.setup(context);
+        }
+
+        var w = hidden::GroupItems::line.doCopy();
+        vbox.VBox.appendChild(context, w);
+        w.label.text = "Control";
+        
+        vbox.ChannelSlider.slider.max = work_object.controls.size - 1;
+        vbox.ChannelSlider.slider.setup(context);
+
+        var labels = [];
+        foreach (var i in input_defines)
+            labels.push(i[0]);
+        main::OptionMenuUtil::initialize(context, SoundEffectControlRoot, vbox.Input.OptionMenu, hidden::PulldownItem, labels);
+
+        labels = [];
+        foreach (var i in output_defines)
+            labels.push(i[0]);
+        main::OptionMenuUtil::initialize(context, SoundEffectControlRoot, vbox.Output.OptionMenu, hidden::PulldownItem, labels);
+
+        labels = [
+            "Linear-Linear",
+            "Linear-Log",
+            "Log-Linear",
+            "Log-Log"
+        ];
+        main::OptionMenuUtil::initialize(context, SoundEffectControlRoot, vbox.GraphType.OptionMenu, hidden::PulldownItem, labels);
+
+        labels = [
+            "Zero",
+            "Linear to Zero",
+            "Extend Line",
+        ];
+        main::OptionMenuUtil::initialize(context, SoundEffectControlRoot, vbox.ExtrapolateType.OptionMenu, hidden::PulldownItem, labels);
+
+        update_channel_view(context);
+    }
+
+    function onFinalize(context)
+    {
+        target_object = nil;
+        work_object = nil;
+        grab = nil;
+
+        format_func = default_format_func;
+
+        Dialog::View::HBox::SBox::Points.clearChildren(context);
+
+        var vbox = Dialog::View::HBox::ScrolledWindow::ScrollClip::space;
+        vbox.VBox.clearWindow(context);
+
+        main::OptionMenuUtil::finalize(context, vbox.Input.OptionMenu);
+        main::OptionMenuUtil::finalize(context, vbox.Output.OptionMenu);
+        main::OptionMenuUtil::finalize(context, vbox.GraphType.OptionMenu);
+        main::OptionMenuUtil::finalize(context, vbox.ExtrapolateType.OptionMenu);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, "Save changes?");
+        if (res)
+            apply();
+
+        close(context);
+        return STATE_YIELD;
+    }
+
+    function setRange(_min, _max)
+    {
+        min = _min;
+        max = _max;
+        scale = [1.0 / (max[0] - min[0]), -1.0 / (max[1] - min[1])];
+        offset = [-min[0] * scale[0], 1.0 - (min[1] * scale[1])];
+    }
+
+    function setSoundEffect(_target)
+    {
+        target_object = _target;
+        work_object = _target.getDeepCopy();
+
+        grab = nil;
+        Dialog::View::HBox::SBox::Points.clearChildren();
+
+        update_path();
+    }
+
+    function apply()
+    {
+        target_object.set(work_object.getDeepCopy());
+        main::CarSound::InitializeRoadAttributeSoundParameter();
+        main::gtengine::MRaceSound::initializeGlobalParameter();
+
+        main::pdistd::MDynRes::setInt32("SoundDebugReload", 1);
+    }
+
+    function get_current_ch_index()
+    {
+        var vbox = Dialog::View::HBox::ScrolledWindow::ScrollClip::space;
+        return vbox.ChannelSlider.slider.index;
+    }
+
+    function apply_input_change()
+    {
+        var vbox = Dialog::View::HBox::ScrolledWindow::ScrollClip::space;
+        var w = vbox.Input.OptionMenu;
+        work_object.controls[get_current_ch_index()].input = w.index;
+        setRange([input_defines[w.index][2][0], min[1]], [input_defines[w.index][2][1], max[1]]);
+
+        x_scale = input_defines[w.index][1];
+        work_object.controls[get_current_ch_index()].type = (y_scale == 1 ? 2 : 0) + (x_scale == 1 ? 1 : 0);
+    }
+
+    function apply_output_change()
+    {
+        var vbox = Dialog::View::HBox::ScrolledWindow::ScrollClip::space;
+        var w = vbox.Output.OptionMenu;
+        work_object.controls[get_current_ch_index()].output = w.index;
+        setRange([min[0], output_defines[w.index][2][0]], [max[0], output_defines[w.index][2][1]]);
+
+        y_scale = output_defines[w.index][1];
+        work_object.controls[get_current_ch_index()].type = (y_scale == 1 ? 2 : 0) + (x_scale == 1 ? 1 : 0);
+    }
+
+    function update_channel_view(context)
+    {
+        enable_update_view = false;
+
+        var vbox = Dialog::View::HBox::ScrolledWindow::ScrollClip::space;
+        vbox.Input.OptionMenu.setIndex(context, work_object.controls[get_current_ch_index()].input);
+        vbox.Output.OptionMenu.setIndex(context, work_object.controls[get_current_ch_index()].output);
+        vbox.GraphType.OptionMenu.setIndex(context, work_object.controls[get_current_ch_index()].type);
+        vbox.ExtrapolateType.OptionMenu.setIndex(context, work_object.controls[get_current_ch_index()].extrapolate);
+
+        enable_update_view = true;
+
+        apply_input_change();
+        apply_output_change();
+        update_axis();
+        update_path();
+    }
+
+    function to_linear_scale_x(x)
+    {
+        if (x_scale == 1)
+            return 10.0 ** x;
+
+        return x;
+    }
+
+    function to_linear_scale_y(y)
+    {
+        if (y_scale == 1)
+            return 10.0 ** y;
+
+        return y;
+    }
+
+    function to_display_scale_x(x)
+    {
+        if (x_scale == 1)
+            return Math::log10(x);
+
+        return x;
+    }
+
+    function to_display_scale_y(y)
+    {
+        if (y_scale == 1)
+            return Math::log10(y);
+
+        return y;
+    }
+
+    function to_graph_scale_x(x)
+    {
+        if (x_scale == 1)
+        {
+            var min_x = 10.0 ** min[0];
+            if (x <= min_x)
+                x = min[0];
+            else
+
+                x = Math::log10(x);
+        }
+
+        return (x * scale[0]) + offset[0];
+    }
+
+    function to_graph_scale_y(y)
+    {
+        if (y_scale == 1)
+        {
+            var min_y = 10.0 ** min[1];
+            if (y <= min_y)
+                y = min[1];
+            else
+
+                y = Math::log10(y);
+        }
+
+        return (y * scale[1]) + offset[1];
+    }
+
+    function to_scale_label_string(x)
+    {
+        if (x >= 1.0)
+            return "%d".format(x.toInt());
+
+        var scale = -Math::log10(x);
+        return "%%.%df".format(Math::ceil(scale).toInt()).format(x + 1e-09);
+    }
+
+    function update_path()
+    {
+        var path = work_object.controls[get_current_ch_index()].graph;
+        var graph_points = Array(path.size);
+
+        for (var i = 0; i < path.size; i++)
+        {
+            var p = Array(2);
+            p[0] = to_graph_scale_x(path[i][0]);
+            p[1] = to_graph_scale_y(path[i][1]);
+            graph_points[i] = p;
+
+            var point = Dialog::View::HBox::SBox::Points.getChild(i);
+            if (point == nil)
+            {
+                point = hidden::Point.doCopy();
+                point.defineStatic("index", i);
+                Dialog::View::HBox::SBox::Points.appendChild(point);
+            }
+
+            point.x = p[0] * Dialog::View::HBox::SBox::Points.w;
+            point.y = p[1] * Dialog::View::HBox::SBox::Points.h;
+            
+            var x0, y0, x1, y1;
+            if (i < path.size - 1)
+            {
+                var x0 = path[i][0];
+                var y0 = path[i][1];
+                var x1 = path[i + 1][0];
+                var y1 = path[i + 1][1];
+            }
+            else
+            {
+                var x0 = path[i - 1][0];
+                var y0 = path[i - 1][1];
+                var x1 = path[i][0];
+                var y1 = path[i][1];
+            }
+
+            if (x_scale == 1)
+            {
+                x0 = Math::log10(x0);
+                x1 = Math::log10(x1);
+            }
+
+            if (y_scale == 1)
+            {
+                y0 = Math::log10(y0);
+                y1 = Math::log10(y1);
+            }
+
+            var dx = x1 - x0;
+            var dydx = dx <= 0.0 ? 0.0 : (y1 - y0) / dx;
+            point.label.text = format_func(path[i][0], path[i][1], dydx);
+        }
+
+        Dialog::View::HBox::SBox::graph.points = graph_points;
+    }
+
+    function update_axis()
+    {
+        var lines = [
+            [0.0, 1.0],
+            [1.0, 1.0],
+            [0.0, 0.0],
+            [0.0, 1.0],
+        ];
+
+        Dialog::View::HBox::SBox::Labels.clearChildren();
+        if (x_scale == 0)
+        {
+            var x_range = Math::max(Math::abs(min[0]), Math::abs(max[0]));
+            var x_scale_step = 10.0 ** Math::floor(Math::log10(x_range) - 1.0);
+
+            for (var i = ((min[0] / x_scale_step) - 0.5).toInt(); i <= ((max[0] / x_scale_step) + 0.5).toInt(); i++)
+            {
+                var x = (i * x_scale_step) * scale[0] + offset[0];
+
+                var d = 0.015;
+
+                if (i % 10 == 0)
+                    d = 1.0;
+                else if (i % 5 == 0)
+                    d = 0.03;
+
+                lines.push([x, offset[1]]);
+                lines.push([x, offset[1] - d]);
+            }
+        }
+        else
+        {
+            var x0 = to_linear_scale_x(min[0]);
+            var x1 = to_linear_scale_x(max[0]);
+            var i0 = Math::floor(Math::log10(x0) * 9.0).toInt();
+            var i1 = Math::floor(Math::log10(x1) * 9.0).toInt();
+
+            for (var i = i0; i < i1; i++)
+            {
+                var index = -i0 + i;
+                var linear_step = 10.0 ** Math::floor((i.toFloat() + 0.5) / 9.0);
+                var linear_base = linear_step;
+                var linear_x = linear_base + (linear_step * (index % 9).toFloat());
+                var nx = Math::log10(linear_x) * scale[0] + offset[0];
+
+                var d = 0.015;
+                if (index % 9 == 0)
+                    d = 1.0;
+                else if (index % 9 == 4)
+                    d = 0.03;
+
+                lines.push([nx, 1.0]);
+                lines.push([nx, 1.0 - d]);
+
+                if (index % 9 == 0)
+                {
+                    var label = hidden::x_value.doCopy();
+                    Dialog::View::HBox::SBox::Labels.appendChild(label);
+                    label.text = to_scale_label_string(linear_x);
+                    label.x = Dialog::View::HBox::SBox::Labels.x + Dialog::View::HBox::SBox::Labels.w * nx;
+                    label.y = Dialog::View::HBox::SBox::Labels.y + Dialog::View::HBox::SBox::Labels.h;
+                }
+            }
+        }
+
+        if (y_scale == 0)
+        {
+            var y_range = Math::max(Math::abs(min[1]), Math::abs(max[1]));
+            var y_scale_step = 10.0 ** Math::floor(Math::log10(y_range) - 1.0);
+
+            for (var i = ((min[1] / y_scale_step) - 0.5).toInt(); i <= ((max[1] / y_scale_step) + 0.5).toInt(); i++)
+            {
+                var y = (i * y_scale_step) * scale[1] + offset[1];
+
+                var d = 0.015;
+
+                if (i % 10 == 0)
+                    d = 1.0;
+                else if (i % 5 == 0)
+                    d = 0.03;
+
+                lines.push([offset[0], y]);
+                lines.push([offset[0] + d, y]);
+            }
+        }
+        else
+        {
+            var y0 = to_linear_scale_y(min[1]);
+            var y1 = to_linear_scale_y(max[1]);
+            var i0 = Math::floor(Math::log10(y0) * 9.0).toInt();
+            var i1 = Math::floor(Math::log10(y1) * 9.0).toInt();
+
+            for (var i = i0; i < i1; i++)
+            {
+                var index = -i0 + i;
+                var linear_step = 10.0 ** Math::floor((i.toFloat() + 0.5) / 9.0);
+                var linear_base = linear_step;
+                var linear_y = linear_base + (linear_step * (index % 9).toFloat());
+                var ny = Math::log10(linear_y) * scale[1] + offset[1];
+
+                var d = 0.015;
+                if (index % 9 == 0)
+                    d = 1.0;
+                else if (index % 9 == 4)
+                    d = 0.03;
+
+                lines.push([0.0, ny]);
+                lines.push([0.0 + d, ny]);
+
+                if (index % 9 == 0)
+                {
+                    var label = hidden::y_value.doCopy();
+                    Dialog::View::HBox::SBox::Labels.appendChild(label);
+                    label.text = to_scale_label_string(linear_y);
+                    label.x = Dialog::View::HBox::SBox::Labels.x - label.w - 8;
+                    label.y = Dialog::View::HBox::SBox::Labels.h * ny - label.h;
+                }
+            }
+        }
+
+        var input = work_object.controls[get_current_ch_index()].input;
+        Dialog::View::HBox::SBox::x_unit.text = input_defines[input][3];
+        Dialog::View::HBox::SBox::axis.points = lines;
+    }
+}
+
+module SoundEffectControlRoot::hidden::Point
+{
+    function onActivate(context, event, widget)
+    {
+        SoundEffectControlRoot::grab = SoundEffectControlRoot::grab == nil ? widget : nil;
+        main::sound.play("ok");
+        return STATE_YIELD;
+    }
+
+    function onCancel(context, event, widget)
+    {
+        if (SoundEffectControlRoot::grab != nil)
+        {
+            SoundEffectControlRoot::grab = nil;
+            main::sound.play("cancel");
+            return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    static cursor_move = [
+        CELL_PAD_CTRL_L3_UP : [0.0, 1.0],
+        CELL_PAD_CTRL_L3_DOWN : [0.0, -1.0],
+        CELL_PAD_CTRL_L3_LEFT : [-1.0, 0.0],
+        CELL_PAD_CTRL_L3_RIGHT : [1.0, 0.0]
+    ];
+
+    function find_point_by_index(index)
+    {
+        for (var w = Dialog::View::HBox::SBox::Points.first; w != nil; w = w.next_widget)
+        {
+            if (w.defined("index") && w["index"] == index)
+                return w;
+        }
+
+        return nil;
+    }
+
+    function onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_START:
+                SoundEffectControlRoot.setFocus(SoundEffectControlRoot::Dialog::Buttons::YesNo::Yes);
+                main::sound.play("cursor");
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_L3_UP:
+            case CELL_PAD_CTRL_L3_DOWN:
+            case CELL_PAD_CTRL_L3_LEFT:
+            case CELL_PAD_CTRL_L3_RIGHT:
+                if (SoundEffectControlRoot::grab != nil)
+                {
+                    var widget = SoundEffectControlRoot::grab;
+                    var index = widget.index;
+                    var path = work_object.controls[get_current_ch_index()].graph;
+                    var point = path[index];
+                    var pad = context.getUpdateContext().getPadButtonState(0);
+                    var step = pad & 0x800 ? 10.0 : (pad & 0x100 ? 0.1 : 1.0);
+                    var step_x = step;
+                    var step_y = step;
+
+                    if (x_scale == 1)
+                        step_x *= 10.0 ** Math::floor(Math::log10(point[0]) - 1.0);
+                    else
+                        step_x *= 10.0 ** Math::floor(Math::log10(max[0] - min[0]) - 2.0);
+
+                    if (y_scale == 1)
+                        step_y *= 10.0 ** Math::floor(Math::log10(point[1]) - 1.0);
+                    else
+                        step_y *= 10.0 ** Math::floor(Math::log10(max[1] - min[1]) - 2.0);
+
+                    var move = cursor_move[event.keysym];
+                    point[0] = Math::clamp(point[0] + (move[0] * step_x), to_linear_scale_x(min[0]), to_linear_scale_x(max[0]));
+                    point[1] = Math::clamp(point[1] + (move[1] * step_y), to_linear_scale_y(min[1]), to_linear_scale_y(max[1]));
+
+                    update_path();
+                    main::sound.play("param");
+                    return STATE_YIELD;
+                } 
+                break;
+
+            case CELL_PAD_CTRL_L1:
+                if (SoundEffectControlRoot::grab == nil)
+                {
+                    var widget = event.widget;
+                    if (widget.defined("index"))
+                    {
+                        var index = widget["index"];
+                        if (index > 0)
+                        {
+                            var w = find_point_by_index(index - 1);
+                            if (w != nil)
+                            {
+                                SoundEffectControlRoot.setFocus(w);
+                                main::sound.play("cursor");
+                                return STATE_YIELD;
+                            }
+                        }
+                    }
+                } 
+                break;
+
+            case CELL_PAD_CTRL_R1:
+                if (SoundEffectControlRoot::grab == nil)
+                {
+                    var widget = event.widget;
+                    if (widget.defined("index"))
+                    {
+                        var index = widget["index"];
+                        var path = work_object.controls[get_current_ch_index()].graph;
+                        var max = path.size - 1;
+                        if (index < max)
+                        {
+                            var w = find_point_by_index(index + 1);
+                            if (w != nil)
+                            {
+                                SoundEffectControlRoot.setFocus(w);
+                                main::sound.play("cursor");
+                                return STATE_YIELD;
+                            }
+                        }
+                    }
+                }
+                break; 
+        }
+
+        return STATE_EXIT;
+    }
+}
+
+
+module SoundEffectControlRoot::Dialog::Buttons::YesNo::Yes
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        apply();
+        close(context);
+        return STATE_YIELD;
+    }
+}
+
+module SoundEffectControlRoot::Dialog::Buttons::YesNo::No
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        close(context);
+        return STATE_YIELD;
+    }
+}
+
+module SoundEffectControlRoot::Dialog::Buttons::YesNo::CopyPage
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        clipboard = work_object.getDeepCopy();
+        return STATE_YIELD;
+    }
+}
+
+module SoundEffectControlRoot::Dialog::Buttons::YesNo::PastePage
+{
+    function onActivate(context)
+    {
+        if (clipboard == nil)
+        {
+            main::sound.play("disable");
+            return STATE_YIELD;
+        }
+
+        main::sound.play("ok");
+
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, "Are you sure?");
+        if (res)
+        {
+            if (work_object.class_id == clipboard.class_id)
+            {
+                work_object = clipboard.getDeepCopy();
+                update_channel_view(context);
+            }   
+            else
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, "Type mismatch");
+            }
+        }
+
+        return STATE_YIELD;
+    }
+}
+
+module SoundEffectControlRoot::Dialog::Buttons::YesNo::CopyChannel
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        clipboard = work_object.controls[get_current_ch_index()].getDeepCopy();
+        return STATE_YIELD;
+    }
+}
+
+module SoundEffectControlRoot::Dialog::Buttons::YesNo::PasteChannel
+{
+    function onActivate(context)
+    {
+        if (clipboard == nil)
+        {
+            main::sound.play("disable");
+            return STATE_YIELD;
+        }
+
+        main::sound.play("ok");
+
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, "Are you sure?");
+        if (res)
+        {
+            if (work_object.controls[get_current_ch_index()].class_id == clipboard.class_id)
+            {
+                work_object.controls[get_current_ch_index()] = clipboard.getDeepCopy();
+                update_channel_view(context);
+            }   
+            else
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, "Type mismatch");
+            }
+        }
+
+        return STATE_YIELD;
+    }
+}
+
+module SoundEffectControlRoot::Dialog::View::HBox::ScrolledWindow::ScrollClip::space::ChannelSlider::slider
+{
+    method onValueChanged(context)
+    {
+        update_channel_view(context);
+        self.sliderValueChanged(context);
+    }
+}
+
+module SoundEffectControlRoot::Dialog::View::HBox::ScrolledWindow::ScrollClip::space::Input::OptionMenu
+{
+    method onValueChanged(context)
+    {
+        apply_input_change();
+        if (enable_update_view)
+        {
+            update_axis();
+            update_path();
+        }
+
+        self.pulldownValueChanged(context);
+    }
+}
+
+module SoundEffectControlRoot::Dialog::View::HBox::ScrolledWindow::ScrollClip::space::Output::OptionMenu
+{
+    method onValueChanged(context)
+    {
+        apply_output_change();
+        if (enable_update_view)
+        {
+            update_axis();
+            update_path();
+        }
+
+        self.pulldownValueChanged(context);
+    }
+}
+
+module SoundEffectControlRoot::Dialog::View::HBox::ScrolledWindow::ScrollClip::space::GraphType::OptionMenu
+{
+    method onValueChanged(context)
+    {
+        work_object.controls[get_current_ch_index()].type = self.index;
+        x_scale = self.index & 1 ? 1 : 0;
+        y_scale = self.index & 2 ? 1 : 0;
+
+        if (enable_update_view)
+        {
+            update_axis();
+            update_path();
+        }
+
+        self.pulldownValueChanged(context);
+    }
+}
+
+module SoundEffectControlRoot::Dialog::View::HBox::ScrolledWindow::ScrollClip::space::ExtrapolateType::OptionMenu
+{
+    method onValueChanged(context)
+    {
+        work_object.controls[get_current_ch_index()].extrapolate = self.index;
+        self.pulldownValueChanged(context);
+    }
+}

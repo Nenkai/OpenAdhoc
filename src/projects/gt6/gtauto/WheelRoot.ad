@@ -1,0 +1,1063 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module WheelRoot
+{
+    hidden.visible = false;
+
+    class WheelData
+    {
+        attribute name;
+        attribute wheel;
+        attribute color;
+        attribute f_inch;
+        attribute r_inch;
+        attribute inch_up;
+        attribute price;
+        attribute is_installed;
+
+        method __init__(name, wheel, color, f_inch, r_inch, inch_up, price, is_installed)
+        {
+            self.name = name;
+            self.wheel = wheel;
+            self.color = color;
+            self.f_inch = f_inch;
+            self.r_inch = r_inch;
+            self.inch_up = inch_up;
+            self.price = price;
+            self.is_installed = is_installed;
+        }
+    }
+
+    attribute modal_page;
+    attribute riding_car;
+    attribute default_f_inch;
+    attribute default_r_inch;
+    attribute need_save = false;
+
+    method open(context)
+    {
+        self.modal_page = main::SequenceUtil::ModalPage(context, WheelRoot);
+        self.modal_page.open();
+    }
+
+    method close(context)
+    {
+        if (self.modal_page != nil)
+        {
+            ContextMain.disableInput();
+
+            if (self.need_save)
+            {
+                SaveDataUtilGT6::saveEveryWhere(context);
+                self.need_save = false;
+            }
+
+            GTAutoMenu::ListWindow::CarView.finalize(context);
+
+            PageUtil::visibleUnderPages(context, self);
+
+            menu::FrameInterval = 1;
+
+            var actor = self.Fade;
+            actor.backward();
+            actor.start();
+
+            var delay_time = actor.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+
+            ContextMain.enableInput();
+        }
+    }
+
+    method onInitialize(context)
+    {
+        self.need_save = false;
+        self.riding_car = GAME_STATUS.user_profile.garage.getRidingCar();
+
+        GTAutoMenu::ListWindow::CarView.initialize(context);
+        GTAutoMenu::ListWindow::CarView.setCar(context, self.riding_car);
+
+        ContextMain.disableInput();
+
+        var actor = self.Fade;
+        actor.forward();
+        actor.restart();
+        actor.on_effect_end = function(context)
+        {
+            actor.on_effect_end = nil;
+            PageUtil::invisibleUnderPages(context, self);
+            ContextMain.enableInput();
+        };
+
+        GTAutoMenu.initialize(context);
+        self.Fade.forward();
+        self.Fade.restart();
+
+        menu::FrameInterval = 2;
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (CarPreview.full_view)
+            return 0;
+
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_L1:
+                if (GTAutoMenu::ListWindow::CarView.swapCamera_L1())
+                    sound.play("cursor");
+
+                return STATE_YIELD;
+                break;
+
+            case CELL_PAD_CTRL_R1:
+                if (GTAutoMenu::ListWindow::CarView.swapCamera_R1())
+                    sound.play("cursor");
+
+                return STATE_YIELD;
+                break;
+
+            case CELL_PAD_CTRL_TRIANGLE:
+                sound.play("ok");
+                CarPreview.switchView(context);
+
+                return STATE_YIELD;
+                break;
+
+            case CELL_PAD_CTRL_START:
+                var preopen_garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+
+                if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+                {
+                    if (preopen_garage_id != GAME_STATUS.user_profile.garage.getRidingGarageId())
+                    {
+                        self.riding_car = GAME_STATUS.user_profile.garage.getRidingCar();
+                        GTAutoMenu.initialize(context);
+                        GTAutoMenu::ListWindow::CarView.setCar(context, self.riding_car);
+                    }
+                }
+                break;
+        }
+
+        return STATE_EXIT;
+    }
+
+    module WheelUtil
+    {
+        static sPriceTable = 
+        [// inch    price
+             12  : 10 * 100,
+             13  : 10 * 100,
+             14  : 10 * 100,
+             15  : 15 * 100,
+             16  : 18 * 100,
+             17  : 20 * 100,
+             18  : 25 * 100,
+             19  : 30 * 100,
+             20  : 40 * 100,
+             21  : 60 * 100,
+             22  : 80 * 100,
+             23  : 80 * 100,
+        ];
+
+        function getBasePrice(inch)
+        {
+            var size = (inch + 5) / 10;
+            var price = sPriceTable[size];
+            return price != nil ? price : (1 * 100);
+        }
+
+        function isInstalled(cp, wheel, color, inch_up)
+        {
+            if (cp == nil)
+                return false;
+
+            return wheel == cp.wheel && color == cp.wheel_color && inch_up == cp.wheel_inchup;
+        }
+    }
+
+    module GTAutoMenu
+    {
+        attribute active_w;
+
+        method initialize(context)
+        {
+            var car_code = WheelRoot.riding_car.getCarCode();
+
+            var wheel_info = SPECDB.query1("SELECT FrontMinDiameter, FrontMaxDiameter, RearMinDiameter, RearMaxDiameter FROM WHEEL WHERE CarCode=?", [car_code]);
+    
+            var default_f_inch = wheel_info.FrontMinDiameter;
+            var default_r_inch = wheel_info.RearMinDiameter;
+            WheelRoot.default_f_inch = default_f_inch;
+            WheelRoot.default_r_inch = default_r_inch;
+
+            var allowed_f_inch = wheel_info.FrontMaxDiameter;
+            var allowed_r_inch = wheel_info.RearMaxDiameter;
+    
+            var allow_change_wheel = allowed_f_inch > 0 && allowed_r_inch > 0;
+            var inch_count = 3;
+    
+            var name_column = main::pdistd::MLocale::getLanguage() == "JP" ? "NameJpn" : "NameEng";
+            var category_wheel_list = [];
+            var found_change_wheel = false;
+
+            for (var i = 0; i < inch_count; i++)
+            {
+                var wheel_list = [];
+
+                var inch_up = i * 10;
+                var f_inch = default_f_inch + inch_up;
+                var r_inch = default_r_inch + inch_up;
+    
+                if (allow_change_wheel)
+                {
+                    if (f_inch <= allowed_f_inch && r_inch <= allowed_r_inch)
+                    {
+                        var min_inch = f_inch < r_inch ? f_inch : r_inch;
+                        var max_inch = f_inch > r_inch ? f_inch : r_inch;
+    
+                        var rows = SPECDB.executeQuery("SELECT %{name_column}, ID, NumColor, Factor FROM WHEEL_EX WHERE MinDiameter <= ? AND ? <= MaxDiameter AND WheelType&1 ORDER BY NameEng", [min_inch, max_inch]);
+                        var base_price = WheelUtil::getBasePrice(max_inch);
+
+                        foreach (var [Name, ID, NumColor, Factor] in rows)
+                        {
+                            for (var color_index = 0; color_index < NumColor; color_index++)
+                                wheel_list.push(WheelData(Name, ID, color_index, f_inch, r_inch, inch_up, base_price * Factor, false));
+
+                            found_change_wheel = true;
+                        }
+                    }
+                }
+
+                if (inch_up == 0 || wheel_list.size > 0)
+                {
+                    category_wheel_list.push([[inch_up, f_inch, r_inch], wheel_list]);
+                }
+            }
+
+            if (found_change_wheel && category_wheel_list.size > 0)
+            {
+                var normal_wheel_data = WheelData(manager.translate("Setting", "PARTS_NORMAL"), 0, 0, 0, 0, 0, 10 * 100, false);
+                category_wheel_list[0][1].unshift(normal_wheel_data);
+            }
+
+            CarPreview::CannotChangeWheel.visible = !allow_change_wheel || !found_change_wheel;
+
+            self.clearCategoryComponent(context);
+
+            var focus_w = nil;
+            var category_w = hidden::Category.doCopy();
+            var cateogry_title_text = manager.translate("GTAuto", "Category_Wheel");
+            category_w.setText(cateogry_title_text);
+
+            foreach (var [inch_trio, wheel_list] in category_wheel_list)
+            {
+                var [inch_up, f_inch, r_inch] = inch_trio;
+                var category_item_w = hidden::CategoryItem.doCopy();
+                category_item_w.value = wheel_list;
+
+                var category_text = "";
+
+                if (inch_up == 0)
+                    category_text = manager.translate("GTAuto", "Wheel_DefaultSize");
+                else
+                    category_text = manager.translate("GTAuto", "Wheel_InchUp").build(inch_up / 10);
+
+                category_item_w.setText(category_text);
+                category_w.setCategoryItemComponent(context, category_item_w);
+
+                if (focus_w == nil)
+                    focus_w = category_item_w;
+            }
+
+            self.setCategoryComponent(context, category_w);
+            self.setActive(context, focus_w);
+
+            WheelRoot.setFocus(focus_w);
+        }
+
+        method onFinalize(context)
+        {
+            if (self.active_w != nil)
+            {
+                self.active_w.active = false;
+                self.active_w = nil;
+            }
+
+            self.clearCategoryComponent(context);
+        }
+
+        method setActive(context, active_item)
+        {
+            if (self.active_w != nil)
+            {
+                self.active_w.active = false;
+                self.active_w = nil;
+            }
+
+            active_item.active = true;
+            self.active_w = active_item;
+
+            self.updateList(context, active_item);
+        }
+
+        method updateList(context, item)
+        {
+            if (item == nil)
+                item = self.active_w;
+
+            var parts_list = item.value;
+            GTAutoMenu::ListWindow::clip::ListBox.setPartsList(context, parts_list);
+        }
+    }
+
+    module GTAutoMenu::ListWindow::clip::ListBox
+    {
+        attribute parts_list;
+        attribute prev_focus_w_;
+        attribute active_w_index = -1;
+
+        method onInitialize(context)
+        {
+            var adj = main::menu::MAdjustment();
+            self.clip::VScrollbar.adjustment = adj;
+            self.clip::VScrollArrow.adjustment = adj;
+            self.v_adjustment = adj;
+        }
+
+        method setPartsList(context, parts_list)
+        {
+            self.active_w_index = -1;
+            self.setItemTemplate(context, hidden::ListItem);
+            self.setItemCount(0, 0);
+            self.postRedraw();
+            context.wait();
+
+            var x = 3;
+            var y = 1;
+
+            if (parts_list.size < x)
+                x = parts_list.size;
+
+            if (x > 0)
+                y = (parts_list.size + (x - 1)) / x;
+
+            self.setItemCount(x, y);
+            self.parts_list = parts_list;
+            self.focus_index = 0;
+
+            var empty = parts_list.size > 0;
+            self.insensitive = !empty;
+            ListWindow::Empty.visible = !empty;
+        }
+
+        method inFocus(context)
+        {
+            if (self.insensitive)
+                return;
+
+            var focus_w = WheelRoot.getFocusWidget();
+            if (focus_w == nil)
+                return;
+
+            self.prev_focus_w_ = focus_w;
+            WheelRoot.setFocus(self);
+        }
+
+        method outFocus(context)
+        {
+            if (self.prev_focus_w_ != nil)
+            {
+                WheelRoot.setFocus(self.prev_focus_w_);
+                self.prev_focus_w_ = nil;
+            }
+        }
+
+        method onActivate(context)
+        {
+            var w = self.getInitializedWidget(context, self.focus_index);
+            if (w == nil || self.focus_index == self.active_w_index)
+                return STATE_YIELD;
+
+            var prev_active_w = self.getItemWidget(self.active_w_index);
+            if (prev_active_w != nil)
+                prev_active_w.set_active(false);
+
+            self.active_w_index = self.focus_index;
+            w.set_active(true);
+            w.on_activate(context);
+
+            return STATE_YIELD;
+        }
+
+        method getInitializedWidget(context, i)
+        {
+            if (i < 0)
+                return nil;
+
+            var w = self.getItemWidget(i);
+            if (w == nil)
+                w = self.getItemWidget(i, context);
+
+            if (!w.initialized)
+            {
+                if (i < self.parts_list.size)
+                    w.initialize(context, self.parts_list[i]);
+                else
+                    w.initializeBlank(context);
+
+                if (w == self.active_w)
+                    w.setActive(true);
+            }
+
+            return w;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+            {
+                if (self.focus_index % 3 == 0)
+                {
+                    sound.play("cursor");
+                    GTAutoMenu::ListWindow::clip::ListBox.outFocus(context);
+                    return STATE_YIELD;
+                }
+            }
+
+            return STATE_EXIT;
+        }
+
+        method onFocusNotify(context, new_index, old_index)
+        {
+            if (new_index != nil)
+            {
+                var w = self.getItemWidget(new_index, context);
+                if (w != nil && w.defined("on_focus_enter"))
+                    w["on_focus_enter"](context);
+            }
+
+            if (old_index != nil)
+            {
+                var w = self.getItemWidget(old_index, context);
+                if (w != nil && w.defined("on_focus_leave"))
+                    w["on_focus_leave"](context);
+            }
+
+            return 1;
+        }
+
+        method onVisibleNotify(context, indices)
+        {
+            foreach (var i in indices)
+            {
+                if (self.getItemVisible(i))
+                {
+                    var w = self.getInitializedWidget(context, i);
+                    if (i == self.active_w_index)
+                        w.set_active(true);
+                }
+                else
+                    self.setItemWidget(i, context, nil);
+            }
+
+            return 1;
+        }
+    }
+
+    module GTAutoMenu::ListWindow::CarView
+    {
+        static sCameraScripts = [
+            "GTAUTO_Parts_Paint_right",
+            "GTAUTO_Parts_Paint_FR",
+            "GTAUTO_Parts_Paint_front",
+            "GTAUTO_Parts_Paint_FL",
+            "GTAUTO_Parts_Paint_left",
+            "GTAUTO_Parts_Paint_RL",
+            "GTAUTO_Parts_Paint_rear",
+            "GTAUTO_Parts_Paint_RR",
+            "GTAUTO_Parts_Paint_topview",
+        ];
+
+        attribute preview_cp;
+        attribute is_preview = false;
+        attribute data;
+        attribute item_w;
+        attribute camera_point = 0;
+
+        method initialize(context)
+        {
+            self.insensitive = true;
+            
+            var sbox = self.SBox;
+            sbox.Name.text = "";
+            sbox.CrPrice::Price.text = "--";
+            sbox.Buy.insensitive = true;
+
+            CarPreview::Footer::Preview::MoveY.forward();
+            CarPreview::Footer::Preview::MoveY.reset();
+
+            CarPreview::SceneFace.initialize(context);
+        }
+
+    
+        method finalize(context)
+        {
+            CarPreview::SceneFace.finalize(context);
+            self.preview_cp = nil;
+            self.is_preview = false;
+            self.data = nil;
+            self.item_w = nil;
+        }
+
+        method onFinalize(context)
+        {
+            self.finalize(context);
+        }
+
+        method setCar(context, cp)
+        {
+            self.finalize(context);
+            self.insensitive = true;
+            self.preview_cp = gtengine::MCarParameter();
+            self.preview_cp.deepCopy(cp);
+            self.preview_cp.setTarmacTiresWithTrunk();
+            GTAutoUtil::applyCarWashAndRepair(self.preview_cp);
+            self.is_preview = false;
+
+            CarPreview::SceneFace.initialize(context);
+            CarPreview::SceneFace.loadCar(context, self.preview_cp);
+            self.camera_point = 0;
+            self.SBox::Buy.insensitive = true;
+            CarPreview::Footer::Preview::MoveY.backward();
+            CarPreview::Footer::Preview::MoveY.start();
+        }
+
+        method startPreview(data, item_w)
+        {
+            var sbox = self.SBox;
+            sbox.Name.text = data.name;
+            sbox.CrPrice::Price.text = pdiext::MMisc::GetMoneyString(data.price);
+
+            var is_installed = WheelUtil::isInstalled(self.preview_cp, data.wheel, data.color, data.inch_up);
+            sbox.Buy.insensitive = is_installed;
+            sbox.OwnFlag.visible = is_installed;
+            
+            CarPreview::Footer::Preview::MoveY.forward();
+            CarPreview::Footer::Preview::MoveY.start();
+
+            self.changeWheels(data.wheel, data.color, data.f_inch, data.r_inch, -1);
+            self.data = data;
+            self.item_w = item_w;
+            self.insensitive = false;
+            self.is_preview = true;
+            
+            return true;
+        }
+
+        method endPreview()
+        {
+            if (!self.is_preview)
+                return false;
+
+            var inch_up = self.preview_cp.wheel_inchup;
+            var f_inch = WheelRoot.default_f_inch + inch_up;
+            var r_inch = WheelRoot.default_r_inch + inch_up;
+
+            self.changeWheels(self.preview_cp.wheel, self.preview_cp.wheel_color, f_inch, r_inch, self.preview_cp.getWheelPaintColor(0));
+
+            self.SBox::Buy.insensitive = true;;
+        
+            CarPreview::Footer::Preview::MoveY.backward();
+            CarPreview::Footer::Preview::MoveY.start();
+
+            self.data = nil;
+            self.item_w = nil;
+            self.insensitive = true;
+            self.is_preview = false;
+
+            return true;
+        }
+
+        method changeWheels(wheel, color, f_inch, r_inch, paint_id)
+        {
+            var f_diameter = f_inch / 10;
+            var r_diameter = r_inch / 10;
+
+            CarPreview::SceneFace.resetCommandQueue();
+            CarPreview::SceneFace.execCommand("setCarWheelVariation %{wheel} car0");
+            CarPreview::SceneFace.execCommand("setCarWheelColorVariation %{color} car0");
+            CarPreview::SceneFace.execCommand("setCarWheelDiameter %{f_diameter} true car0");
+            CarPreview::SceneFace.execCommand("setCarWheelDiameter %{r_diameter} false car0");
+            CarPreview::SceneFace.execCommand("swapCarWheelExtraColor %{paint_id} -1 -1 -1 car0");
+        }
+
+        method resetCamera()
+        {
+            self.SceneFace.resetCommandQueue();
+            SceneFaceUtil::loadScene(CarPreview::SceneFace, sCameraScripts[self.camera_point]);
+        }
+        
+        method swapCamera_R1()
+        {
+            self.camera_point++;
+
+            if (self.camera_point >= sCameraScripts.size)
+                self.camera_point = 0;
+
+            self.SceneFace.resetCommandQueue();
+            SceneFaceUtil::loadScene(CarPreview::SceneFace, sCameraScripts[self.camera_point]);
+            return true;
+        }
+
+        method swapCamera_L1()
+        {
+            self.camera_point--;
+
+            if (self.camera_point < 0)
+                self.camera_point = sCameraScripts.size - 1;
+
+            self.SceneFace.resetCommandQueue();
+            SceneFaceUtil::loadScene(CarPreview::SceneFace, sCameraScripts[self.camera_point]);
+            return true;
+        }
+
+        method onActivate(context, event)
+        {
+            if (event.widget.name == "Buy")
+            {
+                sound.play("ok");
+
+                var res = QUERY(context, "GTAuto", "Query_ChangeWheel");
+                if (!res)
+                    return STATE_YIELD;
+
+                if (!main::GAME_STATUS.user_profile.payTuningCost(self.data.price))
+                {
+                    sound.play("disable");
+                    ERROR(context, "CommonGTMode", "Message_EnoughMoney");
+                    return STATE_YIELD;
+                }
+
+                
+                Grim2Util::PUTLOG::CREDIT::withdraw("wheel", self.data.price, self.data.wheel, self.data.color, self.data.inch_up);
+                
+                CursorProject::StartMenuRoot::StartMenu.reflectCurrentStatus(context);
+                WheelRoot.riding_car.setTarmacTiresWithTrunk();
+                WheelRoot.riding_car.setWheelCode(self.data.wheel, self.data.color, self.data.inch_up);
+                
+                GTAutoUtil::applyCarWash(WheelRoot.riding_car);
+                GAME_STATUS.user_profile.garage.updateCar(WheelRoot.riding_car);
+                WheelRoot.riding_car = GAME_STATUS.user_profile.garage.getRidingCar();
+                self.preview_cp.deepCopy(WheelRoot.riding_car);
+
+                var need_capture = true;
+
+                PitWorkRoot.openModal(context, GAME_STATUS.user_profile.garage.getRidingGarageId(), need_capture);
+                for (var i = 0; i < GTAutoMenu::ListWindow::clip::ListBox.getItemCount(); i++)
+                {
+                    var w = GTAutoMenu::ListWindow::clip::ListBox.getItemWidget(i);
+                    if (w != nil)
+                        w.OwnFlag.visible = false;
+                }
+
+                self.item_w.OwnFlag.visible = true;
+                self.SBox::OwnFlag.visible = true;
+                self.SBox::Buy.insensitive = true;
+            }
+
+            return STATE_YIELD;
+        }
+
+        module SceneFace
+        {
+            attribute current_cp;
+            attribute thread;
+            attribute finalized = false;
+
+            method initialize(context)
+            {
+                GTAutoMenu::ListWindow::CarView::SceneCover::Fade.reset();
+
+                self.finalized = false;
+                self.visible = false;
+            }
+
+            method finalize(context)
+            {
+                self.clearCar(context);
+                self.visible = false;
+
+                ORG.setEnableStereoRendering(false);
+
+                self.finalized = true;
+            }
+    
+            method clearCar(context)
+            {
+                GTAutoMenu::ListWindow::CarView::SceneCover::Fade.reset();
+
+                if (self.thread != nil)
+                {
+                    self.thread.terminate();
+                    self.thread = nil;
+                }
+            
+                if (self.current_cp != nil)
+                {
+                    self.execCommandImmidiate("clearEntity car0");
+                    self.current_cp = nil;
+                }
+            }
+
+            method loadCar(context, cp)
+            {
+                self.clearCar(context);
+                self.setDefaultCarParameter(cp, 0);
+                self.current_cp = cp;
+
+                SceneFaceUtil::loadScene(self, "GTAUTO_Parts_Paint");
+                self.saveCommandQueue();
+
+                self.thread = Thread(function(context) 
+                {
+                    for (;;)
+                    {
+                        if (self.finalized)
+                            return;
+                
+                        if (self.current_cp == nil)
+                            return;
+
+                        if (!self.isUnderSetup())
+                        {
+                            GTAutoMenu::ListWindow::CarView::SceneCover::Fade.start();
+                            return;
+                        }
+
+                        Thread::Sleep(0.1);
+                    }
+                }, context);
+            
+                self.thread.start();
+                ORG.setEnableStereoRendering(true);
+                self.visible = true;
+            }
+        }
+    }
+
+    module CarPreview
+    {
+        attribute full_view = false;
+        attribute focus_widget;
+
+        method switchView(context)
+        {
+            if (!self.full_view)
+            {
+                self.ColorFace::FadeOut.reset();
+                self.ColorFace.visible = true;
+
+                context.sync();
+
+                context.cursor_visible = false;
+
+                self.focus_widget = WheelRoot.getFocusWidget();
+                self.can_focus = true;
+
+                WheelRoot.setFocus(self);
+
+                self.minimum_width = 1920;
+                self.minimum_height = 1080;
+
+                GTAutoMenu.visible = false;
+
+                CursorProject::StartMenuRoot::StartMenu.hide();
+
+                self.Footer::ReducedScreenHelp.visible = false;
+                self.Footer::FullScreenHelp.visible = true;
+                self.full_view = true;
+
+                SceneFaceUtil::loadScene(CarPreview::SceneFace, "GTAUTO_Parts_Paint_fullscreen");
+                context.sync();
+
+                self.ColorFace::FadeOut.start();
+            }
+            else
+            {
+                self.ColorFace::FadeOut.reset();
+                self.ColorFace.visible = true;
+
+                context.sync();
+
+                GTAutoMenu.visible = true;
+
+                CursorProject::StartMenuRoot::StartMenu.appear();
+
+                self.minimum_width = 1440;
+                self.minimum_height = 560;
+
+                self.Footer::FullScreenHelp.visible = false;
+                self.Footer::ReducedScreenHelp.visible = true;
+
+                WheelRoot.setFocus(self.focus_widget);
+                context.cursor_visible = true;
+
+                self.can_focus = false;
+                self.focus_widget = nil;
+                self.full_view = false;
+                self.SceneFace.setEntityRotateVelocityY("CAR", "car0", 0);
+
+                GTAutoMenu::ListWindow::CarView.resetCamera();
+                context.sync();
+
+                self.ColorFace::FadeOut.start();
+            }
+        }
+
+        method onInitialize(context)
+        {
+            self.ColorFace.visible = false;
+            self.ColorFace::FadeOut.reset();
+
+            self.Footer::FullScreenHelp.set(context, [
+                ["L1", manager.translate("GTAuto", "Rotate_Left")],
+                ["R1", manager.translate("GTAuto", "Rotate_Right")],
+                ["Close"]
+            ]);
+
+            self.Footer::FullScreenHelp.visible = false;
+            self.Footer::ReducedScreenHelp.visible = true;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            self.switchView(context);
+
+            return STATE_YIELD;
+        }
+
+        method onKeyPress(context, event)
+        {
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L1:
+                    sound.play("cursor");
+
+                    self.SceneFace.setEntityRotateVelocityY("CAR", "car0", 60, 90);
+                    break;
+
+                case CELL_PAD_CTRL_R1:
+                    sound.play("cursor"); 
+
+                    self.SceneFace.setEntityRotateVelocityY("CAR", "car0", -60, 90);
+                    break;
+            }
+
+            return STATE_EXIT;
+        }
+
+        method onKeyRelease(context, event)
+        {
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L1:
+                case CELL_PAD_CTRL_R1:
+                    self.SceneFace.setEntityRotateVelocityY("CAR", "car0", 0);
+                    break;
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module CarPreview::SceneFace
+    {
+        attribute current_cp;
+        attribute thread;
+        attribute finalized = false;
+
+        method initialize(context)
+        {
+            CarPreview::SceneCover::Fade.reset();
+
+            self.finalized = false;
+            self.visible = false;
+        }
+
+        method finalize(context)
+        {
+            self.clearCar(context);
+            self.visible = false;
+
+            ORG.setEnableStereoRendering(false);
+            self.finalized = true;
+        }
+
+        method clearCar(context)
+        {
+            CarPreview::SceneCover::Fade.reset();
+
+            if (self.thread != nil)
+            {
+                self.thread.terminate();
+                self.thread = nil;
+            }
+        
+            if (self.current_cp != nil)
+            {
+                self.execCommandImmidiate("clearEntity car0");
+                self.current_cp = nil;
+            }
+        }
+
+        method loadCar(context, cp)
+        {
+            self.clearCar(context);
+            self.setDefaultCarParameter(cp, 0);
+            self.current_cp = cp;
+
+            SceneFaceUtil::loadScene(self, "GTAUTO_Parts_Paint");
+            self.saveCommandQueue();
+
+            self.thread = Thread(function(context) 
+            {
+                for (;;)
+                {
+                    if (self.finalized)
+                        return;
+                
+                    if (self.current_cp == nil)
+                        return;
+
+                    if (!self.isUnderSetup())
+                    {
+                        CarPreview::SceneCover::Fade.start();
+                        return;
+                    }
+
+                    Thread::Sleep(0.1);
+                }
+            }, context);
+        
+            self.thread.start();
+            ORG.setEnableStereoRendering(true);
+            self.visible = true;
+        }
+    }
+
+    module hidden::CategoryItem
+    {
+        method onActivate(context, event)
+        {
+            if (self == GTAutoMenu.active_w)
+                return STATE_YIELD;
+
+            sound.play("ok");
+
+            GTAutoMenu::ListWindow::CarView.endPreview();
+
+            GTAutoMenu.setActive(context, event.widget);
+
+            return STATE_YIELD;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_RIGHT)
+            {
+                sound.play("cursor");
+                GTAutoMenu::ListWindow::clip::ListBox.inFocus(context);
+
+                return STATE_YIELD;
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module hidden::ListItem
+    {
+        attribute initialized = false;
+        attribute value;
+
+        method onInitialize(context)
+        {
+            self.Name.text = "";
+            self.CrPrice::Price.text = "";
+            self.Checkbox.active = false;
+            self.OwnFlag.visible = false;
+            self.Invalid.visible = false;
+            self.Thumbnail.image_path = "";
+            self.Normal.visible = false;
+            self.Opacity.reset();
+        }
+
+        method initialize(context, wheel_data)
+        {
+            var is_installed = WheelUtil::isInstalled(GTAutoMenu::ListWindow::CarView.preview_cp, wheel_data.wheel, wheel_data.color, wheel_data.inch_up);
+            self.Name.text = wheel_data.name;
+            self.CrPrice::Price.text = pdiext::MMisc::GetMoneyString(wheel_data.price);
+            self.OwnFlag.visible = is_installed;
+
+            if (wheel_data.wheel == 0)
+                self.Normal.visible = true;
+            else  
+                self.Thumbnail.image_path = "/carparts/wheel_thumb/%03d_%02d".format(wheel_data.wheel, wheel_data.color);
+
+            wheel_data.is_installed = is_installed;
+            self.value = wheel_data;
+            self.initialized = true;
+            self.Opacity.start();
+        }
+
+        method initializeBlank(context, wheel_data)
+        {
+            self.Checkbox.visible = false;
+            self.CrPrice.visible = false;
+            self.initialized = true;
+            self.Invalid.visible = true;
+        }
+
+        method on_activate(context)
+        {
+            if (self.Invalid.visible)
+            {
+                main::sound.play("disable");
+                return;
+            }
+
+            main::sound.play("ok");
+            GTAutoMenu::ListWindow::CarView.startPreview(self.value, self);
+        }
+
+        method set_active(active)
+        {
+            if (self.Invalid.visible)
+                return;
+
+            self.Checkbox.active = active;
+        }
+    }
+}

@@ -1,0 +1,285 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module RoomSelectRoot
+{
+    hidden.visible = false;
+
+    attribute popup;
+    attribute closed = false;
+    attribute result = false;
+    attribute club;
+    attribute event;
+    attribute gp;
+    attribute asyncRoomList;
+
+    method open(context, club, event, gp)
+    {
+        self.club = club;
+        self.event = event;
+        self.gp = gp;
+        self.result = nil;
+        self.closed = false;
+        self.asyncRoomList = OnlineRoomUtil::CreateAsyncRoomList();
+        self.popup = SequenceUtil::ModalPage(context, RoomSelectRoot);
+        self.popup.open();
+
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        Community.clearCallback();
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        if (self.popup != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.popup.close(delay_time);
+            self.popup = nil;
+        }
+
+        self.club = nil;
+        self.event = nil;
+        self.gp = nil;
+        
+        if (self.asyncRoomList != nil)
+        {
+            self.asyncRoomList.finalize(context);
+            self.asyncRoomList = nil;
+        }
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
+        {
+            sound.play("ok");
+            self.refreshListRequest(context);
+            return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    method refreshRoomList(context, roomList)
+    {
+        var listbox = Pane::ListBox;
+        listbox.setItemCount(0);
+        listbox.data_list = roomList;
+        listbox.setItemCount(roomList.size);
+        listbox.postRedraw();
+        listbox.can_focus = roomList.size > 0;
+        Pane::Empty.visible = roomList.size == 0;
+    }
+
+    method refreshListRequest(context)
+    {
+        self.asyncRoomList.clearRoomList(context);
+        OnlineRoomUtil::searchClubEventRoomRequest(context, RoomSelectRoot.club["club_id"], RoomSelectRoot.event["club_event_id"]);
+    }
+
+    method onRoomUpdate(context, roomId, room)
+    {
+        var listbox = Pane::ListBox;
+        var listboxCount = listbox.getItemCount();
+
+        for (var i = 0; i < listboxCount; ++i)
+        {
+            if (listbox.getItemVisible(i))
+            {
+                var w = listbox.getItemWidget(i);
+                if (w != nil && w.updateIfMatched(context, roomId, room))
+                    break;
+            }
+        }
+    }
+
+    method onInitialize(context)
+    {
+        ContextMain.disableInput();
+
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+
+        actor.on_effect_end = (context) => 
+        {
+            actor.on_effect_end = nil;
+            ContextMain.enableInput();
+            RoomSelectRoot.closed = false;
+        };
+
+        self.CloseActor.stop();
+
+        Pane::Empty.visible = false;
+        RoomSelectRoot.setFocus(CreateRoom::Button);
+
+        ButtonHelp.active = pdiext::MSystemConfiguration::GetEnterButtonAssign() == "circle";
+        initializeRoomList(context);
+        context.pushEvent(menu::MScriptEvent(context, RoomSelectRoot, "postInitialize"));
+        return STATE_YIELD;
+    }
+
+    method postInitialize(context)
+    {
+        if (!OnlineRoomUtil::connectLobbyServer(context))
+        {
+            RoomSelectRoot.close(context);
+            return;
+        }
+
+        self.asyncRoomList.initialize(context);
+        self.asyncRoomList.setListUpdateCallback(self.refreshRoomList);
+        self.asyncRoomList.setRoomUpdateCallback(self.onRoomUpdate);
+        self.asyncRoomList.setFilterFunction((context, room) => 
+        {
+            var club_event_id = RoomSelectRoot.event["club_event_id"];
+            return room["clubEventId"] == club_event_id;
+        });
+
+        self.refreshListRequest(context);
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    method abort(context)
+    {
+        if (self.closed)
+            return;
+
+        EventSettingProject::EventSettingRoot.abort(context);
+        self.close(context);
+    }
+    
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (CommunityProject::sHealthCheck && !LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(abort, context));
+        }
+    }
+
+    method initializeRoomList(context)
+    {
+        var listbox = Pane::ListBox;
+        listbox.setItemCount(0);
+        listbox.can_focus = false;
+        listbox.setItemTemplate(context, hidden::EventRoomItem);
+        Pane::Empty.visible = true;
+    }
+
+    module CreateRoom
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+
+            var club_id = RoomSelectRoot.club["club_id"];
+            var club_event_id = RoomSelectRoot.event["club_event_id"];
+
+            var res = OnlineRoomUtil::createRoomByEvent(context, club_id, club_event_id, RoomSelectRoot.gp);
+            if (res)
+            {
+                PUTLOG_LOCAL::room("create", club_id, club_event_id);
+                RoomSelectRoot.result = true;
+                RoomSelectRoot.close(context);
+            }
+
+            return STATE_YIELD;
+        }
+    }
+
+    module Pane
+    {
+        module Title::Reload
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+                RoomSelectRoot.refreshListRequest(context);
+                return STATE_YIELD;
+            }
+        }
+    }
+
+    module hidden
+    {
+        module EventRoomItem
+        {
+            attribute initialized_ = false;
+            attribute room;
+
+            method onRealize(context)
+            {
+                
+            }
+
+            method initialize(context, room)
+            {
+                self.setInfo(context, room);
+                self.room = room;
+                self.initialized_ = true;
+                
+                if (self.room["rttMeasured"] == nil)
+                {
+                    Lobby.getRTTRequest(self.room["roomId"]);
+                    self.room["rttMeasured"] = true;
+                }
+            }
+
+            method on_activate(context)
+            {
+                if (OnlineRoomUtil::joinRoom(context, self.room))
+                {
+                    PUTLOG_LOCAL::room("join", RoomSelectRoot.club["club_id"], RoomSelectRoot.event["club_event_id"]);
+                    RoomSelectRoot.result = true;
+                    RoomSelectRoot.close(context);
+                }
+            }
+
+            method updateIfMatched(context, roomId, room)
+            {
+                if (self.room == nil || self.room["roomId"] != roomId)
+                    return false;
+
+                self.room = room;
+                self.setInfo(context, room);
+                return true;
+            }
+        }
+    }
+}

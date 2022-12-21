@@ -1,0 +1,268 @@
+
+
+//---------------------------------------------------------------------------------------
+// OnlineRanking.ad
+//
+// Utility module
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module OnlineRanking
+{
+    static MAX_DRIFT_SCORE = 10000000;
+    static sReplayUploadThread = nil;
+
+    function getArcadeRankingBoardID(course, car, drift, sim, area)
+    {
+        var course_list = course.isInstanceOf(Array) ? course : [course];
+        var car_code_id = car;
+
+        if (car != nil && car.isInstanceOf(String))
+            car_code_id = main::gtengine::MSpecDBold::getCarCode(car) & 0xFFFFFFFFL;
+        
+        var id_list = [];
+        foreach (var crs in course_list)
+        {
+            var course_code_id;
+            if (crs.isInstanceOf(String))
+                course_code_id = main::gtengine::MSpecDBold::getCourseCode(crs);
+            else
+                course_code_id = crs;
+
+            id_list.push(getArcadeRankingBoardID_by_code(course_code_id, car_code_id, drift, sim, area));
+        }
+
+        var result;
+        if (course.isInstanceOf(Array))
+            result = id_list;
+        else
+            result = id_list[0];
+
+        return result;
+    }
+
+    function getArcadeRankingBoardID_by_code(course, car, drift, sim, area)
+    {
+        // Crappy PDI code ahead
+        if (drift)
+        {
+            drift = nil;
+            drift = 1;
+        }
+        else
+        {
+            drift = nil;
+            drift = 0;
+        }
+
+        var course_code_id = course & 0xFFFFFFFFL;
+        var car_code_id = 0;
+        var is_patchd = 1;
+        var drift_code_id = 0;
+        var sim_code_id = 0;
+        var area_code_id = 0;
+
+        if (car != nil)
+            car_code_id = car & 0xFFFFFFFFL;
+
+        if (drift != nil)
+            drift_code_id = drift;
+
+        if (sim != nil)
+            sim_code_id = sim;
+
+        if (area == nil)
+            area = main::Grim2.getRankingAreaId();
+
+        if (area != nil)
+            area_code_id = area;
+
+        if (course_code_id > 0x1FF)
+            course_code_id = 0x1FF; // 9 bits
+
+        if (car_code_id > 0xFFF)
+            car_code_id = 0xFFF; // 12 bits
+
+        if (drift > 1)
+            drift = 1;
+
+        if (sim_code_id > 1)
+            sim_code_id = 1;
+
+        if (area_code_id > 0b111)
+            area_code_id = 0b111; // 3 bits
+
+        course_code_id = course_code_id << 12;
+        drift_code_id = drift_code_id << 21;
+        sim_code_id = sim_code_id << 22;
+        is_patchd = is_patchd << 24;
+        area_code_id = area_code_id << 26;
+
+        var board_id = area_code_id | is_patchd | sim_code_id | drift_code_id | course_code_id | car_code_id;
+        if (board_id.toLong() >= (1 << 30))
+            return 0L;
+        return board_id.toLong();
+    }
+
+    function getFieldOfArcadeRankingBoardID(board_id)
+    {
+        var map = [:];
+
+        map[$"car_code"] = main::gtengine::MSpecDBold::CarCode32ToCarCode64(board_id & 0xFFF);
+        map[$"course_code"] = main::gtengine::MSpecDBold::CourseCode32ToCourseCode64((board_id >> 12) & 0x1FF);
+        map[$"drift"] = ((board_id >> 21) & 1);
+        map[$"simulation"] = ((board_id >> 22) & 1);
+        map[$"patched"] = ((board_id >> 24) & 1);
+        map[$"area"] = ((board_id >> 26) & 0b111);
+        return map;
+    }
+
+    function getArcadeTimeTrialBoardIDForDemo(course, allcar, is_drift)
+    {
+        var sim = main::pdistd::MRandom::GetValue(0, 2);
+        var car = nil;
+        if (!allcar && main.defined("RankingConfig") && main::RankingConfig.defined("getRankingTimeAttackCarCodeList"))
+        {
+            var cars = main::RankingConfig::getRankingTimeAttackCarCodeList();
+            var idx = main::pdistd::MRandom::GetValue(0, cars.size);
+            car = cars[idx];
+        }
+
+        return getArcadeRankingBoardID(course, car, is_drift, sim);
+    }
+
+    function loadCachedReplayFile(replay_id)
+    {
+        var path = main::Replay2.getPath(replay_id);
+        var replay_data = nil;
+
+        if (path != nil && path.size > 0)
+        {
+            var result = main::pdistd::ReadFile(path, true);
+            var blob = result["buffer"];
+
+            if (blob != nil)
+            {
+                blob = main::pdistd::MCipher::decrypt(blob, true);
+                if (blob != nil)
+                {
+                    blob = main::pdistd::Inflate(blob, true);
+                    if (blob != nil)
+                        replay_data = blob;
+                }
+            }
+        }
+        
+        return replay_data;
+    }
+
+    function downloadReplayToCache(context, replay_id)
+    {
+        var replay_exist = main::Replay2.isExist(replay_id);
+        if (!replay_exist)
+        {
+            var size = main::Replay2.getRequireSizeKB(replay_id);
+            var free = main::Replay2.getDiskFreeSizeKB();
+
+            if (free < size)
+            {
+                // Try to clear grim cache as a fail safe to free some space
+                main::Grim2.clearCacheIf();
+                free = main::Replay2.getDiskFreeSizeKB();
+            }
+
+            if (free < size)
+                return false; // Still failed
+
+            var result = -1;
+
+            var request = main::Replay2.requestReplay(replay_id, (args) => {});
+            if (Grim2Util::joinAwait(context, request))
+                result = 0;
+
+            if (result != 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    function copyCachedReplayFile(replay_id, needed_size_ref)
+    {
+        var replay_dat = loadCachedReplayFile(replay_id);
+        *needed_size_ref = replay_dat.size + MINIMUM_HDD_SPACE;
+
+        if (replay_dat == nil)
+            return nil;
+
+        if (replay_dat.size >= pdistd::GetDiskFreeSize("/APP_DATA/") - MINIMUM_HDD_SPACE)
+            return nil;
+        
+        var replay_path = IO::Path::GetDirName(ORG.replay_work_path) + "/tmp_replay_from_ranking.dat";
+        pdistd::MakeDirectoryForFile(replay_path);
+
+        if (pdistd::Exist(replay_path))
+            pdistd::RemoveFile(replay_path);
+
+        var res = pdistd::WriteFile(replay_path, replay_dat);
+        if (res == pdistd::FileError::OK)
+            return replay_path;
+        else
+            return nil;
+    }
+
+    function downloadRankerReplay(context, course, allcar, is_drift)
+    {
+        if (!main::PDINetwork.isOnline())
+            return nil;
+
+        var res = main::Grim2.getServerOption("gt", "online.timetrial.enable");
+        if (res == nil || res == "" || res == "0")
+            return nil;
+
+        var board_id = getArcadeTimeTrialBoardIDForDemo(course, allcar, is_drift);
+        if (board_id == nil)
+            return nil;
+
+        var list;
+        var request = main::Ranking2.requestRankingList(board_id.toLong(), 1, 10, (args) => { });
+        if (Grim2Util::joinAwait(context, request))
+        {
+            list = main::Ranking2.decodeRankingList(request);
+        }
+
+        if (list == nil)
+            return nil;
+
+        var found = false;
+        var replay_id;
+        for (var i = 0; i < list.size; i++)
+        {
+            var entry = list[i];
+            replay_id = entry[$"replay_id"];
+
+            if (replay_id != nil && replay_id > 0)
+            {
+                found = true;
+                break;
+            }
+        }
+
+        if (!found)
+            return nil;
+
+        var result = downloadReplayToCache(context, replay_id);
+        if (!result)
+            return nil;
+
+        var replay_data = loadCachedReplayFile(replay_id);
+        if (replay_data == nil)
+            return nil;
+
+        return replay_data;
+    }
+}

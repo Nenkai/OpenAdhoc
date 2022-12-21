@@ -1,0 +1,417 @@
+
+
+
+
+
+
+
+
+
+module EnterRoomDialog
+{
+    attribute popup;
+    attribute closed = false;
+    attribute sRoom;
+    attribute result;
+    
+    hidden.visible = false;
+
+    method open(context, room)
+    {
+        self.result = false;
+        self.closed = false;
+        self.sRoom = room;
+        self.popup = main::SequenceUtil::ModalPage(context, EnterRoomDialog);
+
+        self.popup.open();
+        return self.result;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        if (EnterRoomDialog.popup != nil)
+        {
+            EnterRoomDialog.popup.close();
+            EnterRoomDialog.popup = nil;
+        }
+
+        self.sRoom = nil;
+    }
+
+    method abort(context)
+    {
+        self.close(context);
+    }
+
+    method refresh(context)
+    {
+        var clip = Popup::Pane::Body::Message::ScrolledWindow::clip;
+        clip.manual_target_y = 0;
+        
+        var space = clip.space;
+        space.initialize(context);
+    }
+
+    method onInitialize(context)
+    {
+        self.refresh(context);
+        EnterRoomDialog.setFocus(Popup::Pane::Body::Buttons::OK);
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        var space = Popup::Pane::Body::Message::ScrolledWindow::clip::space;
+        space.finalize(context);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        EnterRoomDialog.setFocus(Popup::Pane::Body::Buttons::Cancel);
+
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        var status = STATE_EXIT;
+
+        if (event.keysym == CELL_PAD_CTRL_L3_UP)
+        {
+            Popup::Pane::Body::Message::ScrolledWindow::clip.manualTargetIncY(96.0);
+            status = STATE_YIELD;
+        }
+        else if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+        {
+            Popup::Pane::Body::Message::ScrolledWindow::clip.manualTargetIncY(-96.0);
+            status = STATE_YIELD;
+        }
+
+        return status;
+    }
+
+    module Popup::Pane::Body
+    {
+        module Buttons::Cancel
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                EnterRoomDialog.close(context);
+                return STATE_YIELD;
+            }
+
+            method onCancel(context)
+            {
+                main::sound.play("cancel");
+                EnterRoomDialog.close(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module Buttons::OK
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                var room = EnterRoomDialog.sRoom;
+                EnterRoomDialog.result = true;
+                EnterRoomDialog.close(context);
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Message::ScrolledWindow::clip::space
+        {
+            method initialize(context)
+            {
+                var list = [
+                    self.Race,
+                    self.RegSpec,
+                    self.RegCarType,
+                    self.RegDrivingOption,
+                ];
+
+                foreach (var composite in list)
+                    composite.Header.visible = false;
+
+                var room = EnterRoomDialog.sRoom;
+                var messageText = manager.translate("OnlineMessage", "DO_YOU_JOIN_THIS_ROOM").build(room["comment"]);
+                MessageText::TextFace.text = messageText;
+
+                var Mode = RoomInfo::Mode;
+                Mode.homogeneous = true;
+                Mode.spacing = self.RoomInfo.HBoxSpacing.value;
+                Mode.reset();
+                Mode.reflectState(context, room);
+
+                if (room["roomType"] == gtengine::RoomType::CLUB_LOBBY ||
+                    room["roomType"] == gtengine::RoomType::CLUB_EVENT)
+                    Mode.setColor(2);
+
+                var INVALID = gtengine::MGameParameter::INVALID_VALUE_INT;
+                var LIMIT = manager.translate("Regulation", "limit");
+                var NEED = manager.translate("Regulation", "need");
+                var PROHIBITED = manager.translate("OnlineMessage", "PROHIBITED");
+
+                var showAlarmTime = true,
+                    showBoost = true,
+                    showPenalty = true,
+                    showFreeRunPenalty = false,
+                    showAttackSeparate = false,
+                    showTimePeriod = false;
+
+                switch (room["roomGameMode"])
+                {
+                    case gtengine::RoomGameMode::FREERUN:
+                        showAlarmTime = false;
+                        showBoost = false;
+                        showFreeRunPenalty = true;
+                        break;
+
+                    case gtengine::RoomGameMode::RACE_WITH_QUALIFIER:
+                        showAttackSeparate = true;
+                        showTimePeriod = true;
+                        break;
+
+                    case gtengine::RoomGameMode::TIME_TRIAL:
+                        showBoost = false;
+                        showTimePeriod = true;
+                        break;
+
+                    case gtengine::RoomGameMode::DRIFT_TRIAL:
+                        showBoost = false;
+                        showPenalty = false;
+                        showAttackSeparate = true;
+                        showTimePeriod = true;
+                        break;
+
+                    case gtengine::RoomGameMode::RACE:
+                        break;
+                }
+
+                if (showAlarmTime)
+                {
+                    var alarmTimeLocal = room["alarmTimeLocal"];
+                    if (alarmTimeLocal != nil)
+                    {
+                        var time = "%02d:%02d".format(alarmTimeLocal.hour, alarmTimeLocal.minute);
+                        var str = manager.translate("OnlineMessage", "NEXT_RACE_IS_SCHEDULED").build(time, room["alarmTimeValue"]);
+                        self.addRaceItem(context, manager.translate("RaceTypeName", "AutoRaceCycle"), str);
+                    }
+                }
+
+                if (showAttackSeparate)
+                {
+                    self.addRaceItem(context, manager.translate("RaceTypeName", "AttackSeparateType"), EventSettingProject::sAttackSeparateTypeList.getName(room["attackSeparateType"]));
+                }
+
+                if (showBoost)
+                {
+                    self.addRaceItem(context, manager.translate("TrialSetting", "BOOST"), EventSettingProject::getBoostLevelString(room["boostLevel"]));
+                }
+
+                if (showPenalty)
+                {
+                    var level = showFreeRunPenalty ? room["freeRunPenalty"] : room["penaltyLevel"];
+                    self.addRaceItem(context, manager.translate("TrialSetting", "PENALTY"), EventSettingProject::getPenaltyLevelString(level));
+                }
+
+                var limitPP = room["limitPP"];
+                if (limitPP != INVALID)
+                {
+                    self.addCarSpecItem(context, manager.translate("Regulation", "limit_pp"),
+                        LIMIT.build(manager.translate("Unit", "PERFORMANCE_POINT") + " " + pdiext::GetNumberString(limitPP)));
+                }
+
+                var limitPower = room["limitPower"];
+                if (limitPower != INVALID)
+                {
+                    self.addCarSpecItem(context, manager.translate("Regulation", "limit_power"),
+                        LIMIT.build(EventSettingProject::getPowerString(limitPower)));
+                }
+
+                var needWeight = room["needWeight"];
+                if (needWeight != INVALID)
+                {
+                    self.addCarSpecItem(context, manager.translate("Regulation", "need_weight"),
+                        NEED.build(EventSettingProject::getWeightString(needWeight, true)));
+                }
+
+                var needDriveTrain = room["needDriveTrain"];
+                if (needDriveTrain != INVALID)
+                {
+                    self.addCarSpecItem(context, manager.translate("Regulation", "drivetrain"),
+                        EventSettingProject::getAvailableDriveTrainTypeString(needDriveTrain, nil, " / "));
+                }
+
+                var limitTire = room["limitTire"];
+                if (limitTire != INVALID)
+                {
+                    self.addCarSpecItem(context, manager.translate("Regulation", "tire"),
+                        LIMIT.build(TireUtil::getName(limitTire)));
+                }
+
+                var limitTuning = room["tuning"];
+                if (limitTuning != INVALID)
+                {
+                    self.addCarSpecItem(context, manager.translate("Regulation", "tuning"),
+                        PROHIBITED);
+                }
+                else
+                {
+                    var limitNitro = room["nitro"];
+                    if (limitNitro != INVALID)
+                    {
+                        self.addCarSpecItem(context, manager.translate("Regulation", "NOS"),
+                            PROHIBITED);
+                    }
+                }
+
+                var str;
+                var countries = room["countries"];
+                if (countries.size > 0)
+                {
+                    str = "";
+                    for (var i = 0; i < countries.size; ++i)
+                        str += EventSettingProject::sCarCountryList.getName(countries[i]) + "\n"
+                }
+                self.addCarModelItem(context, manager.translate("Regulation", "countries"), str);
+
+                var tuners = room["tuners"];
+                if (tuners.size > 0)
+                {
+                    str = "";
+                    for (var i = 0; i < tuners.size; ++i)
+                        str += EventSettingProject::sCarTunerList.getName(tuners[i]) + "\n"
+                }
+
+                self.addCarModelItem(context, manager.translate("Regulation", "tuners"), str);
+
+                var carTag = room["carTagId"];
+                if (carTag != INVALID)
+                {
+                    str = "";
+                    var carNameTable = pdistd::MLocale::getLanguage() == "JP" ? "CAR_NAME_JAPAN" : "CAR_NAME_ALPHABET";
+                    var sql = "SELECT N.ShortName FROM CAR_TAG_RELATION AS R INNER JOIN %{carNameTable}"
+                              " AS N"
+                              " ON R.CarID = N.LabelID WHERE R.TagID = %{carTag}"
+                              " ORDER BY RANDOM()";
+
+                    var i = 0;
+                    var etcCount = 0;
+
+                    foreach (var it in SPECDB.query(sql))
+                    {
+                        if (i++ >= 5)
+                            ++etcCount;
+                        else
+                            str += it.ShortName + "\n";
+                    }
+
+                    if (etcCount > 0)
+                    {
+                        str += manager.translate("Regulation", "cars_abbreviation").build(etcCount);
+                    }
+
+                    var title = manager.translate("Regulation", "tag") + " / " + 
+                        EventSettingProject::sCarTagList.getName(carTag);
+                         
+                    self.addCarModelItem(context, title, str.chop());
+                }
+
+                var cars = room["cars"];
+                if (room["carSelectMethod"] == gtengine::CarSelectMethod::ONE_MAKE &&
+                    cars.size > 0)
+                {
+                    self.addCarModelItem(context, manager.translate("OnlineMessage", "CAR_SELECT_METHOD_ONE_MAKE")
+                        gtengine::MSpecDB::getCarShortName(cars[0].code));
+                }
+
+                var list = [
+                    ["isProfessionalMode", 1, "SkidRecoveryForce"],
+                    ["activeSteering", 0, "ActiveSteering"],
+                    ["asm", 0, "ASM"],
+                    ["drivingLine", 0, "DRIVING_LINE"],
+                    ["tcs", 0, "TCSLevel"],
+                    ["abs", 0, "ABSLevel"],
+                ];
+
+                foreach (var [roomKey, comparer, textKey] in list)
+                {
+                    if (room[roomKey] == comparer)
+                        self.addDrivingOptionItem(context, manager.translate("TrialSetting", textKey) + " " + PROHIBITED);
+                }
+            }
+
+            method finalize(context)
+            {
+                var list = [
+                    self.Race,
+                    self.RegSpec,
+                    self.RegCarType,
+                    self.RegDrivingOption
+                ];
+
+                foreach (var composite in list)
+                {
+                    var childList = composite.getChildList();
+                    foreach (var child in childList)
+                    {
+                        if (child.name != "Header")
+                            composite.removeChild(context, child);
+                        else
+                            child.visible = false;
+                    }
+                }
+            }
+
+            method addRaceItem(context, label, label2)
+            {
+                var item = hidden::ItemRace.doCopy();
+                item.TextFace.text = label;
+                item.TextFace0.text = label2;
+
+                self.Race.appendChild(context, item);
+                self.Race::Header.visible = true;
+            }
+
+            method addCarSpecItem(context, label, label2)
+            {
+                var item = hidden::ItemRegSpec.doCopy();
+                item.TextFace.text = label;
+                item.TextFace0.text = label2;
+                
+                self.RegSpec.appendChild(context, item);
+                self.RegSpec::Header.visible = true;
+            }
+
+            method addCarModelItem(context, label, label2)
+            {
+                var item = hidden::ItemRegCarType.doCopy();
+                item.TextFace.text = label;
+                item.TextFace0.text = label2;
+                
+                self.RegCarType.appendChild(context, item);
+                self.RegCarType::Header.visible = true;
+            }
+
+            method addDrivingOptionItem(context, label)
+            {
+                var item = hidden::ItemRegDrivingOption.doCopy();
+                item.TextFace.text = label;
+                
+                self.RegDrivingOption.appendChild(context, item);
+                self.RegDrivingOption::Header.visible = true;
+            }
+        }
+    }
+}

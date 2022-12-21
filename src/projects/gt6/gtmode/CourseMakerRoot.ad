@@ -1,0 +1,336 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CourseMakerRoot
+{
+    method open(context)
+    {
+        SequenceUtil::enableStartMenuRoot();
+        SequenceUtil::startPageSimple(context, self);
+    }
+
+    method close(context)
+    {
+        GTModeRoot.open(context);
+    }
+
+    function RecursiveRestartActors(w)
+    {
+        ActorUtil::ResetInterpolators(w);
+        if (w.isInstanceOf(menu::MCourseMapFace))
+            w.span::SpanActor.restart();
+
+        if (w.isInstanceOf(menu::MComposite))
+        {
+            var w2 = w.first;
+            while (w2 != nil)
+            {
+                RecursiveRestartActors(w2);
+                w2 = w2.next;
+            }
+        }
+    }
+
+    method uploadRemainCourseSlot(context)
+    {
+        var user_id = Grim2.getLoginUserId();
+
+        main::Course.requestList(user_id, args =>
+        {
+            var [context, request] = args;
+            var max = 30;
+            var completed = 0;
+
+            if (request.isDone())
+            {
+                var course_list = main::Course.decodeCourseList(request);
+                foreach (var course in course_list)
+                {
+                    if (course["status"] > 0)
+                        completed++;
+                }
+
+                self.alias_TextToolTip.text = manager.translate(CourseMakerRoot, "TOOLTIP_TEXT")
+                    .build(max - completed);
+
+                self.alias_ToolTip::Fade.start();
+            }
+        });
+
+        self.alias_TextToolTip.text = "";
+        self.alias_ToolTip::Fade.reset();
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        GTModeProject.history[$"LastPageName"] = nil;
+        self.close(context);
+
+        return 2;
+    }
+
+    method onInitialize(context)
+    {
+        var region = pdiext::MProductInformation::GetGameRegionCode();
+
+        alias_Legal.visible = !(region == "scee" || region == "sceb" || region == "scea" || region == "scel");
+        GTModeProject.PlayMenuBGM(context, CourseMakerRoot);
+        CourseMakerRoot.setFocus(alias_ButtonLoad);
+        uploadRemainCourseSlot(context);
+
+        context.pushEvent(menu::MFunctionEvent(postInitialize, context));
+    }
+
+    method postInitialize(context)
+    {
+        var showed_tutorial = KeyValueUtil::getFlag_NotNil("course_maker", "showed_tutorial");
+        if (!showed_tutorial)
+        {
+            CursorProject::StartMenuRoot::StartMenu.hide();
+            Tutorial.open(context);
+            CursorProject::StartMenuRoot::StartMenu.appear();
+
+            KeyValueUtil::set("course_maker", "showed_tutorial", true);
+        }
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+            return 2;
+
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_TRIANGLE:
+                sound.play("ok");
+                CursorProject::StartMenuRoot::StartMenu.hide();
+                Tutorial.open(context);
+                CursorProject::StartMenuRoot::StartMenu.appear();
+                return STATE_YIELD;
+
+                break;
+        }
+
+        return STATE_EXIT;
+    }
+
+    module alias_ButtonLoad
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+            if (!LoginUtil::makeSureLogin(context, true))
+            {
+                LoginUtil::setPresence(false);
+                return false;
+            }
+
+            LoginUtil::setPresence(true);
+            GTModeProject.history[$"LastPageName"] = CourseMakerRoot.name;
+            GAME_STATUS.user_profile.context.coursemaker_course_id = 0;
+
+            UIKitProject::CourseMakerLauncherRoot.openModal(context);
+            return 2;
+        }
+    }
+
+    module alias_ButtonFinder
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+            if (!LoginUtil::makeSureLogin(context, true))
+            {
+                LoginUtil::setPresence(false);
+                return false;
+            }
+
+            LoginUtil::setPresence(true);
+            ReplayListRoot.open(context, ReplayListRoot::MODE::COURSE, [1, 2]);
+
+            self.CourseMakerRoot.uploadRemainCourseSlot(context);
+            
+            return 2;
+        }
+    }
+
+    module alias_Tutorial
+    {
+        attribute goto_next = false;
+
+        method open(context)
+        {
+            ContextMain.disableInput();
+            context.cursor_visible = false;
+
+            var focus_w = CourseMakerRoot.getFocusWidget();
+            self.insensitive = false;
+            CourseMakerRoot.setFocus(self);
+            self.reset();
+            self.Fade.forward();
+            self.Fade.start();
+
+            context.wait(self.Fade.total_time);
+
+            Thread(update, context).start();
+
+            SequenceUtil::enterEventLoop(context, self);
+            self.Fade.backward();
+            self.Fade.start();
+
+            context.wait(self.Fade.total_time);
+
+            CourseMakerRoot.setFocus(focus_w);
+            self.insensitive = true;
+            context.cursor_visible = true;
+            ContextMain.enableInput();
+        }
+
+        method close(context)
+        {
+            SequenceUtil::leaveEventLoop(context, self);
+        }
+
+        method reset()
+        {
+            self.ButtonHelp.visible = false;
+            self.Fade.reset();
+
+            alias_ScrollWindow::Fade.reverse = false;
+            alias_ScrollWindow::Fade.reset();
+
+            var w = self.Tips.first;
+            while (w != nil)
+            {
+                w.visible = false;
+                w.Fade.reset();
+                w = w.next;
+            }
+        }
+
+        method update(context)
+        {
+            self.goto_next = false;
+            var tip = self.Tips.first;
+
+            var prev_tip; // Seems to not actually be defined, it's weird
+            while (tip != nil)
+            {
+                if (prev_tip != nil)
+                {
+                    self.Tips::Fade.restart();
+                    alias_ScrollWindow::Fade.reverse = true;
+                    alias_ScrollWindow::Fade.start();
+
+                    context.wait(self.Tips::Fade.total_time);
+                    prev_tip.Fade.reset();
+                    prev_tip.visible = false;
+                    prev_tip = nil;
+                }
+
+                self.Tips::Fade.reset();
+                CourseMakerRoot::RecursiveRestartActors(tip);
+
+                alias_ScrollText.text = tip.alias_TipText.text;
+                alias_ScrollSpace.y = 0f;
+                alias_ScrollClip.manual_target_y = 0f;
+
+                alias_ScrollWindow::Fade.reverse = false;
+                alias_ScrollWindow::Fade.restart();
+                tip.visible = true;
+                ContextMain.enableInput();
+
+                self.ButtonHelp.visible = true;
+
+                while (true)
+                {
+                    if (self.goto_next)
+                        break;
+                        
+                    Thread::Sleep(0.01f)
+                }
+
+                ContextMain.disableInput();
+                self.ButtonHelp.visible = false;
+                prev_tip = tip;
+                self.goto_next = false;
+                tip = tip.next;
+            }
+
+            self.close(context);
+        }
+
+        method next_tips()
+        {
+            self.goto_next = true;
+        }
+
+        method onInitialize(context)
+        {
+            alias_ScrollClip.scroll_mode = 2;
+            alias_ScrollClip.manual_target_y = 0f;
+            alias_ScrollSpace.y = 0f;
+            self.insensitive = true;
+            self.reset();
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            self.next_tips();
+            return 2;
+        }
+
+        method onKeyPress(context, event)
+        {
+            var line_height = alias_ScrollText.line_height;
+
+            switch (event.keysym)
+            {
+                case 0xFF0D:
+                    return 0;
+                
+                case 0xFF52:
+                    alias_ScrollClip.manualTargetIncY(line_height);
+                    return 2;
+
+                case 0xFF54:
+                    alias_ScrollClip.manualTargetIncY(-line_height);
+                    return 2;
+            }
+
+            return 2;
+        }
+
+        module alias_ButtonHelp
+        {
+            method onInitialize(context)
+            {
+                var assign = main::pdiext::MSystemConfiguration::GetEnterButtonAssign();
+                if (assign == "circle")
+                {
+                    self.Circle.visible = true;
+                    self.Cross.visible = false;
+                }
+                else
+                {
+                    self.Circle.visible = false;
+                    self.Cross.visible = true;
+                }
+            }
+        }
+    }
+
+}

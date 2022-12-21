@@ -1,0 +1,283 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module LiveTimingRoot
+{
+    static localized_text_page = "RaceProject::LiveTimingRoot";
+
+    hidden.visible = false;
+
+    attribute sInstanceWidget;
+    attribute sParentWidget;
+    attribute sPrevFrameInterval;
+
+    View::MainPane::Info_Chat::Chat.opacity = 0;
+
+    method isActive(context)
+    {
+        return self.sInstanceWidget != nil;
+    }
+
+    async method initialize(context, parent_widget)
+    {
+        if (self.sInstanceWidget != nil)
+            return;
+
+        await () => { context.loadGpb("%{main::PROJECT_ROOT_DIR}/race", "LiveTimingRoot", true); }
+
+        RaceRoot.Info.visible = false;
+
+        ORG.disableRenderingRace();
+        ORG.setCamera(gtengine::CameraType::SPECTATOR);
+
+        self.sPrevFrameInterval = menu::FrameInterval;
+        menu::FrameInterval = 2;
+
+        self.sParentWidget = parent_widget;
+        self.sInstanceWidget = View.doCopy();
+        self.sInstanceWidget.visible = false;
+        self.sParentWidget.appendChild(context, self.sInstanceWidget);
+
+        self.sInstanceWidget.initialize(context);
+        self.sInstanceWidget.refresh(context, true);
+        self.initializeTick(context);
+
+        var w = self.View::MainPane::Info_Chat;
+        w.Chat.opacity = 0;
+        w.Chat.ScalarInterpolator.forward();
+        w.Chat.ScalarInterpolator.reset();
+        w.Chat.ScalarInterpolator.stop();
+        w.Chat.visible = false;
+        w.Info.opacity = 1;
+        w.Info.ScalarInterpolator.forward();
+        w.Info.ScalarInterpolator.reset();
+        w.Info.ScalarInterpolator.stop();
+    }
+
+    method finalize(context)
+    {
+        var w = self.View::MainPane::Info_Chat;
+        w.Chat.visible = false;
+
+        if (self.sInstanceWidget != nil)
+        {
+            self.finalizeTick(context);
+            self.sInstanceWidget.finalize(context);
+            self.sParentWidget.removeChild(context, self.sInstanceWidget);
+            self.sParentWidget = nil;
+            self.sInstanceWidget = nil;
+
+            ORG.enableRenderingRace();
+
+            menu::FrameInterval = self.sPrevFrameInterval;
+
+            self.sPrevFrameInterval = nil;
+        }
+
+        RaceRoot.Info.visible = true;
+
+        context.unloadGpb("%{main::PROJECT_ROOT_DIR}/race", "LiveTimingRoot");
+    }
+
+    method onTick(context)
+    {
+        if (self.sInstanceWidget != nil)
+            self.sInstanceWidget.refresh(context, false);
+    }
+
+    attribute sWatcher;
+
+    method initializeTick(context)
+    {
+        self.sWatcher = WatcherUtil::Create(context, onTick, 30);
+    }
+
+    method finalizeTick(context)
+    {
+        if (self.sWatcher != nil)
+        {
+            WatcherUtil::Delete(self.sWatcher);
+            self.sWatcher = nil;
+        }
+    }
+
+    module View
+    {
+        attribute base_rank_list;
+        attribute course_map_data;
+
+        method isEndurance(context)
+        {
+            var event = gSequenceCondition.gp.event;
+            if (event.race_parameter.complete_type == gtengine::CompleteType::BYTIME)
+            {
+                // 60 minutes
+                if (event.race_parameter.race_limit_minute >= 60)
+                    return true;
+            }
+            else if (event.race_parameter.complete_type == gtengine::CompleteType::BYLAPS)
+            {
+                // Or 50 laps
+                if (event.race_parameter.race_limit_laps >= 50)
+                    return true;
+            }
+
+            return false;
+        }
+
+        method showInfoWindow(context)
+        {
+            var w = self.MainPane::Info_Chat;
+            w.Chat.ScalarInterpolator.forward();
+            w.Chat.ScalarInterpolator.start();
+            w.Info.ScalarInterpolator.forward();
+            w.Info.ScalarInterpolator.start();
+        }
+
+        method hideInfoWindow(context)
+        {
+            var w = self.MainPane::Info_Chat;
+            w.Chat.visible = true;
+            w.Chat.ScalarInterpolator.backward();
+            w.Chat.ScalarInterpolator.start();
+            w.Info.ScalarInterpolator.backward();
+            w.Info.ScalarInterpolator.start();
+        }
+
+        async method initialize(context)
+        {
+            var live = gSequenceCondition.is_online && !gSequenceCondition.is_buffer_replay_mode;
+            var is_replay = gSequenceCondition.is_buffer_replay_mode;
+            var is_bspec = gSequenceCondition.enable_director_command && !is_replay;
+
+            MainPane::Info_Chat::Info::FastestLap::Driver.text = "";
+            MainPane::Info_Chat::Info::FastestLap::National_Flag.image_path = "";
+
+            self.course_map_data = nil;
+
+            var course_info = getCurrentCourseInfo();
+            var course_name = course_info.ModelName;
+
+            var st = await () => pdistd::ReadFile("/crs/%{course_name}.map");
+            if (st["result"] == pdistd::FileError::OK)
+            {
+                self.course_map_data = st["buffer"];
+            }
+            else
+                self.course_map_data = 0;
+
+            var option = GAME_STATUS.user_profile.option;
+
+            RaceDisplay::RaceDisplayFace.begin_livetiming(ORG, RaceOperator, RaceDisplay, 0, is_bspec);
+            RaceDisplay::MapClip::CourseMapFace.begin(ORG, RaceDisplay::MapClip, self.course_map_data, option.race_map_view_mode, 0, 0);
+            RaceDisplay::MapClip::CourseMapFace.map_fovy = 20;
+            RaceDisplay::MapClip::CourseMapFace.map_dolly = 1300;
+            RaceDisplay::MapClip::CourseMapFace.map_depression = 41;
+            RaceDisplay::MapClip::CourseMapFace.marker_scale = 18;
+
+            var info = MainPane::Info_Chat::Info;
+            info.CourseLength::HBox::Num.text = SpecDatabaseUtil::Course::getLengthText(course_info, false);
+            info.CourseLength::HBox::Unit.text = pdiext::MUnit::GetUnitOfCourseLength();
+            info.CourseStraight::HBox::Num.text = SpecDatabaseUtil::Course::getLongestStraightText(course_info, false);
+            info.CourseStraight::HBox::Unit.text = pdiext::MUnit::GetUnitOfCourseLength();
+            info.CourseHeight::HBox::Num.text = SpecDatabaseUtil::Course::getHeightText(course_info, false);
+            info.CourseHeight::HBox::Unit.text = pdiext::MUnit::GetUnitOfHeight();
+
+            if (live)
+            {
+                UIKitProject::MessengerRoot.setShowHideCallback(self.hideInfoWindow, self.showInfoWindow);
+            }
+
+            MainPane::MapArea::CourseLogo.image_path = "/piece/gt6/course_logo_M/%s.img".format(course_info.Logo);
+            
+            var is_endurance = isEndurance(context);
+            menu::LiveTimingUtil::initialize(MainPane, context, ORG, LiveTimingRoot::hidden, is_endurance);
+
+            ContextMain.disableInput();
+
+            var actor = self.OpenActor;
+            actor.forward();
+            actor.restart();
+
+            self.visible = true;
+
+            actor.on_effect_end = (context) => 
+            {
+                actor.on_effect_end = nil;
+                ContextMain.enableInput();
+            };
+
+            self.CloseActor.stop();
+        }
+
+        method finalize(context)
+        {
+            UIKitProject::MessengerRoot.setShowHideCallback(nil, nil);
+
+            RaceDisplay::MapClip::CourseMapFace.end();
+            RaceDisplay::RaceDisplayFace.end(false);
+
+            self.course_map_data = nil;
+            var actor = self.CloseActor;
+            actor.forward();
+            actor.restart();
+
+            context.wait(actor.Fade.total_time);
+
+            menu::LiveTimingUtil::finalize(MainPane, context);
+        }
+
+        method refresh(context, warp)
+        {
+            autoSetCamera();
+
+            var racers_list = ORG.getRace().getRankList();
+            var move_index_list;
+
+            if (warp)
+            {
+                self.base_rank_list = racers_list;
+                move_index_list = racers_list;
+            }
+            else
+            {
+                if (self.base_rank_list == nil)
+                    self.base_rank_list = racers_list;
+
+                var [new_base_rank_list, move_index_list] = pdistd::TraceRankList(self.base_rank_list, racers_list, 16);
+                self.base_rank_list = new_base_rank_list;
+            }
+
+            menu::LiveTimingUtil::refresh(
+                MainPane, 
+                ORG, 
+                RaceOperator, 
+                warp, 
+                move_index_list,
+                GAME_STATUS.user_profile.option.racer_list_car,
+                GAME_STATUS.user_profile.option.gap_mode);
+        }
+
+        method notifyMessageAdded()
+        {
+
+        }
+
+        module MainPane
+        {
+            attribute fixed_items;
+            attribute items;
+        }
+    }
+}

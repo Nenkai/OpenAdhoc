@@ -1,0 +1,382 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module SendMessageRoot
+{
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute data;
+    attribute photo;
+
+    class Data
+    {
+        method __init__()
+        {
+            self.user_id = nil;
+            self.subject = nil;
+            self.club = nil;
+            self.bbs_thread = nil;
+            self.club_id = nil;
+            self.original_text = "";
+        }
+
+        attribute user_id;
+        attribute subject;
+        attribute club;
+        attribute bbs_thread;
+        attribute club_id;
+        attribute original_text;
+    }
+
+    function sendInvitation(context, user_id, subject)
+    {
+        var [target, club_id, club_event_id] = subject.split(",");
+
+        if (target == "CLUB")
+        {
+            Community.requestInviteClub(club_id, user_id, (args) => {});
+        }
+        else if (target == "EVENT")
+        {
+            Community.requestInviteEvent(club_event_id, user_id, (args) => {});
+        }
+    }
+
+    function sendMessage(context, user_id, subject, message)
+    {
+        var max_mail_id = GAME_STATUS.user_profile.mail.getMaxMailId();
+        var request = GTMail.requestSendMail(user_id, subject, message, max_mail_id, (args) => {});
+        if (!Grim2Util::joinAwait(context, request))
+            return false;
+
+        var mail_list = GTMail.decodeMailList(request);
+        GAME_STATUS.user_profile.mail.add(mail_list);
+
+        var res = mail_list.size > 0;
+        if (subject != "")
+        {
+            sendInvitation(context, user_id, subject);
+        }
+
+        GENERIC_RESULT(context, res);
+        return res;
+    }
+
+    function sendComment(context, club_id, thread_id, message, photo)
+    {
+        var request;
+        if (photo != nil && pdistd::Exist(photo.filename))
+        {
+            var buf = pdistd::ReadFile(photo.filename);
+            request = Bbs2.requestCreateCommentPhoto(buf["buffer"], club_id, thread_id, message, (args) => {});
+        }
+        else 
+        {
+            request = Bbs2.requestCreateComment(club_id, thread_id, message, (args) => {});
+        }
+
+        if (!Grim2Util::joinAwait(context, request))
+            return false;
+
+        var res = Bbs2.decodeResult(request);
+        GENERIC_RESULT(context, res);
+        return res;
+    }
+
+    function sendClubRecent(context, club_id, message)
+    {
+        var request = Community.requestUpdateClubRecent(club_id, message, (args) => {});
+        var res = false;
+
+        if (Grim2Util::joinAwait(context, request))
+        {
+            res = Community.decodeResult(request);
+        }
+
+        GENERIC_RESULT(context, res);
+        return res;
+    }
+
+    function sendProfileRecent(context, message)
+    {
+        var request = UserProfile2.requestUpdateRecent(message, (args) => {});
+        var res = false;
+
+        if (Grim2Util::joinAwait(context, request))
+        {
+            res = Community.decodeResult(request);
+        }
+
+        GENERIC_RESULT(context, res);
+        return res;
+    }
+
+    method _open(context, data)
+    {
+        self.photo = nil;
+        self.data = data;
+        self.result = false;
+        self.closed = false;
+        self.popup = SequenceUtil::ModalPage(context, SendMessageRoot);
+        self.popup.open();
+        
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method openMessage(context, user_id, subject)
+    {
+        var data = Data();
+        data.user_id = user_id;
+        data.subject = subject;
+        return _open(context, data);
+    }
+
+    method openBbs(context, bbs_thread, club)
+    {
+        var data = Data();
+        data.bbs_thread = bbs_thread;
+        data.club = club;
+        return _open(context, data);
+    }
+
+    method openProfileRecent(context, recent)
+    {
+        var data = Data();
+        data.original_text = recent;
+        return _open(context, data);
+    }
+
+    method openClubRecent(context, club_id, recent)
+    {
+        var data = Data();
+        data.club_id = club_id;
+        data.original_text = recent;
+        return _open(context, data);
+    }
+
+    method close(context)
+    {
+        Community.clearCallback();
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        
+        FadeActor.out = true;
+
+        if (self.popup != nil)
+        {
+            self.popup.close(FadeActor.period);
+            self.popup = nil;
+        }
+
+        self.data = nil;
+        self.photo = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.setFocus(Body::R::Body::Cancel);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        var header = "";
+        var title = "";
+        var max_input_length = 400;
+
+        if (self.data.user_id != nil)
+        {
+            header = "SEND_MESSAGE";
+            title = "SEND_MESSAGE_DESCRIPTION";
+        }
+        else if (self.data.bbs_thread != nil)
+        {
+            header = "COMMENT";
+            title = "SEND_COMMENT_DESCRIPTION";
+        }
+        else if (self.data.club_id != nil)
+        {
+            header = "CLUB_NEWS";
+            title = "SEND_CLUB_NEWS_DESCRIPTION";
+            max_input_length = 140;
+        }
+        else
+        {
+            header = "RECENT_STATE";
+            title = "SEND_RECENT_STATE_DESCRIPTION";
+            max_input_length = 140;
+        }
+
+        Body::L::Head::label.text = manager.translate("Community", header);
+        Body::L::TextFace.text = manager.translate("Community", title);
+        Body::R::Body::Photo.visible = self.data.bbs_thread != nil;
+        Body::R::Body::Photo::Label.text = "";
+        Body::R::Body::SelectPhoto.visible = self.data.bbs_thread != nil;
+        Body::L::InputTextBox::Text::input.max_input_length = max_input_length;
+        Body::L::InputTextBox::Text::input.value = self.data.original_text;
+        Body::L::InputTextBox::Text::input.setCount(context, self.data.original_text.length);
+        Body::R::Body::Photo::Image::ImageFace.image_path = "";
+        SendMessageRoot.setFocus(Body::L::InputTextBox::Text::input);
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    module Body::L::InputTextBox::Text::input
+    {
+        method setCount(context, count)
+        {
+            Body::L::Count.text = "%d / %d".format(count, Body::L::InputTextBox::Text::input.max_input_length);
+            Body::R::Body::Ok.insensitive = count == 0;
+        }
+
+        method onTextClose(context, event)
+        {
+            setCount(context, self.value.length);
+            return 0;
+        }
+
+        method onKeyRelease(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_SQUARE || event.keysym == KEY_BACKSPACE || event.keysym == KEY_DELETE)
+            {
+                setCount(context, self.value.length);
+            }
+
+            return 0;
+        }
+    }
+
+    module Body::R::Body
+    {
+        module SelectPhoto
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var photo = GTModeProject::ReplayListRoot.open(context, GTModeProject::ReplayListRoot::MODE::PHOTO);
+                if (photo == nil)
+                    return STATE_YIELD;
+
+                Body::R::Body::Photo::Image::ImageFace.image_path = photo.filename_t;
+
+                var caption = "";
+                if (photo.title.beginWith("PHOTO_"))
+                    caption = manager.translate("PhotoMode", photo.title);
+                else
+                    caption = manager.translate("CourseName", photo.title);
+
+                Body::R::Body::Photo::Label.text = caption;
+                SendMessageRoot.photo = photo;
+                return STATE_YIELD;
+            }
+        }
+
+        module Ok
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var data = SendMessageRoot.data;
+                var res = false;
+
+                var message = trim(Body::L::InputTextBox::Text::input.value);
+                if (message == "")
+                {
+                    var text = "";
+                    if (data.user_id != nil)
+                        text = "NO_MESSAGE";
+                    else if (data.bbs_thread != nil)
+                        text = "NO_FORUM_COMMENT"
+                    else if (data.club_id != nil)
+                        text = "NO_CLUB_NEWS"
+                    else
+                        text = "NO_RECENT_STATE";
+
+                    ERROR(context, "Community", text);
+                    return STATE_YIELD;
+                }
+
+                var [filter_res, sanitized_text] = filterText(context, message, true);
+                if (!filter_res)
+                    return STATE_YIELD;
+
+                if (data.user_id != nil)
+                {
+                    res = sendMessage(context, data.user_id, data.subject, sanitized_text);
+                }
+                else if (data.bbs_thread != nil)
+                {
+                    res = sendComment(context, data.club["club_id"], data.bbs_thread["thread_id"], sanitized_text, SendMessageRoot.photo);
+                }
+                else if (data.club_id != nil)
+                {
+                    res = sendClubRecent(context, data.club_id, sanitized_text);
+                }
+                else
+                {
+                    res = sendProfileRecent(context, sanitized_text);
+                }
+
+                if (res)
+                {
+                    SendMessageRoot.result = true;
+                    SendMessageRoot.close(context);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Cancel
+        {
+            method onCancel(context)
+            {
+                sound.play("cancel");
+                SendMessageRoot.close(context);
+                return STATE_YIELD;
+            }
+    
+            method onActivate(context)
+            {
+                sound.play("ok");
+                SendMessageRoot.close(context);
+                return STATE_YIELD;
+            }
+        }
+    }
+
+}

@@ -1,0 +1,476 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module PhotoEditRoot
+{
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute cp;
+    attribute photo;
+    attribute comment;
+    attribute local_photo;
+    attribute is_photo;
+
+    function getCarName(local_photo)
+    {
+        var car_label = local_photo.car_label;
+        if (car_label == nil || car_label == "")
+            return "---";
+
+        return gtengine::MSpecDB::getCarShortName(local_photo.car_label);
+    }
+
+    function captureIconImpl(context, sceneface, cp, path)
+    {
+        var sf = sceneface;
+        sf.iconCaptureBegin();
+        
+        var sf_visible = sf.visible;
+        if (sf.visible == false)
+            sf.visible = true;
+
+        sf.setDefaultCarParameter(cp, 0);
+
+        if (gtengine::MSpecDB::checkFlag(cp.getCarCode(), gtengine::GenericFlag::IS_RACING_KART))
+        {
+            SceneFaceUtil::loadScene(sf, "steamBG_kart_capture");
+        }
+        else
+        {
+            SceneFaceUtil::loadScene(sf, "steamBG_capture");
+        }
+
+        context.wait(0.1);
+
+        var counter = 0;
+        while (sf.isUnderSetup())
+        {
+            context.wait(0.3);
+            if (++counter > 50)
+                return;
+        }
+
+        sf.iconShotImage();
+        sf.waitTickEntry();
+        sf.iconCompositeSave(path, 0, 0, 1920, 1080, 0.0, 255.0);
+        sf.visible = sf_visible;
+        sf.iconCaptureEnd();
+    }
+
+    function captureIcon(context, sceneface, cp, path)
+    {
+        captureIconImpl(context, sceneface, cp, path);
+        sceneface.execCommand("clearAllModel");
+        context.wait(0.3);
+    }
+
+    class BaseImageUploader extends UIKitProject::ProgressRoot::GrimHttp
+    {   
+        method begin_message(context)
+        {
+            return manager.translate("Community", "MSG_UPLOADING");
+        }
+
+        method failed_message(context)
+        {
+            return manager.translate("Community", "MSG_UPLOAD_FAILED");
+        }
+
+        method success_message(context)
+        {
+            return manager.translate("Community", "MSG_UPLOAD_SUCCESS");
+        }
+
+        method cancel_message(context)
+        {
+            return manager.translate("Community", "QUERY_UPLOAD_CANCEL");
+        }
+    }
+
+    class CarPhotoUploader extends BaseImageUploader
+    {
+        attribute cp;
+        attribute comment;
+        attribute image_path;
+
+        method __init__(cp, comment, path)
+        {
+            self.cp = cp;
+            self.comment = comment;
+            self.image_path = path;
+            self.auto_mode = true;
+            self.can_cancel = false;
+        }
+
+        method beginImpl(context)
+        {
+            var [res, sanitized_text] = filterText(context, self.comment, false);
+
+            if (!res)
+                return false;
+
+            var comment = sanitized_text;
+            captureIcon(context, PhotoEditRoot.SceneFace, self.cp, self.image_path);
+
+            var jpg = pdistd::ReadFile(self.image_path);
+            var car_code = cp.getCarCode();
+            var tuner_label = gtengine::MSpecDB::getTunerLabel(car_code);
+            var country = gtengine::MSpecDB::getCountryString(gtengine::MSpecDB::getCarCountry(car_code));
+            var buf = cp.serialize();
+            var blob = pdistd::MBlob(buf);
+            blob = pdistd::Deflate(blob);
+            var encoded_cp = pdistd::EncodeBase64(blob);
+            var place = "%{tuner_label},%{country},%{encoded_cp}";
+
+            self.request = main::Photo.requestUploadCarImage(jpg["buffer"], 
+                gtengine::MSpecDB::getCarShortName(car_code), 
+                place, comment,
+                (args) => { });
+
+            return true;
+        }
+    }
+
+    class PhotoUploader extends BaseImageUploader
+    {
+        attribute local_photo;
+        attribute comment;
+
+        method __init__(local_photo, comment)
+        {
+            self.local_photo = local_photo;
+            self.comment = comment;
+            self.auto_mode = true;
+            self.can_cancel = false;
+        }
+
+        method beginImpl(context)
+        {
+            var [res, sanitized_text] = filterText(context, self.comment, false);
+
+            if (!res)
+                return false;
+
+            var comment = sanitized_text;
+
+            var jpg = pdistd::ReadFile(self.local_photo.filename);
+            self.request = main::Photo.requestUploadImage(jpg["buffer"], 
+                self.local_photo.title,
+                getCarName(self.local_photo),
+                comment,
+                self.local_photo.position_x,
+                self.local_photo.position_y,
+                self.local_photo.position_z,
+                (args) => { });
+
+            return true;
+        }
+    }
+
+    function uploadCarPhoto(context, cp, comment)
+    {
+        if (!QUERY(context, "Community", "QUERY_UPLOAD_CAR"))
+            return false;
+
+        var path = "/APP_DATA_RAW/car_photo.jpg";
+        var uploader = CarPhotoUploader(cp, comment, path);
+        var res = UIKitProject::ProgressRoot.open(context, [uploader]);
+
+        if (uploader.request == nil)
+            return false;
+
+        var photo_id = main::Photo.decodeResultString(uploader.request);
+        if (photo_id == "")
+        {
+            ERROR(context, "Community", "ERROR_CAR_UPLOAD_MAX", 8);
+            res = false;
+        }
+
+        return res;
+    }
+
+    function uploadPhoto(context, local_photo, comment)
+    {
+        if (!QUERY(context, "Community", "QUERY_UPLOAD_PHOTO"))
+            return false;
+
+        var uploader = PhotoUploader(local_photo, comment);
+        var res = UIKitProject::ProgressRoot.open(context, [uploader]);
+
+        if (uploader.request == nil)
+            return false;
+
+        var photo_id = main::Photo.decodeResultString(uploader.request);
+        if (photo_id == "")
+        {
+            ERROR(context, "Community", "ERROR_PHOTO_UPLOAD_MAX", 16);
+            res = false;
+        }
+
+        return res;
+    }
+
+    function updateOnlineComment(context, photo, comment)
+    {
+        if (!QUERY(context, "Community", "QUERY_UPDATE_COMMENT"))
+            return false;
+
+        var [res0, sanitized_text] = filterText(context, comment, true);
+        if (!res0)
+            return false;
+
+        var request = main::Photo.requestUpdateComment(photo["photo_id"], sanitized_text, (args) => {});
+        var res = Grim2Util::joinAwait(context, request);
+        if (res)
+        {
+            photo["comment"] = sanitized_text;
+        }
+
+        GENERIC_RESULT(context, res);
+        return res && main::Photo.decodeResult(request);
+    }
+
+    method _open(context, is_photo)
+    {
+        self.is_photo = is_photo;
+        self.result = false;
+        self.closed = false;
+        self.popup = SequenceUtil::ModalPage(context, PhotoEditRoot);
+        self.popup.open();
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method openUploadCar(context, cp)
+    {
+        self.cp = cp;
+        var is_photo = false;
+        return _open(context, is_photo);
+    }
+
+    method openUploadPhoto(context, local_photo)
+    {
+        self.local_photo = local_photo;
+        var is_photo = false;
+        return _open(context, is_photo);
+    }
+
+    method openUpdateComment(context, photo, comment, is_photo)
+    {
+        self.photo = photo;
+        self.comment = comment;
+        return _open(context, is_photo);
+    }
+
+    method close(context)
+    {
+        Photo.clearCallback();
+        Community.clearCallback();
+
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        FadeActor.out = true;
+
+        if (self.popup != nil)
+        {
+            self.popup.close(FadeActor.period);
+            self.popup = nil;
+        }
+
+        self.cp = nil;
+        self.photo = nil;
+        self.comment = nil;
+        self.local_photo = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.setFocus(Body::R::VBox::Cancel);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        var header = "";
+        var caption = "";
+        var comment = "";
+        var action = "";
+
+        var image_face = Body::R::VBox::ImageFace;
+        image_face.visible = true;
+
+        if (self.cp != nil)
+        {
+            header = manager.translate("Community", "Label_Upload");
+            action = manager.translate("Community", "Label_Upload");
+            image_face.image_path = GarageUtil::Thumbnail::getPath(self.cp.garage_id, 
+                GarageUtil::Thumbnail::Type::Garage,
+                GarageUtil::Thumbnail::Size::L);
+
+            caption = gtengine::MSpecDB::getCarShortName(self.cp.getCarLabel());
+        }
+        else if (self.photo != nil)
+        {
+            header = manager.translate("Community", "Label_Edit");
+            action = manager.translate("Community", "Label_Upload");
+            comment = self.comment;
+            var place = self.photo["place"];
+
+            if (self.is_photo)
+            {
+                setThumbnailImage(image_face, self.photo["photo_id"]);
+                if (place.beginWith("PHOTO_"))
+                    caption = manager.translate("PhotoMode", place);
+                else
+                    caption = manager.translate("CourseName", place);
+            }
+            else
+            {
+                setThumbnailImage(image_face, self.photo["photo_id"], self.photo["status"]);
+            }
+
+            caption = self.photo["car_name"];
+        }
+        else if (self.local_photo != nil)
+        {
+            header = manager.translate("Community", "Label_Upload");
+            action = manager.translate("Community", "Label_Upload");
+
+            var comment = self.local_photo.description;
+            image_face.image_path = self.local_photo.filename_t;
+
+            if (self.local_photo.genre == PhotoFileUtil::GENRE::PHOTO_TRAVEL)
+                caption = manager.translate("PhotoMode", self.local_photo.title);
+            else if (self.local_photo.genre == PhotoFileUtil::GENRE::PHOTO_RACE)
+                caption = manager.translate("CourseName", self.local_photo.title);
+        }
+
+        Body::L::Head::label.text = manager.translate("Community", header);
+
+        var text = comment;
+        Body::L::InputTextBox::Text::input.value = text;
+        Body::L::InputTextBox::Text::input.setCount(context, text.length);
+        Body::R::VBox::Label.text = caption;
+
+        var action_text = manager.translate("Community", action);
+        Body::R::VBox::Ok::label.text = action_text;
+        Body::R::VBox::Ok::label_i.text = action_text;
+
+        if (PDINetwork.isChatRestricted())
+            self.setFocus(Body::R::VBox::Ok);
+        else
+            self.setFocus(Body::L::InputTextBox::Text::input);
+
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context))
+        }
+    }
+
+    module Body::L::InputTextBox::Text::input
+    {
+        method setCount(context, count)
+        {
+            Body::L::Count.text = "%d / %d".format(count, 140);
+        }
+
+        method onTextClose(context, event)
+        {
+            setCount(context, self.value.length);
+            return 0;
+        }
+
+        method onKeyRelease(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_SQUARE || event.keysym == KEY_BACKSPACE  || event.keysym == KEY_DELETE)
+            {
+                setCount(context, self.value.length);
+            }
+
+            return 0;
+        }
+    }
+
+    module Body::R::VBox
+    {
+        module Ok
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var comment = trim(Body::L::InputTextBox::Text::input.value);
+                if (comment == "")
+                    comment = manager.translate("Community", "DEFAULT_PHOTO_COMMENT");
+
+                var res = false;
+                if (PhotoEditRoot.cp != nil)
+                {
+                    res = uploadCarPhoto(context, PhotoEditRoot.cp, comment);
+                }
+                else if (PhotoEditRoot.photo != nil)
+                {
+                    res = updateOnlineComment(context, PhotoEditRoot.photo, comment);
+                }
+                else if (PhotoEditRoot.local_photo != nil)
+                {
+                    res = uploadPhoto(context, PhotoEditRoot.local_photo, comment);
+                }
+
+                if (res)
+                {
+                    PhotoEditRoot.result = res;
+                    PhotoEditRoot.close(context);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Cancel
+        {
+            method onCancel(context)
+            {
+                sound.play("cancel");
+                PhotoEditRoot.close(context);
+                return STATE_YIELD;
+            }
+
+            method onActivate(context)
+            {
+                sound.play("ok");
+                PhotoEditRoot.close(context);
+                return STATE_YIELD;
+            }
+        }
+    }
+}

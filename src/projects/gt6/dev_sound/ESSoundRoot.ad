@@ -1,0 +1,412 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ESSoundRoot
+{
+    static es_sound = nil;
+    static es_path = nil;
+    static max_rpm = nil;
+    static modal_page;
+
+    hidden.visible = false;
+
+    class ToneRange
+    {
+        attribute min;
+        attribute max;
+        attribute center;
+
+        method __init__()
+        {
+            self.min = 0.0;
+            self.max = 0.0;
+            self.center = 0.0;
+        }
+    }
+
+    class ESSoundGenerator
+    {
+        attribute watcher_;
+        attribute rpm_;
+        attribute max_rpm_;
+        attribute es_;
+        attribute callback_;
+
+        method __init__(context, path, callback)
+        {
+            self.watcher_ = main::menu::MScriptWatcher(context, on_tick);
+            self.watcher_.interval = 1;
+            self.watcher_.append();
+
+            self.es_ = main::pdiext::MEngineSound();
+            self.es_.engine_data_path = path;
+            self.es_.muffler_data_path = "";
+            self.es_.allocate(500 * 1024); // 512 Kb
+            self.es_.load();
+            self.es_.play();
+            self.es_.engine_volume = 0.5;
+            self.es_.muffler_volume = 0.0;
+            self.es_.engine_rpm = 1000.0;
+            self.rpm_ = 1000.0;
+            self.max_rpm_ = 10000.0;
+            self.callback_ = callback;
+            
+            var info = self.es_.getEngineToneInfo();
+            foreach (var it1 in info)
+            {
+                foreach (var it2 in it1)
+                {
+                    
+                }   
+            }
+        }
+
+        method remove()
+        {
+            self.watcher_.remove();
+            self.watcher_ = nil;
+        }
+
+        method stop()
+        {
+            self.es_.stop();
+        }
+
+        method on_tick(context)
+        {
+            var update_context = context.getUpdateContext();
+            var r1 = update_context.getPadButtonState(0) & 0x800;
+            var rx = update_context.getPadAnalogChannel(0, 0);
+
+            var ry = update_context.getPadAnalogChannel(0, 1);
+            ry = Math::clamp(Math::max(Math::abs(rx), Math::abs(ry)) * 1.2, 0.0, 1.0);
+
+            var minrpm = 0.0;
+            var target_rpm = minrpm + (ry * (self.max_rpm_ - minrpm));
+            var mass = r1 ? 0.1 : 0.03;
+            var d = target_rpm - self.rpm_;
+            var s = d * mass;
+            
+            self.rpm_ = self.rpm_ + s;
+            self.es_.engine_rpm = self.rpm_;
+
+            if (self.callback_ != nil)
+                self.callback_(context, self);
+        }
+
+        method getEngineVolume()
+        {
+            return self.es_.engine_volume;
+        }
+
+        method setEngineVolume(vol)
+        {
+            self.es_.engine_volume = vol;
+        }
+
+        method getEngineSound()
+        {
+            return self.es_;
+        }
+
+        method setMaxRPM(rpm)
+        {
+            self.max_rpm_ = rpm;
+        }
+    }
+
+    function open(context, path)
+    {
+        es_path = path;
+        modal_page = main::SequenceUtil::ModalPage(context, ESSoundRoot);
+        modal_page.open();
+    }
+
+    function close(context)
+    {
+        if (modal_page != nil)
+        {   
+            modal_page.close();
+            modal_page = nil;
+        }
+    }
+
+    function onInitialize(context)
+    {
+        if (es_sound != nil)
+        {
+            es_sound.stop();
+            es_sound.remove();
+        }
+
+        es_sound = ESSoundGenerator(context, es_path, on_tick);
+        
+        var maxrpm = get_max_rpm(es_sound.getEngineSound().getEngineToneInfo());
+        max_rpm = maxrpm.toFloat() + 1500.0;
+        es_sound.setMaxRPM(max_rpm);
+
+        Graph::max_rpm.text = max_rpm.toInt().toString();
+
+        setup_graph(context, Graph::CrossFade::HBox, es_sound.getEngineSound().getEngineToneInfo());
+        var ext = ".esgx";
+        var e_path = es_sound.getEngineSound().engine_data_path + ext;
+
+        Info::ESFile::label.text = "%s (%dK)".format(e_path, IO::File::GetFileSize(e_path) / 1024);
+
+        Status::Volume::slider.setup(context);
+        Status::Volume::slider.decide_cb = on_volume_changed;
+
+        Status::Pan::slider.setup(context);
+        Status::Pan::slider.decide_cb = on_pan_changed;
+
+        Status::Pan::slider2.setup(context);
+        Status::Pan::slider2.decide_cb = on_dist_changed;
+
+        var ctx = main::sound_context;
+        ctx.enable = true;
+        ctx.master_output_gain = 1.0;
+        ctx.setEffectorParameter("world_deq", [
+            "eq_enable" : false,
+            "comp_gain_max" : 0.0,
+            "loudness_det_lowcut_fc" : 0.0,
+            "output_gain" : 0.0,
+            "comp_ratio" : 1.0,
+            "playback_spl_gain" : 0.0,
+            "agc_target_level" : 0.0
+        ]);
+
+        ctx.setEffectorParameter("world_dist", [
+            "dist_enable" : false
+        ]);
+
+        context.cursor_visible = true;
+    }
+
+    function on_tick(context, instance)
+    {
+        var h = Graph.h;
+        Graph::CurrentRPM.y = h - ((h * instance.rpm_) / max_rpm);
+        Status::CurrentRPM::rpm.text = "%d rpm".format(instance.rpm_);
+    }
+
+    function on_volume_changed(context, value)
+    {
+        es_sound.getEngineSound().engine_volume = value.toFloat() * 0.01;
+    }
+
+    function on_pan_changed(context, value)
+    {
+        es_sound.getEngineSound().engine_pan = value.toFloat() / 90.0;
+    }
+
+    function on_dist_changed(context, value)
+    {
+        es_sound.getEngineSound().engine_distance = value.toFloat() / 100.0;
+    }
+
+    function update_volume_slider(context)
+    {
+        Status::Volume::slider.index = (es_sound.getEngineSound().engine_volume * 100.0 + 0.5).toInt();
+        Status::Volume::slider.reflect(context);
+
+        Status::Pan::slider.index = (es_sound.getEngineSound().engine_pan * 90.0).toInt();
+        Status::Pan::slider.reflect(context);
+
+        Status::Pan::slider2.index = (es_sound.getEngineSound().engine_distance * 100.0).toInt();
+        Status::Pan::slider2.reflect(context);
+    }
+
+    function get_max_rpm(info)
+    {
+        if (info == nil || info.size == 0)
+            return 0;
+
+        var maxrpm = 0;
+        foreach (var i in info)
+        {
+            foreach (var j in i)
+            {
+                if (maxrpm < j["center_rpm"])
+                    maxrpm = j["center_rpm"];
+            }
+        }
+
+        return maxrpm;
+    }
+
+    function setup_graph(context, target, info)
+    {
+        target.clearChildren(context);
+        if (info == nil || info.size == 0)
+            return;
+
+        var ei = info;
+        var t0 = ei[0];
+        var range_list = [];
+        var lower_range = ToneRange();
+
+        for (var i = 0; i < t0.size; i++)
+        {
+            var range = ToneRange();
+            range.min = i > 0 ? t0[i - 1]["max_rpm"] : 0;
+            range.max = 99999;
+            range.center = t0[i]["center_rpm"];
+            range_list.push(range);
+
+            lower_range.max = t0[i]["min_rpm"];
+            lower_range = range;
+        }
+
+        var h = Graph::CrossFade::HBox.h;
+        for (var i = 0; i < range_list.size; i++)
+        {
+            var r = range_list[i];
+            var item = hidden::ToneElement.doCopy();
+            item["upper"].y = h - ((h * r.max) / max_rpm);
+            item["upper"].h = h - ((h * r.center) / max_rpm) - item["upper"].y;
+            item["lower"].y = h - ((h * r.center) / max_rpm);
+            item["lower"].h = h - ((h * r.min) / max_rpm) - item["lower"].y;
+
+            var center_pitch = t0[i]["center_pitch"].toFloat() / 4096.0;
+            var maxrpm = r.max == 99999 ? "" : r.max;
+            var max_pitch = r.max == 99999 ? "" : "%.3f".format((center_pitch * r.max.toFloat()) / r.center.toFloat());
+            var min_pitch = (center_pitch * r.min.toFloat()) / r.center.toFloat();
+            var volume = t0[i]["volume"].toFloat() / 16384.0;
+            item.defineStatic("tip", "rpm: %d - %d - %s, pitch: %.3f - %.3f - %s, volume: %.3f".format(r.min, r.center, maxrpm, min_pitch, center_pitch, max_pitch, volume));
+
+            target.appendChild(context, item);
+        }
+    }
+
+    function onFinalize(context)
+    {
+        Graph::CrossFade::HBox.clearChildren(context);
+        if (es_sound != nil)
+        {
+            es_sound.stop();
+            es_sound.remove();
+            es_sound = nil;
+        }
+
+        es_path = nil;
+        max_rpm = nil;
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    function onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_SELECT:
+                if (es_sound != nil)
+                    es_sound.stop();
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_L1:
+                if (es_sound != nil)
+                {
+                    var es = es_sound;
+                    var evol = es.getEngineVolume();
+                    var mode = evol > 0.0 ? 1 : 0;
+                    mode++;
+
+                    if (mode > 3)
+                        mode = 1;
+
+                    switch (mode)
+                    {
+                        case 1:
+                            evol = 1.0;
+                            break;
+
+                        case 2:
+                            evol = 0.0;
+                            break;
+
+                        case 3:
+                            evol = 1.0;
+                            break;
+                    }
+
+                    var fader = 0.5;
+                    es.setEngineVolume(evol * fader);
+                    update_volume_slider(context);
+                }
+
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_R1:
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+}
+
+module ESSoundRoot::hidden::ToneElement
+{
+    function onFocusEnter(context, event)
+    {
+        var w = event.widget;
+        ESSoundRoot::ToolTip::tip.value = w["tip"];
+        return STATE_YIELD;
+    }
+}
+
+module ESSoundRoot::ToneInfoButton
+{
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+        var info = es_sound.es_.getEngineToneInfo();
+        var desc = tone_info_to_string(info);
+        DialogUtil::openConfirmDialog(context, DialogUtil::OK, desc, "ES Tone Info");
+        return STATE_YIELD;
+    }
+
+    function tone_info_to_string(info)
+    {
+        var desc = "";
+        for (var i = 0; i < info.size; i++)
+        {
+            for (var j = 0; j < info[i].size; j++)
+            {
+                desc += "#%d/%d: ".format(i, j);
+                foreach (var k in info[i][j])
+                    desc += "%s:%d, ".format(k[0], k[1]);
+
+                desc = desc.substr(0, desc.size - 2);
+                desc += "\n";
+            }
+        }
+
+        desc = desc.substr(0, desc.size - 1);
+        return desc;
+    }
+}
+
+module ESSoundRoot::Status::Volume
+{
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+        return STATE_YIELD;
+    }
+}

@@ -1,0 +1,1103 @@
+
+
+//---------------------------------------------------------------------------------------
+// SettingUtil.ad
+//
+// Utility module for checking car settings
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module main::SoundUtil
+{
+    static bgm_group_info;
+    static mmusic;
+    static stream_mmusic;
+    static sysbgm_mmusic;
+    static stream_player;
+    static bgm_callback;
+    static context;
+    
+    static SCENE_MENU = 0;
+    static SCENE_RACE = 1;
+    static SCENE_REPLAY = 2;
+    static SCENE_MUSIC_PLAYER = 3;
+    static SCENE_QUICK = 4;
+    static SCENE_PHOTO = 5;
+    static SCENE_OPTION_WITH_NA = 0;
+    static SCENE_REPLAY_WITH_NA = SCENE_REPLAY;
+
+    static REPEAT_OFF = 0;
+    static REPEAT_GROUP = 1;
+    static REPEAT_TRACK = 2;
+
+    function GetMovieVolume()
+    {
+        return main::sound_runtime_parameter.movie_gain;
+    }
+
+    function GetNarrationVolume()
+    {
+        return main::sound_runtime_parameter.na_gain;
+    }
+
+    function SetMenuSEVolume(v)
+    {
+        main::sound.menu_se_volume = v;
+        pdistd::MDynRes::setFloat("gtengine.walk_camera.sevolume", v);
+    }
+
+    async function BGMStop()
+    {
+        pdistd::MDynRes::setInt32("BGMHandle", 0);
+        if (mmusic != nil)
+        {
+            mmusic.setFinishCallback(nil);
+            await function() { mmusic.stop() };
+            mmusic = nil;
+        }
+
+        if (context.playing_sysbgm >= 0)
+        {
+            __SystemBGMStoreContext();
+            context.playing_sysbgm = -1;
+        }
+
+        context.playing_code = "";
+        context.playing_title = "";
+        context.playing_artist = "";
+        context.playing_scene = -1;
+        context.paused = false;
+    }
+
+    function BGMPause(f)
+    {
+        if (mmusic != nil)
+            mmusic.pause(f);
+        context.paused = f;
+    }
+
+    function BGMGetPause()
+    {
+        return context.paused;
+    }
+
+    async function BGMFadeout(time)
+    {
+        if (time == nil)
+            time = 3f;
+
+        pdistd::MDynRes::setInt32("BGMHandle", 0);
+
+        if (mmusic != nil)
+        {
+            mmusic.setFinishCallback(nil);
+            await function() { mmusic.fadeout(time) } ;
+            mmusic = nil;
+        }
+
+        if (context.playing_sysbgm >= 0)
+        {
+            __SystemBGMStoreContext();
+            context.playing_sysbgm = -1;
+        }
+
+        context.playing_code = "";
+        context.playing_title = "";
+        context.playing_artist = "";
+        context.playing_scene = -1;
+        context.paused = false;
+    }
+
+    function BGMIsPlaying(code)
+    {
+        if (code == nil)
+            return mmusic != nil && mmusic.isPlaying();
+        else
+            return context.playing_code == code;
+    }
+
+    function BGMGetPlayingMusicInfo()
+    {
+        return [context.playing_title, context.playing_artist];
+    }
+
+    function BGMRegisterNotifyCallback(callback)
+    {
+        if (bgm_callback.indexOf(callback) < 0)
+            bgm_callback.push(callback);
+    }
+
+    function BGMUnregisterNotifyCallback(callback)
+    {
+        var i = bgm_callback.indexOf(callback);
+        if (i >= 0)
+            bgm_callback.erase(i);
+    }
+
+    function __get_next_music_code(group)
+    {
+        var pair = bgm_group_info.find(pdistd::AsciiStringHash(group));
+        if (pair == nil)
+            return nil;
+
+        var group_info = pair[1];
+        var list = group_info[2];
+
+        var n = list.size;
+        if (n == 0)
+            return nil;
+
+        var index = group_info[0] % n;
+        var loop = group_info[1];
+        if (loop > 0)
+        {
+            index = (index + 1) % n;
+            group_info[0] = index;
+        }
+
+        if (index == 0)
+            group_info[1] = group_info[1] + 1;
+        
+        return list[index];
+    }
+
+    async function __bgm_finish_callback()
+    {
+        var music = mmusic;
+        if (music == nil)
+            return;
+
+        if (context.repeat != 0)
+        {
+            var group = context.playing_code;
+            var code = __get_next_music_code(group);
+            if (code != nil)
+            {
+                await function() { music.playDirect(code) };
+                music.setFinishCallback(__bgm_finish_callback);
+                pdistd::MDynRes::setInt32("BGMHandle", music.getNativeHandle());
+                __update_playing(code);
+
+            }
+            else
+                music.stop();
+        }
+    }
+
+    function __update_playing(code)
+    {
+        var music = mmusic;
+        var map = music.getMusicInfo(code);
+        
+        if (map != nil)
+        {
+            var title = map["title"];
+            var artist = map["artist"];
+
+            context.playing_title = title;
+            context.playing_artist = artist;
+
+            foreach (var cb in bgm_callback)
+                cb();
+        }
+        else
+            ;
+    }
+
+    async function __BGMFadeinGroup(scene, group, repeat, fadein_time)
+    {
+        if (GetSceneBGMEnable(scene))
+        {
+            pdistd::MDynRes::setInt32("BGMHandle", 0);
+
+            if (mmusic != nil)
+                await function() { mmusic.stop() };
+
+            var music = stream_mmusic;
+            var code = __get_next_music_code(group);
+            if (code != nil)
+            {
+                music.volume = GetSceneBGMVolume(scene);
+                music.repeat = repeat == REPEAT_TRACK;
+                await function() { music.fadeinDirect(code, fadein_time); }
+                music.setFinishCallback(__bgm_finish_callback);
+                mmusic = music;
+                pdistd::MDynRes::setInt32("BGMHandle", music.getNativeHandle());
+                __update_playing(code);
+            }
+            else
+                group = nil;
+
+            context.playing_scene = scene;
+            context.repeat = repeat;
+        }
+
+        context.playing_code = group;
+        context.paused = false;
+    }
+
+    async function __BGMFadeinDirect(scene, code, repeat, fadein_time)
+    {
+        if (GetSceneBGMEnable(scene))
+        {
+            pdistd::MDynRes::setInt32("BGMHandle", 0);
+
+            if (mmusic != nil)
+                await function() { mmusic.stop() };
+
+            var music = stream_mmusic;
+            music.volume = GetSceneBGMVolume(scene);
+            music.repeat = repeat == REPEAT_TRACK;
+            await function() { music.fadeinDirect(code, fadein_time); }
+            mmusic = music;
+            pdistd::MDynRes::setInt32("BGMHandle", music.getNativeHandle());
+            __update_playing(code);
+
+
+            context.playing_scene = scene;
+            context.playing_code = code;
+        }
+
+        context.paused = false;
+    }
+
+    function BGMPlayGroup(scene, code, repeat, fadein_time, crossfade_time, force_change)
+    {
+        var playing = BGMIsPlaying();
+        
+        var same_music = context.playing_sysbgm != -1 ? context.playing_sysbgm == SystemBGMGroupToIndex(code) : context.playing_code == code;
+        var sysbgm_change = CheckSystemBGMPlay(code) != (context.playing_sysbgm != -1);
+        if (playing && same_music && !sysbgm_change && force_change != true)
+            return;
+
+        if (repeat == nil || repeat == true)
+            repeat = REPEAT_GROUP;
+
+        if (fadein_time == nil)
+            fadein_time = 0f;
+
+        if (crossfade_time == nil)
+            crossfade_time = 0f;
+
+        BGMFadeout(crossfade_time);
+
+        if (playing)
+            fadein_time = crossfade_time;
+
+        context.playing_scene = -1;
+        if (__TrySystemBGMPlay(scene, code, crossfade_time))
+            return;
+        else
+            __BGMFadeinGroup(scene, code, repeat, fadein_time);
+    }
+
+    function BGMPlayDirect(scene, code, repeat, fadein_time, crossfade_time)
+    {
+        var playing = BGMIsPlaying();
+        if (playing && context.playing_code == code)
+            return;
+
+        if (repeat == nil)
+            repeat = REPEAT_GROUP;
+
+        if (fadein_time == nil)
+            fadein_time = 0f;
+
+        if (crossfade_time == nil)
+            crossfade_time = 0f;
+
+        if (playing)
+        {
+            BGMFadeout(crossfade_time);
+            fadein_time = crossfade_time;
+        }
+
+        context.playing_scene = -1;
+        __BGMFadeinDirect(scene, code, repeat, fadein_time);
+    }
+
+    function BGMFadeoutForPlayGroup(scene, code, fadeout_time)
+    {
+        if (context.playing_scene != scene || context.playing_code != code)
+            BGMFadeout(fadeout_time);
+    }
+
+    function BGMGetGroupPlayInfo(group)
+    {
+        var pair = bgm_group_info.find(pdistd::AsciiStringHash(group));
+        if (pair == nil)
+            return nil;
+
+        var group_info = pair[1];
+        return [group_info[0], group_info[2].size, group_info[1]];
+    }
+
+    function __TrySystemBGMPlay(scene, group, fade_time)
+    {
+        if (CheckSystemBGMPlay(group))
+        {
+            var sysbgm_index = SystemBGMGroupToIndex(group);
+            if (context.playing_sysbgm == sysbgm_index)
+                return true;
+
+            if (fade_time == nil)
+                BGMStop();
+            else
+                BGMFadeout(fade_time);
+
+            return SystemBGMPlay(scene, group);
+        }
+
+        return false;
+    }
+
+    function MenuBGMCrossfadeGroup(group, fadein_time, crossfade_time, repeat, force_change)
+    {
+        BGMPlayGroup(SCENE_MENU, group, repeat, fadein_time, crossfade_time, force_change);
+    }
+
+    function MenuBGMPlayGroupCue(group, crossfade_time, policy)
+    {
+        if (__TrySystemBGMPlay(SCENE_MENU, group))
+            return;
+
+        var duration_sec = 90;
+        var interval = 2;
+
+        if (policy != nil)
+        {
+            if (policy["duration"] != nil)
+                duration_sec = policy["duration"];
+
+            if (policy["interval"] != nil)
+                interval = policy["interval"];
+        }
+
+        var time = pdistd::MTime::getCurrentTime().getBySecond();
+        var change = false;
+
+        if (!BGMIsPlaying())
+        {
+            change = true;
+        }
+        else if (context.playing_code == group)
+        {
+            context.bgm_cue_counter++;
+            var elapsed = time - context.bgm_last_play_time;
+            if (elapsed > duration_sec)
+                change = context.bgm_cue_counter >= interval;
+        }
+        else
+        {
+            context.playing_code = group;
+            context.bgm_cue_counter = 0;
+            change = true;
+        }
+
+        if (change)
+        {
+            MenuBGMCrossfadeGroup(group, 0f, crossfade_time, REPEAT_GROUP, true);
+            context.bgm_last_play_time = time;
+        }
+    }
+
+    async function PlaySGXStreamDirect(path, repeat, volume, delay)
+    {
+        await () => 
+        {
+            var player = stream_player;
+            player.load("sgx");
+            player.delay = delay != nil ? delay : 0f;
+            player.bus = 3;
+            player.start(path + ".sgd", 0f, volume);
+        };
+    }
+
+    async function PlaySGXStreamDirectSGD(path, volume)
+    {
+        await () => 
+        {
+            var player = stream_player;
+            player.load("sgx");
+            player.delay = 0f;
+            player.bus = 3;
+            player.start(path, 0f, volume);
+        };
+    }
+
+    function MenuBGMPlayFile(file, repeat, volume)
+    {
+        if (volume == nil)
+            volume = 1f;
+
+        var opt = main::sound_runtime_parameter;
+        if (opt.menu_bgm && opt.menu_bgm_gain > 0f)
+            PlaySGXStreamDirect("/sound_gt/track/" + file, repeat, opt.menu_bgm_gain * volume);
+    }
+
+    function PlayStream(path, repeat, volume, delay)
+    {
+        PlaySGXStreamDirect(path, repeat, volume, delay);
+    }
+
+    function PlayStreamSE(path)
+    {
+        PlaySGXStreamDirect(path, false, main::sound.menu_se_volume, 0f);
+    }
+
+    function _PlayStreamWithDelay(context, path, volume)
+    {
+        PlaySGXStreamDirect(path, false, volume);
+        context.removeTimeOut("PlayStreamWithDelay");
+    }
+
+    function PlayStreamWithDelay(context, path, volume, delay)
+    {
+        if (volume == nil)
+            volume = main::sound.menu_se_volume;
+
+        context.addTimeOut("PlayStreamWithDelay", _PlayStreamWithDelay, context, path, volume);
+        context.setTimeOut("PlayStreamWithDelay", delay);
+    }
+
+    function StopStream(context)
+    {
+        if (context != nil)
+            context.removeTimeOut("PlayStreamWithDelay");
+
+        stream_player.stop(1f);
+    }
+
+    function PauseStream(x)
+    {
+        stream_player.pause(x);
+    }
+
+    function _PlaySound(context, code)
+    {
+        main::sound.play(code);
+        context.removeTimeOut("PlaySoundWithDelay");
+    }
+
+    function PlaySoundWithDelay(context, delay, code)
+    {
+        context.addTimeOut("PlaySoundWithDelay", _PlaySound, context, code);
+        context.setTimeOut("PlaySoundWithDelay", delay);
+    }
+
+    function beginNarration(file, volume, delay)
+    {
+        PlayStream("/sound_gt/narration/jp/" + file, false, 
+            volume != nil ? volume : GetNarrationVolume(),
+            delay != nil ? delay : 0f);
+    }
+
+    function endNarration()
+    {
+        StopStream();
+    }
+
+    function PlayCarStartSound(car_parameter)
+    {
+        if (car_parameter == nil)
+            return;
+
+        var sound_id_pair = car_parameter.getSoundID();
+        SoundUtil::PlayStream("carsound/start/%05d".format(sound_id_pair[0]), false, main::sound.menu_se_volume, 0f);
+    }
+
+    function RaceBGMPlayGroup(code, replay, repeat)
+    {
+        BGMPlayGroup(replay ? SCENE_REPLAY : SCENE_RACE, code, repeat);
+    }
+
+    function SetNextBGMCode(code)
+    {
+        context.next_play_code = code;
+    }
+
+    function GetNextBGMCode()
+    {
+        var code = context.next_play_code;
+        SetNextBGMCode("");
+        return code;
+    }
+
+    static sysbgm_group_table = [
+        "menu" : 0,
+        "menu_moon" : 0,
+        "christmas" : 0,
+        "garage" : 0,
+        "arcade" : 0,
+        "gtauto" : 0,
+        "quick_before" : 0,
+        "quick_before_coffeebreak" : 0,
+        "quick_before_license" : 0,
+        "quick_before_moon" : 0,
+        "quick_before_timetrial" : 0,
+        "quick_after" : 0,
+        "event_1" : 0,
+        "event_2" : 0,
+        "event_3" : 0,
+        "event_4" : 0,
+        "event_5" : 0,
+        "event_6" : 0,
+        "event_7" : 0,
+        "event_8" : 0,
+        "xchallenge" : 0,
+        "racing" : 1,
+        "racing_moon" : 1,
+        "slideshow" : 2,
+    ];
+
+    function SystemBGMGroupToIndex(group)
+    {
+        return sysbgm_group_table[group];
+    }
+
+    function __SystemBGMStoreContext()
+    {
+        if (context.playing_sysbgm >= 0)
+        {
+            var [result, ctx] = pdiext::MSystemBGM::getContext();
+            if (ctx != nil)
+            {
+                var option = main::GAME_STATUS.user_profile.option;
+                option.sysbgm_context[context.playing_sysbgm] = ctx;
+            }
+        }
+    }
+
+    function CheckSystemBGMPlay(group)
+    {
+        if (!__SystemBGMTryInitialize())
+            return false;
+
+        var option = main::GAME_STATUS.user_profile.option;
+        var index = SystemBGMGroupToIndex(group);
+        return index != nil && option.sysbgm_use[index] && option.sysbgm_valid[index] && option.sysbgm_context[index] != nil;
+    }
+
+    async function __SystemBGMTryInitialize(render_context, dialog = false)
+    {
+        if (context.sysbgm_enable)
+        {
+            var result = await () => pdiext::MSystemBGM::initialize();
+            if (!pdiext::MSystemBGM::isSuccess(result))
+            {
+                if (dialog)
+                {
+                    var error = "I-%08X".format(result);
+                    var root = render_context.getCursorRoot();
+                    var mes = root != nil ? render_context.translate(root, "SystemMessage", "ERROR_DIALOG").build(error) : error;
+                    DialogUtil::openConfirmDialog(render_context, DialogUtil::ERROR, mes);
+                }
+
+                await function() { pdiext::MSystemBGM::finalize() };
+                return false;
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    async function SystemBGMPlay(scene, group)
+    {
+        if (!__SystemBGMTryInitialize())
+            return false;
+
+        var sysbgm_index = SystemBGMGroupToIndex(group);
+        if (context.paused)
+        {
+            pdiext::MSystemBGM::stop();
+            context.playing_code = "";
+            context.paused = false;
+        }
+        else if (context.playing_sysbgm == sysbgm_index)
+            return true;
+        
+        __SystemBGMStoreContext();
+        var option = main::GAME_STATUS.user_profile.option;
+        var param = main::sound_runtime_parameter;
+        var ctx = nil;
+
+        if (sysbgm_index != nil && option.sysbgm_valid[sysbgm_index])
+            ctx = option.sysbgm_context[sysbgm_index];
+
+        if (ctx != nil)
+        {
+            if (mmusic != nil)
+                await function() { mmusic.stop() };
+
+            var result = await () => pdiext::MSystemBGM::setContext(ctx);
+            if (pdiext::MSystemBGM::isSuccess(result))
+            {
+                sysbgm_mmusic.volume = GetSceneBGMVolume(scene) * param.user_bgm_gain;
+                await function() { sysbgm_mmusic.play(group) };
+
+                mmusic = sysbgm_mmusic;
+                pdistd::MDynRes::setInt32("BGMHandle", mmusic.getNativeHandle());
+
+                context.playing_sysbgm = sysbgm_index;
+                context.playing_scene = scene;
+                context.playing_code = group;
+                return true;
+            }
+            else
+            {
+                await function() { pdiext::MSystemBGM::finalize() };
+            }
+        }
+
+        if (mmusic != nil)
+        {
+            mmusic.stop();
+            mmusic = nil;
+        }
+
+        pdistd::MDynRes::setInt32("BGMHandle", 0);
+        context.playing_sysbgm = -1;
+        context.playing_scene = -1;
+        context.playing_code = "";
+        context.playing_title = "";
+        context.playing_artist = "";
+        return false;
+        return; // Two returns, it's weird
+    }
+
+    function OpenSystemBGMDialog(context)
+    {
+        if (!__SystemBGMTryInitialize(context, true))
+            return nil;
+
+        BGMFadeout();
+
+        var result = pdiext::MSystemBGM::startSelectionMenu();
+        var error = "";
+
+        if (pdiext::MSystemBGM::isCanceled(result))
+            return nil;
+        else if (!pdiext::MSystemBGM::isSuccess(result))
+            error = "S-%08X".format(result);
+        else
+        {
+            var pair = pdiext::MSystemBGM::getContext();
+            if (pair[1] != nil)
+                return pair[1];
+
+            error = "C-%08X".format(pair[0]);
+        }
+
+        var root = context.getCursorRoot();
+        var mes = root != nil ? context.translate(root, "SystemMessage", "ERROR_DIALOG").build(error) : error;
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, mes);
+        SetSystemBGMEnable(context, false);
+        SetSystemBGMEnable(context, true); // Ok..?
+    }
+
+    async function SetSystemBGMEnable(render_context, enable, fadeout_time)
+    {
+        context.sysbgm_enable = enable;
+        if (enable)
+            __SystemBGMTryInitialize();
+        else
+        {
+            if (context.playing_sysbgm >= 0)
+            {
+                if (render_context != nil && fadeout_time != nil && fadeout_time > 0f)
+                {
+                    BGMFadeout(fadeout_time);
+                    render_context.sync(fadeout_time);
+                }
+                else
+                    BGMStop();
+
+                BGMPlayGroup(context.playing_scene, context.playing_code, context.repeat);
+            }   
+
+            await function() { pdiext::MSystemBGM::finalize() };
+        }
+    }
+
+    function GetSceneBGMEnable(scene)
+    {
+        scene &= 0x0F;
+        var param = main::sound_runtime_parameter;
+
+        switch (scene)
+        {
+            case SCENE_MENU:
+                return param.menu_bgm;
+            case SCENE_RACE:
+                return param.race_bgm;
+            case SCENE_REPLAY:
+                return param.replay_bgm;
+            case SCENE_MUSIC_PLAYER:
+                return true;
+        }
+
+        return false;
+    }
+
+    function GetSceneBGMVolume(scene)
+    {
+        var scene_opt = scene & 0xF0;
+        scene &= 0x0F;
+        var param = main::sound_runtime_parameter;
+        var v = 0f;
+
+        switch (scene)
+        {
+            case SCENE_MENU:
+                v = param.menu_bgm_gain;
+                break;
+
+            case SCENE_RACE:
+                v = param.race_bgm_gain;
+                break;
+
+            case SCENE_REPLAY:
+                v = param.replay_bgm_gain;
+                break;
+
+            case SCENE_MUSIC_PLAYER:
+                v = param.music_player_gain;
+                break;
+        }
+
+        return v;
+    }
+
+    function UpdateBGMVolume()
+    {
+        var scene = context.playing_scene;
+        if (scene == -1)
+            return;
+
+        var v = GetSceneBGMVolume(scene);
+        if (mmusic != nil)
+            mmusic.volume = v;
+
+        var param = main::sound_runtime_parameter;
+        pdiext::MSystemBGM::setVolume(v * param.user_bgm_gain);
+    }
+
+    function PreviewBGMVolume(volume_percent, user_bgm_volume_percent)
+    {
+        var volume = SoundUtil::GetBGMPercentToAmplitude(volume_percent);
+        if (mmusic != nil)  
+            mmusic.volume = volume;
+
+        var user_bgm_volume;
+        if (user_bgm_volume_percent != nil)
+            user_bgm_volume = SoundUtil::LoudnessPercentToAmplitude(user_bgm_volume_percent);
+        else
+            user_bgm_volume = main::sound_runtime_parameter.user_bgm_gain;
+
+        pdiext::MSystemBGM::setVolume(volume * user_bgm_volume);
+    }
+
+    function LoudnessPercentToAmplitude(percent)
+    {
+        return (percent.toFloat() / 100f) ** 1.6666666f;
+    }
+
+    function BGMPercentToAmplitude(percent, master_volume)
+    {
+        var v = LoudnessPercentToAmplitude(percent) * master_volume;
+        return __toplevel__::System::Math::clamp(v, 0f, 1f);
+    }
+
+    function GetBGMPercentToAmplitude(volume_percent)
+    {
+        var param = main::sound_runtime_parameter;
+        var drc = param.sound_dynamic_range;
+        var preset = main::drc_preset[drc];
+        var bgmvol = preset[$"bgm_master_volume"];
+        return BGMPercentToAmplitude(volume_percent, bgmvol);
+    }
+
+    function SetupSound(scene, force_update)
+    {
+        var opt = main::sound_runtime_parameter;
+        if (force_update != true && opt.scene == scene)
+            return;
+
+        opt.scene = scene;
+        var drcpreset = main::drc_preset[opt.sound_dynamic_range];
+        var ctx = main::sound_context;
+        var sound_user = nil;
+        var dist_enable = false;
+        var scene_opt = scene & 0xF0;
+        scene &= 0x0F;
+        
+        var v;
+        switch (scene)
+        {
+            case SCENE_RACE:
+                v = opt.race_se ? opt.race_se_gain : 0f;
+                sound_user = "race";
+                dist_enable = true;
+
+                break;
+
+            case SCENE_REPLAY:
+                v = opt.replay_se ? opt.replay_se_gain : 0f;
+                sound_user = "race";
+                dist_enable = true;
+                break;
+
+            case SCENE_QUICK:
+                v = opt.replay_se ? opt.replay_se_gain * 0.71f : 0f;
+                sound_user = "race";
+                dist_enable = true;
+                break;
+
+            case SCENE_PHOTO:
+                v = 1f;
+                break;
+
+            case SCENE_MENU:
+            default:
+                v = opt.replay_se ? opt.replay_se_gain * 0.71f : 0f;
+                break;
+        }
+
+        var rs = main["race_sound"];
+        if (rs != nil)
+        {
+            rs.world_se_volume = v;
+            rs.start = true;
+        }
+
+        ctx.setExclusiveUser(sound_user);
+        var eq = drcpreset[$"world_se_eq"];
+        var eq_enable = eq != nil;
+
+        if (eq_enable)
+        {
+            for (var i = 0; i < eq.size; i++)
+                ctx.setWorldEQ(i + 13, eq[i]);
+        }
+
+        var deq;
+        switch (scene)
+        {
+            case SCENE_MENU:
+            case SCENE_QUICK:
+                deq = drcpreset[$"deq_replay"];
+                break;
+
+            case SCENE_RACE:
+                deq = drcpreset[$"deq_race"];
+                break;
+
+            case SCENE_REPLAY:
+                deq = drcpreset[$"deq_replay"];
+                break;
+
+            case SCENE_PHOTO:
+                deq = drcpreset[$"deq_photo"];
+                break;
+        }
+
+        applyDEQParameter(deq);
+        ctx.setEffectorParameter("world_dist", ["dist_enable" : dist_enable]);
+    }
+
+    function SetSoundEnableOption(menu_bgm, menu_se, race_bgm, race_se, replay_bgm, replay_se)
+    {
+        var p = main::sound_runtime_parameter;
+        p.menu_bgm = menu_bgm;
+        p.menu_se = menu_se;
+        p.race_bgm = race_bgm;
+        p.race_se = race_se;
+        p.replay_bgm = replay_bgm;
+        p.replay_se = replay_se;
+    }
+
+    function SetDynamicRangeOption(drc)
+    {
+        var p = main::sound_runtime_parameter;
+        p.sound_dynamic_range = drc;
+    }
+
+    function SetRaceSoundPosition(innerlv)
+    {
+        var rs = main["race_sound"];
+        if (rs != nil)
+            rs.force_innerlv = innerlv;
+    }
+
+    function SetBGMUpmixOption(upmix)
+    {
+        main::sound_context.bgm_upmix_preset = upmix ? "INST" : "NONE";
+    }
+
+    function SetSoundVolumeOption(menu_bgm, menu_se, race_bgm, race_se, replay_bgm, replay_se, user_bgm)
+    {
+        var p = main::sound_runtime_parameter;
+        p.menu_bgm_volume = menu_bgm;
+        p.menu_se_volume = menu_se;
+        p.race_bgm_volume = race_bgm;
+        p.race_se_volume = race_se;
+        p.replay_bgm_volume = replay_bgm;
+        p.replay_se_volume = replay_se;
+        p.user_bgm_volume = user_bgm;
+    }
+
+    function SetRaceSoundVolumeOption(race_bgm, race_se)
+    {
+        var p = main::sound_runtime_parameter;
+        p.race_bgm_volume = race_bgm;
+        p.race_se_volume = race_se;
+    }
+
+    function SetReplaySoundVolumeOption(bgm_vol, se_vol)
+    {
+        var p = main::sound_runtime_parameter;
+        p.replay_bgm_volume = bgm_vol;
+        p.replay_se_volume = se_vol;
+    }
+
+    function ApplySoundVolumeOption()
+    {
+        var p = main::sound_runtime_parameter;
+        var drc = p.sound_dynamic_range;
+        var preset = main::drc_preset[drc];
+        var bgmvol = preset[$"bgm_master_volume"];
+
+        p.menu_bgm_gain = BGMPercentToAmplitude(p.menu_bgm_volume, bgmvol);
+        p.race_bgm_gain = BGMPercentToAmplitude(p.race_bgm_volume, bgmvol);
+        p.replay_bgm_gain = BGMPercentToAmplitude(p.replay_bgm_volume, bgmvol);
+
+        p.user_bgm_gain = LoudnessPercentToAmplitude(p.user_bgm_volume);
+        p.menu_se_gain = LoudnessPercentToAmplitude(p.menu_se_volume);
+        p.race_se_gain = LoudnessPercentToAmplitude(p.race_se_volume);
+        p.replay_se_gain = LoudnessPercentToAmplitude(p.replay_se_volume);
+        p.music_player_gain = preset[$"music_player_master_volume"];
+        p.movie_gain = preset[$"movie_master_volume"];
+        p.na_gain = preset[$"na_master_volume"];
+
+        p.menu_se_gain *= preset[$"menu_se_master_volume"];
+        p.race_bgm_gain *= preset[$"race_bgm_gain"];
+        p.race_se_gain *= preset[$"race_se_gain"];
+        p.replay_bgm_gain *= preset[$"replay_bgm_gain"];
+        p.replay_se_gain *= preset[$"replay_se_gain"];
+
+        SoundUtil::SetMenuSEVolume(p.menu_se ? p.menu_se_gain : 0f);
+
+        var x = ((preset[$"menu_se_master_volume"] * 0.84139514f) * 100f).toInt();
+        PDINetwork.setTrophySoundLevel(x < 20 ? 20 : x);
+    }
+
+    function SuspendMenuSEVolume()
+    {
+        SoundUtil::SetMenuSEVolume(0f);
+    }
+
+    function ResumeMenuSEVolume()
+    {
+        var p = main::sound_runtime_parameter;
+        SoundUtil::SetMenuSEVolume(p.menu_se ? p.menu_se_gain : 0f);
+    }
+
+    function ApplySpeakerLayoutOption(speaker_bits)
+    {
+        var max_ch = pdiext::MSystemConfiguration::GetSystemAudioAvailableOutputChannels();
+        var audioout_ch = 2;
+        var mode = pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO;
+
+        switch (max_ch)
+        {
+            case 2:
+                audioout_ch = 2;
+                mode = pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO;
+                break;
+
+            case 6:
+                var layout_map = [
+                    SpeakerBits::L_R : [2, pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO],
+                    SpeakerBits::L_R | SpeakerBits::LS_RS : [6, pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R_NC],
+                    SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS : [6, pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R],
+                ];
+
+                var pair = layout_map.find(speaker_bits & (SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS));
+                if (pair != nil)
+                {
+                    audioout_ch = pair[1][0];
+                    mode = pair[1][1];
+                }
+                break;
+
+            case 8:
+                var layout_map = [
+                    SpeakerBits::L_R : [2, pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO],
+                    SpeakerBits::L_R | SpeakerBits::LS_RS : [6, pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R_NC],
+                    SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS : [6, pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R],
+                    SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::CB : [8, pdiext::OUTPUTSURROUNDMODE::SURROUND_DOLBY_PL2X],
+                    SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::LB_RB: [8, pdiext::OUTPUTSURROUNDMODE::SURROUND_DOLBY_DIGITAL_EX],
+                ];
+
+                var pair = layout_map.find(speaker_bits & (SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::CB | SpeakerBits::LB_RB));
+                if (pair != nil)
+                {
+                    audioout_ch = pair[1][0];
+                    mode = pair[1][1];
+                }
+                break;
+        }
+
+        pdiext::MSystemConfiguration::SetSystemAudioOutputFormat(audioout_ch);
+        pdiext::MSystemConfiguration::SetSystemAudioOutputMode(6, mode);
+    }
+
+    function ApplyPlaylist()
+    {
+        InitializePlaylist();
+    }
+
+    function InitializePlaylist()
+    {
+        var music = SoundUtil::stream_mmusic;
+        var groups = music.getGroups();
+
+        var list_group_function = [
+            "menu" : MusicFileUtil::getMenuBgmList,
+            "racing" : MusicFileUtil::getRaceBgmList,
+            "slideshow" : MusicFileUtil::getSlideShowBgmList,
+        ];
+
+        if (GetVersionBranch() != "gt6")
+        list_group_function = Map();
+
+        foreach (var group in groups)
+        {
+            var hash = pdistd::AsciiStringHash(group);
+            SoundUtil::bgm_group_info[hash] = nil;
+
+            var list = [];
+            var list_func = list_group_function[group];
+            if (list_func != nil)
+            {
+                var datas = list_func();
+                foreach (var i in datas)
+                    list.push(i.code);
+            }
+            else
+            {
+                var musics = music.getMusics(group);
+                foreach (var i in musics)
+                    list.push(i["code"]);
+            }
+
+            list.randomShuffle(pdistd::MRandom::GetValue());
+            SoundUtil::bgm_group_info[hash] = [0, 0, list];
+        }
+    }
+}

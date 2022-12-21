@@ -1,0 +1,394 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module OptionRoot
+{
+    #include "projects/gt6/option/OptionMenuGroups.ad"
+    #include "projects/gt6/option/SecretCommand.ad"
+
+    hidden.visible = false;
+
+    static sOptionAtTheBegining = nil;
+
+    attribute modal_page;
+    attribute closed;
+    attribute active_w;
+    attribute invisible_pages;
+
+    method open(context)
+    {
+        self.closed = false;
+        self.modal_page = main::SequenceUtil::ModalPage(context, OptionRoot);
+        self.modal_page.open();
+        return true;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        OptionRoot.input_enable = false;
+        saveIfChanged(context);
+        self.visibleUnderWindows();
+
+        OptionRoot.setFocus(nil);
+
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        if (self.modal_page != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+        }
+    }
+
+    method invisibleUnderWindows(context)
+    {
+        self.invisible_pages = [];
+        var page_list = context.getPageList();
+
+        foreach (var page in page_list)
+        {
+            if (self != page && page.visible)
+            {
+                page.visible = false;
+                self.invisible_pages.push(page);
+            }
+        }
+    }
+
+    method visibleUnderWindows(context)
+    {
+        if (self.invisible_pages != nil)
+        {
+            foreach (var page in self.invisible_pages)
+                page.visible = true;
+        }
+
+        self.invisible_pages = nil;
+    }
+
+    method displayGroupSettings(context, group_info)
+    {
+        var listbox = ListMenu.getListBox();
+        listbox.setItemCount(0);
+        listbox.postRedraw();
+        context.wait();
+
+        var group_items = [];
+        foreach (var group_item in group_info.items)
+        {
+            var [item_info, insensitive_f] = group_item;
+            if (item_info.isVisible())
+                group_items.push(group_item);
+        }
+
+        listbox.setItemTemplate(context, hidden::OptionItem);
+        listbox.setItemCount(group_items.size);
+
+        for (var i = 0; i < listbox.getItemCount(); i++)
+        {
+            var [item_info, insensitive_f] = group_items[i];
+            var item = listbox.getItemWidget(i, context);
+            var text = GetLocalizedItemName(context, item_info);
+            item.setText(text, context.translate(OptionRoot, "INFO|" + item_info.name));
+            item.setIcon("/image/gt5/option/%{item_info.image}.dds");
+            item.value = item_info;
+            listbox.setItemInsensitive(i, CheckInsensitiveF(insensitive_f));
+
+            if (ItemAtr::PLAYER_1 & item_info.atr)
+                item.Player1.visible = true;
+
+            if (ItemAtr::PLAYER_2 & item_info.atr)
+                item.Player2.visible = true;
+        }
+
+        listbox.focus_index = 0;
+        ListMenu::ListWindow::Head::Label.text = context.translate(OptionRoot, group_info.name);
+    }
+
+    method setActiveGroup(context, group_info, category_item)
+    {
+        displayGroupSettings(context, group_info);
+
+        if (self.active_w != nil)
+        {
+            self.active_w.active = false;
+            self.active_w = nil;
+        }
+
+        category_item.active = true;
+        self.active_w = category_item;
+    }
+
+    method saveIfChanged(context)
+    {
+        var current = GAME_STATUS.user_profile.option.serialize();
+        if (sOptionAtTheBegining != current)
+        {
+            sOptionAtTheBegining = current;
+            SaveDataUtilGT6::saveEveryWhere(context);
+        }
+    }
+
+    method createSpecialSaveData(context)
+    {
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, context.translate(OptionRoot, "QUESTION_CREATE_SPECIAL_SAVEDATA"));
+        if (res)
+        {
+            SaveDataUtilGT6::saveSpecialEveryWhere(context);
+            ContextMain.disableInput();
+            ExitGameMessageForSSD::Fade.start();
+            context.cursor_visible = false;
+        }
+    }
+
+    function isSecretOptionOpen()
+    {
+        return false;
+    }
+
+    method onRealize(manager)
+    {
+        DefineMenuGroups_GT6();
+
+        var is_debug = false;
+        if (is_debug)
+        {
+            OpenDevelopSettings();
+            OpenSpecialSettings();
+        }
+    }
+
+    method onInitialize(context)
+    {
+        ContextMain.disableInput();
+        
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+
+        actor.on_effect_end = (context) => 
+        {
+            actor.on_effect_end = nil;
+            invisibleUnderWindows(context);
+            ContextMain.enableInput();
+        };
+
+        self.CloseActor.stop();
+
+        ListMenu::Categories.create(context);
+        ExitGameMessageForSSD::Fade.reset();
+        ExitGameMessage::Fade.reset();
+
+        sOptionAtTheBegining = GAME_STATUS.user_profile.option.serialize();
+        ButtonHelpGT6.set(context, [
+            ["Enter"],
+            ["Close"],
+        ]);
+    }
+
+    method onFinalize(context)
+    {
+
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.close(context);
+        return 2;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (sDevelopSettingsManager.check(context, event))
+        {
+            main::sound.play("return");
+            OpenDevelopSettings();
+            ListMenu::Categories.create(context);
+            return 2;
+        }
+
+        return 0;
+    }
+
+    module ListMenu::Categories
+    {
+        method create(context)
+        {
+            ListMenu.clearCategoryComponent(context);
+
+            var category_w = hidden::Category.doCopy();
+            category_w.setText(context.translate(OptionRoot, "Label_Category"));
+
+            var focus_w = nil;
+            var focus_w_group_info = nil;
+
+            foreach (var [group_info, insensitive_f] in sOptionMenuGroups)
+            {
+                if (!group_info.isVisible())
+                    continue;
+
+                var category_item_w = hidden::CategoryItem.doCopy();
+                category_item_w.value = group_info;
+                category_item_w.setText(context.translate(OptionRoot, group_info.name));
+                category_item_w.insensitive = CheckInsensitiveF(insensitive_f);
+
+                category_w.setCategoryItemComponent(context, category_item_w);
+
+                if (focus_w == nil && !category_item_w.insensitive)
+                {
+                    focus_w = category_item_w;
+                    focus_w_group_info = group_info;
+                }
+            }
+
+            ListMenu.setCategoryComponent(context, category_w);
+
+            if (focus_w != nil)
+            {
+                OptionRoot.setActiveGroup(context, focus_w_group_info, focus_w);
+                OptionRoot.setFocus(focus_w);
+            }
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_RIGHT)
+            {
+                sound.play("cursor");
+                ListWindow.inFocus(context);
+                return 2;
+            }
+
+            return 0;
+        }
+    }
+
+    module hidden::CategoryItem
+    {
+        method onActivate(context)
+        {
+            if (self.active)
+                return 2;
+
+            main::sound.play("ok");
+
+            var group_info = self.value;
+            OptionRoot.setActiveGroup(context, group_info, self);
+            return 2;
+        }
+    }
+
+    module ListMenu::ListWindow
+    {
+        attribute prev_focus_w_;
+
+        method inFocus(context)
+        {
+            var focus_w = OptionRoot.getFocusWidget();
+            if (focus_w == nil)
+                return;
+
+            self.prev_focus_w_ = focus_w;
+
+            OptionRoot.setFocus(ListMenu.getListBox());
+        }
+
+        method outFocus(context)
+        {
+            if (self.prev_focus_w_ != nil)
+            {
+                OptionRoot.setFocus(self.prev_focus_w_);
+                self.prev_focus_w_ = nil;
+            }
+        }
+    }
+
+    module ListMenu::ListWindow::clip::ListBox
+    {
+        method onFocusNotify(context, new_index)
+        {
+            var w = self.getItemWidget(new_index, context);
+            OptionRoot.setFocus(w);
+            return 1;
+        }
+
+        method onActivate(context)
+        {
+            if (self.getItemInsensitive(self.focus_index))
+            {
+                main::sound.play("disable");
+                return 2;
+            }
+
+            main::sound.play("ok");
+
+            var w = self.getItemWidget(self.focus_index, context);
+            var info = w.value;
+            if (info == nil)
+                return 2;
+
+            if (ItemAtr::CREATE_SPECIAL_SAVEDATA & info.atr)
+            {
+                createSpecialSaveData(context);
+                return 2;
+            }
+
+            if (info.root == nil)
+                return 2;
+
+            var root = OptionProject[info.root];
+            var res = root.open(context, info.args);
+
+            if ("exit_game" == res)
+            {
+                SaveDataUtilGT6::saveAutoForGame(context);
+                ContextMain.disableInput();
+                ExitGameMessage::Fade.start();
+                context.cursor_visible = false;
+            }
+            else if ("close_option" == res)
+            {
+                OptionRoot.close(context);
+            }
+            else if ("multimonitor_client" == res)
+            {
+                OptionRoot.close(context);
+                SequenceUtil::startSequence(context, GameSequence::MULTIMONITOR_CLIENT);
+            }
+
+            return 2;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+            {
+                sound.play("cursor");
+                ListWindow.outFocus(context);
+                return 2;
+            }
+
+            return 0;
+        }
+    }
+}

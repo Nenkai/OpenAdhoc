@@ -1,0 +1,547 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ProfileRoot
+{
+    class Button
+    {
+        attribute label;
+        attribute onActivateFunction;
+        attribute onInitializeFunction;
+        attribute widget;
+
+        method __init__(label, funcActivate, funcInit)
+        {
+            self.label = label;
+            self.onActivateFunction = funcActivate;
+            self.onInitializeFunction = funcInit;
+        }
+
+        method setWidget(widget)
+        {
+            self.widget = widget;
+        }
+
+        method initialize(context)
+        {
+            if (self.onInitializeFunction != nil && self.widget != nil)
+            {
+                self.onInitializeFunction(context, self.widget);
+            }
+        }
+
+        method finalize()
+        {
+            self.label =nil;
+            self.onActivateFunction = nil;
+            self.onInitializeFunction = nil;
+            self.widget = nil;
+        }
+
+        method onActivate(context)
+        {
+            if (self.onActivateFunction != nil)
+                self.onActivateFunction(context, self.widget);
+        }
+    }
+
+    class Params
+    {
+        attribute additionalButtons;
+        attribute pdi_user_id;
+    }
+
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute user_id;
+    attribute pdi_user_id;
+    attribute your_profile;
+    attribute params;
+
+    hidden.visible = false;
+
+    method getPDINetworkUserId()
+    {
+        if (self.params != nil && self.params.pdi_user_id != nil)
+            return self.params.pdi_user_id;
+
+        var user_id = ProfileRoot.user_id;
+        var pdinetwork_user_id = nil;
+
+        if (user_id == Grim2.getLoginUserId())
+        {
+            pdinetwork_user_id = PDINetwork.getMyUserId();
+        }
+        else
+        {
+            pdinetwork_user_id = PDINetwork.getFriendList(user_id);
+            if (pdinetwork_user_id == nil)
+            {
+                var context_num = 1;
+                if (NP.initializeLookup(context_num))
+                    pdinetwork_user_id = NP.lookupNpId(user_id);
+
+                NP.finalizeLookup();
+            }
+        }
+
+        return pdinetwork_user_id;
+    }
+
+    function isFriend()
+    {
+        var pdinetwork_user_id = PDINetwork.getFriendList(ProfileRoot.user_id);
+        return pdinetwork_user_id != nil;
+    }
+
+    function isMe()
+    {
+        return ProfileRoot.user_id == Grim2.getLoginUserId();
+    }
+
+    function _isHiddenPhoto(photo_id)
+    {
+        var hidden_flag = photo_id.beginWith("_");
+        return hidden_flag;
+    }
+
+    function setImage(image_face, photo_id)
+    {
+        if (photo_id == nil || photo_id == "" || PDINetwork.isChatRestricted())
+        {
+            image_face.image_path = "";
+            return;
+        }
+
+        if (_isHiddenPhoto(photo_id))
+        {
+            image_face.image_path = "/piece/gt6/profile/deleted.img";
+            return;
+        }
+
+        var image_path = Photo.getImagePath(photo_id);
+        if (pdistd::Exist(image_path))
+        {
+            image_face.image_path = image_path;
+            return;
+        }
+
+        Photo.requestImage(photo_id, (args) => 
+        {
+            var [context, request] = args;
+            if (request.isDone())
+                image_face.image_path = image_path;
+        });
+    }
+
+    function setFlagImage(image_face, country)
+    {
+        image_face.image_path = "/piece/gt6/flag_S/%{country.upcase()}.img";
+    }
+
+    function ERROR(context, page, keyword, args)
+    {
+        var s = manager.translate(page, keyword);
+        if (args != nil)
+            s = s.build(args);
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, s);
+    }
+
+    function getPresenceInfo(context, presence_list, np_presence)
+    {
+        var gtcom_online = false;
+        foreach (var presence in presence_list)
+        {
+            var stats = presence["stats"];
+            if (stats == "ENTER COMMUNITY WEB")
+                gtcom_online = true;
+        }
+
+        var gt6_online = false;
+        if (np_presence != nil)
+            gt6_online = np_presence["presenceState"] == pdistd::PresenceState::SameContext;
+
+        var online = gt6_online || gtcom_online;
+        var text = "";
+        if (gt6_online && gtcom_online)
+        {
+            text = manager.translate("Community", "PRESENCE_GT6_GTCOM");
+        }
+        else if (gt6_online)
+        {
+            text = manager.translate("Community", "PRESENCE_GT6");
+        }
+        else if (gtcom_online)
+        {
+            text = manager.translate("Community", "PRESENCE_GTCOM");
+        }
+        else
+        {
+            text = manager.translate("Community", "OFFLINE");
+        }
+
+        return [online, text];
+    }
+
+    function distanceText(running_km)
+    {
+        var km_mile;
+
+        if (GAME_STATUS.user_profile.option.unit_velocity)
+        {
+            km_mile = running_km / 1.6;
+        }
+        else
+        {
+            km_mile = running_km;
+        }
+
+        if (km_mile > 999999.9)
+            km_mile = 999999.94;
+
+        return pdiext::GetNumberString(10 * km_mile, 1) + " " + pdiext::MUnit::GetUnitOfDistance();
+    }
+
+    function nolinebreak(text)
+    {
+        var s = text.replaceAll("\r\n", "");
+        s = s.replaceAll("\n", "");
+        return s;
+    }
+
+    method open(context, user_id, params)
+    {
+        self.user_id = user_id;
+        self.params = params;
+        self.result = nil;
+        self.closed = false;
+        self.popup = SequenceUtil::ModalPage(context, ProfileRoot);
+        self.popup.open();
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        UserProfile2.clearCallback();
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        self.params = nil;
+        self.user_id = nil;
+        self.pdi_user_id = nil;
+        
+        FadeActor.out = true;
+
+        if (self.popup != nil)
+        {
+            self.popup.close(FadeActor.period);
+            self.popup = nil;
+        }
+
+        self.user_id = nil;
+        self.pdi_user_id = nil;
+        self.your_profile = nil;
+        self.params = nil;
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    function _chatRestrictedFilter(context, text)
+    {
+        var default_text = "";
+        return PDINetwork.isChatRestricted() ? default_text : text;
+    }
+
+    function _checkText(context, text, hidden_flag, deleted_text)
+    {
+        if (hidden_flag)
+            return manager.translate("Community", deleted_text);
+        else
+            return _chatRestrictedFilter(context, text);
+    }
+
+    method onInitialize(context)
+    {
+        Profile::L::Body::Image::ImageFace.image_path = "";
+        Profile::L::Body::VBox::Name::TextFace.text = "";
+        Profile::L::Body::VBox::Nickname::TextFace.text = "";
+        Profile::L::Body::VBox::Nickname::Presence::Label.text = "";
+        Profile::L::Body::VBox::Nickname::Presence::Label_a.text = "";
+        Profile::L::Body::VBox::Tag::TextFace.text = "";
+        Profile::L::Body::VBox::Introduce::TextFaceComment.text = "";
+        Profile::L::Body::VBox::Introduce::ImageFaceCombo::Head.image_path = "";
+        Profile::L::Body::VBox::Introduce::ImageFaceCombo::Body.image_path = "";
+        Profile::L::Body::VBox::Nickname::Country::TextFace.text = "";
+        Profile::L::Body::VBox::Nickname::Country::ImageFace.image_path = "";
+        Profile::L::Body::Status::Member.visible = false;
+        Profile::R::Body::Friend.visible = false;
+        Profile::R::Body::Message.visible = false;
+        Profile::L::Body::Status::Private.visible = self.user_id == Grim2.getLoginUserId();
+
+        var request = UserProfile2.requestUserProfile(self.user_id, (args) => { });
+
+        Profile::R::Body::Additional.setup(context, self.params);
+
+        var is_friend = isFriend();
+        if (Grim2Util::joinAwait(context, request))
+        {
+            var u = UserProfile2.decodeUserProfile(request);
+            self.your_profile = u;
+            
+            var is_me = isMe();
+            
+            var target = Profile::L::Body;
+            setImage(target.Image::ImageFace, u["photo_id_avatar"]);
+            target.Status::Member.visible = is_friend;
+            target.VBox::Name::TextFace.text = u["user_id"];
+            target.VBox::Nickname::TextFace.text = _checkText(context, u["nickname"], u["nickname_hidden"], "DELETED_NICKNAME");
+            
+            var country = u["country"];
+            target.VBox::Nickname::Country::TextFace.text = manager.translate("Country", country.upcase());
+            setFlagImage(target.VBox::Nickname::Country::ImageFace, country);
+
+            var tag_list = [];
+            foreach (var tag_id in u["tag_id_list"])
+                tag_list.push(manager.translate("CommunityTag", "CATEGORY_%d".format(tag_id)));
+
+            target.VBox::Tag::TextFace.text = tag_list.join(", ");
+
+            var license_level = u["license_level"];
+            var license = ["n", "b", "a", "ib", "ia", "s"][license_level];
+            target.VBox::Stats::MBox::License::ImageFace.image_path = "/piece/gt6/profile/license_%{license}.img";
+            target.VBox::Stats::MBox::License::Label.text = manager.translate("CommonGTMode", "CareerCategory_%s".format(license.upcase()));
+
+            target.VBox::Stats::MBox::Trophy::Label.text = u["trophy"];
+            target.VBox::Stats::MBox::GameProgress::Label.text = manager.translate("Unit", "PERCENT").build(u["achievement"]);
+            target.VBox::Stats::MBox::Star::Label.text = u["star"];
+            target.VBox::Stats::MBox::OwnedCars::Label.text = manager.translate("Unit", "CARS").build(u["car_count"]);
+            target.VBox::Stats::MBox::TotalDistance::Label.text = distanceText(u["odometer"]);
+            target.VBox::Introduce::TextFaceComment.text = _checkText(context, nolinebreak(u["comment"]), u["comment_hidden"], "DELETED_INTRODUCE");
+
+            target.VBox::Introduce::ImageFaceCombo::Head.image_path = ThumbnailUtil::Avatar::getImagePathGT6(
+                ThumbnailUtil::Avatar::Genre::COMBO,
+                ThumbnailUtil::Avatar::Type::MET,
+                u["menu_helmet"], u["menu_helmet_color"],
+                nil, nil
+            );
+
+            target.VBox::Introduce::ImageFaceCombo::Body.image_path = ThumbnailUtil::Avatar::getImagePathGT6(
+                ThumbnailUtil::Avatar::Genre::COMBO,
+                ThumbnailUtil::Avatar::Type::SUITS,
+                nil, nil,
+                u["menu_wear"], u["menu_wear_color"],
+            );
+
+            target = Profile::R::Body;
+
+            var chat_restricted = PDINetwork.isChatRestricted();
+            var profile_level = u["profile_level"];
+            target.Friend.visible = !is_me && !is_friend && !chat_restricted;
+            target.Message.visible = !is_me && !chat_restricted;
+        }
+
+        Profile::L::Body::VBox::Nickname::Presence.visible = false;
+
+        var np_presence;
+        if (self.user_id != Grim2.getLoginUserId())
+        {
+            var np_friend_list = OnlineUtility.getFriendPresenceList();
+            foreach (var f in np_friend_list)
+            {
+                var u = f["id"].toString();
+                if (self.user_id == u)
+                    np_presence = f;
+            }
+        }
+        else
+        {
+            np_presence = ["presenceState" : pdistd::PresenceState::SameContext];
+        }
+
+        if (self.user_id == Grim2.getLoginUserId() || is_friend)
+        {
+            UserProfile2.requestGetPresence(self.user_id, (args) => 
+            {
+                var [context, request] = args;
+                if (request.isDone())
+                {
+                    var presence_list = UserProfile2.decodePresenceList(request);
+                    var [online, text] = getPresenceInfo(context, presence_list, np_presence);
+                    Profile::L::Body::VBox::Nickname::Presence.visible = true;
+                    Profile::L::Body::VBox::Nickname::Presence.active = online;
+                    Profile::L::Body::VBox::Nickname::Presence::Label.text = text;
+                    Profile::L::Body::VBox::Nickname::Presence::Label_a.text = text;
+                }
+            });
+        }
+
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        Profile::R::Body::Additional.setup(context, nil);
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    module Profile::R::Body
+    {
+        module Profile
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+                var pdinetwork_user_id = ProfileRoot.getPDINetworkUserId();
+                if (pdinetwork_user_id == nil)
+                    ERROR(context, "OnlineMessage", "OTHER_NETWORK_ERROR");
+                else
+                    PDINetwork.showProfile(pdinetwork_user_id);
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Friend
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var pdinetwork_user_id = ProfileRoot.getPDINetworkUserId();
+                var message = manager.translate("OnlineMessage", "REQUEST_FRIEND");
+                NP.requestFriend(pdinetwork_user_id, message);
+                return STATE_YIELD;
+            }
+        }
+
+        module Message
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                if (!isFriend())
+                {
+                    var my_user_id = Grim2.getLoginUserId();
+                    var request = UserProfile2.requestUserProfile(my_user_id, (args) => {});
+                    if (Grim2Util::joinAwait(context, request))
+                    {
+                        var u = UserProfile2.decodeUserProfile(request);
+                        if ((u["profile_level"] & (1 << 1)) != 0)
+                        {
+                            ERROR(context, "Community", "MESSAGE_OFF_FOR_ME");
+                            return STATE_YIELD;
+                        }
+                    }
+
+                    if ((ProfileRoot.your_profile["profile_level"] & (1 << 1)) != 0)
+                    {
+                        ERROR(context, "Community", "MESSAGE_OFF_FOR_YOU");
+                        return STATE_YIELD;
+                    }
+                }
+
+                SimpleSendMessageRoot.open(context, ProfileRoot.user_id);
+                return STATE_YIELD;
+            }
+        }
+
+        module Close
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+                ProfileRoot.close(context);
+                return STATE_YIELD;
+            }
+        }
+
+        module Additional
+        {
+            method setup(context, params)
+            {
+                self.clearChildren(context);
+
+                if (params == nil || params.additionalButtons == nil)
+                    return;
+
+                foreach (var button in params.additionalButtons)
+                {
+                    var w = ProfileRoot::hidden::Button.doCopy();
+                    w.setup(context, button);
+                    self.appendChild(context, w);
+                }
+            }
+        }
+    }
+
+    module hidden
+    {
+        module Button
+        {
+            attribute button;
+
+            method setup(context, button)
+            {
+                self.button = button;
+                self.button.setWidget(self);
+                self.button.initialize(context);
+                self.updateLabel(context, button.label);
+            }
+
+            method updateLabel(context, text)
+            {
+                self.label.text = text;
+                self.label_i.text = text;
+            }
+
+            method onFinalize()
+            {
+                if (self.button != nil)
+                    self.button.finalize();
+
+                self.button = nil;
+            }
+
+            method onActivate(context)
+            {
+                if (button != nil)
+                    button.onActivate(context);
+                
+                return STATE_YIELD;
+            }
+        }
+    }
+}

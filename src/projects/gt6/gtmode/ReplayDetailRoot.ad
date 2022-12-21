@@ -1,0 +1,251 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ReplayDetailRoot
+{
+    attribute replay;
+    attribute result;
+    attribute play_replay;
+    attribute ref_removed;
+    attribute on_favorite_list;
+
+    module Function
+    {
+        #include "ReplayFunction.ad";
+    }
+
+    method open(context, replay_data, ref_removed, on_favorite_list)
+    {
+        self.result = false;
+        self.play_replay = false;
+        self.replay = replay_data;
+        self.ref_removed = ref_removed;
+        self.on_favorite_list = on_favorite_list != nil ? on_favorite_list : false;
+
+        SettingFrame2.appear();
+        SequenceUtil::pushPage(context, self);
+
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        var delay_time = SettingFrame2.hide();
+        SequenceUtil::popPage(context, self, delay_time);
+    }
+
+    method playReplay(context, replay)
+    {
+        ReplayDetailRoot.play_replay = true;
+        ReplayDetailRoot.result = false;
+        ReplayDetailRoot.close(context);
+    }
+
+    method onRealize(manager)
+    {
+        var L = SettingFrame2::Pane::Left;
+        L.Event.text = "";
+        L.RaceType.text = "";
+        L.CourseImage.image_path = "";
+        L.Datetime.text = "";
+        L.FileSize.text = "";
+
+        var R = SettingFrame2::Pane::Right::ScrolledBody::clip::space;
+        R.Comment::TextFace.text = "";
+        R.Car::TextFace.text = "";
+        R.Course::TextFace.text = "";
+        R.Driver::TextFace.text = "";
+        R.Record::TextFace.text = "";
+    }
+
+    method onInitialize(context)
+    {
+        var course_code = replay.course_code;
+        if (course_code == gtengine::COURSE_CODE_GENERATED)
+            course_code = replay.scenery_code;
+
+        var course_info = SPECDB.query1("SELECT Logo, LoadingBg, Name, Reverse FROM COURSE WHERE ID=?", [course_code]);
+
+        var L = SettingFrame2::Pane::Left;
+        L.Event.text = self.replay.subtitle;
+        L.RaceType.text = manager.translate("GameModeName", self.replay.title);
+
+        if (self.replay.onelap > 0)
+            L.RaceType.text += manager.translate("SaveData", "BEST_LAP_REPLAY");
+
+        L.CourseImage.image_path = "piece/gt6/course_img/%s.img".format(course_info.LoadingBg);
+        L.CourseLogo.image_path = "piece/gt6/course_logo_M/%s.img".format(course_info.Logo);
+        L.Datetime.text = GetDateTimeText(context, self.replay.datetime);
+        L.FileSize.text = UnitUtil::getDiskSizeString(context, self.replay.filesize);
+        L.Buttons::vbox.AddFavorite.setup(self.replay.favorite);
+
+        var R = SettingFrame2::Pane::Right::ScrolledBody::clip::space;
+        R.Comment::TextFace.text = self.replay.description;
+        R.Car::TextFace.text = gtengine::MSpecDB::getCarShortName(replay.target_car_code);
+        R.Course::TextFace.text = manager.translate("CourseName", course_info.Name);
+
+        if (course_info.Reverse)
+            R.Course::TextFace.text += " / " + manager.translate("CourseData", "direction_reverse");
+
+        if (self.replay.title == "ONLINE_TIME_ATTACK" ||
+            self.replay.title == "ONLINE_SINGLE_RACE" ||
+            self.replay.title == "ONLINE_DRIFT_ATTACK")
+        {
+            R.OnlineID::TextFace.text = self.replay.online_id != "" ? self.replay.online_id : "---";
+            R.OnlineID.visible = true;
+            R.Driver.visible = false;
+        }
+        else 
+        {
+            R.Driver::TextFace.text = self.replay.target_name != "" ? self.replay.target_name : "---";
+            R.Driver.visible = true;
+            R.OnlineID.visible = false;
+
+            if (self.replay.snapshot_filename == "B")
+                R.Driver::TextFace.text += " (%s)".format(manager.translate("QuickMenu", "caption_START_BSPEC"));
+        }
+
+        R.Record::TextFace.text = ReplayFileUtil::getRaceBestResultText(replay);
+        L.Buttons.vbox.ExportMoTeCData.visible = true;
+
+        ReplayDetailRoot.setFocus(L.Buttons::vbox::Play);
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        self.close(context);
+        return STATE_YIELD;
+    }
+
+    module SettingFrame2::Pane::Left::Buttons::vbox
+    {
+        module Play
+        {
+            method onActivate(context)
+            {
+                sound.play("next");
+                playReplay(context, ReplayDetailRoot.replay);
+                return STATE_YIELD;
+            }
+        }
+
+        module AddFavorite
+        {
+            method setup(favorite)
+            {
+                self.label.text = favorite ? 
+                    manager.translate("GTModeProject::ReplayListRoot", "Label_RemoveFavorite") : 
+                    manager.translate("GTModeProject::ReplayDetailRoot", "Button_AddFavorite");
+
+                self.label_i.text = self.label.text;
+            }
+
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var fv = !ReplayDetailRoot.replay.favorite;
+
+                Function::setFavorite(context, [ReplayDetailRoot.replay], fv);
+                self.setup(fv);
+
+                if (ReplayDetailRoot.on_favorite_list)
+                    &ReplayDetailRoot.ref_removed = !fv;
+
+                ReplayDetailRoot.result = true;
+                return STATE_YIELD;
+            }
+        }
+
+        module EditComment
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var replay = ReplayDetailRoot.replay;
+
+                var config = [
+                    "limit_length" : 25,
+                ];
+
+                var text = replay.description;
+                var message = OSKUtil::open(context, text, ReplayDetailRoot, config);
+
+                if (message == nil || message == text)
+                    return STATE_YIELD;
+
+                ReplayFileUtil::updateComment(replay.id, message);
+                replay.description = message;
+
+                OK(context, "Gallery", "MSG_UPDATE_COMMENT");
+
+                var R = SettingFrame2::Pane::Right::ScrolledBody::clip::space;
+                R.Comment::TextFace.text = message;
+
+                return STATE_YIELD;
+            }
+        }
+
+        module ExportPS3
+        {
+            method onActivate(context)
+            {
+                if (SaveDataUtil::isBackgroundSaveRunning())
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+
+                Function::export(context, [ReplayDetailRoot.replay]);
+
+                return STATE_YIELD;
+            }
+        }
+
+        module ExportMoTeCData
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+                Function::exportMoTeCData(context, ReplayDetailRoot.replay);
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Remove
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var res = Function::remove(context, [ReplayDetailRoot.replay]);
+                if (res)
+                {
+                    &ReplayDetailRoot.ref_removed = true;
+                    ReplayDetailRoot.result = true;
+                    ReplayDetailRoot.close(context);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+    }
+}

@@ -1,0 +1,318 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ViewMessageRoot
+{
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute data;
+
+    class Data
+    {
+        attribute message;
+        attribute club;
+        attribute event;
+        attribute comment;
+        attribute no_link;
+    }
+
+    method _open(context, data)
+    {
+        self.data = data;
+        self.result = false;
+        self.closed = false;
+        self.popup = SequenceUtil::ModalPage(context, ViewMessageRoot);
+        self.popup.open();
+        
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method openMessage(context, message, club, event, no_link)
+    {
+        var data = Data();
+        data.message = message;
+        data.club = club;
+        data.event = event;
+        data.no_link = no_link;
+        return _open(context, data);
+    }
+
+    method openBbs(context, comment)
+    {
+        var data = Data();
+        data.comment = comment;
+        data.no_link = false;
+        return _open(context, data);
+    }
+
+    method close(context)
+    {
+        Community.clearCallback();
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        
+        FadeActor.out = true;
+
+        if (self.popup != nil)
+        {
+            self.popup.close(FadeActor.period);
+            self.popup = nil;
+        }
+
+        self.data = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        var header = "";
+        var title = "";
+        var photo_id = "";
+        var body = "";
+        var body_reject = "";
+        var delete_comment = false;
+        var view_photo = false;
+        var show_profile = false;
+
+        if (self.data.message != nil)
+        {
+            header = "MESSAGE";
+            var [mail_id, user_id, sender, subject, body0, date, new_flag] = self.data.message;
+            body = body0;
+            var [what] = subject.split(",");
+
+            if (what == "REJECT")
+            {
+                body_reject = body;
+                body = manager.translate("Community", "REJECT_CAUTION");
+            }
+            
+            var text = "";
+
+            if (self.data.event != nil)
+            {
+                title = checkText(context, list2text(self.data.event["title_list"]), self.data.event["title_hidden"], "DELETED_TITLE");
+                photo_id = self.data.event["photo_id"];
+                text = manager.translate("Community", "GO_TO_EVENT");
+            }
+            else if (self.data.club != nil)
+            {
+                title = checkText(context, self.data.club["title"], self.data.club["title_hidden"], "DELETED_TEXT");
+                photo_id = self.data.club["photo_id"];
+                text = manager.translate("Community", "GO_TO_CLUB");
+            }
+
+            Body::R::Body::Link::label.text = text;
+            Body::R::Body::Link::label_i.text = text;
+        }
+        else
+        {
+            header = not_nil(self.data.comment["_header"], "COMMENT");
+            title = self.data.comment["user_id"];
+            body = self.data.comment["comment"];
+            photo_id = self.data.comment["photo_id"];
+            delete_comment = self.data.comment["_delete"];
+            view_photo = photo_id != "";
+            show_profile = true;
+        }
+
+        Body::L::Head::label.text = manager.translate("Community", header);
+        if (photo_id != "")
+        {   
+            Body::R::Body::Photo::Label.text = title;
+            if (self.data.message != nil)
+                setImage(Body::R::Body::Photo::Image::ImageFace, photo_id);
+            else
+                setThumbnailImage(Body::R::Body::Photo::Image::ImageFace, photo_id);
+        }
+        
+        Body::R::Body::Photo.visible = photo_id != "";
+        Body::R::Body::Link.visible = !self.data.no_link && (self.data.club != nil || self.data.event != nil);
+        Body::R::Body::ShowPhoto.visible = view_photo;
+        Body::R::Body::DeleteComment.visible = delete_comment;
+        Body::R::Body::Profile.visible = show_profile;
+        
+        var target = Body::L::Body::ScrolledWindow;
+        target.can_focus = false;
+        target.clip.space.y = 0.0;
+        target.clip.manual_target_y = 0.0;
+        target.clip::space::TextFace.text = body;
+        target.clip::space::TextFaceReject.text = body_reject;
+        ViewMessageRoot.setFocus(Body::R::Body::Ok);
+        context.pushEvent(menu::MScriptEvent(context, self, "on_initialize"));
+        return STATE_YIELD;
+    }
+
+    method on_initialize(context)
+    {
+        context.wait();
+        
+        var clip = Body::L::Body::ScrolledWindow::clip;
+        Body::L::Body::ScrolledWindow.can_focus = clip.h < clip.space.h;
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    module Body
+    {
+        module L::Body::ScrolledWindow
+        {
+            method onFocusEnter(context)
+            {
+                context.target_widget = self.VScrollbar::pinch::pointer;
+                return STATE_YIELD;
+            }
+
+            method onKeyPress(context, event)
+            {
+                var scrollclip = self.clip;
+                var line_height = scrollclip.space::TextFace.line_height;
+                var status = 0;
+    
+                if (event.keysym == CELL_PAD_CTRL_L3_UP)
+                {
+                    if (scrollclip.manualTargetIncY(line_height))
+                        status = 1;
+                }
+        
+                if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+                {
+                    if (scrollclip.manualTargetIncY(-line_height))
+                        status = 1;
+                }
+    
+                return status;
+            }
+        }
+
+        module R::Body
+        {
+            module Link
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+                    ViewMessageRoot.result = true;
+                    ViewMessageRoot.close(context);
+                    return STATE_YIELD;
+                }
+            }
+
+            module ShowPhoto
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+                    var comment = ViewMessageRoot.data.comment;
+
+                    var photo = [
+                        "photo_id" : comment["photo_id"],
+                        "comment" : "",
+                        "comment_hidden" : 0,
+                        "user_id" : comment["user_id"],
+                        "_country" : comment["_country"],
+                        "_club_id" : comment["_club_id"],
+                        "_thread_id" : comment["_thread_id"],
+                        "comment_id" : comment["comment_id"],
+                    ];
+
+                    PhotoViewerRoot.openViewPhoto(context, [photo], photo, true, "BBS");
+                    return STATE_YIELD;
+                }
+            }
+            
+            module DeleteComment
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+
+                    var club_id = ViewMessageRoot.data.comment["_club_id"];
+                    var thread_id = ViewMessageRoot.data.comment["_thread_id"];
+                    var comment_id = ViewMessageRoot.data.comment["comment_id"];
+
+                    if (!QUERY(context, "Community", "QUERY_DELETE_COMMENT"))
+                        return STATE_YIELD;
+
+                    var request = Bbs2.requestDeleteComment(club_id, thread_id, comment_id, (args) => {});
+                    var res = 0;
+
+                    if (Grim2Util::joinAwait(context, request))
+                        res = Bbs2.decodeResult(request);
+
+                    GENERIC_RESULT(context, res > 0);
+                    if (res > 0)
+                    {
+                        ViewMessageRoot.data.comment["delete_user_id"] = Grim2.getLoginUserId();
+                        ViewMessageRoot.result = true;
+                        ViewMessageRoot.close(context);
+                    }
+
+                    return STATE_YIELD;
+                }
+            }
+
+            module Profile
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+
+                    if (ViewMessageRoot.data.comment != nil)
+                    {
+                        var user_id = ViewMessageRoot.data.comment["user_id"];
+                        UIKitProject::ProfileRoot.open(context, user_id);
+                    }
+
+                    return STATE_YIELD;
+                }
+            }
+
+            module Ok
+            {
+                method onActivate(context)
+                {
+                    sound.play("ok");
+                    ViewMessageRoot.close(context);
+                    return STATE_YIELD;
+                }
+            }
+        }
+    }
+}

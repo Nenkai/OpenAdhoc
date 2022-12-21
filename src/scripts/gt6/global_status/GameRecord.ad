@@ -1,0 +1,488 @@
+
+
+//---------------------------------------------------------------------------------------
+// GameRecord.ad
+//
+// Creates the save profile entity
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module main::GameRecord
+{
+    function clearInitializer()
+    {
+        undef CreateStructure;
+        undef Initialize;
+        undef clearInitializer;
+    }
+
+    function CreateStructure()
+    {
+        var st_event_record = STStructure("EventRecordImpl");
+        main::GameRecord.defineModule(st_event_record);
+
+        var st_playlog_record = STStructure("PlayLogRecordImpl");
+        main::GameRecord.defineModule(st_playlog_record);
+
+        var st_event_present = STStructure("EventPresentImpl");
+        main::GameRecord.defineModule(st_event_present);
+
+        var st = STStructure("Impl");
+        main::GameRecord.defineModule(st);
+
+        st.define("event_record", st_event_record);
+        st.define("event_present", st_event_present);
+        st.define("event_id_list_csv_in_progress", STString(128));
+        st.define("playlog_record", st_playlog_record);
+
+        DefineMethod();
+
+        return st;
+    }
+
+    function Initialize(instance)
+    {
+
+    }
+
+    function Finalize(instance)
+    {
+
+    }
+
+    function InitializeDB(instance)
+    {
+        var sqlite = GlobalStatus::getSqlite();
+        var sql_list = [
+            ("CREATE TABLE IF NOT EXISTS t_event_record (\n"
+            "event_id INTEGER,\n"
+            "event_type INTEGER,\n"
+            "folder_id INTEGER,\n"
+            "category INTEGER,\n"
+            "result INTEGER,\n"
+            "eval_type INTEGER,\n"
+            "best_record INTEGER,\n"
+            "star_num INTEGER,\n"
+            "is_online INTEGER,\n"
+            "PRIMARY KEY (event_id)\n"
+            ")"),
+            "CREATE TABLE IF NOT EXISTS t_playlog_record (event_id INTEGER, start_session INTEGER, disqualify INTEGER, PRIMARY KEY (event_id))",
+            ("CREATE TABLE IF NOT EXISTS t_event_present (\n"
+            "event_id INTEGER,\n"
+            "present_index INTEGER,\n"
+            "itemtype INTEGER,\n"
+            "itemcategory INTEGER,\n"
+            "argument1 INTEGER,\n"
+            "argument2 INTEGER,\n"
+            "argument3 INTEGER,\n"
+            "argument4 INTEGER,\n"
+            "f_name TEXT,\n"
+            "status INTEGER,\n"
+            "PRIMARY KEY (event_id, present_index)\n"
+            ")")
+        ];
+
+        foreach (var sql in sql_list)
+        {
+            var res = sqlite.execute0(sql);
+            if (!(res == 0)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+        }
+    }
+
+    function DefineMethod()
+    {
+        module Impl
+        {
+            method apply()
+            {
+
+            }
+        }
+
+        module EventRecordImpl
+        {
+            static DIST_DECIMAL_DIGIT = 1000;
+
+            method skipInitialize(event_id_list)
+            {
+                if (event_id_list.size == 0)
+                    return [];
+
+                var params = [];
+                for (var i = 0; i < event_id_list.size; ++i)
+                    params.push("?");
+
+                var params_csv = params.join(",");
+                var sqlite = GlobalStatus::getSqlite();
+                var exist_event_id_list = sqlite.executeQuery1C("SELECT event_id FROM t_event_record WHERE event_id in (%{params_csv})", event_id_list);
+                var new_event_id_list = [];
+
+                foreach (var event_id0 in event_id_list)
+                {
+                    var found = false;
+                    foreach (var event_id1 in exist_event_id_list)
+                    {
+                        if (event_id0 == event_id1)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (!found)
+                        new_event_id_list.push(event_id0);
+                }
+
+                return new_event_id_list;
+            }
+
+            method initializeRecord(event_id_list, event_type, folder_id, category, is_online)
+            {
+                var new_event_id_list = skipInitialize(event_id_list);
+                if (new_event_id_list.size == 0)
+                    return true;
+
+                var result = -1;
+                var eval_type = -1;
+                var best_record = -1;
+                var star_num = 0;
+                var sql_list = [];
+
+                foreach (var event_id in new_event_id_list)
+                {
+                    sql_list.push([
+                        "INSERT INTO t_event_record VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [event_id, event_type, folder_id, category, result, eval_type, best_record, star_num, is_online]
+                    ]);
+                }
+
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeTransaction(sql_list);
+                return res;
+            }
+
+            method initializeRecords(event_id_list, event_type, folder_id, category, is_online)
+            {
+                foreach (var event_id in event_id_list)
+                {
+                    initializeRecord(event_id, event_type, folder_id, category, is_online);
+                }
+            }
+
+            method isFolderCleared(folder_id, target_result)
+            {
+                if (target_result == nil)
+                    target_result = convertResult(nil, gtengine::FinishResult::BRONZE);
+
+                var sqlite = GlobalStatus::getSqlite();
+                var res_list = sqlite.queryList("SELECT result, event_id FROM t_event_record WHERE folder_id = ?", [folder_id]);
+                if (res_list.size == 0)
+                    return false;
+
+                var all_event_clear = true;
+
+                foreach (var res in res_list)
+                {
+                    var result = res.result;
+                    if (folder_id == res.event_id)
+                    {
+                        if (result == -1 || result > target_result)
+                            return false;
+                        else
+                            return true;
+                    }
+                    
+                    if (result == -1 || result > target_result)
+                        all_event_clear = false;
+                }
+
+                return all_event_clear;
+            }
+
+            method getStars(event_type, folder_id, event_id)
+            {
+                var where_clause = "";
+                var where_conditions = [];
+                var params = [];
+
+                if (event_type != nil)
+                {
+                    where_conditions.push("event_type = ?");
+                    params.push(event_type);
+                }
+
+                if (folder_id != nil)
+                {
+                    where_conditions.push("folder_id = ?");
+                    params.push(folder_id);
+                }
+
+                if (event_id != nil)
+                {
+                    where_conditions.push("event_id = ?");
+                    params.push(event_id);
+                }
+
+                if (where_conditions.size > 0)
+                    where_clause = "WHERE " + where_conditions.join(" AND ");
+
+                var sqlite = GlobalStatus::getSqlite();
+                var total = sqlite.executeQuery1R1C("SELECT COALESCE(SUM(star_num), 0) FROM t_event_record %{where_clause}", params);
+                if (total == nil)
+                    total = 0;
+
+                return total;
+            }
+
+            method getEventResult(event_id)
+            {
+                if (event_id == nil)
+                    return -1;
+
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeQuery1R1C("SELECT result FROM t_event_record WHERE event_id = ?", [event_id]);
+                return res != nil ? res : -1;
+            }
+
+            method getBestRecord(event_id)
+            {
+                if (event_id == nil)
+                {
+                    return [0, -1, -1];
+                }
+
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.query1("SELECT eval_type, best_record, result FROM t_event_record WHERE event_id = ?", [event_id]);
+                if (res == nil)
+                    return [0, -1, -1];
+                else
+                {
+                    var record = res.best_record;
+                    if (res.eval_type == gtengine::EvalType::DIST)
+                        record = res.best_record.toFloat() / DIST_DECIMAL_DIGIT;
+
+                    return [res.eval_type, record, res.result];
+                }
+            }
+
+            method updateStars(event_id, star_num)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.execute("UPDATE t_event_record SET star_num = ? WHERE event_id = ?", [star_num, event_id]);
+                self.checkStarTrophyUnlock();
+                return res;
+            }
+
+            method checkStarTrophyUnlock()
+            {
+                var total = self.getStars();
+
+                var array = [
+                    [total >= 25, gtengine::TrophyType::STAR1],
+                    [total >= 100, gtengine::TrophyType::STAR2],
+                    [total >= 200, gtengine::TrophyType::STAR3],
+                    [total >= 300, gtengine::TrophyType::STAR4],
+                ];
+
+                foreach (var [condition, trophyId] in array)
+                {
+                    if (condition)
+                        PDINetwork.unlockTrophyAsync(trophyId);
+                    else
+                        break;
+                }
+            }
+
+            method convertResult(eval_type, result)
+            {
+                if (gtengine::FinishResult::GOLD <= result && result <= gtengine::FinishResult::BRONZE)
+                    return result - gtengine::FinishResult::GOLD;
+                else
+                    return result;
+            }
+
+            method updateResult(event_id, finish_result, eval_type, best_record, star_num)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var result = convertResult(eval_type, finish_result);
+                if (eval_type == gtengine::EvalType::DIST)
+                {
+                    best_record *= DIST_DECIMAL_DIGIT;
+                    best_record = best_record.toInt();
+                }
+
+                var res;
+                if (eval_type == gtengine::EvalType::TIME ||
+                    eval_type == gtengine::EvalType::NONE ||
+                    eval_type == gtengine::EvalType::ORDER)
+                {
+                    res = sqlite.execute("UPDATE t_event_record SET result = ?, eval_type = ?, best_record = ? WHERE event_id = ? AND (result = -1 OR result > ? OR best_record > ?)",
+                                            [result, eval_type, best_record, event_id, result, best_record]);
+                }
+                else if (eval_type == gtengine::EvalType::DRIFT ||
+                    eval_type == gtengine::EvalType::PYLON ||
+                    eval_type == gtengine::EvalType::DIST ||
+                    eval_type == gtengine::EvalType::FUEL ||
+                    eval_type == gtengine::EvalType::OVER_TAKE)
+                {
+                    res = sqlite.execute("UPDATE t_event_record SET result = ?, eval_type = ?, best_record = ? WHERE event_id = ? AND (result = -1 OR result > ? OR best_record < ?)",
+                                        [result, eval_type, best_record, event_id, result, best_record]);
+
+                }
+                else
+                    ;
+
+                return res;
+            }
+
+            method updateResultOnly(event_id, result)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.execute("UPDATE t_event_record SET result = ? WHERE event_id = ? AND (result = -1 OR result > ?)", [result, event_id, result]);
+                return res;
+            }
+
+            method getLicenseTrophyCount()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var folder_id_list = MENUDB.executeQuery1C("SELECT FolderID FROM t_event_folder WHERE Name LIKE 'license_%'");
+                var folder_id_str = folder_id_list.join(",");
+
+                var result_list = sqlite.executeQuery1C("SELECT result FROM t_event_record WHERE (folder_id IN (%{folder_id_str})) AND (result BETWEEN 0 AND 2) AND is_online=0");
+                if (result_list == nil)
+                    return 0;
+
+                var total = 0;
+                foreach (var result in result_list)
+                    total += [3,2,1][result];
+
+                return total;
+            }
+
+            method getOfflineTrophyCount()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var result_list = sqlite.executeQuery1C("SELECT result FROM t_event_record WHERE 0 <= result AND (result BETWEEN 0 AND 2) AND is_online=0");
+                if (result_list == nil)
+                    return 0;
+
+                var total = 0;
+                foreach (var result in result_list)
+                    total += [3,2,1][result];
+
+                return total;
+            }
+        }
+
+        module EventPresentImpl
+        {
+            method checkEventPresent(event_id, present_index)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.query1("SELECT status FROM t_event_present WHERE event_id = ? AND present_index = ?", [event_id, present_index]);
+                return res;
+            }
+
+            method getPresentList()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res_list = sqlite.queryList("SELECT event_id, present_index, itemtype, itemcategory, argument1, argument2, argument3, argument4, f_name, status FROM t_event_present WHERE status = 0", []);
+                return res_list;
+            }
+
+            method getPresentListByEventId(event_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res_list = sqlite.queryList("SELECT event_id, present_index, itemtype, itemcategory, argument1, argument2, argument3, argument4, f_name, status FROM t_event_present WHERE status = 0 AND event_id = ?", [event_id]);
+                return res_list;
+            }
+
+            method initializeRecord(event_id, present_index, itemtype, itemcategory, argument1, argument2, argument3, argument4, f_name, status)
+            {
+                if (event_id == nil || present_index == nil)
+                    return;
+
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeTransaction([ 
+                    [
+                        "INSERT INTO t_event_present VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [event_id, present_index, itemtype, itemcategory, argument1, argument2, argument3, argument4, f_name, status]
+                    ]
+                ]);
+                return res;
+            }
+
+            method updateGetStatus(event_id, present_index)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeTransaction([ 
+                    [
+                        "UPDATE t_event_present SET status = 1 WHERE event_id = ? AND present_index = ? ",
+                        [event_id, present_index]
+                    ]
+                ]);
+                return res;
+            }
+        }
+
+        module PlayLogRecordImpl
+        {
+            method getSize(event_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeQuery("SELECT start_session, disqualify FROM t_playlog_record WHERE event_id = ?", [event_id]);
+                return res.size;
+            }
+
+            method addStartSession(event_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res;
+                if (getSize(event_id) <= 0)
+                {
+                    res = sqlite.execute("INSERT INTO t_playlog_record VALUES (?, ?, ?)", [event_id, 1, 0]);
+                    if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+                }
+                else
+                {
+                    res = sqlite.execute("UPDATE t_playlog_record SET start_session = start_session+1 WHERE event_id = ?", [event_id]);
+                    if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+                }
+
+                return res;
+            }
+
+            method addDisqualify(event_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res;
+                if (getSize(event_id) <= 0)
+                {
+                    res = sqlite.execute("INSERT INTO t_playlog_record VALUES (?, ?, ?)", [event_id, 0, 1]);
+                    if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+                }
+                else
+                {
+                    res = sqlite.execute("UPDATE t_playlog_record SET disqualify = disqualify+1 WHERE event_id = ?", [event_id]);
+                    if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+                }
+
+                return res;
+            }
+
+            method getPlayLog(event_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeQuery("SELECT start_session, disqualify FROM t_playlog_record WHERE event_id = ?", [event_id]);
+                if (res.size > 0)
+                    return res[0];
+                    
+                return [-1, -1];
+            }
+        }
+    }
+}

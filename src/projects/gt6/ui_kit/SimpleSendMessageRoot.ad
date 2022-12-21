@@ -1,0 +1,215 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module SimpleSendMessageRoot
+{
+    attribute popup;
+    attribute closed = false;
+    attribute user_id;
+
+    function OK(context, page, keyword, args)
+    {
+        var s = manager.translate(page, keyword);
+        if (args != nil)
+            s = s.build(args);
+        
+        DialogUtil::openConfirmDialog(context, DialogUtil::OK, s);
+    }
+
+    function ERROR(context, page, keyword, args)
+    {
+        var s = manager.translate(page, keyword);
+        if (args != nil)
+            s = s.build(args);
+        
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, s);
+    }
+
+    function GENERIC_RESULT(context, res)
+    {
+        if (res)
+            OK(context, "Community", "GENERIC_SUCCESS");
+        else
+            ERROR(context, "Community", "GENERIC_FAIL")
+    }
+
+    function trim(s)
+    {
+        var ws = " \n\t\v\r\f";
+        ws += "　"; // IDEOGRAPHIC SPACE U+3000
+        s = s.trim(ws);
+        return s;
+    }
+
+    function filterText(context, s, show_error)
+    {
+        VulgarityFilterUtil::begin();
+        var [res, sanitized_text] = VulgarityFilterUtil::check(s);
+        VulgarityFilterUtil::end();
+
+        if (!res && show_error)
+            OK(context, "Community", "ERROR_VULGARITY_FILTER");
+
+        return [res, sanitized_text];
+    }
+
+    function sendMessage(context, user_id, message)
+    {
+        var subject = "";
+        var max_mail_id = GAME_STATUS.user_profile.mail.getMaxMailId();
+        var request = GTMail.requestSendMail(user_id, subject, message, max_mail_id, (args) => {});
+
+        if (!Grim2Util::joinAwait(context, request))
+            return false;
+
+        var mail_list = GTMail.decodeMailList(request);
+        GAME_STATUS.user_profile.mail.add(mail_list);
+        
+        var res = mail_list.size > 0;
+        GENERIC_RESULT(context, res);
+        return res;
+    }
+
+    method onRealize(context)
+    {
+        if (!main.defined("VulgarityFilterUtil"))
+            UIKitProject.load("/scripts/gt6/util/VulgarityFilterUtil");
+    }
+
+    method onDestroy(context)
+    {
+        if (main.defined("VulgarityFilterUtil"))
+            main.removeStatic($"VulgarityFilterUtil");
+    }
+
+    method open(context, user_id)
+    {
+        self.user_id = user_id;
+        self.closed = false;
+        self.popup = SequenceUtil::ModalPage(context, SimpleSendMessageRoot);
+        self.popup.open();
+        return true;
+    }
+
+    method close(context)
+    {
+        Community.clearCallback();
+
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        FadeActor.out = true;
+        if (self.popup != nil)
+        {
+            self.popup.close(FadeActor.period);
+            self.popup = nil;
+        }
+
+        self.user_id = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.setFocus(Body::R::Body::Cancel);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        Body::L::InputTextBox::Text::input.value = "";
+        Body::L::InputTextBox::Text::input.setCount(context, 0);
+        SimpleSendMessageRoot.setFocus(Body::L::InputTextBox::Text::input);
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    module Body::L::InputTextBox::Text::input
+    {
+        method setCount(context, count)
+        {
+            Body::L::Count.text = "%d / %d".format(count, 400);
+            Body::R::Body::Ok.insensitive = count == 0;
+        }
+
+        method onTextClose(context, event)
+        {
+            setCount(context, self.value.length);
+            return STATE_EXIT;
+        }
+
+        method onKeyRelease(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_SQUARE || event.keysym == 0xFF08 || event.keysym == 0xFFFF)
+            {
+                setCount(context, self.value.length);
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module Body::R::Body
+    {
+        module Ok
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var message = trim(Body::L::InputTextBox::Text::input.value);
+                if (message == "")
+                {
+                    ERROR(context, "Community", "NO_MESSAGE");
+                    return STATE_YIELD;
+                }
+
+                var [filter_res, sanitized_text] = filterText(context, message, true);
+                if (!filter_res)
+                    return STATE_YIELD;
+
+                var res = sendMessage(context, SimpleSendMessageRoot.user_id, sanitized_text);
+                if (res)
+                {
+                    SimpleSendMessageRoot.close(context);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Cancel
+        {
+            method onCancel(context)
+            {
+                sound.play("cancel");
+                SimpleSendMessageRoot.close(context);
+                return STATE_YIELD;
+            }
+
+            method onActivate(context)
+            {
+                sound.play("ok");
+                SimpleSendMessageRoot.close(context);
+                return STATE_YIELD;
+            }
+        }
+    }
+}

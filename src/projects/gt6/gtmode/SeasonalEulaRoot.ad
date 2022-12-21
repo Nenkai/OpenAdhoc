@@ -1,0 +1,151 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module SeasonalEulaRoot
+{
+    attribute modal_page;
+    attribute closed;
+    attribute result;
+    attribute read_detail;
+    attribute event;
+
+    method open(context, event)
+    {
+        self.event = event;
+        self.read_detail = false;
+        self.result = false;
+        self.closed = false;
+
+        DialogFrame.appear();
+        self.modal_page = SequenceUtil::ModalPage(context, SeasonalEulaRoot);
+        self.modal_page.open();
+
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        if (self.modal_page != nil)
+        {
+            var delay_time = DialogFrame.hide();
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        DialogFrame::Pane::Body::Buttons::OK.insensitive = true;
+    }
+
+    method onFinalize(context)
+    {
+        EventRace2.clearCallback(context);
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        SeasonalEulaRoot.setFocus(DialogFrame::Pane::Body::Buttons::Cancel);
+        return 2;
+    }
+
+    module DialogFrame::Pane::Body::TandC
+    {
+        method onActivate(context)
+        {
+            sound.play("ok");
+            var advanced_notice = RaceEventUtil::getAdvancedNoticeText(SeasonalEulaRoot.event);
+
+            var request = EventRace2.requestEula(advanced_notice, args => { });
+            if (!Grim2Util::joinAwait(context, request))
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("Network", "DOWNLOAD_ERROR"));
+                return 2;
+            }
+
+            var eula = Grim2.decodeEula(request);
+
+            var text_list = [];
+            for (var i = 1; i <= 10; ++i)
+            {
+                var value = eula["eula%02d".format(i)];
+                if (value != nil && value != "")
+                    text_list.push(value);
+            }
+
+            DialogUtil::openTextReaderDialog(context, manager.translate("Eula", "TERMS_CONDITIONS"), text_list);
+
+            SeasonalEulaRoot.read_detail = true;
+            var accepted = true;
+            DialogFrame::Pane::Body::Buttons::OK.insensitive = !accepted;
+
+            return 2;
+        }
+    }   
+
+    module DialogFrame::Pane::Body::Buttons::OK
+    {
+        method requestEula(context, eula_id, value)
+        {
+            var request = Grim2.requestEulaAgreement(eula_id, value, (context) => {});
+            return Grim2Util::joinAwait(context, request);
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            var event = SeasonalEulaRoot.event;
+            var eula_id = event.event_id;
+            var res = requestEula(context, eula_id, 1);
+
+            if (!res)
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                    manager.translate("Network", "CANNOT_CONNECT_SERVER"));
+                return 2;
+            }
+
+            var key = "eula%d".format(event.event_id);
+            KeyValueUtil::set("seasonal_eula", key, true);
+
+            SaveDataUtilGT6::saveEveryWhere(context);
+            SeasonalEulaRoot.result = true;
+            SeasonalEulaRoot.close(context);
+
+            return 2;
+        }
+    }
+
+    module DialogFrame::Pane::Body::Buttons::Cancel
+    {
+        method onActivate(context)
+        {
+            sound.play("cancel");
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                manager.translate("Eula", "NOT_NEXT_SEASONAL_EVENT"));
+            
+            SeasonalEulaRoot.close(context);
+
+            return 2;
+        }
+    }
+}

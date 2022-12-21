@@ -1,0 +1,1457 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module MeterRoot
+{
+    hidden.visible = false;
+
+    attribute modal_page;
+    attribute need_save = false;
+    attribute riding_car;
+    attribute slot_count;
+
+    method open(context)
+    {
+        self.modal_page = main::SequenceUtil::ModalPage(context, MeterRoot);
+        self.modal_page.open();
+    }
+
+    method close(context)
+    {
+        if (self.modal_page != nil)
+        {
+            ContextMain.disableInput();
+
+            if (self.need_save)
+            {
+                SaveDataUtilGT6::saveEveryWhere(context);
+                self.need_save = false;
+            }
+
+            CarPreview::SceneFace.finalize(context);
+            CarPreview::SceneFace.visible = false;
+            
+            PageUtil::visibleUnderPages(context, self);
+
+            menu::FrameInterval = 1;
+
+            var actor = self.Fade;
+            actor.backward();
+            actor.start();
+
+            var delay_time = actor.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+
+            ContextMain.enableInput();
+        }
+    }
+
+    method setCurrentRidingCar(context, riding_car)
+    {
+        self.riding_car = riding_car;
+        self.slot_count = SPECDB.executeQuery1R1C("SELECT ExtraMeterCount FROM CAR_CUSTOM_INFO WHERE CarCode=?", [self.riding_car.getCarCode()]);
+
+        if (self.slot_count == nil)
+            self.slot_count = 0;
+
+        MeterSelect.initialize(context, slot_count, self.riding_car);
+        SBox::BackLightSettings.initialize(context);
+
+        CannotAddMeter.visible = slot_count == 0;
+        self.update();
+
+        if (MeterRoot.slot_count > 0)
+            MeterRoot.setFocus(MeterSelect::Slot1::MeterCategories);
+        else
+            MeterRoot.setFocus(MeterSelect::Slot1::NoSlot::Icon);
+    }
+
+    method getCurrentMeter(slot_index)
+    {
+        if (slot_index < MeterRoot.riding_car.extraMeterCount)
+            return MeterRoot.riding_car.getExtraMeterKind(slot_index);
+        else
+            return -1;
+    }
+
+    method isChangeMeter()
+    {
+        var is_change_meter = false;
+        for (var slot = MeterSelect::Slot1; slot != nil; slot = slot.next)
+        {
+            var meter_id = slot.getSelectMeter();
+            if (meter_id != nil)
+            {
+                var current_meter_id = MeterRoot.getCurrentMeter(slot.sSlotIndex);
+                if (current_meter_id != meter_id)
+                {
+                    is_change_meter = true;
+                    break;
+                }
+            }
+        }
+
+        return is_change_meter;
+    }
+
+    method getTotalCost()
+    {
+        var total_price = 0;
+        for (var slot = MeterSelect::Slot1; slot != nil; slot = slot.next)
+        {
+            var meter_id = slot.getSelectMeter();
+            if (meter_id != nil)
+            {
+                var current_meter_id = MeterRoot.getCurrentMeter(slot.sSlotIndex);
+                var changed = current_meter_id != meter_id;
+                var no_meter = meter_id == -1;
+                
+                if (changed && !no_meter)
+                    total_price += 50000 / 100;
+            }
+        }
+
+        return total_price;
+    }
+
+    method update()
+    {
+        var insensitive_buy = true;
+        var total_price = 0;
+
+        for (var slot = MeterSelect::Slot1; slot != nil; slot = slot.next)
+        {
+            var meter_id = slot.getSelectMeter();
+            if (meter_id != nil)
+            {
+                var current_meter_id = MeterRoot.getCurrentMeter(slot.sSlotIndex);
+                var changed = current_meter_id != meter_id;
+                var no_meter = meter_id == -1;
+                
+                if (changed)
+                {
+                    slot.Installed.visible = false;
+                    if (no_meter)
+                        slot.CrPrice.visible = false;
+                    else
+                    {
+                        slot.CrPrice.visible = true;
+                        total_price += 50000 / 100;
+                    }
+
+                    insensitive_buy = false;
+                }
+                else
+                {
+                    slot.Installed.visible = !no_meter;
+                    slot.CrPrice.visible = false;
+                }
+            }
+        }
+
+        SBox::CrPrice::Price.text = pdiext::MMisc::GetMoneyString(total_price);
+
+        if (SBox::BackLightSettings.isColorChanged())
+        {
+            SBox::BackLightSettings::CurrentColor::RGB.active = false;
+            insensitive_buy = false;
+        }
+        else
+        {
+            SBox::BackLightSettings::CurrentColor::RGB.active = true;
+        }
+
+        SBox::Buy.insensitive = insensitive_buy;
+    }
+
+    method onInitialize(context)
+    {
+        self.need_save = false;
+        self.setCurrentRidingCar(context, GAME_STATUS.user_profile.garage.getRidingCar());
+
+        CarPreview::SceneFace.initialize(context);
+
+        ContextMain.disableInput();
+
+        var actor = self.Fade;
+        actor.forward();
+        actor.restart();
+        actor.on_effect_end = function(context)
+        {
+            actor.on_effect_end = nil;
+            PageUtil::invisibleUnderPages(context, self);
+            CarPreview::SceneFace.loadCar(context, self.riding_car);
+            ContextMain.enableInput();
+        };
+
+        self.Fade.forward();
+        self.Fade.restart();
+        self.ColorFace.visible = false;
+        self.ColorFace::FadeOut.reset();
+
+        menu::FrameInterval = 2;
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_L1:
+                if (MeterRoot.slot_count == 0)
+                    return STATE_YIELD;
+
+                sound.play("cursor");
+                CarPreview.switchCamera(context);
+
+                return STATE_YIELD;
+                break;
+
+            case CELL_PAD_CTRL_R1:
+                if (MeterRoot.slot_count == 0)
+                    return STATE_YIELD;
+
+                sound.play("cursor");
+                CarPreview.switchCamera(context);
+
+                return STATE_YIELD;
+                break;
+
+            case CELL_PAD_CTRL_TRIANGLE:
+                if (MeterRoot.slot_count == 0)
+                    return STATE_YIELD;
+
+                if (CarPreview.full_view)
+                    return STATE_YIELD;
+
+                sound.play("ok");
+                CarPreview.switchView(context);
+
+                return STATE_YIELD;
+                break;
+
+            case CELL_PAD_CTRL_SQUARE:
+                if (MeterRoot.slot_count == 0)
+                    return STATE_YIELD;
+
+                sound.play("ok");
+                CarPreview.switchLight(context);
+                return STATE_YIELD;
+                break;
+
+            case CELL_PAD_CTRL_START:
+                if (CarPreview.full_view)
+                    return STATE_YIELD;
+
+                var preopen_garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+
+                if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+                {
+                    if (preopen_garage_id != GAME_STATUS.user_profile.garage.getRidingGarageId())
+                    {
+                        self.setCurrentRidingCar(context, GAME_STATUS.user_profile.garage.getRidingCar());
+                        CarPreview::SceneFace.loadCar(context, self.riding_car);
+                    }
+                }
+        }
+
+        if (CarPreview.full_view && event.keysym != CELL_PAD_CTRL_CIRCLE)
+            return STATE_YIELD;
+            
+        return STATE_EXIT;
+    }
+
+    module SBox::Buy
+    {
+        method onActivate(context)
+        {
+            if (MeterRoot.isChangeMeter())
+            {
+                sound.play("ok");
+
+                var cost = MeterRoot.getTotalCost();
+                if (!QUERY(context, MeterRoot, "Comfirm_Purchase"))
+                    return STATE_YIELD;
+
+                if (!main::GAME_STATUS.user_profile.payTuningCost(cost))
+                {
+                    sound.play("disable");
+                    ERROR(context, "CommonGTMode", "Message_EnoughMoney");
+                    return STATE_YIELD;
+                }
+
+                CursorProject::StartMenuRoot::StartMenu.reflectCurrentStatus(context);
+
+                var meter_count = 0;
+                for (var slot = MeterSelect::Slot1; slot != nil; slot = slot.next)
+                {
+                    var meter_id = slot.getSelectMeter();
+                    if (meter_id != nil)
+                    {
+                        MeterRoot.riding_car.setExtraMeterKind(slot.sSlotIndex, meter_id);
+                        if (meter_id > -1)
+                            meter_count++;
+                    }
+                }
+
+                MeterRoot.riding_car.extraMeterCount = meter_count;
+
+                var rgb = SBox::BackLightSettings.getCurrentRGB();
+                MeterRoot.riding_car.extraMeterBacklightColor = rgb;
+
+                GAME_STATUS.user_profile.garage.updateCar(MeterRoot.riding_car); 
+
+                var need_capture = false;
+                PitWorkRoot.openModal(context, GAME_STATUS.user_profile.garage.getRidingGarageId(), need_capture);
+            }
+            else if (SBox::BackLightSettings.isColorChanged())
+            {
+                sound.play("ok");
+
+                var rgb = SBox::BackLightSettings.getCurrentRGB();
+                MeterRoot.riding_car.extraMeterBacklightColor = rgb;
+
+                GAME_STATUS.user_profile.garage.updateCar(MeterRoot.riding_car); 
+
+                OK(context, MeterRoot, "Adjusted_BackLightColor");
+            }
+            else
+            {
+                sound.play("disable");
+                return STATE_YIELD;
+            }
+
+            MeterRoot.update();
+
+            return STATE_YIELD;
+        }
+    }
+
+    module SBox::BackLightSettings
+    {
+        static sDefaultColor = [255, 0, 0];
+
+        method rgb2hsv(r, g, b)
+        {
+            var r = r.toDouble();
+            var g = g.toDouble();
+            var b = b.toDouble();
+            var h = 0d;
+            var s = 0d;
+            var v = 0d;
+
+            var cmax = r > g ? (r > b ? r : b) : (g > b ? g : b);
+            var cmin = r < g ? (r < b ? r : b) : (g < b ? g : b);
+
+            v = cmax;
+
+            var c = cmax - cmin;
+
+            s = cmax == 0d ? 0d : c / cmax;
+
+            h = 0d;
+
+            if (s != 0d)
+            {
+                if (r == cmax)
+                    h = (g - b) / c;
+                else if (g == cmax)
+                    h = 2d + ((b - r) / c);
+                else if (b == cmax)
+                    h = 4d + ((r - g) / c);
+
+                h *= 60d;
+                if (h < 0d)
+                    h = h + 360d;
+            }
+
+            h = h / 360d;
+
+            return [h, s, v];
+        }
+
+        method hsv2rgb(h, s, v)
+        {
+            h = h.toDouble();
+            s = s.toDouble();
+            v = v.toDouble();
+            
+            var r = 0d;
+            var g = 0d;
+            var b = 0d;
+    
+            if (s == 0d)
+            {
+                r = g = b = v;
+                return [r, g, b];
+            }
+    
+            if (h > 1d)
+                h -= 1d;
+    
+            if (h < 0d)
+                h += 1d;
+    
+            h *= 6d;
+    
+            var in = h.toInt();
+            in %= 6;
+    
+            var fl = h - in.toDouble();
+            var p = v * (1d - s);
+            var q = v * (1d - (s * fl));
+            var t = v * (1d - (s * (1d - fl)));
+    
+            switch (in)
+            {
+                case 0: r = v; g = t; b = p; break;
+                case 1: r = q; g = v; b = p; break;
+                case 2: r = p; g = v; b = t; break;
+                case 3: r = p; g = q; b = v; break;
+                case 4: r = t; g = p; b = v; break;
+                case 5: r = v; g = p; b = q; break;
+            }
+    
+            return [r, g, b];
+        }
+
+        method setInsensitive(insensitive)
+        {
+            self.CurrentColor.insensitive = insensitive;
+            self.H.insensitive = insensitive;
+            self.S.insensitive = insensitive;
+            self.V.insensitive = insensitive;
+        }
+
+        method initialize(context)
+        {
+            if (MeterRoot.riding_car.extraMeterCount == 0)
+                MeterRoot.riding_car.extraMeterBacklightColor = sDefaultColor;
+
+            var [r, g, b] = MeterRoot.riding_car.extraMeterBacklightColor;
+            
+            H::slider.setup(context);
+            S::slider.setup(context);
+            V::slider.setup(context);
+
+            self.setRGB(r, g, b);
+            self.on_value_change(context);
+        }
+
+        method setRGB(r, g, b)
+        {
+            var [h, s, v] = rgb2hsv(r, g, b);
+            H::slider.value = h * H::slider.max;
+            S::slider.value = s * S::slider.max;
+            V::slider.value = v * V::slider.max;
+        }
+
+        method getCurrentRGB()
+        {
+            var h = H::slider.value / H::slider.max;
+            if (h == 1.0d)
+                h = 0.0d;
+
+            var s = S::slider.value / S::slider.max;
+            var v = V::slider.value / V::slider.max;
+
+            var rgb = hsv2rgb(h, s, v);
+            return rgb;
+        }
+
+        method isColorChanged()
+        {
+            var [current_r, current_g, current_b] = self.getCurrentRGB();
+            var [saved_r, saved_g, saved_b] = MeterRoot.riding_car.extraMeterBacklightColor;
+
+            return (Math::round(current_r * 255.0).toInt() != Math::round(saved_r * 255.0).toInt()) ||
+                (Math::round(current_g * 255.0).toInt() != Math::round(saved_g * 255.0).toInt()) ||
+                (Math::round(current_b * 255.0).toInt() != Math::round(saved_b * 255.0).toInt());
+        }
+
+        method on_value_change(context)
+        {
+            var [r, g, b] = getCurrentRGB();
+            CarPreview::SceneFace.setMeterBacklightColor(r, g, b);
+
+            var r255 = Math::round(r * 255.0).toInt();
+            var g255 = Math::round(g * 255.0).toInt();
+            var b255 = Math::round(b * 255.0).toInt();
+
+            CurrentColor::RGB::R::value.text = r255;
+            CurrentColor::RGB::R::value_a.text = r255;
+            CurrentColor::RGB::R::value_i.text = r255;
+            CurrentColor::RGB::G::value.text = g255;
+            CurrentColor::RGB::G::value_a.text = g255;
+            CurrentColor::RGB::G::value_i.text = g255;
+            CurrentColor::RGB::B::value.text = b255;
+            CurrentColor::RGB::B::value_a.text = b255;
+            CurrentColor::RGB::B::value_i.text = b255;
+
+            CurrentColor::Chip::ColorFace.setColor(menu::MColorObject(r, g, b));
+            MeterRoot.update();
+        }
+
+        // Stolen from race/QuickOptionRoot
+        module CurrentColor::OptionMenu
+        {
+            static sColorPalet = 
+            [
+                [[0xFF, 0xFF, 0xFF], "WHITE"],
+                [[0xFF, 0x3C, 0xDC], "PINK"],
+                [[0xFF, 0x00, 0xFF], "MAGENTA"],
+                [[0x8C, 0x00, 0xFF], "PURPLE_RED"],
+                [[0x50, 0x00, 0xFF], "PURPLE"],
+                [[0x28, 0x00, 0xFF], "VIOLET"],
+                [[0x10, 0x00, 0xFF], "BLUE_VIOLET"],
+                [[0x00, 0x00, 0xFF], "MARINE_BLUE"],
+                [[0x00, 0x1E, 0xFF], "COBALT_BLUE"],
+                [[0x00, 0x64, 0xFF], "CERULEAN_BLUE"],
+                [[0x00, 0xFF, 0xFF], "AQUA_BLUE"],
+                [[0x00, 0xFF, 0x64], "EMERALD_GREEN"],
+                [[0x00, 0x7F, 0x00], "GREEN"],
+                [[0x55, 0xFF, 0x00], "LIME"],
+                [[0xFF, 0xFF, 0x00], "YELLOW"],
+                [[0xFF, 0x82, 0x00], "YELLOW_ORANGE"],
+                [[0xFF, 0x2D, 0x00], "ORANGE"],
+                [[0xFF, 0x00, 0x00], "RED"],
+            ];
+
+            method onInitialize(context)
+            {
+                self.popup::vbox.clearChildren(context);
+
+                foreach (var color in sColorPalet)
+                {
+                    var [r, g, b] = color[0];
+                    var color_name = color[1];;
+
+                    var w = hidden::ColorItem.doCopy();
+                    w.Chip::ColorFace.face_color = [r, g, b, 0xFF];
+                    w.label.text = manager.translate("Color", color_name);
+                    self.popup::vbox.appendChild(context, w);
+                }
+
+                self.applyAppend(context);
+                self.setIndex(context, 0);
+            }
+
+            method onActivate(context)
+            {
+                if (self.is_popuped)
+                {
+                    var w = self.getItem(self.index);
+                    var color = w.Chip::ColorFace.face_color;
+                    BackLightSettings.setRGB(color[0] / 255.0, color[1] / 255.0, color[2] / 255.0);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+        
+        module H::slider
+        {
+            method onValueChanged(context)
+            {
+                __prototype__::onValueChanged(context);
+                self.on_value_change(context);
+
+                var h = self.value / self.max;
+                if (h == 1d)
+                    h = 0d;
+
+                var rgb = hsv2rgb(h, 1d, 1d);
+                var hue = menu::MColorObject(rgb[0], rgb[1], rgb[2], 1);
+                S::slider::popup::bg::ColorFaceH.setColor(hue);
+                V::slider::popup::bg::ColorFaceH.setColor(hue);
+
+                return 1;
+            }
+        }
+
+        module S::slider
+        {
+            method onValueChanged(context)
+            {
+                __prototype__::onValueChanged(context);
+                self.on_value_change(context);
+
+                var s = self.value / self.max;
+
+                V::slider::popup::bg::ColorFaceS.setColor(menu::MColorObject(1,1,1, 1.0 - s));
+
+                return 1;
+            }
+        }
+
+        module V::slider
+        {
+            method onValueChanged(context)
+            {
+                __prototype__::onValueChanged(context);
+                self.on_value_change(context);
+
+                var v = self.value / self.max;
+
+                S::slider::popup::bg::ColorFaceV.setColor(menu::MColorObject(0,0,0, 1.0 - v));
+                return 1;
+            }
+        }
+    }
+
+    module MeterSelect
+    {
+        module METER_DIAL
+        {
+            static NONE = 0;
+            static BLACK = 1;
+            static WHITE = 2;
+        }
+
+        class METER
+        {
+            attribute id;
+            attribute image;
+            attribute text;
+            attribute dial;
+
+            method __init__(id, image, text, dial)
+            {
+                self.id = id;
+                self.image = image;
+                self.text = text;
+                self.dial = dial;
+            }
+        }
+
+        class METER_WHITE extends METER
+        {
+            method __init__(id, image, text)
+            {
+                __super__::__init__(id, image, text, METER_DIAL::WHITE);
+            }
+        }
+
+        class METER_BLACK extends METER
+        {
+            method __init__(id, image, text)
+            {
+                __super__::__init__(id, image, text, METER_DIAL::BLACK);
+            }
+        }
+
+        class METER_NONE extends METER
+        {
+            method __init__()
+            {
+                __super__::__init__(-1, "", "", METER_DIAL::NONE);
+            }
+        }
+
+        // Speedometers
+        static sSpeedmeters_B = [
+            METER_BLACK(300, "meter_speed_1", "Speedmeter_Dial_1"),
+            METER_BLACK(301, "meter_speed_2", "Speedmeter_Dial_2"),
+            METER_BLACK(302, "meter_speed_3", "Speedmeter_Dial_3"),
+            METER_BLACK(400, "meter_speed_4", "Speedmeter_Dial_4"),
+            METER_BLACK(401, "meter_speed_5", "Speedmeter_Dial_5"),
+            METER_BLACK(402, "meter_speed_6", "Speedmeter_Dial_6"),
+        ];
+
+        static sSpeedmeters_W = [
+            METER_WHITE(310, "meter_speed_1", "Speedmeter_Dial_1"),
+            METER_WHITE(311, "meter_speed_2", "Speedmeter_Dial_2"),
+            METER_WHITE(312, "meter_speed_3", "Speedmeter_Dial_3"),
+            METER_WHITE(410, "meter_speed_4", "Speedmeter_Dial_4"),
+            METER_WHITE(411, "meter_speed_5", "Speedmeter_Dial_5"),
+            METER_WHITE(412, "meter_speed_6", "Speedmeter_Dial_6"),
+        ];
+
+        // Water Temperature Meters
+        static sWaterTempMeters_B = [
+            METER_BLACK(801, "meter_water_temp_1", "WaterTempMeter_Dial_2"),
+            METER_BLACK(800, "meter_water_temp_2", "WaterTempMeter_Dial_1"),
+        ];
+
+        static sWaterTempMeters_W = [
+            METER_WHITE(811, "meter_water_temp_1", "WaterTempMeter_Dial_2"),
+            METER_WHITE(810, "meter_water_temp_2", "WaterTempMeter_Dial_1"),
+        ];
+
+        // Tachometers
+        static sTachometers_B = [
+            METER_BLACK(0, "meter_rpm_1", "Tachometer_Dial_1"),
+            METER_BLACK(1, "meter_rpm_2", "Tachometer_Dial_2"),
+            METER_BLACK(2, "meter_rpm_3", "Tachometer_Dial_3"),
+        ];
+
+        static sTachometers_W = [
+            METER_WHITE(10, "meter_rpm_1", "Tachometer_Dial_1"),
+            METER_WHITE(11, "meter_rpm_2", "Tachometer_Dial_2"),
+            METER_WHITE(12, "meter_rpm_3", "Tachometer_Dial_3"),
+        ];
+
+        // Oil Temperature Meters
+        static sOilTempMeters_B = [
+            METER_BLACK(601, "meter_oil_temp_1", "OilTempMeter_Dial_2"),
+            METER_BLACK(600, "meter_oil_temp_2", "OilTempMeter_Dial_1"),
+        ];
+
+        static sOilTempMeters_W = [
+            METER_WHITE(611, "meter_oil_temp_1", "OilTempMeter_Dial_2"),
+            METER_WHITE(610, "meter_oil_temp_2", "OilTempMeter_Dial_1"),
+        ];
+
+        // Oil Pressure Meters
+        static sOilPressMeters_B = [
+            METER_BLACK(500, "meter_oil_press_1", "OilPressMeter_Dial_1"),
+        ];
+
+        static sOilPressMeters_W = [
+            METER_WHITE(510, "meter_oil_press_1", "OilPressMeter_Dial_1"),
+        ];
+
+        // Volt Meters
+        static sVoltmeters_B = [
+            METER_BLACK(700, "meter_volts_1", "Voltmeter_Dial_1"),
+        ];
+
+        static sVoltmeters_W = [
+            METER_WHITE(710, "meter_volts_1", "Voltmeter_Dial_1"),
+        ];
+
+        // Fuel Meters
+        static sFuelmeters_B = [
+            METER_BLACK(200, "meter_fuel_1", "Fuelmeter_Dial_1"),
+        ];
+
+        static sFuelmeters_W = [
+            METER_WHITE(210, "meter_fuel_1", "Fuelmeter_Dial_1"),
+        ];
+
+        // Boost Meters
+        static sBoostMeters_B = [
+            METER_BLACK(100, "meter_boost_4", "BoostMeter_Dial_1"),
+            METER_BLACK(101, "meter_boost_5", "BoostMeter_Dial_2"),
+            METER_BLACK(102, "meter_boost_1", "BoostMeter_Dial_3"),
+            METER_BLACK(103, "meter_boost_2", "BoostMeter_Dial_4"),
+            METER_BLACK(104, "meter_boost_3", "BoostMeter_Dial_5"),
+        ];
+
+        static sBoostMeters_W = [
+            METER_WHITE(110, "meter_boost_4", "BoostMeter_Dial_1"),
+            METER_WHITE(111, "meter_boost_5", "BoostMeter_Dial_2"),
+            METER_WHITE(112, "meter_boost_1", "BoostMeter_Dial_3"),
+            METER_WHITE(113, "meter_boost_2", "BoostMeter_Dial_4"),
+            METER_WHITE(114, "meter_boost_3", "BoostMeter_Dial_5"),
+        ];
+
+        static sMeterCategories = [
+            ["NoMeter", [METER_NONE()]],
+            ["BoostMeter_Black", sBoostMeters_B],
+            ["BoostMeter_White", sBoostMeters_W],
+            ["WaterTempMeter_Black", sWaterTempMeters_B],
+            ["WaterTempMeter_White", sWaterTempMeters_W],
+            ["OilTempMeter_Black", sOilTempMeters_B],
+            ["OilTempMeter_White", sOilTempMeters_W],
+            ["Tachometer_Black", sTachometers_B],
+            ["Tachometer_White", sTachometers_W],
+            ["Speedmeter_Black", sSpeedmeters_B],
+            ["Speedmeter_White", sSpeedmeters_W],
+            ["OilPressMeter_Black", sOilPressMeters_B],
+            ["OilPressMeter_White", sOilPressMeters_W],
+            ["Voltmeter_Black", sVoltmeters_B],
+            ["Voltmeter_White", sVoltmeters_W],
+            ["Fuelmeter_Black", sFuelmeters_B],
+            ["Fuelmeter_White", sFuelmeters_W],
+        ];
+
+        static sAircoolCarMeterCategories = [
+            ["NoMeter", [METER_NONE()]],
+            ["BoostMeter_Black", sBoostMeters_B],
+            ["BoostMeter_White", sBoostMeters_W],
+            ["OilTempMeter_Black", sOilTempMeters_B],
+            ["OilTempMeter_White", sOilTempMeters_W],
+            ["Tachometer_Black", sTachometers_B],
+            ["Tachometer_White", sTachometers_W],
+            ["Speedmeter_Black", sSpeedmeters_B],
+            ["Speedmeter_White", sSpeedmeters_W],
+            ["OilPressMeter_Black", sOilPressMeters_B],
+            ["OilPressMeter_White", sOilPressMeters_W],
+            ["Voltmeter_Black", sVoltmeters_B],
+            ["Voltmeter_White", sVoltmeters_W],
+            ["Fuelmeter_Black", sFuelmeters_B],
+            ["Fuelmeter_White", sFuelmeters_W],
+        ];
+
+        static sNoSlotCategories = [
+            ["NoMeter", [METER_NONE()]]
+        ];
+
+        method onRealize(context)
+        {
+            var meter = hidden::MeterItem::Meter;
+            meter.WhiteDial.image_path = "";
+            meter.BlackDial.image_path = "";
+            meter.Current.visible = false;
+            meter.active = false;
+        }
+
+        method initialize(context, slot_count, cp)
+        {
+            var aircood_car = SPECDB.executeQuery1R1C("SELECT AircoolCar FROM GENERIC_CAR WHERE ID=?", [cp.getCarCode()]);
+            for (var slot = Slot1; slot != nil; slot = slot.next)
+            {
+                var categories = [];
+                if (slot.sSlotIndex < slot_count)
+                {
+                    if (aircood_car)
+                        categories = sAircoolCarMeterCategories;
+                    else
+                        categories = sMeterCategories;
+
+                    slot.setActive(true);
+                }
+                else
+                {
+                    categories = sNoSlotCategories;
+                    slot.setActive(false);
+                }
+
+                slot.MeterCategories.initialize(context, categories);
+                slot.CrPrice::Price.text = pdiext::MMisc::GetMoneyString(50000 / 100);
+            }
+        }
+
+        method getExtraMeterCount()
+        {
+            var meter_count = 0;
+            for (var slot = Slot1; slot != nil; slot = slot.next)
+            {
+                var meter_id = slot.getSelectMeter();
+                if (meter_id != nil && meter_id > -1)
+                    meter_count++;
+            }
+
+            return meter_count;
+        }
+
+        module Slot1
+        {
+            static sSlotIndex = 0;
+
+            method setActive(active)
+            {
+                MeterCategories.visible = active;
+                MeterTypes.visible = active;
+                NoSlot.visible = !active;
+                Meter.visible = active;
+                Installed.active = active;
+                Header.insensitive = !active;
+            }
+
+            method setInsensitive(insensitive)
+            {
+                MeterCategories.insensitive = insensitive;
+                MeterTypes.insensitive = insensitive;
+            }
+
+            method uninstalledMeter(context)
+            {
+                self.MeterCategories.setIndex(context, 0);
+            }
+
+            method isUninstalledMeter()
+            {
+                return self.MeterCategories.index == 0;
+            }
+
+            method getSelectMeter()
+            {
+                var w = MeterTypes.getItem(MeterTypes.index);
+                if (w != nil)
+                    return w.meter_info.id;
+                else
+                    return nil;
+            }
+
+            module MeterCategories
+            {
+                attribute cancel_value_changed = false;
+                attribute prev_index = -1;
+
+                method initialize(context, categories)
+                {
+                    self.cancel_value_changed = false;
+                    self.prev_index = -1;
+
+                    self.popup::vbox.clearChildren(context);
+                    var current_meter_id = MeterRoot.getCurrentMeter(self.sSlotIndex);
+
+                    var i = 0;
+                    var focus_index = 0;
+
+                    foreach (var category in categories)
+                    {
+                        var [text, meter_set] = category;
+                        var w = hidden::PulldownItem.doCopy();
+                        w.label.text = manager.translate(MeterRoot, text);
+                        w.label_i.text = manager.translate(MeterRoot, text);
+                        w.Current.visible = false;
+                        w.defineAttribute("meter_set", meter_set);
+                        self.popup::vbox.appendChild(context, w);
+
+                        foreach (var meter in meter_set)
+                        {
+                            if (meter.id == current_meter_id)
+                            {
+                                focus_index = i;
+                                break;
+                            }
+                        }
+
+                        i++;
+                    }
+
+                    self.applyAppend(context);
+                    self.setIndex(context, focus_index);
+                }
+
+                method onActivate(context, event)
+                {
+                    if (self.is_popuped && self.prev_index != self.index)
+                    {
+                        if (self.isUninstalledMeter() && !Slot2.isUninstalledMeter())
+                        {
+                            if (!QUERY_D_NO(context, MeterRoot, "Comfirm_Uninstalled_Slot1"))
+                                self.cancel_value_changed = true;
+                        }
+                    }
+
+                    return STATE_YIELD;
+                }
+
+                method onPopupOpen(context)
+                {
+                    var current_meter_id = MeterRoot.getCurrentMeter(self.sSlotIndex);
+                    var current_no_meter = current_meter_id == -1;
+
+                    for (var i = 0; i < self.Count(); i++)
+                    {
+                        var w = self.getItem(i);
+                        w.Current.visible = false;
+                        foreach (var meter in w.meter_set)
+                        {
+                            var installed = meter.id == current_meter_id;
+                            var no_meter = meter.id == -1;
+
+                            if (current_no_meter)
+                            {
+                                if (no_meter)
+                                {
+                                    w.Current.visible = true;
+                                    break;
+                                }
+                            }
+                            else if (installed)
+                            {
+                                w.Current.visible = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                method onValueChanged(context)
+                {
+                    if (self.prev_index == self.index)
+                        return 1;
+
+                    if (self.cancel_value_changed)
+                    {
+                        self.setIndex(context, self.prev_index);
+                        return 1;
+                    }
+
+                    __prototype__::onValueChanged(context);
+
+                    var w = self.getItem(self.index);
+                    if (w != nil)
+                        MeterTypes.initialize(context, w.meter_set);
+                    
+                    var slot = self.parent;
+                    var next_slot = slot.next;
+                    if (next_slot != nil)
+                    {
+                        if (self.prev_index > -1 && self.isUninstalledMeter())
+                            next_slot.uninstalledMeter(context);
+
+                        next_slot.setInsensitive(self.isUninstalledMeter(context));
+                    }
+
+                    self.prev_index = self.index;
+                    return 1;
+                }
+
+                method onPopupClosed(context)
+                {
+                    self.cancel_value_changed = false;
+                    return 1;
+                }
+
+                method onFocusEnter(context)
+                {
+                    if (self.insensitive)
+                    {
+                        var slot = self.parent.prev;
+                        if (slot["Header"]["Label"] != nil)
+                        {
+                            BalloonTip.set_value(context, self.Icon, manager.translate(MeterRoot, "BalloonTip").build(slot.Header::Label.text));
+                        }
+                    }
+                    
+                    return 1;
+                }
+
+                method onFocusLeave(context)
+                {
+                    BalloonTip.reset_value(context);
+                    return 1;
+                }
+            }
+
+            module MeterTypes
+            {
+                method initialize(context, meter_set)
+                {
+                    self.popup::vbox.clearChildren(context);
+                    self.visible = true;
+
+                    var current_meter_id = MeterRoot.getCurrentMeter(self.sSlotIndex);
+
+                    var i = 0;
+                    var focus_index = 0;
+
+                    foreach (var meter in meter_set)
+                    {
+                        var w = hidden::MeterItem.doCopy();
+                        w.Meter.active = meter.dial != METER_DIAL::NONE;
+                        w.Meter.active1 = meter.dial == METER_DIAL::WHITE;
+
+                        if (meter.dial == METER_DIAL::WHITE)
+                        {
+                            w.Meter::WhiteDial.image_path = "/image/gt6/gtauto/%s.dds".format(meter.image);
+                        }
+                        else if (meter.dial == METER_DIAL::BLACK)
+                        {
+                            w.Meter::BlackDial.image_path = "/image/gt6/gtauto/%s.dds".format(meter.image);
+                        }
+
+                        w.label.text = manager.translate(MeterRoot, meter.text);
+                        w.label_i.text = manager.translate(MeterRoot, meter.text);
+                        w.Current.visible = false;
+                        w.defineAttribute("meter_info", meter);
+                        self.popup::vbox.appendChild(context, w);
+
+                        if (meter.id == current_meter_id)
+                            focus_index = i;
+                        i++;
+                    }
+
+                    self.applyAppend(context);
+                    self.setIndex(context, focus_index);
+
+                    var item_count = self.Count();
+                    self.insensitive = item_count == 1;
+                }
+
+                method onPopupOpen(context)
+                {
+                    if (self.sSlotIndex < MeterRoot.riding_car.extraMeterCount)
+                    {
+                        var current_meter_id = MeterRoot.getCurrentMeter(self.sSlotIndex);
+                        for (var i = 0; i < self.Count(); i++)
+                        {
+                            var w = self.getItem(i);
+                            w.Current.visible = w.meter_info.id == current_meter_id;
+                        }
+                    }
+                }
+
+                method onValueChanged(context)
+                {
+                    __prototype__::onValueChanged(context);
+
+                    var w = self.getItem(self.index);
+                    if (w != nil)
+                    {
+                        var meter_id = w.meter_info.id;
+                        var no_meter = meter_id == -1;
+
+                        self.visible = !no_meter;
+                        self.Meter.active = w.Meter.active;
+                        self.Meter.active1 = w.Meter.active1;
+                        self.Meter::WhiteDial.image_path = w.Meter::WhiteDial.image_path;
+                        self.Meter::BlackDial.image_path = w.Meter::BlackDial.image_path;
+
+                        CarPreview::SceneFace.setExtraMeter(self.sSlotIndex, meter_id);
+                        CarPreview::SceneFace.setExtraMeterCount(MeterSelect.getExtraMeterCount());
+
+                        if (self.sSlotIndex == 0)
+                            SBox::BackLightSettings.setInsensitive(no_meter);
+
+                        MeterRoot.update();
+                    }
+
+                    return 1;
+                }
+            }
+
+            module NoSlot
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("disable");
+                    return STATE_YIELD;
+                }
+            }
+        }
+
+        module Slot2
+        {
+            static sSlotIndex = 1;
+
+            import Slot1::setActive;
+            import Slot1::setInsensitive;
+            import Slot1::uninstalledMeter;
+            import Slot1::isUninstalledMeter;
+            import Slot1::getSelectMeter;
+
+            module MeterCategories
+            {
+                attribute cancel_value_changed = false;
+                attribute prev_index = -1;
+
+                import Slot1::MeterCategories::initialize;
+                import Slot1::MeterCategories::onFocusEnter;
+                import Slot1::MeterCategories::onFocusLeave;
+                import Slot1::MeterCategories::onPopupOpen;
+                import Slot1::MeterCategories::onValueChanged;
+                import Slot1::MeterCategories::onPopupClosed;
+
+                method onActivate(context, event)
+                {
+                    if (self.is_popuped && self.prev_index != self.index)
+                    {
+                        if (self.isUninstalledMeter() && !Slot3.isUninstalledMeter())
+                        {
+                            if (!QUERY_D_NO(context, MeterRoot, "Comfirm_Uninstalled_Slot2"))
+                                self.cancel_value_changed = true;
+                        }
+                    }
+
+                    return STATE_YIELD;
+                }
+            }
+
+            module MeterTypes
+            {
+                import Slot1::MeterTypes::initialize;
+                import Slot1::MeterTypes::onPopupOpen;
+                import Slot1::MeterTypes::onValueChanged;
+            }
+
+            module NoSlot
+            {
+                import Slot1::NoSlot::onActivate;
+            }
+        }
+
+        module Slot3
+        {
+            static sSlotIndex = 2;
+
+            import Slot1::setActive;
+            import Slot1::setInsensitive;
+            import Slot1::uninstalledMeter;
+            import Slot1::isUninstalledMeter;
+            import Slot1::getSelectMeter;
+
+            module MeterCategories
+            {
+                attribute cancel_value_changed = false;
+                attribute prev_index = -1;
+
+                import Slot1::MeterCategories::initialize;
+                import Slot1::MeterCategories::onFocusEnter;
+                import Slot1::MeterCategories::onFocusLeave;
+                import Slot1::MeterCategories::onPopupOpen;
+                import Slot1::MeterCategories::onValueChanged;
+                import Slot1::MeterCategories::onPopupClosed;
+            }
+
+            module MeterTypes
+            {
+                import Slot1::MeterTypes::initialize;
+                import Slot1::MeterTypes::onPopupOpen;
+                import Slot1::MeterTypes::onValueChanged;
+            }
+
+            module NoSlot
+            {
+                import Slot1::NoSlot::onActivate;
+            }
+        }
+    }
+
+    module CarPreview
+    {
+        attribute full_view = false;
+        attribute focus_widget;
+        attribute driver_camera = true;
+        attribute light_off = true;
+
+        method switchCamera()
+        {
+            if (self.SceneFace.isUnderSetup())
+                return;
+
+            if (self.driver_camera)
+                SceneFaceUtil::loadScene(SceneFace, "GTAUTO_Parts_Meter_2");
+            else
+                SceneFaceUtil::loadScene(SceneFace, "GTAUTO_Parts_Meter_3");
+
+            self.driver_camera = !self.driver_camera;
+        }
+
+        method switchLight()
+        {
+            if (self.SceneFace.isUnderSetup())
+                return;
+
+            if (self.light_off)
+                SceneFaceUtil::loadScene(SceneFace, "GTAUTO_Parts_Meter_Light_On");
+            else
+                SceneFaceUtil::loadScene(SceneFace, "GTAUTO_Parts_Meter_Light_Off");
+
+            self.light_off = !self.light_off;
+        }
+
+        method switchView(context)
+        {
+            if (!self.full_view)
+            {
+                MeterRoot::ColorFace::FadeOut.reset();
+                MeterRoot::ColorFace.visible = true;
+
+                MeterSelect.visible = false;
+                SBox.visible = false;
+                Title.visible = false;
+                self.post_render = true;
+
+                context.sync();
+
+                context.cursor_visible = false;
+
+                self.focus_widget = MeterRoot.getFocusWidget();
+                self.can_focus = true;
+
+                MeterRoot.setFocus(self);
+
+                self.x = 0;
+                self.minimum_width = 1920;
+                self.minimum_height = 1080;
+
+                CursorProject::StartMenuRoot::StartMenu.hide();
+
+                self.Footer::ReducedScreenHelp.visible = false;
+                self.Footer::FullScreenHelp.visible = true;
+                self.full_view = true;
+
+                context.sync();
+
+                MeterRoot::ColorFace::FadeOut.start();
+            }
+            else
+            {
+                MeterRoot::ColorFace::FadeOut.reset();
+                MeterRoot::ColorFace.visible = true;
+
+                context.sync();
+
+                CursorProject::StartMenuRoot::StartMenu.appear();
+
+                self.x = 120;
+                self.minimum_width = 1450;
+                self.minimum_height = 560;
+
+                self.Footer::FullScreenHelp.visible = false;
+                self.Footer::ReducedScreenHelp.visible = true;
+
+                MeterRoot.setFocus(self.focus_widget);
+                context.cursor_visible = true;
+
+                self.can_focus = false;
+                self.focus_widget = nil;
+                self.full_view = false;
+                self.post_render = false;
+                MeterSelect.visible = true;
+                SBox.visible = true;
+                Title.visible = true;
+
+                context.sync();
+
+                MeterRoot::ColorFace::FadeOut.start();
+            }
+        }
+
+        method onInitialize(context)
+        {
+            var assign = main::pdiext::MSystemConfiguration::GetEnterButtonAssign();
+            if (assign == "circle")
+            {
+                self.Footer::FullScreenHelp::Circle.visible = false;
+                self.Footer::FullScreenHelp::Cross.visible = true;
+            }
+            else
+            {
+                self.Footer::FullScreenHelp::Circle.visible = true;
+                self.Footer::FullScreenHelp::Cross.visible = false;
+            }
+
+            self.Footer::FullScreenHelp.visible = false;
+            self.Footer::ReducedScreenHelp.visible = true;
+        }
+
+        method onCancel(context)
+        {
+            main::sound.play("cancel");
+            self.switchView(context);
+
+            return STATE_YIELD;
+        }
+    }
+
+    module CarPreview::SceneFace
+    {
+        attribute current_cp;
+        attribute thread;
+        attribute finalized = false;
+
+        method initialize(context)
+        {
+            CarPreview::SceneCover::Fade.reset();
+
+            self.finalized = false;
+            self.visible = false;
+        }
+
+        method finalize(context)
+        {
+            self.clearCar(context);
+            self.visible = false;
+
+            ORG.setEnableStereoRendering(false);
+            self.finalized = true;
+        }
+
+        method clearCar(context)
+        {
+            CarPreview::SceneCover::Fade.reset();
+
+            if (self.thread != nil)
+            {
+                self.thread.terminate();
+                self.thread = nil;
+            }
+        
+            if (self.current_cp != nil)
+            {
+                self.execCommandImmidiate("clearEntity car0");
+                self.current_cp = nil;
+            }
+        }
+
+        method setExtraMeterCount(count)
+        {
+            self.execCommand("setCarExtraMeterCount %{count} car0");
+            self.saveCommandQueue();
+        }
+
+        method setExtraMeter(slot_index, meter_id)
+        {
+            self.execCommand("setCarExtraMeterKind %{slot_index} %{meter_id} car0");
+            self.saveCommandQueue();
+        }
+
+        method setMeterBacklightColor(r, g, b)
+        {
+            self.execCommand("setCarExtraMeterBacklightColor %{r} %{g} %{b} car0");
+            self.saveCommandQueue();
+        }
+
+        method loadCar(context, cp)
+        {
+            self.clearCar(context);
+            
+            if (MeterRoot.slot_count == 0)
+                return;
+
+            CarPreview.driver_camera = true;
+            CarPreview.light_off = true;
+            self.setClearColorBuffer(true);
+            self.setDefaultCarParameter(cp, 0);
+            self.current_cp = cp;
+
+            SceneFaceUtil::loadScene(self, "GTAUTO_Parts_Meter_1");
+            self.saveCommandQueue();
+
+            self.thread = Thread(function(context) 
+            {
+                self.opacity = 0.0;
+                self.visible = true;
+
+                for (;;)
+                {
+                    if (self.finalized)
+                        return;
+                
+                    if (self.current_cp == nil)
+                        return;
+
+                    if (!self.isUnderSetup())
+                    {
+                        SceneFaceUtil::loadScene(SceneFace, "GTAUTO_Parts_Meter_3");
+                        ORG.setEnableStereoRendering(true);
+                        self.opacity = 1.0;
+
+                        CarPreview::SceneCover::Fade.start();
+                        return;
+                    }
+
+                    Thread::Sleep(0.1);
+                }
+            }, context);
+        
+            self.thread.start();
+        }
+    }
+}

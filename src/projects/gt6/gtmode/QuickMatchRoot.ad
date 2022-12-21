@@ -1,0 +1,1181 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module QuickMatchRoot
+{
+    hidden.visible = false;
+    
+    attribute folder_list;
+    attribute gp_list;
+    attribute tickThread;
+    attribute closed = false;
+    attribute entryCountList = [:];
+
+    method open(context)
+    {
+        SequenceUtil::enableStartMenuRoot();
+        SequenceUtil::enableSceneFaceRoot();
+
+        SequenceUtil::startPageSimple(context, self);
+
+        menu::FrameInterval = 1;
+    }
+
+    method close(context, goto_race)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        if (!goto_race)
+        {
+            ServerUtil::ResidentLobby::leave(context);
+            GTModeRoot.open(context);
+        }
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        self.close(context, false);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        GTModeProject.PlayMenuBGM(context, QuickMatchRoot);
+        CursorProject::SceneFaceRoot.requestParticleCommand(context, "topMenuParticle_Shape02");
+
+        Connecting.visible = false;
+        EventSelect.visible = false;
+
+        context.pushEvent(main::menu::MFunctionEvent(self.postInitialize, context));
+
+        if (GAME_STATUS.user_profile.option.bot_on)
+            BotUtil::begin(context);
+
+        return STATE_YIELD;
+    }
+
+    method initializeLobby(context)
+    {
+        ServerUtil::ResidentLobby::stay(context);
+
+        if (!Lobby.isInitialized())
+        {
+            if (!OnlineUtil::canSkipCheckingEnvironment(context))
+            {
+                Connecting.State.text = manager.translate("OnlineMessage", "PROGRESS_CHECKING_NETWORK");
+                Connecting.visible = true;
+                OnlineUtil::checkEnvironment(context, OnlineUtil::DefaultProbedBandwidthCacheLifeTime, false);
+            }
+
+            Connecting.State.text = manager.translate("OnlineMessage", "PROGRESS_CONNECTING_TO_SERVER");
+            Connecting.visible = true;
+
+            if (!self.initializeLobbyEntry(context))
+                return false;
+
+            Connecting.visible = false;
+        }
+
+        EventSelect.visible = true;
+        PDINetwork.setUseNickname(false);
+
+        return true;
+    }
+
+    method initializeLobbyEntry(context)
+    {
+        if (!Lobby.isInitialized())
+        {
+            return OnlineUtil::initializeLobby2(context, -1, OnlineUtil::MatchingWorld::QuickMatchStart);
+        }
+
+        return true;
+    }
+
+    method onQuickMatchStatsReceived(args)
+    {
+        var [context, request] = args;
+        if (request.isDone() && !request.isError())
+        {
+            var list = QuickMatchUtil::Stats::createCounterList(request, true, true);
+            foreach (var [eventId, data] in list)
+            {
+                var count = data["RaceCount"];
+                if (count != nil)
+                {
+                    EventSelect.updateRaceCount(context, eventId, count);
+                }
+            }
+        }
+    }
+
+    method onCrowdedLevelReceived(context, eventId, level)
+    {
+        EventSelect::EventList.updateCrowdedLevel(context, eventId, level);
+    }
+
+    method postInitialize(context)
+    {
+        SaveDataUtilGT6::syncBackgroundSave();
+        if (!GTModeProject::checkQuickMatchAvailable(context))
+        {
+            self.close(context, false);
+            return;
+        }
+
+        var fixed_folder_id = 8;
+        var res = EventSelect.open(context, fixed_folder_id);
+        self.close(context, res);
+    }
+
+    method onFinalize(context)
+    {
+        if (GAME_STATUS.user_profile.option.bot_on)
+            BotUtil::end();
+
+        QuickMatchUtil::finalize();
+        QuickMatchUtil::setGetCrowdedLevelCallback(nil);
+
+        self.finalizeTick(context);
+        EventRace2.clearCallback(context);
+        Ranking2.clearCallback(context);
+
+        context.enableInput();
+        context.filterEvent("Grim2");
+
+        return STATE_YIELD;
+    }
+
+    function checkNetworkState(context)
+    {
+        if (!Lobby.isInitialized())
+            return false;
+
+        return true;
+    }
+
+    method onNetworkDisconnect(context)
+    {
+        SettingProject::SettingRoot.abort(context);
+
+        if (__projects__.defined("GarageProject"))
+        {
+            GarageProject::CarSelectPopup.abort(context);
+        }
+
+        if (__projects__.defined("OptionProject"))
+        {
+            OptionProject::OptionRoot.close(context);
+        }
+
+        if (__projects__.defined("ManualProject"))
+        {
+            ManualProject::KeyAssignPopup.close(context);
+        }
+
+        DialogUtil::cancelConfirmDialog(context);
+        DialogUtil::closeMyMenuDialog(context);
+
+        EventSelect.close(context, false);
+    }
+
+    method onTick(context)
+    {
+        while (true)
+        {
+            if (!checkNetworkState(context))
+            {
+                onNetworkDisconnect(context);
+                break;
+            }
+
+            Thread::Sleep(0.01);
+        }
+    }
+
+    method initializeTick(context)
+    {
+        self.tickThread = Thread(onTick, context);
+        self.tickThread.start();
+    }
+
+    method finalizeTick(context)
+    {
+        if (self.tickThread != nil)
+        {
+            self.tickThread.terminate();
+            self.tickThread = nil;
+        }
+    }
+
+    module EventSelect
+    {
+        attribute event_loop;
+        attribute result;
+        attribute display_description_thread;
+        attribute description;
+
+        method open(context, folder_id)
+        {
+            QuickMatchRoot.setFocus(nil);
+
+            if (!self.initialize(context, folder_id))
+                return false;
+
+            self.Fade.forward();
+            self.Fade.start();
+
+            self.description = "";
+            self.result = false;
+            self.insensitive = false;
+
+            self.event_loop = main::menu::EventLoop(context);
+            self.event_loop.enter();
+
+            self.insensitive = true;
+            self.finalize(context);
+        
+            var res = self.result;
+            self.result = nil;
+            return res;
+        }
+
+        method close(context, goto_race)
+        {
+            if (self.event_loop != nil)
+            {
+                self.Fade.backward();
+                self.Fade.start();
+                context.wait(self.Fade.ramain_time);
+                self.event_loop.leave();
+                self.event_loop = nil;
+            }
+
+            self.result = goto_race;
+        }
+
+        method initializeEventListCommon(context, gp_list)
+        {
+            var size = gp_list.size;
+
+            ListBox.setItemTemplate(context, hidden::EventItem);
+            ListBox.setItemCount(size);
+
+            var focus_index = 0;
+            var event_id = GTModeProject.history[$"QuickMatchRoot::EventId"];
+
+            if (event_id != nil)
+            {
+                for (var i = 0; i < gp_list.size; i++)
+                {
+                    var gp = gp_list[i];
+                    if (gp.event.event_id == event_id)
+                    {
+                        focus_index = i;
+                        break;
+                    }
+                }
+
+                GTModeProject.history[$"QuickMatchRoot::EventId"] = nil;
+            }
+
+            ListBox.focus_index = focus_index;
+            QuickMatchRoot.setFocus(ListBox);
+            
+            if (!AppOpt.defined("quickmatch_old"))
+            {
+                ListBox.visible = false;
+                EventList.setEventList(context, gp_list);
+                EventList.setFocus(event_id);
+                EventList.visible = true;
+            }
+            else
+            {
+                ListBox.visible = true;
+                EventList.visible = false;
+            }
+            
+            QuickMatchRoot.gp_list = gp_list;
+
+            if (self.description != nil)
+            {
+                self.display_description_thread = Thread(function(context)
+                {
+                    Thread::Sleep(1);
+                    if (context != nil)
+                    {
+                        self.ToolTip::tip.value = self.description;
+                    }
+                }, context);
+
+                self.display_description_thread.start();
+            }
+
+            var statsRequestList = [];
+            foreach (var gp in gp_list)
+                statsRequestList.push(gp.event.event_id);
+
+            QuickMatchUtil::getCrowdedLevelRequest(context, onCrowdedLevelReceived);
+            var list = QuickMatchUtil::Stats::getCount(context, statsRequestList, nil, true, onQuickMatchStatsReceived);
+        }
+
+        method initializeEventListOnline(context, folder_id)
+        {
+            var me = self;
+            
+            EventRace2.requestGameParameterList(folder_id, (args) =>
+            {
+                var [context, request] = args;
+                if (request.isDone())
+                {
+                    var xml = EventRace2.getGameParameterList(folder_id);
+                    var gp_list = GameParameterUtil::parseXML(xml);
+                    me.initializeEventListCommon(context, gp_list);
+                }
+            });
+        }
+
+        method initializeFolderOnline(context, folder_id)
+        {
+            var me = self;
+            EventRace2.requestOnlineEventList2((args) =>
+            {
+                var [context, request] = args;
+                if (request.isDone())
+                {
+                    var folder_list = EventRace2.decodeOnlineEventList(request);
+                    foreach (var folder in folder_list)
+                    {
+                        if (folder["id"].toInt() != folder_id)
+                            continue;
+
+                        self.description = OnlineEventUtil::localize(folder["description"]);
+                        me.initializeEventListOnline(context, folder_id);
+                    }
+                }
+            });
+        }
+
+        method updateRegulations(context)
+        {
+            var listbox = EventSelect::ListBox;
+
+            for (var i = 0; i < listbox.getItemCount(); ++i)
+            {
+                var w = listbox.getInitializedWidget(context, i);
+                if (w != nil)
+                    w.updateRegulation(QuickMatchRoot.gp_list[i]);
+            }
+
+            EventSelect::EventList.updateRegulations(context, QuickMatchRoot.gp_list);
+        }
+
+        method updateEntryCount(context, eventId, num)
+        {
+            var listbox = EventSelect::ListBox;
+
+            for (var i = 0; i < listbox.getItemCount(); ++i)
+            {
+                var w = listbox.getInitializedWidget(context, i);
+                if (w != nil && w.getEventId() == eventId)
+                    w.updateEntryCount(context, num);
+            }
+        }
+
+        method updateRaceCount(context, eventId, num)
+        {
+            var listbox = EventSelect::ListBox;
+
+            for (var i = 0; i < listbox.getItemCount(); ++i)
+            {
+                var w = listbox.getInitializedWidget(context, i);
+                if (w != nil && w.getEventId() == eventId)
+                    w.updateRaceCount(num);
+            }
+
+            EventSelect::EventList.updateRaceCount(context, eventId, num);
+        }
+
+        method initialize(context, folder_id)
+        {
+            initializeFolderOnline(context, folder_id);
+
+            context.cursor_visible = false;
+            finally () => { context.cursor_visible = true };
+
+            if (!QuickMatchRoot.initializeLobby(context))
+            {
+                self.close(context, false);
+                return false;
+            }
+
+            QuickMatchRoot.initializeTick(context);
+            return true;
+        }
+
+        method finalize(context)
+        {
+            if (self.display_description_thread != nil)
+            {
+                self.display_description_thread.terminate();
+                self.display_description_thread = nil;
+            }
+
+            ListBox.setItemCount(0);
+        }
+
+        method onInitialize(context)
+        {
+            self.Fade.forward();
+            self.Fade.reset();
+            self.insensitive = true;
+
+            var adj = main::menu::MAdjustment();
+            HScrollArrow.adjustment = adj;
+            ListBox.h_adjustment = adj;
+
+            ToolTip::tip.remove();
+
+            ListBox.visible = false;
+            EventList.visible = false;
+        }
+
+        method onKeyPress(context, event)
+        {
+            var preopen_garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+            if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+            {
+                if (preopen_garage_id != GAME_STATUS.user_profile.garage.getRidingGarageId())
+                    updateRegulations(context);
+                return STATE_YIELD;
+            }
+
+            return STATE_EXIT;
+        }
+
+        method onActivate(context)
+        {
+            var w = ListBox.getItemWidget(ListBox.focus_index);
+            if (w == nil)
+            {
+                sound.play("disable");
+                return STATE_YIELD;
+            }
+
+            sound.play("ok");
+
+            var gp = QuickMatchRoot.gp_list[ListBox.focus_index];
+            gp.online_room.matching_event_id32 = QuickMatchUtil::createMatchingEventId32(gp);
+
+            var res = RaceEntryRoot.modal_open_quick_match(context, gp);
+            if (res)
+            {
+                GTModeProject.history[$"QuickMatchRoot::EventId"] = gp.event.event_id;
+                GTModeProject.history[$"LastPageName"] = QuickMatchRoot.name;
+                self.close(context, true);
+            }
+            else
+            {
+                self.updateRegulations(context);
+            }
+
+            return STATE_YIELD;
+        }
+
+        method onCancel(context, event, item)
+        {
+            main::sound.play("cancel");
+            self.close(context, false);
+            return STATE_YIELD;
+        }
+
+        module ListBox
+        {
+            method getInitializedWidget(context, i)
+            {
+                if (i < 0)
+                    return nil;
+
+                var w = self.getItemWidget(i);
+                if (w == nil)
+                {
+                    w = self.getItemWidget(i, context);
+
+                    if (i < QuickMatchRoot.gp_list.size)
+                    {
+                        var gp = QuickMatchRoot.gp_list[i];
+                        w.init(context, gp, i);
+                    }
+                    else
+                        return nil;
+                }
+
+                return w;
+            }
+
+            method onFocusNotify(context, new_index, old_index)
+            {
+                if (new_index != nil)
+                {
+                    var w = self.getInitializedWidget(context, new_index);
+                    if (w != nil)
+                        w.focus_enter(context);
+                }
+
+                if (old_index != nil)
+                {
+                    var w = self.getInitializedWidget(context, old_index);
+                    if (w != nil)
+                        w.focus_leave(context);
+                }
+
+                return 1;
+            }
+
+            method onVisibleNotify(context, indexes)
+            {
+                foreach (var i in indexes)
+                {
+                    if (self.getItemVisible(i))
+                        self.getInitializedWidget(context, i);
+                    else
+                        ;
+                }
+
+                return;
+            }
+        }
+
+        module EventList
+        {
+            method getEventWidget(event_index)
+            {
+                var event_w = self["Event_%{event_index + 1}"];
+                if (event_w == nil)
+                    return nil;
+
+                return event_w;
+            }
+            
+            method initEventWidget(context, event_w, gp)
+            {
+                if (gp != nil)
+                {
+                    var event = gp.event;
+                    var regulation = event.regulation;
+                    var course_code = event.track.course_code;
+					var rentacar_label;
+                    var is_rentacar = RaceEventUtil::isRentACarEvent(event, &rentacar_label);
+                    var online_room = gp.online_room;
+
+                    event_w.Text.text = RaceEventUtil::getTitleText(event);
+
+                    if (course_code == gtengine::COURSE_CODE_GENERATED)
+                        course_code = gtengine::getSceneryCourseCode(gp.event.track.edit_data);
+
+                    var course_info = main::SPECDB.query1("SELECT Logo, LoadingBg FROM COURSE WHERE ID=?", [course_code]);
+                    if (event_w.name == "Event_1")
+                        event_w.CourseLogo.image_path = "piece/gt6/course_logo_L/%s.img".format(course_info.Logo);
+                    else
+                        event_w.CourseLogo.image_path = "piece/gt6/course_logo_M/%s.img".format(course_info.Logo);
+
+                    var image_name = event.information.logo_image_path;
+                    if (image_name != "")
+                    {
+                        event_w.Image::ImageFace.image_path = "";
+
+                        var delay_load_complete = method (context)
+                        {
+                            event_w.Image::ImageFace::FadeIn.start();
+                            event_w.Image::ImageFace.on_delay_load_complete = nil;
+                        };
+
+                        event_w.Image::ImageFace.on_delay_load_complete = *self{delay_load_complete};
+
+                        var image_path = EventRace2.getEventBgImagePath(image_name);
+                        EventRace2.requestEventBgImage(image_name, (args) => 
+                        {
+                            var [context, request] = args;
+                            if (request.isDone())
+                            {
+                                event_w.Image::ImageFace::FadeIn.reset();
+                                event_w.Image::ImageFace.image_path = image_path;
+                            }
+                        });
+                    }
+                    else
+                    {
+                        event_w.Image::ImageFace.image_path = "piece/gt6/quickmatch_bg/%s.img".format(course_info.LoadingBg;)
+                    }
+
+                    event_w.Laps_World::World::TextFace.visible = online_room.matching_space == gtengine::MatchingSpace::GLOBAL;
+                    event_w.Laps_World::Laps::TextFace.text = RaceEventUtil::getCompleteTypeText(context, event, false);
+                    event_w.RaceCount.text = manager.translate(QuickMatchRoot, "RACE_COUNT").build("--");
+                    event_w.entry.text = manager.translate("Unit", "CARS").build(event.race_parameter.entry_max);
+
+                    var flag = KeyValueUtil::getFlag("quickmatch_new_flag", event.event_id);
+                    if (flag == nil)
+                    {
+                        flag = true;
+                        KeyValueUtil::set("quickmatch_new_flag", event.event_id, flag);
+                    }
+
+                    event_w.NEW.visible = flag;
+                    if (event_w.defined("Description"))
+                    {
+                        var scroll_clip = event_w.Description::ScrolledWindow::clip;
+                        scroll_clip.space::Text.text = RaceEventUtil::getDescriptionText(event);
+                        scroll_clip.manual_target_y = 0.0;
+                        scroll_clip.space.y = 0.0;
+                    }
+
+                    event_w.gp = gp;
+                    event_w.insensitive = false;
+                }
+                else
+                {
+                    event_w.gp = nil;
+                    event_w.insensitive = true;
+                }
+
+                event_w.FadeIn.start();
+            }
+
+            method setEventList(context, gp_list)
+            {
+                QuickMatchRoot.gp_list = gp_list;
+
+                var gp_index_base = 0;
+
+                if (AppOpt.defined("quickmatch_index"))
+                    gp_index_base = AppOpt["quickmatch_index"].toInt();
+
+                for (var i = 0; i < 5; i++)
+                {
+                    var event_w = self.getEventWidget(i);
+                    if (event_w == nil)
+                        break;
+
+                    var gp_index = gp_index_base + i;
+                    if (gp_index < gp_list.size)
+                    {
+                        var gp = gp_list[gp_index];
+                        self.initEventWidget(context, event_w, gp);
+                    }
+                    else
+                    {
+                        self.initEventWidget(context, event_w, nil);
+                    }
+                }
+
+                self.updateRegulations(context, gp_list);
+            }
+
+            method updateRegulation(event_w, gp)
+            {
+                var is_rentacar = RaceEventUtil::isRentACarEvent(gp.event);
+                if (!is_rentacar)
+                {
+					var dummy_text;
+                    event_w.PassedRegulation.active = RaceEventUtil::checkRegulation(gp, &dummy_text);
+                }
+
+                event_w.PassedRegulation.active2 = is_rentacar;
+            }
+
+            method updateRegulations(context, gp_list)
+            {
+                var gp_index_base = 0;
+
+                if (AppOpt.defined("quickmatch_index"))
+                    gp_index_base = AppOpt["quickmatch_index"].toInt();
+
+                for (var i = 0; i < 5; i++)
+                {
+                    var event_w = self.getEventWidget(i);
+                    if (event_w == nil)
+                        break;
+
+                    var gp_index = gp_index_base + i;
+                    if (gp_index < gp_list.size)
+                    {
+                        var gp = QuickMatchRoot.gp_list[gp_index];
+                        self.updateRegulation(event_w, gp);
+                    }
+                    else
+                        break;
+                }
+            }
+
+            method updateRaceCount(context, event_id, count)
+            {
+                for (var i = 0; i < 5; i++)
+                {
+                    var event_w = self.getEventWidget(i);
+                    if (event_w == nil)
+                        break;
+
+                    var gp = event_w.gp;
+                    if (gp != nil)
+                    {
+                        if (gp.event.event_id == event_id)
+                        {
+                            event_w.RaceCount.text = manager.translate(QuickMatchRoot, "RACE_COUNT").build(pdiext::GetNumberString(count));
+                        }
+                    }
+                }
+            }
+
+            method updateCrowdedLevel(context, eventId, level)
+            {
+                for (var i = 0; i < 5; ++i)
+                {
+                    var event_w = self.getEventWidget(i);
+                    if (event_w == nil)
+                        break;
+
+                    var gp = event_w.gp;
+                    if (gp != nil && gp.event.event_id == eventId)
+                    {
+                        event_w.setCrowdedLevel(context, level);
+                    }
+                }
+            }
+
+            method setFocus(event_id)
+            {
+                var focus_w;
+
+                for (var i = 0; i < 5; i++)
+                {
+                    var event_w = self.getEventWidget(i);
+                    if (event_w != nil)
+                    {
+                        var gp = event_w.gp;
+                        if (gp != nil && gp.event.event_id == event_id)
+                        {
+                            focus_w = event_w;
+                            break;
+                        }
+                    }
+                }
+
+                if (focus_w == nil)
+                    focus_w = self.getEventWidget(0);
+
+                if (focus_w != nil)
+                    QuickMatchRoot.setFocus(focus_w);
+            } 
+
+            method onInitialize(context, gp_list)
+            {
+                self.RaceEntryBG::FadeIn.forward();
+                self.RaceEntryBG::FadeIn.reset();
+
+                for (var i = 0; i < 5; i++)
+                {
+                    var event_w = self.getEventWidget(i);
+                    event_w.CourseLogo.image_path = "";
+                    event_w.Image::ImageFace.image_path = "";
+                    event_w.Text.text = "";
+                    event_w.defineStatic("gp", nil);
+                    event_w.FadeIn.reset();
+                }
+            }
+
+            method onActivate(context, event)
+            {
+                sound.play("ok");
+                var w = event.widget;
+                var gp = w.gp;
+
+                if (gp == nil)
+                    return STATE_YIELD;
+
+                gp.online_room.matching_event_id32 = QuickMatchUtil::createMatchingEventId32(gp);
+
+                var bg = self.RaceEntryBG;
+                bg.EventName.text = RaceEventUtil::getTitleText(gp.event);
+                
+                var image_face = bg.ImageFace;
+                image_face.image_path = "";
+
+                var delay_load_complete = method (context)
+                {
+                    bg.FadeIn.forward();
+                    bg.FadeIn.start();
+                    image_face.on_delay_load_complete = nil;
+                };
+
+                image_face.on_delay_load_complete = *self{delay_load_complete};
+                image_face.image_path = w.Image::ImageFace.image_path;
+
+                for (var i = 0; i < 15; i++)
+                {
+                    if (w.Image::ImageFace.image_path != "")
+                    {
+                        image_face.image_path = w.Image::ImageFace.image_path;
+                        break;
+                    }
+
+                    ContextMain.disableInput();
+                    Thread::Sleep(0.1);
+                }
+                
+                ContextMain.enableInput();
+
+                if (image_face == "")
+                {
+                    var course_code = gp.event.track.course_code;
+                    if (course_code == gtengine::COURSE_CODE_GENERATED)
+                        course_code = gtengine::getSceneryCourseCode(self.gp.event.track.edit_data);
+
+                    var LoadingBg = main::SPECDB.executeQuery1R1C("SELECT LoadingBg FROM COURSE WHERE ID=?", [course_code]);
+                    image_face.image_path = "piece/gt6/quickmatch_bg/%s.img".format(LoadingBg);
+                }
+
+                KeyValueUtil::set("quickmatch_new_flag", gp.event.event_id, false);
+
+                CursorProject::LoadingRaceRoot::QuickMatchBase::bg.image_path = w.Image::ImageFace.image_path;
+
+                var res = RaceEntryRoot.modal_open_quick_match(context, gp);
+                if (res)
+                {
+                    GTModeProject.history[$"QuickMatchRoot::EventId"] = gp.event.event_id;
+                    GTModeProject.history[$"LastPageName"] = QuickMatchRoot.name;
+                    self.close(context, true);
+                }
+                else
+                {
+                    w.NEW.visible = false;
+                    self.RaceEntryBG::FadeIn.backward();
+                    self.RaceEntryBG::FadeIn.start();
+                    self.updateRegulations(context, QuickMatchRoot.gp_list);
+                    CursorProject::LoadingRaceRoot::QuickMatchBase::bg.image_path = "";
+                }
+
+                return STATE_YIELD;
+            }
+
+            method onKeyPress(context, event)
+            {
+                if (GTModeProject::IsDevelop(context) && event.keysym == CELL_PAD_CTRL_SELECT)
+                {
+                    var data = UIKitProject::SelectRoot::Data();
+                    data.title_ = "develop window";
+                    data.candidates_ = [];
+
+                    foreach (var gp in QuickMatchRoot.gp_list)
+                    {
+                        if (gp != nil)
+                        {
+                            var str = "id %d : %s".format(gp.event.event_id, RaceEventUtil::getTitleText(gp.event));
+                            data.candidates_.push(str);
+                        }
+                    }
+
+                    var result = UIKitProject::SelectRoot.open(context, data);
+                    if (result != nil)
+                    {
+                        var w = QuickMatchRoot.getFocusWidget();
+                        var gp = w.gp;
+
+                        if (gp != nil)
+                        {
+                            var index = 0;
+                            foreach (var gp2 in QuickMatchRoot.gp_list)
+                            {
+                                if (gp.event.event_id == gp2.event.event_id)
+                                    break;
+
+                                index++;
+                            }
+
+                            var index2 = result[0];
+                            QuickMatchRoot.gp_list[index] = QuickMatchRoot.gp_list[index2];
+                            QuickMatchRoot.gp_list[index2] = gp;
+                            self.setEventList(context, QuickMatchRoot.gp_list);
+
+                            return STATE_YIELD;
+                        }
+                    }
+                }
+
+                return STATE_EXIT;
+            }
+
+            module EventItemModule
+            {
+                method setCrowdedLevel(context, level)
+                {
+                    var list = [
+                        nil,
+                        person.p1,
+                        person.p2,
+                        person.p3,
+                        person.p4,
+                        person.p5,
+                    ];
+    
+                    for (var i = 0; i < list.size; ++i)
+                    {
+                        var w = list[i];
+                        if (w != nil)
+                            w.active = i <= level;
+                    }
+                }
+            }
+
+            module HidePersonModule
+            {
+                method onRealize(manager)
+                {
+                    self.p1.active = false;
+                    self.p2.active = false;
+                    self.p3.active = false;
+                    self.p4.active = false;
+                    self.p5.active = false;
+                }
+            }
+
+            module Event_1
+            {
+                import EventItemModule::*;
+
+                module person
+                {
+                    import HidePersonModule::*;
+                }
+
+                method onInitialize(context)
+                {
+                    var adj = main::menu::MAdjustment();
+                    Description::Scrollbar::VScrollbar.adjustment = adj;
+
+                    var scroll_clip = Description::ScrolledWindow::clip;
+                    scroll_clip.scroll_mode = SCROLL_MODE_MANUAL;
+
+                    scroll_clip.v_adjustment = adj;
+                    scroll_clip.space.y = 0.0;
+                    scroll_clip.manual_target_y = 0.0;
+                }
+
+                method onKeyPress(context, event)
+                {
+                    var scroll_clip = Description::ScrolledWindow::clip;
+                    var line_height = scroll_clip.space::Text.line_height;
+
+                    switch (event.keysym)
+                    {
+                        case CELL_PAD_CTRL_L3_UP:
+                            scroll_clip.manualTargetIncY(line_height);
+                            return STATE_YIELD;
+
+                        case CELL_PAD_CTRL_L3_DOWN:
+                            scroll_clip.manualTargetIncY(-line_height);
+                            return STATE_YIELD;
+                    }
+
+                    return STATE_EXIT;
+                }
+            }
+
+            module Event_2
+            {
+                import EventItemModule::*;
+
+                module person
+                {
+                    import HidePersonModule::*;
+                }
+            }
+
+            module Event_3
+            {
+                import EventItemModule::*;
+
+                module person
+                {
+                    import HidePersonModule::*;
+                }
+            }
+
+            module Event_4
+            {
+                import EventItemModule::*;
+
+                module person
+                {
+                    import HidePersonModule::*;
+                }
+            }
+
+            module Event_5
+            {
+                import EventItemModule::*;
+
+                module person
+                {
+                    import HidePersonModule::*;
+                }
+            }
+        }
+    }
+
+    module hidden::EventItem
+    {
+        attribute gp;
+
+        method onInitialize(context)
+        {
+            self.Fade.reset();
+            self.Arrow.visible = false;
+            self.BeforeOpen.visible = false;
+            self.Open.visible = false;
+            self.Closed.visible = false;
+        }
+
+        method onFinalize()
+        {
+            self.gp = nil;
+        }
+
+        method init(context, gp)
+        {
+            self.gp = gp;
+            var event = gp.event;
+            var regulation = event.regulation;
+            var online_room = gp.online_room;
+            var course_code = event.track.course_code;
+			var rentacar_label;
+            var is_rentacar = RaceEventUtil::isRentACarEvent(event, &rentacar_label);
+            
+            var f = self.FlyerBase::Flyer;
+            self.Title.text = RaceEventUtil::getTitleText(event);
+            
+            if (RaceEventUtil::checkEventBeforeOpen(context, event))
+                self.BeforeOpen.visible = true;
+            else if (RaceEventUtil::checkEventClosed(context, event))
+                self.Closed.visible = true;
+            else
+                self.Open.visible = true;
+
+            if (is_rentacar)
+            {
+                var color = gtengine::MSpecDB::getCarVariationFlag(rentacar_label, 1);
+                f.Car.image_path = "car/thumbnail_L/%s_%02d".format(rentacar_label, color);
+            }
+            else
+            {
+                var cars = event.regulation.cars;
+                for (var i = 0; i < cars.size; i++)
+                {
+                    var car = cars[i];
+                    if (car.code != gtengine::MSpecDB::NO_CODE)
+                    {
+                        var color = gtengine::MSpecDB::getCarVariationFlag(car.label, 1);
+                        f.Car.image_path = "car/thumbnail_L/%s_%02d".format(car.label, color);
+                    }
+                }
+            }
+            
+            if (course_code == gtengine::COURSE_CODE_GENERATED)
+                course_code = gtengine::getSceneryCourseCode(gp.event.track.edit_data);
+            
+            var course_logo = main::SPECDB.executeQuery1R1C("SELECT Logo FROM COURSE WHERE ID=?", [course_code]);
+            
+            f.CourseLogo.image_path = "piece/gt6/course_logo_M/%s.img".format(course_logo);
+            f.Global.visible = online_room.matching_space == gtengine::MatchingSpace::GLOBAL;
+            
+            if (event.begin_date != 0)
+            {
+                var begin_datetime = main::pdistd::MTime();
+                begin_datetime.setBySecond(event.begin_date);
+                begin_datetime = begin_datetime.toLocal();
+                var begin_datetime_str = main::pdiext::GetDateTimeStringShort(begin_datetime.getBySecond());
+                var [begin_date_srt, begin_time_srt] = begin_datetime_str.split(" ");
+                f.StartDateTime::Date.text = begin_date_srt;
+                f.StartDateTime::Time.text = begin_time_srt;
+            }
+            
+            if (event.end_date != 0)
+            {
+                var end_datetime = main::pdistd::MTime();
+                end_datetime.setBySecond(event.end_date);
+                end_datetime = end_datetime.toLocal();
+                var end_datetime_str = main::pdiext::GetDateTimeStringShort(end_datetime.getBySecond());
+
+                var [end_date_srt, end_time_srt] = end_datetime_str.split(" ");
+                f.EndDateTime::Date.text = end_date_srt;
+                f.EndDateTime::Time.text = end_time_srt;
+            }
+            else
+                f.EndDateTime::Date.text = "";
+
+
+            self.RaceType.text = RaceEventUtil::getGameModeText(context, event);
+
+            self.Fade.start();
+
+            self.updateRegulation(gp);
+        }
+
+        method updateRegulation(gp)
+        {
+            var is_rentacar = RaceEventUtil::isRentACarEvent(gp.event);
+            if (!is_rentacar)
+            {
+				var dummy_text;
+                self.PassedRegulation.active = RaceEventUtil::checkRegulation(gp, &dummy_text);
+            }
+
+            self.PassedRegulation.active2 = is_rentacar;
+        }
+
+        method updateEntryCount(context, num)
+        {
+            var text = RaceEventUtil::getTitleText(self.gp.event);
+            text += " [{0}人参加中]".build(num);
+            self.Title.text = text;
+        }
+
+        method updateRaceCount(count)
+        {
+            self.RaceCount.text = "累計{0}レース".build(pdiext::GetNumberString(count));
+        }
+
+        method getEventId()
+        {
+            if (self.gp != nil)
+                return gp.event.event_id;
+            else
+                return 0;
+        }
+
+        method focus_enter(context)
+        {
+            self.FlyerBase::ScaleXY.forward();
+            self.FlyerBase::ScaleXY.start();
+        }
+
+        method focus_leave(context)
+        {
+            self.FlyerBase::ScaleXY.backward();
+            self.FlyerBase::ScaleXY.start();
+        }
+    }
+}

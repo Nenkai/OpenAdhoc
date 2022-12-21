@@ -1,0 +1,454 @@
+
+
+//---------------------------------------------------------------------------------------
+// RaceResultUtil.ad
+//
+// Utility module for reading/serializing/uploading race results
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module RaceResultUtil
+{
+    function GetEnumKey(enum, value)
+    {
+        var res = enum.find_static(pair => pair[1] == value);
+        if (res.size > 0)
+            return res[0][0];
+        else
+            return nil;
+    }
+
+    function escape(s)
+    {
+        s.replaceAll("&", "&amp;");
+        s.replaceAll("\"", "&quot;");
+        s.replaceAll(">", "&gt;");
+        s.replaceAll("<", "&lt;");
+        return s;
+    }
+
+    function unescape(s)
+    {
+        s.replaceAll("&lt;", "<");
+        s.replaceAll("&gt;", ">");
+        s.replaceAll("&quot;", "\"");
+        s.replaceAll("&amp;", "&");
+        return s;
+    }
+
+    module ResultType
+    {
+        static UNKNOWN = -1;
+        static TIME = 1;
+        static BEST = 2;
+        static LAPS = 3;
+        static SCORE = 4;
+        static POINT = 5;
+    }
+
+    class Result
+    {
+        attribute version;
+        attribute mode;
+        attribute club_id;
+        attribute club_event_id;
+        attribute title;
+        attribute races;
+        attribute current_time;
+
+        method __init__()
+        {
+            self.version = 2;
+            self.mode = gtengine::RoomGameMode::NONE;
+            self.club_id = nil;
+            self.club_event_id = nil;
+            self.title = "";
+            self.races = Array();
+            self.current_time = "";
+        }
+
+        method setData(rc, mode)
+        {
+            var lt = ORG.getLiveTimingRecord();
+            self.mode = mode;
+            self.current_time = pdiext::getBetterTime().toString();
+            self.title = rc.comment;
+
+            var room_info = OnlineSession.getRoomInformation();
+
+            if (room_info != nil)
+            {
+                if (room_info["roomType"] == gtengine::RoomType::CLUB_EVENT)
+                {
+                    self.club_id = room_info["clubId"];
+                    self.club_event_id = room_info["clubEventId"];
+                }
+            }
+
+            if (rc.hasQualifier())
+            {
+                var qualifier = Race();
+                var race = Race();
+                qualifier.setData(ResultType::BEST, lt.countEnabled(2), lt.getEntries(true, 2));
+                race.setData(ResultType::TIME, lt.countEnabled(1), lt.getEntries(true, 1));
+                self.races.push(qualifier);
+                self.races.push(race);
+            }
+            else if (rc.online_series_count > 1)
+            {
+                for (var i = rc.online_series_count; i > 0; i--)
+                {
+                    var race = Race();
+                    race.setData(ResultType::POINT, lt.countEnabled(i), lt.getEntries(true, i));
+                    self.races.push(race);
+                }
+            }
+            else
+            {
+                var race = Race();
+                var type = ResultType::TIME;
+
+                switch (self.mode)
+                {
+                    case gtengine::RoomGameMode::TIME_TRIAL:
+                        type = ResultType::BEST;
+                        break;
+
+                    case gtengine::RoomGameMode::DRIFT_TRIAL:
+                        type = ResultType::SCORE;
+                        break;
+
+                    case gtengine::RoomGameMode::ENDURANCE:
+                    case gtengine::RoomGameMode::ENDURANCE_WITH_QUALIFIER:
+                        type = ResultType::LAPS;
+                        break;
+                }
+
+                race.setData(type, lt.countEnabled(1), lt.getEntries(true, 1));
+                self.races.push(race);
+            }
+        }
+
+        method getDomNode()
+        {
+            var root = pdistd::MDomNode();
+            var races = pdistd::MDomNode();
+
+            root.addAttribute("version", self.version);
+            root.addAttribute("mode", GetEnumKey(gtengine::RoomGameMode, self.mode));
+
+            if (self.club_id != nil)
+                root.addAttribute("club_id", self.club_id);
+
+            if (self.club_event_id != nil)
+                root.addAttribute("club_event_id", self.club_event_id);
+
+            root.addAttribute("title", escape(self.title));
+            root.addAttribute("current_time", self.current_time);
+
+            for (var i = 0; i < self.races.size; i++)
+                races.addNode("race", self.races[i].getDomNode());
+            root.addNode("races", races);
+
+            return root;
+        }
+
+        method setDomNode(root)
+        {
+            if (root == nil)
+                return;
+
+            var ver = root.getAttribute("version");
+            self.version = ver;
+
+            if (ver < 2)
+                self.mode = root.getAttribute("mode")
+            else
+                self.mode = gtengine::RoomGameMode[root.getAttribute("mode")];
+
+            self.club_id = root.getAttribute("club_id");
+            self.club_event_id = root.getAttribute("club_event_id");
+            self.title = unescape(root.getAttribute("title"));
+            self.current_time = root.getAttribute("current_time");
+
+            if (root["races"] == nil)
+                return;
+
+            var nodes = root["races"][0]["race"];
+            for (var i = 0; i < nodes.size; i++)
+            {
+                var race = Race();
+                race.setDomNode(nodes[i], ver);
+                self.races.push(race);
+            }
+        }
+
+        method serialize()
+        {
+            var xml = self.getDomNode();
+            return xml.serialize("xml");
+        }
+
+        method deserialize(xml)
+        {
+            var parser = pdistd::MXml();
+            parser.parse(xml);
+
+            if (parser.result["xml"] != nil)
+            {
+                self.setDomNode(parser.result["xml"][0]);
+            }
+        }
+    }
+
+    class Race
+    {
+        attribute type;
+        attribute entries;
+        attribute top_time;
+        attribute top_laps;
+        attribute top_score;
+        attribute top_point;
+
+        method __init__()
+        {
+            self.type = ResultType::UNKNOWN;
+            self.entries = Array();
+            self.top_time = -1;
+            self.top_laps = -1;
+            self.top_score = -1;
+            self.top_point = -1;
+        }
+
+        method setData(type, lt_count, lt_entries)
+        {
+            self.type = type;
+            for (var i = 0; i < lt_count; i++)
+            {
+                var entry = Entry();
+                entry.setData(self, i + 1, lt_entries[i]);
+                self.entries.push(entry);
+            }
+        }
+
+        method getDomNode()
+        {
+            var root = pdistd::MDomNode();
+            var entries = pdistd::MDomNode();
+
+            for (var i = 0; i < self.entries.size; i++)
+                entries.addNode("entry", self.entries[i].getDomNode());
+            
+            root.addAttribute("type", GetEnumKey(ResultType, self.type));
+            root.addAttribute("top_time", self.top_time);
+            root.addAttribute("top_laps", self.top_laps);
+            root.addAttribute("top_score", self.top_score);
+            root.addAttribute("top_point", self.top_point);
+            root.addNode("entries", entries);
+            return root;
+        }
+
+        method setDomNode(root, ver)
+        {
+            if (root == nil)
+                return;
+
+            if (ver < 2)
+                self.type = root.getAttribute("type");
+            else
+                self.type = ResultType[root.getAttribute("type")];
+
+            if (self.type == nil)
+                return;
+
+            self.top_time = root.getAttribute("top_time");
+            self.top_laps = root.getAttribute("top_laps");
+            self.top_score = root.getAttribute("top_score");
+            self.top_point = root.getAttribute("top_point");
+
+            if (root["entries"] == nil)
+                return;
+
+            var nodes = root["entries"][0]["entry"];
+            if (nodes == nil)
+                return;
+
+            for (var i = 0; i < nodes.size; i++)
+            {
+                var entry = Entry();
+                entry.setDomNode(nodes[i]);
+                self.entries.push(entry);
+            }
+        }
+    }
+
+    class Entry
+    {
+        attribute race;
+        attribute rank;
+        attribute slot_id;
+        attribute car_label;
+        attribute car_color;
+        attribute car_paint;
+        attribute driver_name;
+        attribute driver_country;
+        attribute time;
+        attribute laps;
+        attribute score;
+        attribute point;
+        attribute total;
+        attribute gap;
+
+        method __init__()
+        {
+            self.rank = -1;
+            self.slot_id = -1;
+            self.car_label = "";
+            self.car_color = -1;
+            self.car_paint = -1;
+            self.driver_name = "";
+            self.driver_country = "";
+            self.time = -1;
+            self.laps = -1;
+            self.score = -1;
+            self.point = -1;
+            self.total = -1;
+            self.gap = -1;
+        }
+
+        method setData(race, rank, entry)
+        {
+            self.race = race;
+            self.rank = rank;
+            self.slot_id = entry.entry_id;
+            if (self.slot_id < 0)
+                return;
+
+            if (entry.car_code == gtengine::MSpecDB::NO_CODE)
+                return;
+
+            self.car_label = gtengine::MSpecDB::getCarLabel(entry.car_code);
+            self.car_color = entry.car_color;
+            self.car_paint = entry.paint_color;
+            self.driver_name = entry.driver_name;
+            self.driver_country = entry.country_code.upcase();
+            self.laps = entry.total_laps;
+
+            if (self.race.type == ResultType::BEST)
+                self.time = entry.best_lap_time;
+            else
+                self.time = entry.total_time;
+
+            if (self.race.type == ResultType::SCORE)
+                self.score = entry.best_lap_time;
+
+            if (self.race.type == ResultType::POINT)
+                self.point = entry.point;
+
+            self.total = entry.total_point;
+
+            if (self.rank == 1)
+            {
+                self.race.top_time = self.time;
+                self.race.top_laps = self.laps;
+                self.race.top_score = self.score;
+                self.race.top_point = self.total;
+            }
+            else 
+            {
+                if (self.race.type == ResultType::SCORE)
+                    self.gap = self.score - self.race.top_score;
+                else if (self.race.type == ResultType::POINT)
+                    self.gap = self.total - self.race.top_point;
+                else if (self.race.type == ResultType::LAPS)
+                    self.gap = self.laps - self.race.top_laps;
+                else
+                {
+                    if (self.laps == self.race.top_laps)
+                        self.gap = self.time - self.race.top_time;
+                    else
+                        self.gap = self.laps - self.race.top_laps;
+                }
+            }
+        }
+
+        method getDomNode()
+        {
+            var root = pdistd::MDomNode();
+            root.addAttribute("rank", self.rank);
+            root.addAttribute("slot_id", self.slot_id);
+            root.addAttribute("car_label", self.car_label);
+            root.addAttribute("car_color", self.car_color);
+            root.addAttribute("car_paint", self.car_paint);
+            root.addAttribute("driver_name", self.driver_name);
+            root.addAttribute("driver_country", self.driver_country);
+            root.addAttribute("time", self.time);
+            root.addAttribute("laps", self.laps);
+            root.addAttribute("score", self.score);
+            root.addAttribute("point", self.point);
+            root.addAttribute("total", self.total);
+            root.addAttribute("gap", self.gap);
+            return root;
+        }
+
+        method setDomNode(root)
+        {
+            if (root == nil)
+                return;
+
+            self.rank = root.getAttribute("rank");
+            self.slot_id = root.getAttribute("slot_id");
+            self.car_label = root.getAttribute("car_label");
+            self.car_color = root.getAttribute("car_color");
+            self.car_paint = root.getAttribute("car_paint");
+            self.driver_name = root.getAttribute("driver_name");
+            self.driver_country = root.getAttribute("driver_country");
+            self.time = root.getAttribute("time");
+            self.laps = root.getAttribute("laps");
+            self.score = root.getAttribute("score");
+            self.point = root.getAttribute("point");
+            self.total = root.getAttribute("total");
+            self.gap = root.getAttribute("gap");
+        }
+    }
+
+    function createOnline()
+    {
+        var result = Result();
+        var mode = RaceOperator.game_parameter.online_room.room_game_mode;
+        var rc = OnlineSession.getRoomConfig();
+        result.setData(rc, mode);
+        return result;
+    }
+
+    function exportXML()
+    {
+        var result = createOnline();
+        return result.serialize();
+    }
+
+    function importXML(xml)
+    {
+        var result = Result();
+        result.deserialize(xml);
+        return result;
+    }
+
+    function send()
+    {
+        var result = createOnline();
+        var xml = result.serialize();
+
+        if (result.club_id == nil)
+            return;
+
+        if (result.club_event_id == nil)
+            return;
+
+        Community.requestCreateEventResult(result.club_id, result.club_event_id, xml, () => { });
+    }
+}

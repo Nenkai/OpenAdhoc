@@ -1,0 +1,846 @@
+
+
+//---------------------------------------------------------------------------------------
+// SaveDataUtil.ad
+//
+// Utility module for saving
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module SaveDataUtil
+{
+    import main::DialogUtil;
+    
+    module INDICATOR_DISP_POS
+    {
+        static INDICATORPOS_LOWER_RIGHT = 0;
+        static INDICATORPOS_LOWER_LEFT = 1;
+        static INDICATORPOS_UPPER_RIGHT = 2;
+        static INDICATORPOS_UPPER_LEFT = 3;
+        static INDICATORPOS_CENTER = 4;
+    }
+
+    module INDICATOR_DISP_MSG_ALIGN
+    {
+        static INDICATORPOS_MSGALIGN_LEFT = 0 << 4;
+        static INDICATORPOS_MSGALIGN_RIGHT = 1 << 4;
+        static INDICATORPOS_MSGALIGN_CENTER = 2 << 4;
+    }
+
+    module INDICATOR_DISP_MODE
+    {
+        static INDICATORMODE_FIXED = 0;
+        static INDICATORMODE_BLINK = 1;
+        static INDICATORMODE_BLINK_FAST = 2;
+        static INDICATORMODE_BLINK_SLOW = 3;
+    }
+
+    class DataForSave
+    {
+        attribute firstCB;
+        attribute lastCB;
+        attribute mode;
+        attribute canCopy;
+        attribute bindCheck;
+        attribute makeBackup;
+        attribute compress;
+        attribute abort_request;
+        attribute create_new;
+        attribute dirName;
+        attribute saveFileName;
+        attribute inputFileName;
+        attribute listParam;
+        attribute iconTitle;
+        attribute title;
+        attribute subtitle;
+        attribute description;
+        attribute iconPngName;
+        attribute iconBuf;
+        attribute bgPngName;
+        attribute indicatorMessage;
+        attribute indicatorPosition;
+        attribute indicatorAlign;
+        attribute indicatorMode;
+		attribute indicatorPngName;
+    }
+
+    class DataForLoad
+    {
+        attribute complete_func;
+        attribute mode;
+        attribute bindCheck;
+        attribute compress;
+        attribute dirName;
+        attribute loadFileName;
+        attribute outputFileName;
+        attribute indicatorMessage;
+        attribute indicatorPosition;
+        attribute indicatorAlign;
+        attribute indicatorMode;
+        attribute indicatorPngName;
+    }
+
+    ////////////////////////////////////
+    ///////// SAVING ///////////////////
+    ////////////////////////////////////
+    static sSaveBGIssued = false;
+
+    function _save(context, project, data, use_tsm)
+    {
+        if (data.firstCB != nil)
+        {
+            var success = data.firstCB(context, data, use_tsm);
+            if (!success)
+                return false;
+        }
+
+        var icon_png = data.iconPngName;
+        var bg_png = data.bgPngName;
+
+        var sutil = main::SaveUtil;
+        var success = false;
+        var loop = true;
+        var retry_no_file_name = false;
+
+        main::SaveCallback.setCallback(main::SaveUtil);
+
+        do
+        {
+            var result = nil;
+
+            sutil.setErrorMessageInfo(
+                manager.translate("SaveData", "ERROR_SAVE_NO_SPACE"),
+                manager.translate("SaveData", "ERROR_SAVE_BINDCHECK"),
+                manager.translate("SaveData", "DO_YOU_DELETE_OTHER_FILES"),
+                manager.translate("SaveData", "DO_YOU_ABORT_TO_SAVE"),
+                manager.translate("SaveData", "ERROR_SAVE_OTHER"),
+                manager.translate("SaveData", "ERROR_SAVE_NO_SAVEDATA"),
+                manager.translate("SaveData", "DO_YOU_RETRY_TO_SAVE"),
+                manager.translate("SaveData", "SAVE_NOT_DONE"),
+                manager.translate("SaveData", "SAVE_ABORT_GAME"),
+            );
+
+            switch (data.mode)
+            {
+                case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO:
+                    sutil.resetProgress();
+                    DialogUtil::setProgress(context, sutil.progress);
+                    break;
+
+                case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BG:
+                case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BACKUP:
+                case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_OVERWRITE:
+                    sSaveBGIssued = true;
+                    break;
+
+                default: 
+                    break;
+            }
+
+            if (pdiext::MSystemCondition::IsExitGame())
+                return false;
+
+            result = sutil.save(
+                data.mode,
+                data.canCopy,
+                data.bindCheck,
+                data.makeBackup,
+                data.compress,
+                data.abort_request,
+                data.create_new,
+                data.dirName,
+                data.saveFileName,
+                data.inputFileName,
+                data.title,
+                data.subtitle,
+                data.description,
+                data.listParam,
+                data.iconTitle,
+                icon_png,
+                bg_png,
+                nil,
+                nil,
+                data.indicatorPosition,
+                data.indicatorAlign,
+                data.indicatorMode,
+                data.indicatorMessage,
+                data.indicatorPngName
+            );
+
+            if (retry_no_file_name)
+                result = getBackgroundSaveResult();
+
+            switch (result)
+            {
+                case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BUSY:
+                    success = true;
+                    loop = false;
+                    break;
+
+                case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS:
+                    if (retry_no_file_name)
+                    {
+                        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO;
+                        loop = true;
+                        retry_no_file_name = false;
+                    }
+                    else
+                    {
+                        success = true;
+                        loop = false;
+                    }
+                    break;
+
+                case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_CANCEL_BY_USER:
+                    loop = false;
+                    break;
+
+                case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_NOMORE_SPACE:
+                    var need_size_text = sutil.needSizeKB;
+
+                    if (data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO ||
+                        data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO_CREATE ||
+                        data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BG || 
+                        data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BACKUP)
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                            manager.translate("SaveData", "ERROR_SAVE_NO_SPACE").build(need_size_text));
+                    }
+                    else if (data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_MIGRATION)
+                    {
+                        while (true)
+                        {
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ABORT,
+                                manager.translate("SaveData", "SAVE_ABORT_GAME").build(need_size_text));
+                        }
+                    }
+
+                    var res = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY, 
+                        manager.translate("SaveData", "DO_YOU_DELETE_OTHER_FILES"));
+
+                    if (!res)
+                    {
+                        var abort_to_save = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO,
+                            manager.translate("SaveData", "DO_YOU_ABORT_TO_SAVE"));
+
+                        if (!abort_to_save)
+                            res = true;
+                    }
+
+                    if (res)
+                    {
+                        import __projects__::CursorProject;
+                        SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+                        context.pageOutRootTransition();
+                        context.syncOutRootTransition();
+
+                        res = sutil.listDelete();
+
+                        context.pageInRootTransition();
+
+                        if (!res)
+                            loop = false;
+                    }
+                    else
+                        loop = false;
+                    break;
+                
+                case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_NO_FILENAME:
+                    loop = false;
+
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                        manager.translate("SaveData", "ERROR_SAVE_NO_SAVEDATA"));
+
+                    if (data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO)
+                    {
+                        retry_no_file_name = true;
+                        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BACKUP;
+                    }
+
+                    loop = true;
+                    break;
+
+                case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BIND_ERROR:
+                    loop = false;
+
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                        manager.translate("SaveData", "ERROR_SAVE_BINDCHECK"));
+
+                    if (data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO)
+                    {
+                        data.mode = main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO_CREATE;
+                        loop = true;
+                        data.bindCheck = false;
+                    }
+                    break;
+
+                default:
+                    loop = false;
+
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                        manager.translate("SaveData", "ERROR_SAVE_OTHER"));
+                        
+                    var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO,
+                        manager.translate("SaveData", "DO_YOU_RETRY_TO_SAVE"));
+
+                    if (!res)
+                    {
+                        DialogUtil::openConfirmDialog(context, 0,
+                            manager.translate("SaveData", "SAVE_NOT_DONE"));
+
+                        loop = false;    
+                    }
+                    else
+                        loop = true;
+
+                    break;
+            }
+
+        } while (loop);
+
+        if (data.lastCB != nil)
+            data.lastCB(context, data);
+
+        return success;
+    }
+
+    function _autoSaveGameCallback(context, success)
+    {
+        var skip = false;
+        if (success)
+        {
+            main::sound.play("ok");
+            context.wait(0.5f);
+            skip = true;
+        }
+
+        return skip;
+    }
+
+    function _autoSave(context, args)
+    {
+        var [project, data, use_tsm] = args;
+        var success = _save(context, project, data, use_tsm);
+        return [success, _autoSaveGameCallback];
+    }
+
+    function save(context, data, use_tsm)
+    {
+        if (AppOpt.defined("disable_savedata"))
+            return true;
+
+        var project = context.getCursorProject();
+        var res = false;
+
+        DialogUtil::setProgress(context, nil);
+
+        var res;
+        if (data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO ||
+            data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO_CREATE)
+        {
+            res = DialogUtil::openProgressDialog(context, 
+                manager.translate("SaveData", "NOW_SAVING"),
+                manager.translate("SaveData", "SAVE_DONE"),
+                manager.translate("SaveData", "SAVE_NOT_DONE"),
+                _autoSave,
+                [project, data, use_tsm]
+            );
+        }
+        else
+        {
+            res = _save(context, project, data, use_tsm);
+        }
+
+        return res;
+    }
+
+    function getBackgroundSaveResult()
+    {
+        var success = main::pdiext::SaveDataUtilError::SAVEDATAUTIL_FATAL_ERROR;
+
+        if (!sSaveBGIssued)
+            return main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS;
+
+        var sutil = main::SaveUtil;
+        while (sutil.isBackgroundRunning())
+            Thread::Sleep(1);
+        
+        var result = sutil.getStatus();
+        if (result != main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS)
+            sSaveBGIssued = true;
+        else
+            sSaveBGIssued = false;
+
+        return result;
+    }
+
+    function isBackgroundSaveRunning()
+    {
+        var sutil = main::SaveUtil;
+        return sutil.isBackgroundRunning();
+    }
+
+    /////////////////////////////////////
+    ///////// LOADING ///////////////////
+    /////////////////////////////////////
+    static sLoadResult;
+
+    function _load(context, data)
+    {
+        var sutil = main::SaveUtil;
+
+        if (data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO)
+            DialogUtil::setProgress(context, sutil.progress);
+
+        var result = sutil.load(
+            data.mode,
+            data.bindCheck,
+            data.compress,
+            data.dirName,
+            data.loadFileName,
+            data.outputFileName,
+            data.indicatorPosition,
+            data.indicatorAlign,
+            data.indicatorMode,
+            data.indicatorMessage,
+            data.indicatorPngName
+        );
+
+        var success = false;
+
+        switch (result)
+        {
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BUSY:
+                sLoadResult = [result, false, false];
+                success = true;
+                break;
+            
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS:
+                sLoadResult = [result, false, false];
+                success = true;
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_CANCEL_BY_USER:
+                sLoadResult = [result, false, false];
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_FATAL_ERROR:
+                sLoadResult = [result, true, true];
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_FAILED_MALLOC:
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_NO_ENOUGH_BUFFER_TO_LOAD:
+                sLoadResult = [result, false, true];
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BIND_ERROR:
+                var project = context.getCursorProject();
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                    manager.translate("SaveData", "ERROR_LOAD_BINDCHECK"));
+                sLoadResult = [result, true, false];
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BIND_NEED_RECREATE:
+                sLoadResult = [result, nil, false, false];
+                success = true;
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_NO_DIRNAME:
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_NO_FILENAME:
+            default:
+                sLoadResult = [result, true, false];
+                break;
+        }
+
+        return success;
+    }
+
+    function _autoLoadGameCallback(context, success)
+    {
+        var skip = false;
+        if (success)
+        {
+            main::sound.play("ok");
+            context.wait(0.5f);
+            skip = true;
+        }
+
+        return skip;
+    }
+
+    function _autoLoad(context, args)
+    {
+        var [data] = args;
+        var success = _load(context, data);
+
+        return [success, _autoLoadGameCallback];
+    }
+
+    function load(context, data)
+    {
+        if (AppOpt.defined("disable_loaddata"))
+            return [nil, false, false];
+        
+        var res = false;
+
+        if (data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO)
+        {
+            var project = context.getCursorProject();
+
+            res = DialogUtil::openProgressDialog(context, 
+                manager.translate("SaveData", "NOW_LOADING"),
+                manager.translate("SaveData", "LOAD_DONE"),
+                manager.translate("SaveData", "LOAD_NOT_DONE"),
+                _autoLoad,
+                [data]
+            );
+        }
+        else
+        {
+            res = _load(context, data);
+        }
+
+        var result = sLoadResult;
+        sLoadResult = nil;
+        return result;
+    }
+
+    function isExistLoadFile(dir_name)
+    {
+        return main::SaveUtil.isExistLoadFile(dir_name);
+    }
+
+    function isExistLoadDirAndFile(dir_name, file_name)
+    {
+        return main::SaveUtil.isExistLoadDirAndFile(dir_name, file_name);
+    }
+
+    function deleteLoadBackupFile(file_name)
+    {
+        return main::SaveUtil.deleteLoadBackupFile(file_name);
+    }
+
+    function getBackgroundLoadResult(context, need_recovery = true)
+    {
+        if (AppOpt.defined("disable_loaddata"))
+            return [main::pdiext::SaveDataUtilError::SAVEDATAUTIL_CORRUPT_DATA, nil, false, false];
+
+        var success = false;
+        var sutil = main::SaveUtil;
+        sutil.sync();
+        var result = sutil.getStatus();
+
+        if (!need_recovery)
+        {
+            // PD Things
+            sLoadResult = [result, false, false];
+            var result = sLoadResult;
+            sLoadResult = nil;
+            return result;
+        }
+
+        switch (result)
+        {
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS:
+                sLoadResult = [result, false, false];
+                success = true;
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_CANCEL_BY_USER:
+                sLoadResult = [result, false, false];
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_FATAL_ERROR:
+                var project = context.getCursorProject();
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR
+                    manager.translate("SaveData", "LOADED_DATA_WAS_WRONG"));
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR
+                    manager.translate("SaveData", "LOAD_NOT_DONE"));
+                sLoadResult = [result, true, false];
+                sLoadResult = [result, true, true]; // Don't ask
+
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_FAILED_MALLOC:
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_NO_ENOUGH_BUFFER_TO_LOAD:
+                var project = context.getCursorProject();
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR
+                    manager.translate("SaveData", "LOADED_DATA_WAS_WRONG"));
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR
+                    manager.translate("SaveData", "LOAD_NOT_DONE"));
+                sLoadResult = [result, true, false];
+                sLoadResult = [result, false, true];
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BIND_ERROR:
+                var project = context.getCursorProject();
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR
+                    manager.translate("SaveData", "ERROR_LOAD_BINDCHECK"));
+                sLoadResult = [result, true, false];
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BIND_NEED_RECREATE:
+                sLoadResult = [result, false, false];
+                success = true;
+                break;
+
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_NO_DIRNAME:
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_NO_FILENAME:
+                sLoadResult = [result, true, false];
+                break;
+
+            default:
+                var project = context.getCursorProject();
+                var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO
+                    manager.translate("SaveData", "CORRUPTED_DO_YOU_RETRY_TO_LOAD"));
+
+                if (!res)
+                {
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR
+                        manager.translate("SaveData", "LOAD_NOT_DONE"));
+                    sLoadResult = [result, true, true];
+                }
+                else
+                {
+                    sLoadResult = [main::pdiext::SaveDataUtilError::SAVEDATAUTIL_NEED_RETRY_LOAD, true, true];
+                }
+                break;
+        }  
+
+        result = sLoadResult;
+        sLoadResult = nil;
+        return result;
+    }
+
+    function _export(context, data)
+    {
+        var sutil = main::SaveUtil;
+        var result;
+
+        switch (data.mode)
+        {
+            case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_FIXED:
+                result = sutil.fixedExport(data.dirName, data.fileName);
+                break;
+
+            case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO:
+            case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BG:
+                break;
+            
+            case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_LIST:
+                result = sutil.listExport(data.dirName, data.fileName);
+                break;
+        }
+
+        var success = false;
+        switch (result)
+        {
+            case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS:
+                success = true;
+                break;
+
+            default: 
+                break;
+        }
+
+        return success;
+    }
+
+    function export(context, data)
+    {
+        return _export(context, data);
+    }
+
+    function _import(context, data)
+    {
+        var project = context.getCursorProject();
+        var sutil = main::SaveUtil;
+        var success = false;
+        var loop = true;
+        
+        do
+        {
+            var result = nil;
+
+            switch (data.mode)
+            {
+                case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_FIXED:
+                    result = sutil.fixedImport(data.dirName, data.fileName);
+                    break;
+
+                case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO:
+                case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BG:
+                    break;
+
+                case main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_LIST:
+                    result = sutil.listImport(data.dirName, data.fileName);
+                break;
+            }
+
+            return true;
+
+            // Unreachable code
+            switch (result)
+            {
+                case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS:
+                    success = true;
+                    loop = false;
+                    break;
+
+                case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_CANCEL_BY_USER:
+                    loop = false;
+                    break;
+
+                case main::pdiext::SaveDataUtilError::SAVEDATAUTIL_NOMORE_SPACE:
+                    var need_size_text = sutil.needSizeKB;
+
+                    if (data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_AUTO ||
+                        data.mode == main::pdiext::SaveDataUtilMode::SAVEDATAUTIL_BG)
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                            manager.translate("SaveData", "ERROR_SAVE_NO_SPACE").build(need_size_text));
+                    }
+
+                    var res = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY, 
+                        manager.translate("SaveData", "DO_YOU_DELETE_OTHER_FILES"));
+
+                    if (!res)
+                    {
+                        var abort_to_save = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO,
+                            manager.translate("SaveData", "DO_YOU_ABORT_TO_SAVE"));
+
+                        if (!abort_to_save)
+                            res = true;
+                    }
+
+                    if (res)
+                    {
+                        import __projects__::CursorProject;
+                        SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+                        context.pageOutRootTransition();
+                        context.syncOutRootTransition();
+
+                        res = sutil.listDelete();
+
+                        context.pageInRootTransition();
+
+                        if (!res)
+                            loop = false;
+                    }
+                    else
+                        loop = false;
+                    break;
+
+                default:
+                    loop = false;
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                        manager.translate("SaveData", "ERROR_SAVE_OTHER"));
+
+                    res = DialogUtil::openConfirmDialog(context, 1, 
+                        manager.translate("SaveData", "DO_YOU_RETRY_TO_SAVE"));
+
+                    if (!res)
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                            manager.translate("SaveData", "SAVE_NOT_DONE"));
+                        loop = false;
+                    }
+                    else
+                        loop = true;
+                    break;
+                    
+            }
+        } while (loop);
+
+        return success;
+    }
+
+    function import(context, data)
+    {
+        return _import(context, data);
+    }
+
+    function listDelete(context)
+    {
+        var sutil = main::SaveUtil;
+        sutil.listDelete();
+    }
+
+    function checkBackgroundStatus(context)
+    {
+        var sutil = main::SaveUtil;
+        var scb = main::SaveCallback;
+        if (scb.isWaitingUi())
+        {
+            _executeSaveDataUiFunction(context);
+        }
+        else
+            return false;
+
+        return sutil.isRecoverMode();
+    }
+
+    function _executeSaveDataUiFunction(context)
+    {
+        var scb = main::SaveCallback;
+    }
+}
+
+static module main
+{
+    function onOpenSaveDataErrorDialog(args)
+    {
+        while (menu::MSystemOSK::isOpend())
+            Thread::Sleep(1);
+
+        var scb = main::SaveCallback;
+        var [message] = args;
+
+        pdistd::MSystemDialog::open("NN", message);
+        scb.finishUiProcess(0);
+    }
+
+    function onOpenSaveDataQueryDialog(args)
+    {
+        while (menu::MSystemOSK::isOpend())
+            Thread::Sleep(1);
+
+        var scb = main::SaveCallback;
+        var [message] = args;
+
+        var res = pdistd::MSystemDialog::open("NY", message);
+        var result = 0;
+
+        if (res == "YES")
+            result = 1;
+
+        scb.finishUiProcess(result);
+    }
+
+    function onOpenSaveDataAbortDialog(args)
+    {
+        while (menu::MSystemOSK::isOpend())
+        Thread::Sleep(1);
+
+        var scb = main::SaveCallback;
+        var [message] = args;
+
+        pdistd::MSystemDialog::open("ENYD", message);
+        scb.finishUiProcess(0);
+    }
+
+    function onOpenSaveDataListDelete(args)
+    {
+        while (menu::MSystemOSK::isOpend())
+            Thread::Sleep(1);
+
+        var sutil = main::SaveUtil;
+        var scb = main::SaveCallback;
+        sutil.listDeleteForCallback();
+        scb.finishUiProcess(0);
+    }
+}

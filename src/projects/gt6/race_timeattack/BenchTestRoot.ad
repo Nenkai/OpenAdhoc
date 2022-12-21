@@ -1,0 +1,353 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module BenchTestRoot
+{
+    attribute sStageRequestId;
+    attribute sThread;
+
+    class Setting
+    {
+        attribute type;
+        attribute warm_sec;
+        attribute velocity_kmh;
+        attribute freq_a;
+        attribute freq_b;
+        attribute height_a;
+        attribute steer_a;
+        attribute lpf_cutoff_;
+
+        method __init__()
+        {
+            self.type = 0;
+            self.warm_sec = 2;
+            self.velocity_kmh = 100;
+            self.freq_a = 1.0;
+            self.freq_b = 20.0;
+            self.height_a = 20.0;
+            self.steer_a = 10.0;
+            lpf_cutoff_ = 30.0;
+        }
+    }
+
+    attribute sSetting = Setting();
+
+    method close(context)
+    {
+        QuickRoot.open(context);
+    }
+
+    async function _analyse()
+    {
+        var setting = [
+            "cutoff_lpf" : Panel::LPF::slider.index / 960.0,
+        ];
+
+        await () => { ORG.analyseBenchTest(setting); };
+
+        return true;
+    }
+
+    function analyse(context)
+    {
+        CursorUtil::setCursor(context, "wait");
+        _analyse();
+        CursorUtil::setCursor(context, "cursor_chrome");
+
+        BodePlotSpectrum0::ChartFace.reset();
+        BodePlotPhase0::ChartFace.reset();
+        BodePlotSpectrum1::ChartFace.reset();
+        BodePlotPhase1::ChartFace.reset();
+        BodePlotSpectrum2::ChartFace.reset();
+        BodePlotPhase2::ChartFace.reset();
+    }
+
+    function onTick(context)
+    {
+        while (ORG.isBenchTestRunning())
+        {
+            Thread::Sleep(1);
+        }
+
+        analyse(context);
+    }
+
+    method onInitialize(context)
+    {
+        OptionMenuUtil::initialize(context, self, 
+            Panel::Type::OptionMenu,
+            hidden::Item,
+            ["SWEEPTEST_SUSPENSION", "SWEEPTEST_STEERING"]);
+
+        Panel::Type::OptionMenu.setIndex(context, 0);
+        BodePlotSpectrum0.visible = true;
+        BodePlotSpectrum1.visible = false;
+        BodePlotSpectrum2.visible = false;
+
+        BodePlotPhase0.visible = true;
+        BodePlotPhase1.visible = false;
+        BodePlotPhase2.visible = false;
+
+        var code = CommandAlias::getCode("stage_bg026");
+        self.sStageRequestId = ORG.requestRaceStage(code);
+
+        RenderControl.begin(ORG);
+
+        var rp = gtengine::MRaceParameter();
+        rp.deepCopy(ORG.getBackRaceParameter());
+        rp.race_type = gtengine::RaceType::DEMO;
+        rp.start_type = gtengine::StartType::FREE;
+        rp.bench_test = true;
+        startSessionSync(rp, false, gtengine::StartSessionCameraType::BENCHTEST, true);
+
+        ORG.pauseRace = false;
+        ORG.pauseAvailable = false;
+        
+        while (!ORG.isReadyRaceStage(self.sStageRequestId))
+            yield;
+
+        ORG.beginBenchTestFloor(self.sStageRequestId, "floor");
+        ORG.resetRaceStage(self.sStageRequestId,
+            0,
+            gtengine::StageCoordType::WORLD,
+            0, 0, 0);
+
+        while (!ORG.canEnterCourse(false))
+            Thread::Sleep(1);
+
+        ORG.bindInputBenchTest(InputChart::ChartFace);
+        ORG.bindOutputBenchTest(0, OutputChart0::ChartFace, BodePlotSpectrum0::ChartFace, BodePlotPhase0::ChartFace);
+        ORG.bindOutputBenchTest(1, OutputChart1::ChartFace, BodePlotSpectrum1::ChartFace, BodePlotPhase1::ChartFace);
+        ORG.bindOutputBenchTest(2, OutputChart2::ChartFace, BodePlotSpectrum2::ChartFace, BodePlotPhase2::ChartFace);
+    }
+
+    method onFinalize(context)
+    {
+        if (self.sThread != nil)
+        {
+            self.sThread.terminate();
+            self.sThread = nil;
+        }
+
+        if (ORG.inSession())
+        {
+            endSessionSync();
+        }
+
+        RenderControl.end();
+        ORG.endBenchTestFloor(self.sStageRequestId, "floor");
+        ORG.endRaceStage(self.sStageRequestId);
+        ORG.clearRaceStage(self.sStageRequestId);
+
+        OptionMenuUtil::finalize(context, Panel::Type::OptionMenu);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.close(context);
+        return STATE_YIELD;
+    }
+
+    module Panel
+    {
+        module Type::OptionMenu
+        {
+            method onValueChanged(context)
+            {
+                if (self.index == 0)
+                {
+                    HeightA.visible = true;
+                    SteerA.visible = false;
+                }
+                else
+                {
+                    HeightA.visible = false;
+                    SteerA.visible = true;
+                }
+            }
+        }
+
+        module Cancel
+        {
+            method onActivate(context)
+            {
+                main::sound.play("cancel");
+                return STATE_YIELD;
+            }
+        }
+
+        module Start
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                if (BenchTestRoot.sThread != nil)
+                {
+                    BenchTestRoot.sThread.terminate();
+                    BenchTestRoot.sThread = nil;
+                }
+
+                yield;
+
+                InputChart::ChartFace.focus_mode = 1;
+                OutputChart0::ChartFace.focus_mode = 1;
+                OutputChart1::ChartFace.focus_mode = 1;
+                OutputChart2::ChartFace.focus_mode = 1;
+                BodePlotSpectrum0::ChartFace.focus_mode = 2;
+                BodePlotSpectrum1::ChartFace.focus_mode = 2;
+                BodePlotSpectrum2::ChartFace.focus_mode = 2;
+                BodePlotPhase0::ChartFace.focus_mode = 0;
+                BodePlotPhase1::ChartFace.focus_mode = 0;
+                BodePlotPhase2::ChartFace.focus_mode = 0;
+                BodePlotSpectrum0::ChartFace.logarithmX = true;
+                BodePlotSpectrum0::ChartFace.logarithmY = true;
+                BodePlotSpectrum1::ChartFace.logarithmX = true;
+                BodePlotSpectrum1::ChartFace.logarithmY = true;
+                BodePlotSpectrum2::ChartFace.logarithmX = true;
+                BodePlotSpectrum2::ChartFace.logarithmY = true;
+
+                BodePlotPhase0::ChartFace.logarithmX = true;
+                BodePlotPhase1::ChartFace.logarithmX = true;
+                BodePlotPhase2::ChartFace.logarithmX = true;
+
+                InputChart::ChartFace.pitch = [1.0 / 96.0, 1000.0];
+                InputChart::ChartFace.mag = [96.0, 10.0];
+
+                OutputChart0::ChartFace.pitch = [1.0, 1.0];
+                OutputChart0::ChartFace.mag = [1.0, 300000.0];
+
+                OutputChart1::ChartFace.pitch = [1.0, 1.0];
+                OutputChart1::ChartFace.mag = [1.0, 300000.0];
+
+                OutputChart2::ChartFace.pitch = [1.0, 1.0];
+                OutputChart2::ChartFace.mag = [1.0, 3000.0];
+
+                BodePlotSpectrum0::ChartFace.mag_max = [0.0, 100.0];
+                BodePlotSpectrum1::ChartFace.mag_max = [0.0, 100.0];
+                BodePlotSpectrum2::ChartFace.mag_max = [0.0, 100.0];
+
+                BodePlotPhase0::ChartFace.mag = [0.4, 0.4];
+                BodePlotPhase0::ChartFace.lookat = [500.0, 0];
+                BodePlotPhase1::ChartFace.mag = [0.4, 0.4];
+                BodePlotPhase1::ChartFace.lookat = [500.0, 0.25];
+                BodePlotPhase2::ChartFace.mag = [0.4, 0.4];
+                BodePlotPhase2::ChartFace.lookat = [500.0, 0.25];
+
+                yield;
+
+                var type = Panel::Type::OptionMenu.index;
+
+                var setting = [
+                    "type" : type,
+                    "warm_sec" : Panel::WarmSec::slider.value,
+                    "velocity_kmh" : Panel::VelocityKMH::slider.value,
+                    "FreqBegin" : Panel::FreqA::slider.value,
+                    "FreqEnd" : Panel::FreqB::slider.value,
+                    "Amp" : type == 0 ? Panel::HeightA::slider.value * 0.001 : Panel::SteerA::slider.value,
+                ];
+
+                ORG.startBenchTest(setting);
+                InputChart::ChartFace.reset();
+                OutputChart0::ChartFace.reset();
+                OutputChart1::ChartFace.reset();
+                OutputChart2::ChartFace.reset();
+
+                yield;
+
+                BenchTestRoot.sThread = Thread(BenchTestRoot::onTick, context);
+                BenchTestRoot.sThread.start();
+
+                return STATE_YIELD;
+            }
+        }
+
+        module Analyse
+        {
+            method onActivate(context)
+            {
+                if (ORG.isBenchTestRunning())
+                {
+                    main::sound.play("disable");
+                }
+                else
+                {
+                    main::sound.play("ok");
+                }
+
+                analyse(context);
+
+                return STATE_YIELD;
+            }
+        }
+    }
+
+    module OutputChart0
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+
+            BodePlotSpectrum0.visible = true;
+            BodePlotPhase0.visible = true;
+
+            BodePlotSpectrum1.visible = false;
+            BodePlotPhase1.visible = false;
+
+            BodePlotSpectrum2.visible = false;
+            BodePlotPhase2.visible = false;
+
+            return STATE_YIELD;
+        }
+    }
+
+    module OutputChart1
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+
+            BodePlotSpectrum0.visible = false;
+            BodePlotPhase0.visible = false;
+
+            BodePlotSpectrum1.visible = true;
+            BodePlotPhase1.visible = true;
+
+            BodePlotSpectrum2.visible = false;
+            BodePlotPhase2.visible = false;
+
+            return STATE_YIELD;
+        }
+    }
+
+    module OutputChart2
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+
+            BodePlotSpectrum0.visible = false;
+            BodePlotPhase0.visible = false;
+
+            BodePlotSpectrum1.visible = false;
+            BodePlotPhase1.visible = false;
+
+            BodePlotSpectrum2.visible = true;
+            BodePlotPhase2.visible = true;
+
+            return STATE_YIELD;
+        }
+    }
+}

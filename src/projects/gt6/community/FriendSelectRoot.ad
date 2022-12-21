@@ -1,0 +1,303 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module FriendSelectRoot
+{
+    hidden.visible = false;
+
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute subject;
+    attribute friend_list;
+
+    method open(context, subject)
+    {
+        self.friend_list = getFriendList(context, true);
+        if (self.friend_list.size == 0)
+        {
+            ERROR(context, "Community", "NO_FRIEND");
+            return false;
+        }
+
+        self.subject = subject;
+        self.result = nil;
+        self.closed = false;
+        self.popup = SequenceUtil::ModalPage(context, FriendSelectRoot);
+        self.popup.open();
+
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        Community.clearCallback();
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        if (self.popup != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.popup.close(delay_time);
+            self.popup = nil;
+        }
+
+        self.subject = nil;
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        ContextMain.disableInput();
+
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+
+        actor.on_effect_end = (context) => 
+        {
+            actor.on_effect_end = nil;
+            ContextMain.enableInput();
+            FriendSelectRoot.closed = false;
+        };
+
+        self.CloseActor.stop();
+
+        var listbox = Pane::ListBox;
+        listbox.setItemCount(0);
+        listbox.setItemTemplate(context, hidden::FriendItem);
+        
+        var adj = menu::MAdjustment();
+        Pane::VScrollArrow.adjustment = adj;
+        listbox.v_adjustment = adj;
+
+        addLevel(context, self.friend_list);
+        listbox.data_list = self.friend_list;
+        listbox.setItemCount(self.friend_list.size);
+
+        ButtonHelp.active = pdiext::MSystemConfiguration::GetEnterButtonAssign() == "circle";
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    method addLevel(context, friend_list)
+    {
+        var [target, club_id, club_event_id] = FriendSelectRoot.subject.split(",");
+        if (target == "CLUB")
+        {
+            var request = Community.requestClubFriendList(club_id, (args) => {});
+            if (Grim2Util::joinAwait(context, request))
+            {
+                var club_user_list = Community.decodeClubUserList(request);
+                foreach (var friend in friend_list)
+                {
+                    var [user_profile, presence] = friend;
+                    user_profile["_level"] = 0;
+
+                    foreach (var g in club_user_list)
+                    {
+                        if (g["user_id"] == user_profile["user_id"])
+                        {
+                            user_profile["_level"] = g["level"];
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        else if (target == "EVENT")
+        {
+            var request = Community.requestEventFriendList(club_event_id, (args) => {});
+            if (Grim2Util::joinAwait(context, request))
+            {
+                var event_user_list = Community.decodeEventUserList(request);
+                foreach (var friend in friend_list)
+                {
+                    var [user_profile, presence] = friend;
+                    user_profile["_level"] = 0;
+
+                    foreach (var g in event_user_list)
+                    {
+                        if (g["user_id"] == user_profile["user_id"])
+                        {
+                            user_profile["_level"] = g["level"];
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        friend_list.sort((a, b) => 
+        {
+            var [uA, pA] = a;
+            var [uB, pB] = b;
+
+            var lA = uA["_level"];
+            var lB = uB["_level"];
+
+            if (lA == 4)
+                lA = -1;
+
+            if (lB == 4)
+                lB = -1;
+
+            if (lA == lB)
+            {
+                return uA["user_id"].upcase() < uB["user_id"].upcase();
+            }
+            else
+            {
+                return lA > lB;
+            }
+        });
+    }
+
+    module hidden
+    {
+        module FriendItem
+        {
+            attribute initialized_ = false;
+            attribute user_profile;
+            attribute level;
+
+            method onRealize(context)
+            {
+                self.Head::TextFaceID.text = "";
+                self.Foot::TextFaceNickname.text = "";
+                self.Foot::Country::TextFace.text = "";
+                self.Foot::Presence::Label.text = "";
+                self.Foot::Presence::Label_a.text = "";
+            }
+
+            method initialize(context, friend)
+            {
+                var [user_profile, presence, np_presence] = friend;
+                self.user_profile = user_profile;
+
+                var user_id = user_profile["user_id"];
+
+                self.Head::TextFaceID.text = user_id;
+                self.Foot::TextFaceNickname.text = checkNickName(context, user_profile);
+
+                var country = user_profile["country"];
+                setFlagImage(self.Foot::Country::ImageFace, country);
+
+                self.Foot::Country::TextFace.text = manager.translate("Country", country.upcase());
+
+                var photo_id = user_profile["photo_id_avatar"];
+                setImage(self.Image::ImageFace, photo_id);
+
+                var [online, text] = getPresenceInfo(context, presence, np_presence);
+                self.Foot::Presence.active = online;
+                self.Foot::Presence::Label.text = text;
+                self.Foot::Presence::Label_a.text = text;
+
+                setLevel(context, user_profile["_level"]);
+                self.initialized_ = true;
+            }
+
+            method setLevel(context, level)
+            {
+                if (level == nil)
+                    level = -1;
+
+                self.level = level;
+
+                if (level == -1)
+                {
+                    self.Head::Label.text = "";
+                    self.Head.active = false;
+                }
+                else
+                {
+                    var [target, club_id, club_event_id] = FriendSelectRoot.subject.split(",");
+                    var text = "";
+
+                    if (target == "CLUB")
+                    {
+                        var level_text = ["", "MEMBER", "STATE_APPROVE", "STATE_INVITE", ""];
+                        if (level_text != "")
+                            text = manager.translate("Community", level_text[level]);
+                    }
+                    else if (target == "EVENT")
+                    {
+                        var level_text = ["", "STATE_JOIN", "dummy", "STATE_INVITE", "dummy"];
+                        text = manager.translate("Community", level_text[level]);
+                    }
+
+                    self.Head::Label.text = text;
+                    self.Head.active = level == 0 || level == 3;
+                }
+            }
+
+            method on_activate(context)
+            {
+                var user_profile = self.user_profile;
+                if (user_profile == nil)
+                    return;
+
+                if (self.level == -1)
+                    return;
+
+                if (self.level == 0 || self.level == 3)
+                {
+                    var user_id = user_profile["user_id"];
+                    SendMessageRoot.openMessage(context, user_id, FriendSelectRoot.subject);
+                }
+                else if (self.level == 1)
+                {
+                    ERROR(context, "Community", "ERROR_ALREADY_MEMBER");
+                }
+                else if (self.level == 2)
+                {
+                    ERROR(context, "Community", "ERROR_CANT_INVITE");
+                }
+                else if (self.level == 4)
+                {
+                    ERROR(context, "Community", "ERROR_CANT_INVITE");
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,295 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module PitWorkRoot
+{
+    attribute root_name;
+    attribute need_capture = false;
+    attribute modal;
+    attribute cp;
+    attribute garage_id;
+    attribute return_page;
+    attribute return_page_args;
+    attribute frame_interval;
+    attribute enable_stereo_rendering;
+
+    method open(context, garage_id, need_capture, return_page, return_page_args)
+    {
+        var cursor_visible = context.cursor_visible;
+        context.cursor_visible = false;
+
+        self.garage_id = garage_id;
+        self.cp = GAME_STATUS.user_profile.garage.getCar(garage_id);
+        self.need_capture = need_capture;
+        self.return_page = return_page;
+        self.return_page_args = return_page_args;
+        
+        var root = context.getRootWindow();
+        self.root_name = root.name;
+
+        SequenceUtil::startPageSimple(context, self);
+    }
+
+    method close(context)
+    {
+        if (self.modal != nil)
+        {
+            self.SceneFace.visible = false;
+            if (self.enable_stereo_rendering != nil)
+            {
+                ORG.setEnableStereoRendering(self.enable_stereo_rendering);
+                self.enable_stereo_rendering = nil;
+            }
+
+            PageUtil::visibleUnderPages(context, self);
+
+            var actor = self.FadeActor;
+            actor.backward();
+            actor.start();
+
+            self.modal.close(actor.total_time);
+            self.modal = nil;
+        }
+        else if (self.return_page != nil)
+        {
+            self.return_page.open(context, self.return_page_args);
+        }
+        else
+        {
+            GTModeProject::GTModeRoot.open(context);
+        }
+
+        context.enableInput();
+
+        SoundUtil::MenuBGMCrossfadeGroup("gtauto", 0.0, 3.0);
+    }
+
+    method openModal(context, garage_id, need_capture)
+    {
+        var cursor_visible = context.cursor_visible;
+        context.cursor_visible = false;
+
+        self.garage_id = garage_id;
+        self.cp = GAME_STATUS.user_profile.garage.getCar(garage_id);
+        self.need_capture = need_capture;
+
+        var root = context.getRootWindow();
+        self.root_name = root.name;
+
+        self.modal = SequenceUtil::ModalPage(context, self);
+        self.modal.open();
+
+        context.cursor_visible = cursor_visible;
+    }
+
+    method startPitWork(context)
+    {
+        if (self.root_name != "MeterRoot")
+        {
+            self.SceneCover::Fade.reset();
+            self.SceneFace.startSceneScript("GTAUTO_PitService", self.cp, onSceneCommandEnd, ["buy_car"]);
+            SceneFaceUtil::loadScene(self.SceneFace, "GTAUTO_Finish_wait");
+            self.SceneCover::Fade.start();
+        }
+        else
+        {
+            self.SceneCover::Fade.reset();
+            self.SceneFace.startSceneScript("GTAUTO_Parts_Meter_1", self.cp, onSceneCommandEnd, ["buy_car"]);
+        }
+    }
+
+    method onSceneCommandEnd(context, args)
+    {
+        SoundUtil::MenuBGMCrossfadeGroup(args[0], 0.0, 1.0, SoundUtil::REPEAT_OFF);
+        if (PitWorkRoot.need_capture)
+            CaptureCarDialog.open(context);
+
+        if (self.root_name != "MeterRoot")
+            SceneFaceUtil::loadScene(self.SceneFace, "GTAUTO_Finish");
+        else
+        {
+            SceneFaceUtil::loadScene(self.SceneFace, "GTAUTO_Parts_Meter_Finish");
+            while (SceneFace.isUnderSetup())
+                context.wait(0.1);
+
+            self.SceneCover::Fade.start();
+        }
+
+        SaveDataUtilGT6::saveEveryWhere(context);
+        FinishWorkDialog.open(context);
+        PitWorkRoot.close(context);
+    }
+    
+
+    method onInitialize(context)
+    {
+        context.disableInput();
+        self.SceneFace.visible = false;
+
+        var actor = self.FadeActor;
+        actor.forward();
+        actor.restart();
+        actor.on_effect_end = function(context)
+        {
+            actor.on_effect_end = nil;
+            PageUtil::invisibleUnderPages(context, self);
+            self.enable_stereo_rendering = ORG.getEnableStereoRendering();
+            ORG.setEnableStereoRendering(true);
+            context.pushEvent(menu::MFunctionEvent(startPitWork, context));
+        };
+
+        self.frame_interval = menu::FrameInterval;
+        menu::FrameInterval = 2;
+    }
+
+    method onFinalize(context)
+    {
+        self.cp = nil;
+        self.garage_id = nil;
+        self.return_page = nil;
+        self.return_page_args = nil;
+        self.root_name = nil;
+
+        if (self.frame_interval != nil)
+        {
+            menu::FrameInterval = self.frame_interval;
+            self.frame_interval = nil;
+        }
+    }
+
+    module CaptureCarDialog
+    {
+        method open(context)
+        {
+            var actor = self.MoveY;
+            actor.forward();
+            actor.start();
+
+            GarageUtil::Thumbnail::capture(context, SceneFaceForCapture, PitWorkRoot.garage_id, PitWorkRoot.cp, GarageUtil::Thumbnail::Type::Garage);
+            
+            actor.backward();
+            actor.start();
+        }
+
+        method onInitialize(context)
+        {
+            var actor = self.MoveY;
+            actor.forward();
+            actor.reset();
+        }
+    }
+
+    module FinishWorkDialog
+    {
+        attribute event_loop;
+        attribute result;
+
+        method open(context)
+        {
+            var cursor_visible = context.cursor_visible;
+            context.cursor_visible = true;
+
+            var actor = self.MoveY;
+            actor.forward();
+            actor.start();
+
+            PitWorkRoot.setFocus(HBox::Yes);
+            self.insensitive = false;
+            self.result = nil;
+
+            context.enableInput();
+
+            self.event_loop = main::menu::EventLoop(context);
+            self.event_loop.enter();
+
+            context.disableInput();
+            self.insensitive = true;
+            PitWorkRoot.setFocus(nil);
+            context.cursor_visible = cursor_visible;
+            
+            var res = self.result;
+            self.result = nil;
+            return res;
+        }
+
+        method close(context)
+        {
+            if (self.event_loop != nil)
+            {
+                var actor = self.MoveY;
+                actor.backward();
+                actor.start();
+
+                self.event_loop.leave();
+            }
+        }
+
+        method onInitialize(context)
+        {
+            self.insensitive = true;
+
+            var actor = self.MoveY;
+            actor.forward();
+            actor.reset();
+        }
+
+        method onActivate(context, event)
+        {
+            sound.play("ok");
+            self.close(context);
+        }
+    }
+
+    module SceneFace
+    {
+        attribute cp;
+        attribute command_end_func;
+        attribute command_end_func_args;
+
+        method startSceneScript(scene_script, cp, command_end_func, command_end_func_args)
+        {
+            self.cp = cp;
+            self.command_end_func = command_end_func;
+            self.command_end_func_args = command_end_func_args;
+            self.visible = true;
+
+            SceneFaceUtil::loadScene(self, scene_script, cp);
+            SceneFaceUtil::SetSignalHandler(self, SceneFaceUtil::HandleType::SCENE_START, self.on_signal);
+        }
+
+        method on_signal(context, enum, param)
+        {
+            if (enum == SceneFaceUtil::HandleType::SCENE_START)
+            {
+                if (self.command_end_func != nil)
+                    context.pushEvent(menu::MFunctionEvent(self.command_end_func, context, self.command_end_func_args));
+            }
+
+            self.command_end_func = nil;
+            self.command_end_func_args = nil;
+        }
+
+        method onFinalize(context)
+        {
+            if (self.cp != nil)
+            {
+                self.execCommandImmidiate("clearEntity car0");
+                self.cp = nil;
+            }
+
+            self.command_end_func = nil;
+            self.command_end_func_args = nil;
+        }
+    }
+}

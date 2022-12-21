@@ -1,0 +1,829 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module SennaChapterRoot
+{
+    #include "projects/gt6/gtmode/SennaUtil.ad"
+
+    attribute gp;
+    attribute current_chapter;
+    attribute event_loop;
+
+    hidden.visible = false;
+
+    method open(context, chapter)
+    {
+        self.current_chapter = chapter;
+
+        SequenceUtil::startPage(context, self);
+    }
+
+    method close(context)
+    {
+        SceneFace.clearCar(context);
+        SennaRoot.open(context, self.current_chapter);
+    }
+
+    method getChapterWidget(chapter)
+    {
+        return self["Chapter%{chapter}"];
+    }
+
+    method initializeGameRecord(folder_info)
+    {
+        var event_id_list = folder_info["event_id_list"];
+        var event_type = folder_info["event_type"];
+        var folder_id = folder_info["id"];
+        var category = 0;
+        var is_online = false;
+        
+        if (folder_info["championship"])
+        {
+            var championship_event_id = folder_id;
+            event_id_list.push(championship_event_id);
+        }
+
+        GAME_STATUS.user_profile.record.event_record.initializeRecord(event_id_list, event_type, folder_id, category, is_online);
+    }
+
+    method getFolderInfo(context, event_name)
+    {
+        var xml = "/game_parameter/gt6/event/%s.xml".format(event_name);
+        var folder_info_list = EventRace2.decodeOfflineEventList(xml);
+        if (folder_info_list.size == 0)
+            return nil;
+
+        GAME_STATUS.user_profile.context.event_name = event_name;
+
+        return folder_info_list[0];
+    }
+
+    method opneGameParameterXml(context, folder_id)
+    {
+        var xml = "/game_parameter/gt6/event/r%03d.xml".format(folder_id);
+        return GameParameterUtil::createFromFile(xml);
+    }
+
+    method onInitialize(context)
+    {
+        var folder_info = self.getFolderInfo(context, "senna");
+        if (folder_info == nil)
+        {
+            self.close(context);
+            return false;
+        }
+
+        var gp = self.opneGameParameterXml(context, folder_info["id"]);
+        if (gp == nil)
+        {
+            self.close(context);
+            return false;
+        }
+
+        self.gp = gp;
+        self.initializeGameRecord(folder_info);
+
+        SennaUtil::checkTrophyUnlock();
+
+        var current_chapter_w = getChapterWidget(self.current_chapter);
+        current_chapter_w.init(context);
+
+        ToolTip::tip.remove();
+        ToolTip::tip.value = "";
+
+        noise::Fade.forward();
+        noise::Fade.reset();
+
+        context.pushEvent(menu::MFunctionEvent(SennaUtil::checkPresentCars, context, self.current_chapter));
+
+        GTModeProject.PlayMenuBGM(context, SennaChapterRoot);
+
+        menu::FrameInterval = 2;
+    }
+
+    method onFinalize(context)
+    {
+        SceneFace.clearCar(context);
+        menu::FrameInterval = 1;
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        if (self.leaveGalleryView(context))
+            return STATE_YIELD;
+
+        self.close(context);
+
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (inGalleryView())
+        {
+            if (event.keysym == CELL_PAD_CTRL_L3_UP ||
+                event.keysym == CELL_PAD_CTRL_L3_DOWN ||
+                event.keysym == CELL_PAD_CTRL_L3_RIGHT ||
+                event.keysym == CELL_PAD_CTRL_L3_LEFT)
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    method enterGalleryView(context)
+    {
+        leaveGalleryView(context);
+
+        context.cursor_visible = false;
+        var focus = SennaChapterRoot.getFocusWidget();
+        
+        self.setFocus(nil);
+        SceneFace.enterGalleryView(context);
+
+        var current_chapter_w = getChapterWidget(self.current_chapter);
+        var factor = current_chapter_w.FadeLayer::Fade;
+        factor.forward();
+        factor.start();
+
+        noise::Fade.forward();
+        noise::Fade.start();
+
+        var rtext = main::pdistd::MRTextDB();
+        rtext.load("/description/gt6/%s.rt2".format(pdistd::MLocale::getLanguage()));
+
+        var car_description = rtext.get("CarDescription", current_chapter_w.car_label);
+        rtext.unload();
+
+        while (factor.ramain_time > 0)
+            context.wait(0.1);
+
+        ToolTip::tip.value = pdistd::TextConv(car_description);
+
+        self.event_loop = main::menu::EventLoop(context);
+        self.event_loop.enter();
+
+        ToolTip::tip.value = "";
+
+        SceneFace.leaveGalleryView(context);
+
+        noise::Fade.backward();
+        noise::Fade.start();
+
+        factor.backward();
+        factor.start();
+
+        while (factor.ramain_time > 0)
+            context.wait(0.1);
+
+        self.setFocus(focus);
+        
+        context.cursor_visible = true;
+    }
+
+    method leaveGalleryView(context)
+    {
+        if (self.event_loop != nil)
+        {
+            self.event_loop.leave();
+            self.event_loop = nil;
+            return true;
+        }
+
+        return false;
+    }
+
+    method inGalleryView()
+    {
+        return self.event_loop != nil;
+    }
+
+    method startMission(context, event_id)
+    {
+        var gp = self.gp;
+        gp.event_index = SennaUtil::getEventIndex(gp, event_id);
+
+        var photo_list = MENUDB.queryList("SELECT * FROM t_senna_bridge WHERE event_index=? ORDER BY display_order", [gp.event_index]);
+        var title_image = "";
+        var title_text = "";
+        var bgm = "";
+        var enable_skip = false;
+
+        switch (event_id)
+        {
+            case 1000473:
+                title_image = "piece/gt6/senna/bridge_1.img";
+                title_text = manager.translate(SennaChapterRoot, "BRIDGE_TITLE_1");
+                bgm = "senna_bridge_1";
+                enable_skip = KeyValueUtil::getFlag_NotNil("senna", "enable_skip_bridge_1");
+                KeyValueUtil::set("senna", "enable_skip_bridge_1", true);
+                break;
+
+            case 1000474:
+                title_image = "piece/gt6/senna/bridge_2.img";
+                title_text = manager.translate(SennaChapterRoot, "BRIDGE_TITLE_2");
+                bgm = "senna_bridge_2";
+                enable_skip = KeyValueUtil::getFlag_NotNil("senna", "enable_skip_bridge_2");
+                KeyValueUtil::set("senna", "enable_skip_bridge_2", true);
+                break; 
+
+            case 1000475:
+                title_image = "piece/gt6/senna/bridge_3.img";
+                title_text = manager.translate(SennaChapterRoot, "BRIDGE_TITLE_3");
+                bgm = "senna_bridge_3";
+                enable_skip = KeyValueUtil::getFlag_NotNil("senna", "enable_skip_bridge_3");
+                KeyValueUtil::set("senna", "enable_skip_bridge_3", true);
+                break; 
+
+            case 1000476:
+                title_image = "piece/gt6/senna/bridge_4.img";
+                title_text = manager.translate(SennaChapterRoot, "BRIDGE_TITLE_4");
+                bgm = "senna_bridge_4";
+                enable_skip = KeyValueUtil::getFlag_NotNil("senna", "enable_skip_bridge_4");
+                KeyValueUtil::set("senna", "enable_skip_bridge_4", true);
+                break; 
+        }
+
+        main::cursor_project.KamishibaiInfo = [
+            "list" : photo_list,
+            "title_image" : title_image,
+            "title_text" : title_text,
+            "bgm" : bgm,
+            "enable_skip" : enable_skip,
+        ];
+
+        GTModeProject.history[$"LastPageName"] = SennaChapterRoot.name;
+        GTModeProject.history[$"LastPageArg1"] = SennaChapterRoot.current_chapter;
+
+        GameParameterUtil::executeEvent(context, gp, GAME_STATUS);
+
+        self.close(context);
+
+        return STATE_YIELD;
+    }
+
+    module Chapter1
+    {
+        attribute car_label = "dap_racing_kart_80";
+        attribute large_text = "CHAPTER1_LARGE_TEXT";
+
+        attribute racemission_list = [
+            [
+                "event_id" : 1000473,
+                "need_event_id" : nil,
+                "template_base" : Chapter1::FadeLayer::RaceMissionBase,
+                "text_white" : false,
+                "text_tt" : "TIME_TRIAL",
+                "image_thumb" : "tt_1",
+            ],
+        ];
+
+        method onInitialize(context)
+        {
+            self.visible = false;
+
+            FadeLayer::LargeText.remove();
+            FadeLayer::LargeText.action_type = 1;
+        }
+
+        method init(context)
+        {
+            var car_code = gtengine::MSpecDB::getCarCode(self.car_label);
+            SceneFace.setCar(context, self.car_label);
+
+            Manufacturer.text = manager.translate("TunerNameI18n", gtengine::MSpecDB::getTunerLabel(car_code));
+            CarName.text = SpecDatabaseUtil::getAlphabetCarShortName(context, car_code);
+            FadeLayer::LargeText.value = manager.translate(SennaChapterRoot, self.large_text);
+
+            var enable_slideshow = true;
+
+            foreach (var data_map in self.racemission_list)
+            {
+                var event_id = data_map["event_id"];
+                var need_event_id = data_map["need_event_id"];
+                var template_base = data_map["template_base"];
+                var text_white = data_map["text_white"];
+                var text_tt = data_map["text_tt"];
+                var image_thumb = data_map["image_thumb"];
+
+                var event_index = SennaUtil::getEventIndex(SennaChapterRoot.gp, event_id);
+                var event = SennaChapterRoot.gp.events[event_index]; 
+
+                var template_w = hidden::RaceMission.doCopy();
+                template_w.x = 0;
+                template_w.y = 0;
+                template_w.init(context, event, event_id, need_event_id, image_thumb);
+                template_w.active1 = text_white;
+                template_w.TimeTrial_w.text = manager.translate(SennaChapterRoot, text_tt);
+                template_w.TimeTrial_b.text = template_w.TimeTrial_w.text;
+                template_base.clearChildren(context);
+                template_base.appendChild(context, template_w);
+            }
+
+            FadeLayer::SlideShow.insensitive = !SennaUtil::isCompleteChapter(SennaChapterRoot.current_chapter);
+
+            var photo_count = MENUDB.count("SELECT COUNT(image) FROM t_senna_slideshow WHERE chapter=?", [SennaChapterRoot.current_chapter]);
+            FadeLayer::SlideShow::Photos.text = manager.translate("Unit", "PHOTOS").build(photo_count);
+
+            var cp = gtengine::MCarParameter(car_code);
+            var catalog = gtengine::MSpecDB::getCatalogSpec(car_code);
+            var car_name = gtengine::MSpecDB::getCarShortName(car_code);
+
+            var displacement = catalog.displacement;
+            if (!displacement.beginWith("---") && displacement.find("x") == -1)
+                displacement = pdistd::TextConv("<#%{displacement}>");
+
+            var drivetrain = manager.translate("DriveTrainName", catalog.DriveTypeName);
+            var aspiration = LocalizeUtil::GetAspirationText(cp.getCurrentAspirationType());
+            var car_spec = manager.translate(SennaChapterRoot, "CAR_SPEC");
+            FadeLayer::CarSpec.text = car_spec.build(car_name, displacement, drivetrain, aspiration);
+
+            self.visible = true;
+        }
+    
+
+        module FadeLayer::Episode
+        {
+            method onInitialize(context)
+            {
+                var adj = main::menu::MAdjustment();
+                self.VScrollbar.adjustment = adj;
+
+                var sw = self.ScrolledWindow;
+                sw.clip.scroll_mode = SCROLL_MODE_MANUAL;
+                sw.clip.space.y = 0.0;
+                sw.clip.manual_target_y = 0.0;
+                sw.clip.v_adjustment = adj;
+            }
+
+            method onFocusEnter(context)
+            {
+                context.target_widget = self.VScrollbar::pinch::pointer;
+                return STATE_YIELD;
+            }
+
+            method onKeyPress(context, event)
+            {
+                var scrollclip = self.ScrolledWindow::clip;
+                var line_height = scrollclip.space.Text.line_height;
+                var status = 0;
+
+                if (event.keysym == CELL_PAD_CTRL_L3_UP)
+                {
+                    if (scrollclip.manualTargetIncY(line_height))
+                        status = 1;
+                }
+
+                if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+                {
+                    if (scrollclip.manualTargetIncY(-line_height))
+                        status = 1;
+                }
+
+                return STATE_EXIT;
+            }
+        }
+
+        module FadeLayer::GalleryView
+        {
+           method onActivate(context)
+           {
+               sound.play("ok");
+               SennaChapterRoot.enterGalleryView(context);
+               return STATE_YIELD;
+           } 
+        }
+
+        module FadeLayer::SlideShow
+        {
+            method onActivate(context)
+            {
+                if (self.Lock.visible)
+                {
+                    sound.play("disable");
+                    return STATE_YIELD;
+                }
+
+                sound.play("ok");
+
+                var cp = SceneFace.current_cp;
+                var car_label = cp != nil ? cp.getCarLabel() : nil;
+                if (car_label != nil)
+                    SceneFace.clearCar(context);
+
+                SennaSlideShowRoot.open(context, SennaChapterRoot.current_chapter);
+                if (car_label != nil)
+                    SceneFace.setCar(context, car_label);
+
+                return STATE_YIELD;
+            }
+        }
+    }
+
+    module Chapter2
+    {
+        attribute car_label = "ralt_rt3_83";
+        attribute large_text = "CHAPTER2_LARGE_TEXT";
+
+        attribute racemission_list = [
+            [
+                "event_id" : 1000474,
+                "need_event_id" : 1000473,
+                "template_base" : Chapter2::FadeLayer::RaceMissionBase,
+                "text_white" : false,
+                "text_tt" : "TIME_TRIAL",
+                "image_thumb" : "tt_2",
+            ],
+        ];
+
+        import Chapter1::onInitialize;
+        import Chapter1::init;
+        
+        module FadeLayer::Episode
+        {
+            import Chapter1::FadeLayer::Episode::onInitialize;
+            import Chapter1::FadeLayer::Episode::onFocusEnter;
+            import Chapter1::FadeLayer::Episode::onKeyPress;
+        }
+
+        module FadeLayer::GalleryView
+        {
+            import Chapter1::FadeLayer::GalleryView::onActivate;
+        }
+
+        module FadeLayer::SlideShow
+        {
+            import Chapter1::FadeLayer::SlideShow::onActivate;
+        }
+    }
+
+    module Chapter3
+    {
+        attribute car_label = "lotus_97t_85";
+        attribute large_text = "CHAPTER3_LARGE_TEXT";
+
+        attribute racemission_list = [
+            [
+                "event_id" : 1000475,
+                "need_event_id" : 1000474,
+                "template_base" : Chapter3::FadeLayer::RaceMissionBase,
+                "text_white" : true,
+                "text_tt" : "TIME_TRIAL_1",
+                "image_thumb" : "tt_3",
+            ],
+            [
+                "event_id" : 1000476,
+                "need_event_id" : 1000475,
+                "template_base" : Chapter3::FadeLayer::RaceMissionBase2,
+                "text_white" : true,
+                "text_tt" : "TIME_TRIAL_2",
+                "image_thumb" : "tt_4",
+            ],
+        ];
+
+        import Chapter1::onInitialize;
+        import Chapter1::init;
+        
+        module FadeLayer::Episode
+        {
+            import Chapter1::FadeLayer::Episode::onInitialize;
+            import Chapter1::FadeLayer::Episode::onFocusEnter;
+            import Chapter1::FadeLayer::Episode::onKeyPress;
+        }
+
+        module FadeLayer::GalleryView
+        {
+            import Chapter1::FadeLayer::GalleryView::onActivate;
+        }
+
+        module FadeLayer::SlideShow
+        {
+            import Chapter1::FadeLayer::SlideShow::onActivate;
+        }
+    }
+
+    module Chapter4
+    {
+        method onInitialize(context)
+        {
+            FadeLayer::SlideShow.insensitive = false;
+            self.visible = false;
+        }
+
+        method init(context)
+        {
+            var photo_count = MENUDB.count("SELECT COUNT(image) FROM t_senna_slideshow WHERE chapter=?", [SennaChapterRoot.current_chapter]);
+            FadeLayer::SlideShow::Photos.text = manager.translate("Unit", "PHOTOS").build(photo_count);
+            self.visible = true;
+        }
+
+        module FadeLayer::Episode
+        {
+            import Chapter1::FadeLayer::Episode::onInitialize;
+            import Chapter1::FadeLayer::Episode::onFocusEnter;
+            import Chapter1::FadeLayer::Episode::onKeyPress;
+        }
+
+        module FadeLayer::SlideShow
+        {
+            import Chapter1::FadeLayer::SlideShow::onActivate;
+        }
+
+        module FadeLayer::PlayMovie
+        {
+            method onActivate(context)
+            {
+                var project = ProjectUtil::LoadProject("play_movie", "play_movie");
+                SoundUtil::BGMStop();
+                var frame_interval = menu::FrameInterval;
+                menu::FrameInterval = 1;
+
+                PlayMovieProject::MovieRoot.openModal(context, "SENNA_WISH");
+
+                menu::FrameInterval = frame_interval;
+                SoundUtil::MenuBGMCrossfadeGroup("menu", 0.0, 1.0);
+                ProjectUtil::UnloadProject(project);
+            }
+        }
+
+        module FadeLayer::MovieDescription
+        {
+            method onInitialize(context)
+            {
+                var adj = main::menu::MAdjustment();
+                self.VScrollbar.adjustment = adj;
+
+                var sw = self.ScrolledWindow;
+                sw.clip.scroll_mode = SCROLL_MODE_MANUAL;
+                sw.clip.space.y = 0.0;
+                sw.clip.manual_target_y = 0.0;
+                sw.clip.v_adjustment = adj;
+            }
+
+            method onFocusEnter(context)
+            {
+                context.target_widget = self.VScrollbar::pinch::pointer;
+                return STATE_YIELD;
+            }
+
+            method onKeyPress(context, event)
+            {
+                var scrollclip = self.ScrolledWindow::clip;
+                var line_height = scrollclip.space.Text.line_height;
+                var status = 0;
+
+                if (event.keysym == CELL_PAD_CTRL_L3_UP)
+                {
+                    if (scrollclip.manualTargetIncY(line_height))
+                        status = 1;
+                }
+
+                if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+                {
+                    if (scrollclip.manualTargetIncY(-line_height))
+                        status = 1;
+                }
+
+                return STATE_EXIT;
+            }
+        }
+    }
+
+    // Templates
+
+    module hidden::RaceMission
+    {
+        attribute event_id;
+        attribute event;
+
+        method init(context, event, event_id, need_event_id, image_thumb)
+        {
+            self.event_id = event_id;
+            self.event = event;
+
+            var result = RaceEventUtil::getResult(event.event_id);
+            var order = result + 1;
+
+            switch (order)
+            {
+                case 1:
+                    Trophy::Image.image_path = "/image/gt6/event/trophy_gold.dds";
+                    break;
+
+                case 2:
+                    Trophy::Image.image_path = "/image/gt6/event/trophy_silver.dds";
+                    break;
+                        
+                case 3:
+                    Trophy::Image.image_path = "/image/gt6/event/trophy_bronze.dds";
+                    break;
+
+                default:
+                    Trophy::Image.image_path = "";
+                    break;
+            }
+
+            self.Time_w.text = pdiext::GetRaceTimeString(event.eval_condition.gold);
+            self.Time_b.text = self.Time_w.text;
+
+            var course_code = event.track.course_code;
+            var course_name = main::SPECDB.executeQuery1R1C("SELECT Name FROM COURSE WHERE ID=?", [course_code]);
+            self.Course_w.text = manager.translate("CourseName", course_name);
+            self.Course_b.text = self.Course_w.text;
+
+            self.Prize.visible = event.reward.present != nil && event.reward.present.size > 0;
+            self.Lock.visible = need_event_id != nil ? !SennaUtil::isCompleteEvent(need_event_id) : false;
+            self.Thumb.image_path = "/image/gt6/senna/%s.dds".format(image_thumb);
+        }
+
+        method onActivate(context)
+        {
+            if (self.Lock.visible)
+            {
+                sound.play("disable");
+                return STATE_YIELD;
+            }
+
+            sound.play("next");
+            SennaChapterRoot.startMission(context, self.event_id);
+            return STATE_YIELD;
+        }
+
+        method onKeyPress(context, key_event)
+        {
+            if (key_event.keysym == CELL_PAD_CTRL_SELECT)
+            {
+                if (GTModeProject::IsDevelop(context))
+                {
+                    var event_record = GAME_STATUS.user_profile.record.event_record;
+                    var event_id = self.event_id;
+                    var result = RaceEventUtil::getResult(event_id);
+                    if (--result < 0)
+                        result = gtengine::FinishResult::RANK_3;
+
+                    event_record.updateResultOnly(event_id, result);
+
+                    var current_chapter_w = SennaChapterRoot.getChapterWidget(SennaChapterRoot.current_chapter);
+                    current_chapter_w.init(context);
+                    return STATE_YIELD;
+                }
+            }
+
+            return STATE_EXIT;
+        }
+    }
+
+    module SceneFace
+    {
+        attribute current_cp;
+        attribute thread;
+
+        method onInitialize(context)
+        {
+            self.visible = false;
+            SceneCover::Fade.forward();
+            SceneCover::Fade.reset();
+        }
+
+        method setCar(context, car_label)
+        {
+            self.clearCar(context);
+
+            var scene_alias;
+            switch (car_label)
+            {
+                case "dap_racing_kart_80":
+                    scene_alias = "AyrtonSenna_kart";
+                    break;
+
+                case "ralt_rt3_83":
+                    scene_alias = "AyrtonSenna_F3";
+                    break;
+
+                case "lotus_97t_85":
+                    scene_alias = "AyrtonSenna_F1";
+                    break;
+
+                default:
+                    break;
+            }
+
+            if (scene_alias == nil)
+                return;
+
+            var cp = gtengine::MCarParameter(car_label);
+
+            self.thread = Thread((context) => 
+            {
+                SceneFace.visible = true;
+                SceneCover::Fade.forward();
+                SceneCover::Fade.reset();
+                SceneFaceUtil::loadScene(SceneFace, scene_alias, cp);
+                SceneFace.current_cp = cp;
+                
+                while (true)
+                {
+                    if (SennaChapterRoot.opacity == 1.0 && !self.isUnderSetup())
+                        break;
+                    
+                        Thread::Sleep(0.5);
+                }
+                    
+                SceneCover::Fade.forward();
+                SceneCover::Fade.start();
+            }, context);
+
+            self.thread.start();
+        }
+
+        method clearCar(context)
+        {
+            if (self.thread != nil)
+            {
+                self.thread.terminate();
+                self.thread = nil;
+            }
+
+            SceneCover::Fade.forward();
+            SceneCover::Fade.reset();
+
+            SceneFace.visible = false;
+
+            if (self.current_cp != nil)
+            {
+                self.execCommandImmidiate("clearEntity car0");
+                self.current_cp = nil;
+            }
+        }
+
+        method enterGalleryView(context)
+        {
+            var car_label = self.current_cp.getCarLabel();
+
+            var scene_alias;
+            switch (car_label)
+            {
+                case "dap_racing_kart_80":
+                    scene_alias = "AyrtonSenna_kart_galleryView";
+                    break;
+
+                case "ralt_rt3_83":
+                    scene_alias = "AyrtonSenna_F3_galleryView";
+                    break;
+
+                case "lotus_97t_85":
+                    scene_alias = "AyrtonSenna_F1_galleryView";
+                    break;
+
+                default:
+                    break;
+            }
+
+            if (scene_alias == nil)
+                return;
+
+            SceneFaceUtil::loadScene(self, scene_alias);
+        }
+
+        method leaveGalleryView(context)
+        {
+            var car_label = self.current_cp.getCarLabel();
+
+            var scene_alias;
+            switch (car_label)
+            {
+                case "dap_racing_kart_80":
+                    scene_alias = "AyrtonSenna_kart_back";
+                    break;
+
+                case "ralt_rt3_83":
+                    scene_alias = "AyrtonSenna_F3_back";
+                    break;
+
+                case "lotus_97t_85":
+                    scene_alias = "AyrtonSenna_F1_back";
+                    break;
+
+                default:
+                    break;
+            }
+
+            if (scene_alias == nil)
+                return;
+
+            SceneFaceUtil::loadScene(self, scene_alias);
+        }
+    }
+}

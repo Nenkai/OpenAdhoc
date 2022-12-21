@@ -1,0 +1,683 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module SlideShowRoot
+{
+    attribute photo_list;
+    attribute params;
+    attribute index;
+    attribute popup;
+    attribute closed;
+    attribute watcher;
+
+    method open(context, photo_list, params)
+    {
+        self.params = params;
+
+        if (self.params["imagetype"] == 1)
+        {
+            self.photo_list = [];
+            foreach (var photo in photo_list)
+            {
+                if (!photo.is_3d && PhotoFileUtil::isExist(photo.id) && photo.genre != PhotoFileUtil::GENRE::PHOTO_PROFILE)
+                {
+                    self.photo_list.push(photo);
+                }
+            }
+        }
+        else if (self.params["imagetype"] == 2)
+        {
+            self.photo_list = [];
+            foreach (var photo in photo_list)
+            {
+                if (photo.is_3d && PhotoFileUtil::isExist(photo.id) && photo.genre != PhotoFileUtil::GENRE::PHOTO_PROFILE)
+                {
+                    self.photo_list.push(photo);
+                }
+            }
+        }
+        else
+        {
+            self.photo_list = [];
+            foreach (var photo in photo_list)
+            {
+                if (PhotoFileUtil::isExist(photo.id) && photo.genre != PhotoFileUtil::GENRE::PHOTO_PROFILE)
+                {
+                    self.photo_list.push(photo);
+                }
+            }
+        }
+
+        self.index = 0;
+        self.closed = false;
+
+        self.popup = main::SequenceUtil::ModalPage(context, SlideShowRoot);
+        self.popup.open();
+        return self.need_update;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        ContextMain.event_mask = 5;
+        ContextMain.disableInput();
+
+        while (true)
+        {
+            if (CrossFade.finished && Slide.finished && KenBurns.finished)
+                break;
+
+            yield;
+        }
+
+        GTModeRoot.visible = true;
+
+        FadeActor.on_effect_end = (context) => 
+        {
+            if (SlideShowRoot.popup != nil)
+            {
+                SlideShowRoot.popup.close();
+                SlideShowRoot.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        };
+
+        FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        if (self.photo_list.size > 0)
+        {
+            if (self.params["shuffle"])
+                self.photo_list.randomShuffle();
+
+            context.cursor_visible = false;
+
+            var style = self.params["style"];
+            switch (style)
+            {
+                case 0:
+                    context.pushEvent(main::menu::MFunctionEvent(CrossFade.initialize, context));
+                    break;
+
+                case 1:
+                    context.pushEvent(main::menu::MFunctionEvent(Slide.initialize, context));
+                    break;  
+
+                case 2:
+                    context.pushEvent(main::menu::MFunctionEvent(KenBurns.initialize, context));
+                    break;
+            }
+
+            if (SlideShowRoot.params["bgm"])
+            {
+                SoundUtil::MenuBGMCrossfadeGroup("slideshow", 0.0, 1.0);
+            } 
+            else
+            {
+                SoundUtil::BGMFadeout(1.0);
+            }
+
+            GTModeRoot.visible = false;
+        }
+        else
+        {
+            close(context);
+        }
+
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        if (self.watcher != nil)
+        {
+            WatcherUtil::Delete(self.watcher);
+            self.watcher = nil;
+        }
+
+        if (self.photo_list.size > 0)
+        {
+            SoundUtil::MenuBGMCrossfadeGroup("menu", 0.0, 1.0);
+
+            CrossFade.finalize(context);
+            Slide.finalize(context);
+            KenBurns.finalize(context);
+
+            context.cursor_visible = true;
+        }
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+ 
+        return STATE_YIELD;
+    }
+
+    module CrossFade
+    {
+        attribute index;
+        attribute finished = true;
+
+        method initialize(context)
+        {
+            self.index = 0;
+            self.finished = false;
+
+            var transition = SlideShowRoot.params["transition"];
+            var interval = SlideShowRoot.params["interval"];
+
+            foreach (var image_face in [ImageFaceA, ImageFaceB])
+            {
+                image_face.ScalarInterpolator.total_time = transition;
+            }
+
+            var photo = SlideShowRoot.photo_list[0];
+            ImageFaceA.image_path = photo.filename;
+            ImageFaceA.ScalarInterpolator.reverse = false;
+            ImageFaceA.ScalarInterpolator.restart();
+
+            var tickInterval = transition + interval;
+            SlideShowRoot.watcher = WatcherUtil::Create(context, onTick, 60 * tickInterval);
+        }
+
+        method finalize(context)
+        {
+            ImageFaceA.image_path = "";
+            ImageFaceB.image_path = "";
+        }
+
+        method onTick(context)
+        {
+            if (SlideShowRoot.watcher == nil)
+                return;
+
+            var hide_index = self.index;
+            var show_index = ++self.index;
+            var need_close = SlideShowRoot.closed;
+
+            if (self.index == SlideShowRoot.photo_list.size)
+            {
+                if (!SlideShowRoot.params["repeat"])
+                    need_close = true;
+            }
+
+            var me = self;
+            ImageFaceA::ScalarInterpolator.on_effect_end = (context) =>
+            {
+                ImageFaceA::ScalarInterpolator.on_effect_end = nil;
+                if (need_close)
+                {
+                    me.finished = true;
+                    ImageFaceA.image_path = "";
+                    ImageFaceB.image_path = "";
+                    context.sync(1.0);
+                    SlideShowRoot.close(context);
+                }
+
+                if (hide_index % 2 == 0)
+                    ImageFaceA.image_path = "";
+                else
+                    ImageFaceB.image_path = "";
+            };
+
+            if (!need_close)
+            {
+                var photo = SlideShowRoot.photo_list[show_index % SlideShowRoot.photo_list.size];
+                var imageface;
+                if (show_index % 2 == 0)
+                    imageface = ImageFaceA;
+                else
+                    imageface = ImageFaceB;
+
+                imageface.image_path = photo.filename;
+            }
+
+            foreach (var image_face in [ImageFaceA, ImageFaceB])
+            {
+                image_face.ScalarInterpolator.reverse = show_index % 2 != 0;
+                image_face.ScalarInterpolator.restart();
+            }
+        }
+    }
+
+    module Slide
+    {
+        attribute index;
+        attribute finished = true;
+
+        function fire(context, fade_reverse, mode_in)
+        {
+            ImageFace::ScalarInterpolatorFade.reverse = fade_reverse;
+            ImageFace::ScalarInterpolatorFade.restart();
+
+            if (mode_in)
+                ScalarInterpolatorIn.restart();
+            else
+                ScalarInterpolatorOut.restart();
+        }
+
+        method initialize(context)
+        {
+            self.index = 0;
+            self.finished = false;
+
+            var transition = SlideShowRoot.params["transition"];
+            ImageFace.ScalarInterpolatorFade.total_time = transition;
+            ScalarInterpolatorOut.total_time = transition;
+            ScalarInterpolatorIn.total_time = transition;
+
+            var interval = transition + SlideShowRoot.params["interval"];
+            SlideShowRoot.watcher = WatcherUtil::Create(context, onTick, 60 * interval);
+
+            var photo = SlideShowRoot.photo_list[0];
+            ImageFace.image_path = photo.filename;
+
+            fire(context, false, true);
+        }
+
+        method finalize(context)
+        {
+            ImageFace.image_path = "";
+        }
+
+        method onTick(context)
+        {
+            if (SlideShowRoot.watcher == nil)
+                return;
+            else
+            {
+                var transition = SlideShowRoot.params["transition"];
+                var interval = (transition * 2) + SlideShowRoot.params["interval"];
+                SlideShowRoot.watcher.interval = 60 * interval;
+            }
+
+            var current_index = ++self.index;
+            var need_close = SlideShowRoot.closed;
+            if (self.index == SlideShowRoot.photo_list.size)
+            {
+                if (!SlideShowRoot.params["repeat"])
+                    need_close = true;
+            }
+
+            var me = self;
+            ImageFace.ScalarInterpolatorFade.on_effect_end = (context) =>
+            {
+                ImageFace.ScalarInterpolatorFade.on_effect_end = nil;
+                if (need_close)
+                {
+                    me.finished = true;
+                    ImageFace.image_path = "";
+                    context.sync(1.0);
+                    SlideShowRoot.close(context);
+                }
+                else
+                {
+                    var photo = SlideShowRoot.photo_list[current_index % SlideShowRoot.photo_list.size];
+                    ImageFace.image_path = photo.filename;
+                }
+
+                fire(context, false, true);
+            };
+
+            fire(context, true, false);
+        }
+    }
+
+    module KenBurns
+    {
+        attribute finished = true;
+        attribute sTotalTime = 0.0;
+
+        static sRandom = nil;
+
+        function equal(a, b, epsiron)
+        {
+            return Math::abs(a - b) >= epsiron;
+        }
+
+        function isAspectVertical(context, photo)
+        {
+            if (photo.width == photo.height)
+                return getRandomBool(context);
+
+            return photo.height > photo.width;
+        }
+
+        function getParameterRangeByPhoto(ref_min_size, photo)
+        {
+            var size = 1.0;
+            var orientation = photo.is_3d ? 1 : photo.orientation;
+            var imageWidth = photo.width;
+            var imageHeight = photo.height;
+            var shortSide = imageWidth < imageHeight ? imageWidth : imageHeight;
+            var is2x = shortSide > 1080 ? true : false;
+
+            if (is2x)
+            {
+                imageWidth *= 0.5;
+                imageHeight *= 0.5;
+            }
+
+            size = 1080.0 / imageHeight;
+            if (size == 1.0)
+                size *= 0.75;
+            else
+                size *= 0.85;
+
+            &ref_min_size = size;
+        }
+
+        function setParameterByRectangle(imageface, trans, start_tx, start_ty, end_tx, end_ty, start_size, end_size)
+        {
+            trans.InterpolatorTransX.start_value = (start_tx * 1920.0) * 0.5;
+            trans.InterpolatorTransY.start_value = (start_ty * 1080.0) * 0.5;
+            trans.InterpolatorTransX.end_value = (end_tx * 1920.0) * 0.5;
+            trans.InterpolatorTransY.end_value = (end_ty * 1080.0) * 0.5;
+
+            var start_scale = 1.0 / start_size;
+            var end_scale = 1.0 / end_size;
+
+            imageface.InterpolatorScaleX.start_value = start_scale;
+            imageface.InterpolatorScaleY.start_value = start_scale;
+            imageface.InterpolatorScaleX.end_value = end_scale;
+            imageface.InterpolatorScaleY.end_value = end_scale;
+        }
+
+        function getRandomMinusPlus(context)
+        {
+            return (sRandom.getMTInt(0, 1 + 1) * 2.0) - 1.0;
+        }
+
+        function getRandomBool(context)
+        {
+            return sRandom.getMTInt(0, 1 + 1);
+        }
+
+        function setKenBurnsParameters(context, scale, trans, photo)
+        {
+            var min_size = 1.0;
+            getParameterRangeByPhoto(&min_size, photo);
+            
+            var size = getRandomBool(context) ? min_size : sRandom.getMTFloat(min_size, 1.0);
+            var size2 = 1.0;
+            var scale_epsiron = 0.1;
+            if (1.0 - min_size > scale_epsiron)
+            {
+                do
+                {
+                    size2 = sRandom.getMTFloat(min_size, 1.0);
+                } while (equal(size, size2, scale_epsiron));
+            }
+
+            var tx = 1.0 - size;
+            tx = getRandomMinusPlus(context) * tx;
+
+            var ty = 1.0 - size;
+            ty = getRandomMinusPlus(context) * ty;
+
+            var tx2 = 1.0 - size2;
+            tx2 = getRandomMinusPlus(context) * tx2;
+
+            var ty2 = 1.0 - size2;
+            ty2 = getRandomMinusPlus(context) * ty2;
+
+            var mode = sRandom.getMTInt(0, 18 + 1);
+
+            switch (mode)
+            {
+                case 0:
+                    setParameterByRectangle(scale, trans, -tx, -ty, +tx, +ty, size, 1.0);
+                    break;
+                  
+                case 1:
+                    setParameterByRectangle(scale, trans, -tx, -ty, +tx, +ty, 1.0, size);
+                    break;
+
+                case 2:
+                    setParameterByRectangle(scale, trans, -tx, -ty, +tx, +ty, 1.0, 1.0);
+                    break;
+
+                case 3:
+                    setParameterByRectangle(scale, trans, -tx, -ty, +tx, +ty, size, size);
+                    break;
+
+                case 4:
+                    setParameterByRectangle(scale, trans, -tx, -ty, +tx, +ty, size, size2);
+                    break;
+                
+                case 5:
+                    setParameterByRectangle(scale, trans, 0.0, 0.0, +tx, +ty, 1.0, size);
+                    break;
+
+                case 6:
+                    setParameterByRectangle(scale, trans, 0.0, 0.0, +tx, +ty, 1.0, 1.0);
+                    break;
+                  
+                case 7:
+                    setParameterByRectangle(scale, trans, -tx, -ty, 0.0, 0.0, size, 1.0);
+                    break;
+    
+                case 8:
+                    setParameterByRectangle(scale, trans, -tx, -ty, 0.0, 0.0, 1.0, 1.0);
+                    break;
+    
+                case 9:
+                    var s = (size * 0.5) + 0.5;
+                    s = getRandomBool(context) ? s : 1.0 / s;
+                    setParameterByRectangle(scale, trans, 0.0, 0.0, +tx, +ty, 1.0, s);
+                    break;
+    
+                case 10:
+                    var s = (size * 0.5) + 0.5;
+                    s = getRandomBool(context) ? s : 1.0 / s;
+                    setParameterByRectangle(scale, trans, -tx, -ty, 0.0, 0.0, s, 1.0);
+                    break;
+                
+                case 11:
+                    var s = (size * 0.5) + 0.5;
+                    setParameterByRectangle(scale, trans, 0.0, 0.0, +tx, +ty, 1.0 / s, s);
+                    break;
+
+                case 12:
+                    var s = (size * 0.5) + 0.5;
+                    setParameterByRectangle(scale, trans, -tx, -ty, 0.0, 0.0, s, 1.0 / s);
+                    break;
+
+                case 13:
+                    var s = (size * 0.5) + 0.5;
+                    s = getRandomBool(context) ? s : 1.0 / s;
+                    setParameterByRectangle(scale, trans, 0.0, 0.0, 0.0, 0.0, 1.0 / s, s);
+                    break;
+
+                case 14:
+                    isAspectVertical(context, photo) ? setParameterByRectangle(scale, trans, 0.0, -ty, 0.0, +ty, size, 1.0)
+                                                     : setParameterByRectangle(scale, trans, -tx, 0.0, +tx, 0.0, size, 1.0);
+                    break;
+
+                case 15:
+                    isAspectVertical(context, photo) ? setParameterByRectangle(scale, trans, 0.0, -ty, 0.0, +ty, 1.0, size)
+                                                     : setParameterByRectangle(scale, trans, -tx, 0.0, +tx, 0.0, 1.0, size);
+                    break;
+
+                case 16:
+                    isAspectVertical(context, photo) ? setParameterByRectangle(scale, trans, 0.0, -ty, 0.0, +ty, 1.0, 1.0)
+                                                     : setParameterByRectangle(scale, trans, -tx, 0.0, +tx, 0.0, 1.0, 1.0);
+                    break;
+
+                case 17:
+                    isAspectVertical(context, photo) ? setParameterByRectangle(scale, trans, 0.0, -ty, 0.0, +ty, size, size)
+                                                     : setParameterByRectangle(scale, trans, -tx, 0.0, +tx, 0.0, size, size);
+                    break;
+
+                case 18:
+                    isAspectVertical(context, photo) ? setParameterByRectangle(scale, trans, 0.0, -ty, 0.0, +ty, size, size2)
+                                                     : setParameterByRectangle(scale, trans, -tx, 0.0, +tx, 0.0, size, size2);
+                    break;
+            }
+        }
+
+        method initialize(context)
+        {
+            self.finished = false;
+            sRandom = main::pdistd::MRandom();    
+            sRandom.mt_seed = main::pdistd::GetSystemTimeMicroSecond();
+
+            SlideShowRoot.index = 0;
+            
+            var transition = SlideShowRoot.params["transition"];
+            var interval = SlideShowRoot.params["interval"];
+
+            foreach (var image_face in [aImageFaceA, aImageFaceB])
+            {
+                image_face.opacity = 0.0;
+                image_face.InterpolatorFadeIn.total_time = transition;
+                image_face.InterpolatorFadeOut.total_time = transition;
+            }
+
+            sTotalTime = (transition + interval) + transition;
+            foreach (var scale in [aImageFaceA.ParallelActor, aImageFaceB.ParallelActor])
+            {
+                foreach (var interpolator in [scale.InterpolatorScaleX, scale.InterpolatorScaleY])
+                {
+                    interpolator.total_time = sTotalTime;
+                }
+            }
+
+            foreach (var trans in [TransA.ParallelActor, TransB.ParallelActor])
+            {
+                foreach (var interpolator in [trans.InterpolatorTransX, trans.InterpolatorTransY])
+                {
+                    interpolator.total_time = sTotalTime;
+                }
+            }
+
+            var photo = SlideShowRoot.photo_list[0];
+            aImageFaceA.image_path = photo.filename;
+
+            setKenBurnsParameters(context, aImageFaceA.ParallelActor, TransA.ParallelActor, photo);
+
+            var me = self;
+            aImageFaceA.InterpolatorFadeIn.on_effect_end = (context) => 
+            {
+                var show_index = ++SlideShowRoot.index;
+                var need_close = SlideShowRoot.closed;
+
+                if (show_index == SlideShowRoot.photo_list.size)
+                {
+                    if (!SlideShowRoot.params["repeat"])
+                        need_close = true;
+                }
+
+                var selfImageFace = aImageFaceA;
+                var selfTrans = TransA;
+                var otherImageFace = aImageFaceB;
+                var otherTrans = TransB;
+
+                if (need_close)
+                {
+                    me.finished = true;
+                    otherImageFace.image_path = "";
+                    otherImageFace.opacity = 0.0;
+
+                    context.sync(interval);
+
+                    selfImageFace.InterpolatorFadeOut.restart();
+                    context.sync(transition + 1.0);
+                    SlideShowRoot.close(context);
+                }
+                else
+                {
+                    var photo = SlideShowRoot.photo_list[show_index % SlideShowRoot.photo_list.size];
+
+                    otherImageFace.image_path = photo.filename;
+                    setKenBurnsParameters(context, otherImageFace.ParallelActor, otherTrans.ParallelActor, photo);
+                    otherImageFace.opacity = 0.0;
+                    
+                    context.sync(interval);
+
+                    selfImageFace.InterpolatorFadeOut.restart();
+                    otherImageFace.InterpolatorFadeIn.restart();
+                    otherTrans.ParallelActor.restart();
+                    otherImageFace.ParallelActor.restart();
+                }
+            };
+
+            aImageFaceB.InterpolatorFadeIn.on_effect_end = (context) => 
+            {
+                var show_index = ++SlideShowRoot.index;
+                var need_close = SlideShowRoot.closed;
+
+                if (show_index == SlideShowRoot.photo_list.size)
+                {
+                    if (!SlideShowRoot.params["repeat"])
+                        need_close = true;
+                }
+
+                var selfImageFace = aImageFaceB;
+                var selfTrans = TransB;
+                var otherImageFace = aImageFaceA;
+                var otherTrans = TransA;
+
+                if (need_close)
+                {
+                    me.finished = true;
+                    otherImageFace.image_path = "";
+                    otherImageFace.opacity = 0.0;
+
+                    context.sync(interval);
+
+                    selfImageFace.InterpolatorFadeOut.restart();
+                    context.sync(transition + 1.0);
+                    SlideShowRoot.close(context);
+                }
+                else
+                {
+                    var photo = SlideShowRoot.photo_list[show_index % SlideShowRoot.photo_list.size];
+
+                    otherImageFace.image_path = photo.filename;
+                    setKenBurnsParameters(context, otherImageFace.ParallelActor, otherTrans.ParallelActor, photo);
+                    otherImageFace.opacity = 0.0;
+                    
+                    context.sync(interval);
+
+                    selfImageFace.InterpolatorFadeOut.restart();
+                    otherImageFace.InterpolatorFadeIn.restart();
+                    otherTrans.ParallelActor.restart();
+                    otherImageFace.ParallelActor.restart();
+                }
+            };
+
+            aImageFaceA.InterpolatorFadeIn.restart();
+            TransA.ParallelActor.restart();
+            aImageFaceA.ParallelActor.restart();
+        }
+
+        method finalize(context)
+        {
+            aImageFaceA.image_path = "";
+            aImageFaceB.image_path = "";
+
+            sRandom = nil;
+        }
+    }
+}

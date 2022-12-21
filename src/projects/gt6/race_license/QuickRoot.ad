@@ -1,0 +1,1080 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+module QuickRoot
+{
+    static sAfterRace = false;
+    static sPrevReplayWorkPath = nil;
+    static sEntriedCPDP = nil;
+    
+    attribute entry_top;
+
+    hidden.visible = false;
+    method preStartRace(context)
+    {
+        var abort = false;
+        var confirmed = false;
+
+        if (!abort)
+        {
+            checkDiskSpaceForReplay();
+            ORG.checkGhostFileBeforeRace();
+        }
+
+        return [abort, confirmed];
+    }
+
+    method postStartRace(context)
+    {
+        sAfterRace = true;
+        PluginModule::sUpdatedFriendRank = nil;
+    }
+
+    method onStartRace(context)
+    {
+        if (sAfterRace)
+        {
+            main::sound.play("ok");
+            var res = DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, manager.translate("QuickMenu", "DO_YOU_RETRY"));
+            if (!res)
+                return STATE_YIELD;
+
+            RaceMenuUtil::setEnableButton(false);
+            res = waitForLoadingDone(context);
+
+            if (!res)
+            {
+                RaceMenuUtil::setEnableButton(true);
+                return STATE_YIELD;
+            }
+        }
+
+        QuickRoot.input_enable = false;
+
+        var [abort, confirmed] = preStartRace(context);
+        if (abort)
+        {
+            RaceMenuUtil::setEnableButton(true);
+            QuickRoot.input_enable = true;
+            return STATE_YIELD;
+        }
+
+        if (!confirmed)
+        {
+            main::sound.play("ok");
+        }
+
+        if (Grim2Util::Ranking::isEnableLicenseRanking())
+        {
+            downloadMarkReplay(context);
+        }
+
+        Info2.hide();
+        doStartRace(context);
+        postStartRace(context);
+
+        return STATE_YIELD;
+    }
+
+    method onStartReplay(context)
+    {
+        RaceMenuUtil::setEnableButton(false);
+        if (!PluginModule::doStartReplay(context))
+        {
+            RaceMenuUtil::setEnableButton(true);
+        }
+
+        return STATE_YIELD;
+    }
+
+    method onSaveReplay(context)
+    {
+        if (gSequenceCondition.gp.event.race_parameter.ghost_type == gtengine::GhostType::ONELAP)
+        {
+            if (!ReplayFileUtil::canSave())
+            {
+                main::sound.play("disable");
+                LeaveDetectUtil::suspend(context);
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate("QuickMenu", "YOUVE_ALREADY_SAVED"));
+                LeaveDetectUtil::resume(context);
+                return STATE_YIELD;
+            }
+
+            LeaveDetectUtil::suspend(context);
+            PluginModule::doSaveReplay(context);
+            LeaveDetectUtil::resume(context);
+        }
+        else if (!ReplayFileUtil::canSave(ReplayFileUtil::MODE_ATTACH))
+        {
+            main::sound.play("disable");
+            LeaveDetectUtil::suspend(context);
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate("QuickMenu", "YOUVE_ALREADY_SAVED"));
+            LeaveDetectUtil::resume(context);
+            return STATE_YIELD;
+        }
+
+        LeaveDetectUtil::suspend(context);
+        PluginModule::doSaveAttachReplay(context);
+        LeaveDetectUtil::resume(context);
+        return STATE_YIELD;
+    }
+
+    method onSaveGhostReplay(context)
+    {
+        if (!ReplayFileUtil::canSave(ReplayFileUtil::MODE_ONELAP))
+        {
+            main::sound.play("disable");
+            LeaveDetectUtil::suspend(context);
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, manager.translate("QuickMenu", "YOUVE_ALREADY_SAVED"));
+            LeaveDetectUtil::resume(context);
+            return STATE_YIELD;
+        }
+
+        main::sound.play("ok");
+
+        UIKitProject::SaveReplayRoot.open(context, ReplayFileUtil::MODE_ONELAP);
+        return STATE_YIELD;
+    }
+
+    method onLoadGhostReplay(context)
+    {
+        var res = waitForLoadingDone(context);
+        if (!res)
+            return STATE_YIELD;
+
+        main::sound.play("ok");
+
+        LeaveDetectUtil::suspend(context);
+        var gp = gSequenceCondition.gp;
+        var event = gp.event;
+        var course_code = event.race_parameter.course_code;
+        var event_id = event.event_id;
+
+        if (event.race_parameter.ghost_type == gtengine::GhostType::ONELAP)
+        {
+            UIKitSubProject::LoadReplayRoot.open(context, UIKitSubProject::LoadReplayRoot::MODE_ONELAP, course_code, nil, event_id);
+        }
+        else
+        {
+            UIKitSubProject::LoadReplayRoot.open(context, UIKitSubProject::LoadReplayRoot::MODE_GHOST, course_code, nil, event_id);
+        }
+
+        LeaveDetectUtil::resume(context);
+        return STATE_YIELD;
+    }
+
+    method onDrivingOption(context)
+    {
+        main::sound.play("ok");
+
+        QuickRoot.hideAction(context);
+
+        var rp = gSequenceCondition.gp.event.race_parameter;
+        var constraint = gSequenceCondition.gp.event.constraint;
+
+        var data = SettingProject::DrivingOptionRoot2::Data(getPlayerCar(), 
+            getPlayerDriver(), 
+            rp, 
+            constraint);
+
+        SettingProject::DrivingOptionRoot2.open(context, data);
+
+        QuickRoot.appearAction(context);
+
+        return STATE_YIELD;
+    }
+
+    method onSetting(context)
+    {
+        main::sound.play("ok");
+        
+        var cp = getPlayerCar();
+        var params = SettingProject::SettingRoot::Params();
+        params.on_quick = true;
+        SettingProject::SettingRoot.open(context, cp, params, onSettingApply);
+        return STATE_YIELD;
+    }
+
+    function viewReplayCB(context, replay_path)
+    {
+        sPrevReplayWorkPath = ORG.replay_work_path;
+        ORG.replay_work_path = replay_path;
+
+        var info = gtengine::MReplayInfo();
+        var success = info.initialize(ORG, replay_path);
+
+        if (!success)
+            return false;
+
+        var cp_on_replay = info.getCarParameter(0);
+        var dp_on_replay = info.getDriverParameter(0, 0);
+
+        sEntriedCPDP = exchangeCar([cp_on_replay, dp_on_replay]);
+        PluginModule::doStartReplay(context, true);
+        return true;
+    }
+
+    function begin_osd(context)
+    {
+        DialogUtil::openDimmerDialog(context);
+    }
+
+    function end_osd(context)
+    {
+        DialogUtil::closeDimmerDialog(context);
+    }
+
+    function IsDevelop(context)
+    {
+        var is_debug = false;
+        return pdiext::isQABuild() || is_debug;
+    }
+    
+    method onOnlineRanking(context)
+    {
+        RaceMenuUtil::setEnableButton(false);
+        main::sound.play("ok");
+
+        CursorUtil::setCursor(context, "wait");
+
+        finally () => { CursorUtil::setCursor(context, "cursor_chrome"); }
+        
+        var event = gSequenceCondition.gp.event;
+
+        if (!LoginUtil::makeSureLogin(context, true))
+        {
+            RaceMenuUtil::setEnableButton(true);
+            return STATE_YIELD;
+        }
+
+        if (event.ranking.board_id != 0 ? !Grim2Util::OnlineRace::isEnable() : !Grim2Util::Ranking::isEnable())
+        {
+            main::sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                context.translate(QuickRoot, "Network", "RANKING_SERVICE_NOT_AVAILABLE"));
+            RaceMenuUtil::setEnableButton(true);
+            return STATE_YIELD;
+        }
+
+        var course_list = [gtengine::MSpecDB::getCourseLabel(getCurrentCourse())];
+        if (event.ranking.board_id == 0)
+            ;
+        else
+        {
+            var only_friend_ranking = true;
+            if (IsDevelop(context))
+            {
+                var state = context.getUpdateContext().getPadButtonState(0);
+                if (state & 0x800)
+                    only_friend_ranking = false;
+            }
+
+            var view_replay_executed = RankingProject::RankingPopup.open(context, gSequenceCondition.gp, true, viewReplayCB, waitForLoadingDone, cancelWaitingForLoaing, only_friend_ranking);
+            if (view_replay_executed)
+                ;
+        }
+
+        RaceMenuUtil::setEnableButton(true);
+        return STATE_YIELD;
+    }
+
+    method onExit(context)
+    {
+        main::sound.play("ok");
+
+        main::GameSequence::setResult("exit");
+        RaceMenuUtil::closeAction(context);
+        SequenceUtil::startSequence(context, main::GameSequence::MENU);
+        SoundUtil::BGMFadeout(1.0);
+        SoundUtil::SetupSound(SoundUtil::SCENE_MENU);
+        ORG.getRaceSound().start = false;
+        SaveDataUtilGT6::saveEveryWhere(context);
+
+        return STATE_YIELD;
+    }
+
+    method onFriendRankingUpdate(context, my_rank)
+    {
+        Info2::Footer.initialize(context);
+    }
+
+    method decodeStats(context, stats)
+    {
+        if (stats == nil || stats.getByteDataCount() == 0)
+            return nil;
+
+        var blob = main::pdistd::MBlob(stats);
+        var rstats = Grim2Util::Ranking::DeserializeRankingStats(blob);
+        return rstats;
+    }
+
+    method getGap(rank, top_rank)
+    {
+        if (rank == nil || top_rank == nil)
+            return "";
+
+        var diff = rank["score"] - top_rank["score"];
+        if (diff == 0)
+            return "";
+
+        return "+" + pdiext::GetRaceTimeString(diff);
+    }
+
+    method setup_entry(context, item, order, rank, delay_ratio)
+    {
+        foreach (var name in ["No", "Driver", "Time", "Gap"])
+        {
+            item[name].label.text = "--";
+        }
+
+        item.Driver::labela.text = "--";
+
+        var odd = order & 1;
+        foreach (var name in ["Driver", "Flag", "Time", "Gap"])
+        {
+            item[name].bg0.visible = !odd;
+            item[name].bg1.visible = odd;
+        }
+
+        if (rank == nil)
+        {
+            foreach (var name in ["No", "Driver", "Time", "Gap"])
+            {
+                item[name].label.opacity = 0.6;
+            }
+
+            return;
+        }
+
+        item.No.label.text = "%d".format(order + 1);
+
+        var user_id = rank["user_id"];
+        item.Driver.label.text = user_id;
+        item.Driver.labela.text = user_id;
+
+        var rstats = decodeStats(context, rank["stats"]);
+        if (rstats == nil)
+            return;
+
+        var country = rstats.country_code;
+        item.Flag::image.image_path = "/piece/flag_ranking/%{country}.img";
+        item.Time::label.text = pdiext::GetRaceTimeString(rank["score"]);
+
+        if (order == 0)
+            self.entry_top = rank;
+
+        item.Gap::label.text = getGap(rank, self.entry_top);
+        item.Driver.active = user_id == NP.getOnlineId();
+    }
+
+    method open(context)
+    {
+        ORG.pauseAvailable = false;
+        SequenceUtil::startPage(context, QuickRoot);
+    }
+
+    method on_leave_detect(context)
+    {
+        SequenceUtil::startSequence(context, main::GameSequence::MENU);
+        SoundUtil::BGMFadeout(1.0);
+
+        ORG.getRaceSound().start = false;
+    }
+
+    method on_initialize_info(context)
+    {
+        var course_info = getCurrentCourseInfo();
+
+        if (course_info != nil)
+        {
+            var gp = gSequenceCondition.gp;
+            Info2::Header.initialize(context, gp);
+            Info2::Body::Description_and_BG.initialize(context, gp, course_info);
+            Info2::Body::Target_Info.initialize(context, gp, course_info);
+            Info2::Body::Map_Area.initialize(context, gp, course_info);
+            Info2::Footer.initialize(context);
+            CourseLogo.initialize(course_info);
+
+            Info2::Header.next_animation_widget_list = [
+                Info2::Body::Description_and_BG,
+                Info2::Body::Target_Info
+            ];
+
+            Info2::Body::Target_Info.next_animation_widget = Info2::Body::Map_Area;
+
+            if (Grim2Util::Ranking::isEnableLicenseRanking())
+            {
+                Info2::Body::Map_Area.next_animation_widget = Info2::Body::Friend_Ranking;
+                Info2::Body::Friend_Ranking.next_animation_widget = Info2::Body::Target_Info;
+            }
+            else
+            {
+                Info2::Body::Map_Area.next_animation_widget = Info2::Body::Target_Info;
+            }
+        }
+
+        var board_id = OnlineRankingUpload::getEventBoardID(context);
+        var ranking_list = [];
+
+        if (GetVersionBranch() != "demo" && Grim2Util::Ranking::isEnableLicenseRanking())
+        {
+            BoardUtil::initialize(context, 
+                QuickRoot, 
+                setup_entry, 
+                Info2::Body::Friend_Ranking::FrameR,
+                nil,
+                nil,
+                Template::FriendRankingBoard, []);
+
+            RankingUtil::getFriendRankingListAsync(context, board_id, (context, future_result, list) => 
+            {
+                ranking_list = list;
+                var my_rank = 0;
+                var found = false;
+                var my_user_id = Grim2.getLoginUserId();
+
+                foreach (var entry in ranking_list)
+                {
+                    ++my_rank;
+
+                    if (entry["user_id"] == my_user_id)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (found && !sAfterRace)
+                    PluginModule::sPrevFriendRank = my_rank;
+
+                BoardUtil::finalize(context, Info2::Body::Friend_Ranking::FrameR, nil, nil);
+                BoardUtil::initialize(context, 
+                    QuickRoot, 
+                    setup_entry, 
+                    Info2::Body::Friend_Ranking::FrameR,
+                    nil,
+                    nil,
+                    Template::FriendRankingBoard, ranking_list);
+            });
+        }
+    }
+
+    method initialize_icons(context)
+    {
+        var icons = [];
+
+        icons.push(RaceMenuUtil::Icon(sAfterRace ? "RETRY" : "START", "icon_start.dds", onStartRace));
+
+        var has_replay = PluginModule::canStartReplay();
+        if (has_replay)
+            icons.push(RaceMenuUtil::Icon("REPLAY", "icon_replay.dds", onStartReplay));
+
+        if (GetVersionBranch() != "demo")
+        {
+            var has_replaysave = PluginModule::canSaveReplay();
+            if (has_replaysave)
+                icons.push(RaceMenuUtil::Icon("REPLAYSAVE", "icon_replay_save.dds", onSaveReplay));
+        }
+
+        var event = gSequenceCondition.gp.event;
+        var has_ghostload = GetVersionBranch() != "demo" && event.eval_condition.ghost_data_path == "";
+
+        if (has_ghostload)
+        {
+            icons.push(RaceMenuUtil::Icon("GHOSTLOAD", "icon_ghost_load.dds", onLoadGhostReplay));
+        }
+
+        if (GetVersionBranch() != "demo")
+        {
+            var has_ghostsave = PluginModule.defined("canSaveGhost") && PluginModule::canSaveGhost() && 
+                ReplayFileUtil::canSave(ReplayFileUtil::MODE_ONELAP);
+
+            if (has_ghostsave)
+                icons.push(RaceMenuUtil::Icon("GHOSTSAVE", "icon_ghost_save.dds", onSaveGhostReplay)); 
+        }
+        
+        icons.push(RaceMenuUtil::Icon("DRIVING_OPTION", "icon_driving_option.dds", onDrivingOption));
+
+        if (GetVersionBranch() != "demo")
+        {
+            var cp = getPlayerCar();
+            if (cp != nil && !cp.rentacar)
+                icons.push(RaceMenuUtil::Icon("TUNE", "icon_setting.dds", onSetting));
+        }
+
+        if (Grim2Util::Ranking::isEnableLicenseRanking())
+            icons.push(RaceMenuUtil::Icon("ONLINE_RANKING", "icon_online_ranking.dds", onOnlineRanking));
+        
+        icons.push(RaceMenuUtil::Icon("EXIT", "icon_exit.dds", onExit));
+
+        RaceMenuUtil::create(context, QuickRoot, Template::QuickMenu, icons, "QuickMenu", nil, nil, true);
+        RaceMenuUtil::setFocus(context);
+    }
+
+    method setup(context)
+    {
+        self.entry_top = nil;
+        restrictRTA();
+        self.initialize_icons(context);
+    }
+
+    method on_initialize(context)
+    {
+        gRaceBGM.onQuickRootInitialize(gSequenceCondition.session_number == 0);
+        var delay = sAfterRace ? 0.0 : 2.0;
+
+        self.on_initialize_info(context);
+
+        context.pushEvent(menu::MFunctionEvent(Info2.startAnimation, context, delay));
+        LeaveDetectUtil::begin(context, 75, self, onLeaveDetect, onActivateDetect);
+    }
+
+    method onInitialize(context)
+    {
+        disableInput(context);
+        RaceMenuUtil::setEnableButton(false);
+
+        ORG.setEffectFader(0.0);
+        setup(context);
+
+        SoundUtil::SetupSound(SoundUtil::SCENE_QUICK);
+        startQuickMenuDemo(context, sEntriedCPDP);
+        sEntriedCPDP = nil;
+        context.pushEvent(menu::MScriptEvent(context, self, "on_initialize"));
+
+        if (main::GAME_STATUS.config.reset_setting_at_quick)
+            resetPlayerSettings();
+
+        syncLoadingForStartingQuickMenu();
+    }
+
+    method onFinalize(context)
+    {
+        self.entry_top = nil;
+        Ranking2.clearCallback();
+
+        Info2::Body::Map_Area.finalize(context);
+        Info2.finalize(context);
+
+        LeaveDetectUtil::end(context);
+
+        BoardUtil::finalize(context, 
+            Info2::Body::Friend_Ranking::FrameR,
+            nil,
+            nil);
+
+        RaceMenuUtil::remove(context);
+        RaceMenuUtil::setEnableButton(true);
+
+        if (ORG.inSession())
+            endSessionSync();
+
+        ORG.pauseAvailable = true;
+
+        RaceMenuUtil::setEnableButton(true);
+    }
+
+    method onUnload(context)
+    {
+        OnlineRankingUpload::clearEventRankingCache(context);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        if (cancelWaitingForLoaing(context))
+        {
+            RaceMenuUtil::setFocus(context, 0, false);
+            return STATE_YIELD;
+        }
+
+        RaceMenuUtil::setFocusLast(context);
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (LeaveDetectUtil::activated(context, event))
+            return STATE_YIELD;
+
+        if (event.keysym == CELL_PAD_CTRL_CIRCLE)
+            return STATE_EXIT;
+
+        if (!RaceMenuUtil::getEnableButton())
+            return STATE_YIELD;
+
+        var scrollclip = Info2::Body::Description_and_BG::ScrolledWindow::clip;
+        var line_height = scrollclip.space.Details.line_height;
+
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_START:
+                if (RaceMenuUtil::activated())
+                {
+                    RaceMenuUtil::setFocus(context, 0, true);
+                    onStartRace(context);
+                }
+
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_R1:
+                Info2.fastforward(context);
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_L3_UP:
+                if (scrollclip.manualTargetIncY(line_height))
+                    return STATE_RETURN;
+                break;
+
+            case CELL_PAD_CTRL_L3_DOWN:
+                if (scrollclip.manualTargetIncY(-line_height))
+                    return STATE_RETURN;
+                break;
+
+        }
+
+        return STATE_EXIT;
+    }
+
+    method onLeaveDetect(context)
+    {
+        RaceMenuUtil::hideAction();
+        Info2.hide();
+        self.CourseLogo.show();
+    }
+
+    method onActivateDetect(context)
+    {
+        self.CourseLogo.hide();
+        RaceMenuUtil::appearAction();
+        Info2.show();
+    }
+
+    method hideAction(context)
+    {
+        RaceMenuUtil::hideAction();
+    }
+
+    method appearAction(context)
+    {
+        RaceMenuUtil::appearAction();
+    }
+
+    module Info2
+    {
+        module Header
+        {
+            method initialize(context, gp)
+            {
+                self.InformationTitle.text = manager.translate("QuickMenu", "TARGET_TIME");
+                self.EventTitle.text = gp.event.information.title.getText();
+            }
+        }
+
+        module Body
+        {
+            module Description_and_BG
+            {
+                method initialize(context, gp, course_info)
+                {
+                    var clip = self.ScrolledWindow::clip;
+                    clip.space.y = 0.0;
+                    clip.manual_target_y = 0.0;
+
+                    self.Title_main.text = gp.event.information.one_line_title.getText();
+                    clip.space::Details.text = gp.event.information.description.getText();
+                }
+
+                method beginAnimation(context)
+                {
+                    var list = [self.Opacity];
+                    foreach (var a in list)
+                    {
+                        a.restart();
+                    }
+                }
+            }
+
+            module Target_Info
+            {
+                attribute next_animation_widget;
+                attribute actor_list;
+                attribute first_animation;
+
+                async method initialize(context, gp, course_info)
+                {
+                    var eval_condition = gp.event.eval_condition;
+
+                    self.Target_Info::Place::CourseName.text = manager.translate("CourseName", course_info.Name);
+
+                    var flag = course_info.CountryFlag.downcase();
+                    self.Target_Info::Place::Flag.image_path = "/piece/flag_ranking/%{flag}.img";
+                    self.Target_Info::Target::HBox_Gold::HBox::Time.text = pdiext::GetRaceTimeString(eval_condition.gold);
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Silver::Time.text = pdiext::GetRaceTimeString(eval_condition.silver);
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Bronze::Time.text = pdiext::GetRaceTimeString(eval_condition.bronze);
+
+                    var event_id = gSequenceCondition.gp.event.event_id;
+                    var [eval_type, best_record] = await () => GAME_STATUS.user_profile.record.event_record.getBestRecord(event_id);
+
+                    if (best_record == -1)
+                        best_record = pdiext::MAX_LAPTIME1000;
+
+                    self.Target_Info::Target::HBox_Gold::HBox::Check.active = best_record <= eval_condition.gold;
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Silver::Check.active = best_record <= eval_condition.silver;
+                    self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Bronze::Check.active = best_record <= eval_condition.bronze;
+
+                    Description_and_BG::PassMark.visible = best_record <= eval_condition.bronze;
+
+                    var cp = getPlayerCar();
+                    if (cp != nil)
+                    {
+                        self.Target_Info::Car::Car_Name.text = gtengine::MSpecDB::getCarName(cp.getCarCode());
+                        self.Target_Info::Car::Car_Thumb.image_path = getCarThumbnailPath(cp);
+                    }
+                    else
+                    {
+                        self.Target_Info::Car::Car_Name.text = "";
+                        self.Target_Info::Car::Car_Thumb.image_path = "";
+                    }
+
+                    self.Target_Info::MyRecord::Time.text = pdiext::GetRaceTimeString(best_record);
+                    self.Target_Info::MyRecord::Order.text = "--";
+
+                    self.Target_Info::Online_Record::Time.text = pdiext::GetRaceTimeString(pdiext::MAX_LAPTIME1000);
+                    self.Target_Info::Online_Record::Name_Top.text = "--";
+
+                    if (GetVersionBranch() != "demo" && Grim2Util::Ranking::isEnableLicenseRanking())
+                    {
+                        var board_id = OnlineRankingUpload::getEventBoardID(context);
+                        var user_id = NP.getOnlineId();
+                        var me = self;
+                        var is_license = true;
+
+                        OnlineRankingUpload::setEventRankingCacheAsync(context, (context, map) => 
+                        {
+                            if (map != nil)
+                            {
+                                me.Target_Info::MyRecord::Time.text = pdiext::GetRaceTimeString(map["score"]);
+                            }
+                        }, is_license);
+                    }
+
+                    self.first_animation = true;
+                }
+
+                method beginAnimation(context)
+                {
+                    Info2.setPlayModule(nil);
+
+                    Body::Opacity.on_effect_end = nil;
+                    
+                    var title = manager.translate("QuickMenu", "TARGET_TIME");
+                    var title_changed = Header.InformationTitle.text != title;
+                    Header.InformationTitle.text = title;
+
+                    Header.InformationTitle::Opacity.setStartDuration(0, 0);
+                    var time = Header.InformationTitle::Opacity.getInterpolationPeriod(1);
+                    Header.InformationTitle::Opacity.setInterpolationPeriod(0, time);
+                    Header.InformationTitle::Opacity.setEndDuration(1, 1.5);
+
+                    var total_time = Stretch_bg.Height.total_time;
+                    var title_time = total_time - (Header.InformationTitle::Opacity.total_time - Header.InformationTitle::Opacity.getEndDuration(0))
+                    if (self.first_animation)
+                    {
+                        title_time += Stretch_bg.Opacity.total_time;
+                        self.first_animation = false;
+                    }
+
+                    Header.InformationTitle::Opacity.setEndDuration(0, title_time);
+
+                    self.actor_list = [];
+                    Stretch_bg.Height.restart();
+
+                    var list = [
+                        self.Opacity,
+                        self.Target_Info::Place::X,
+                        self.Target_Info::Target::Height,
+                        self.Target_Info::Target::HBox_Gold::Opacity,
+                        self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Silver::Opacity,
+                        self.Target_Info::Target::HBox_Silver_Bronze::HBox::HBox_Bronze::Opacity,
+                        self.Target_Info::Car::ParallelActor,
+                        self.Target_Info::MyRecord::ParallelActor,
+                        self.Target_Info::Online_Record::ParallelActor,
+                    ];
+
+                    var o = Header.InformationTitle::Opacity;
+                    self.actor_list.push(o);
+
+                    if (title_changed)
+                        o.restart();
+                    else
+                        o.start();
+
+                    foreach (var a in list)
+                    {
+                        self.actor_list.push(a);
+                        a.restart();
+                    }
+
+                    self.Opacity.on_effect_end = self.endAnimation;
+                    Info2.setPlayModule(self);
+
+                    Body::Opacity.reverse = true;
+                    Body::Opacity.start();
+                }
+
+                method endAnimation(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+                    if (self.next_animation_widget != nil)
+                    {
+                        self.next_animation_widget.beginAnimation(context);
+                    }
+                }
+
+                method rewind(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+
+                    Body::Opacity.reverse = false;
+                    Body::Opacity.start();
+
+                    Body::Opacity.on_effect_end = self.beginAnimation;
+                }
+
+                method fastforward(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+
+                    foreach (var a in self.actor_list)
+                        a.warp();
+
+                    Body::Opacity.reverse = false;
+                    Body::Opacity.start();
+                    
+                    Body::Opacity.on_effect_end = self.endAnimation;
+                }
+            }
+
+            module Map_Area
+            {
+                attribute next_animation_widget;
+                attribute actor_list;
+                attribute map_data;
+
+                method initialize(context, gp, course_info)
+                {
+                    CourseMapFaceUtil::initialize(context, self.MapClip::CourseMapFace, course_info, gp.event);
+                }
+
+                method finalize(context)
+                {
+                    self.map_data = nil;
+                }
+
+                method beginAnimation(context)
+                {
+                    Info2.setPlayModule(nil);
+
+                    Body::Opacity.on_effect_end = nil;
+
+                    var title = manager.translate("QuickMenu", "DRIVING_SECTION");
+                    var title_changed = Header.InformationTitle.text != title;
+                    Header.InformationTitle.text = title;
+
+                    Header.InformationTitle::Opacity.setStartDuration(0, 0);
+                    Header.InformationTitle::Opacity.setEndDuration(1, 0);
+
+                    var total_time = self.Opacity.total_time;
+                    var title_time = total_time - (Header.InformationTitle::Opacity.total_time - Header.InformationTitle::Opacity.getEndDuration(0))
+
+                    Header.InformationTitle::Opacity.setEndDuration(0, title_time);
+
+                    self.actor_list = [];
+                    
+                    var list = [
+                        self.Opacity,
+                    ];
+                    
+                    var o = Header.InformationTitle::Opacity;
+                    self.actor_list.push(o);
+
+                    if (title_changed)
+                        o.restart();
+                    else
+                        o.start();
+
+                    foreach (var a in list)
+                    {
+                        self.actor_list.push(a);
+                        a.restart();
+                    }
+
+                    self.Opacity.on_effect_end = self.endAnimation;
+                    Info2.setPlayModule(self);
+
+                    Body::Opacity.reverse = true;
+                    Body::Opacity.start();
+                }
+
+                method endAnimation(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+
+                    if (self.next_animation_widget != nil)
+                        self.next_animation_widget.beginAnimation(context);
+                }
+
+                method fastforward(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+                    foreach (var a in self.actor_list)
+                        a.warp();
+
+                    Stretch_bg.Height.warp();
+
+                    Body::Opacity.reverse = false;
+                    Body::Opacity.start();
+
+                    Body::Opacity.on_effect_end = self.endAnimation;
+                }
+
+                method rewind(context)
+                {
+                    
+                }
+            }
+
+            module Friend_Ranking
+            {
+                attribute next_animation_widget;
+                attribute actor_list;
+
+                method beginAnimation(context)
+                {
+                    Info2.setPlayModule(nil);
+
+                    Body::Opacity.on_effect_end = nil;
+                    
+                    var title = manager.translate("QuickMenu", "FRIEND_RANKING");
+                    var title_changed = Header.InformationTitle.text != title;
+                    Header.InformationTitle.text = title;
+
+                    Header.InformationTitle::Opacity.setStartDuration(0, 0);
+                    Header.InformationTitle::Opacity.setEndDuration(1, 0);
+
+                    var total_time = self.Opacity.total_time;
+                    var title_time = total_time - (Header.InformationTitle::Opacity.total_time - Header.InformationTitle::Opacity.getEndDuration(0))
+                    Header.InformationTitle::Opacity.setEndDuration(0, title_time);
+
+                    self.actor_list = [];
+                    var list = [
+                        self.Opacity,
+                        self.TextInfo::Opacity
+                    ];
+
+                    var o = Header.InformationTitle::Opacity;
+                    self.actor_list.push(o);
+
+                    if (title_changed)
+                        o.restart();
+                    else
+                        o.start();
+
+                    foreach (var a in list)
+                    {
+                        self.actor_list.push(a);
+                        a.restart();
+                    }
+
+                    self.Opacity.on_effect_end = self.endAnimation;
+
+                    var start_duration = 0.0;
+                    if (self.FrameR.defined("Board"))
+                    {
+                        var listbox = self.FrameR::Board::ListBox;
+                        for (var i = 0; i < listbox.getItemCount(); i++)
+                        {
+                            var w = listbox.getItemWidget(i, context);
+                            w.Actors::Rotate3D.setStartDuration(0, start_duration);
+                            w.Actors::Opacity.setStartDuration(0, start_duration);
+
+                            self.actor_list.push(w.Actors);
+                            w.Actors.restart();
+
+                            start_duration += 0.2;
+                        }
+                    }
+
+                    Info2.setPlayModule(self);
+
+                    Body::Opacity.reverse = true;
+                    Body::Opacity.start();
+                }
+
+                method endAnimation(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+                    if (self.next_animation_widget != nil)
+                    {
+                        self.next_animation_widget.beginAnimation(context);
+                    }
+                }
+
+                method rewind(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+
+                    Body::Opacity.reverse = false;
+                    Body::Opacity.start();
+
+                    Body::Opacity.on_effect_end = self.beginAnimation;
+                }
+
+                method fastforward(context)
+                {
+                    self.Opacity.on_effect_end = nil;
+
+                    foreach (var a in self.actor_list)
+                        a.warp();
+
+                    Body::Opacity.reverse = false;
+                    Body::Opacity.start();
+                    
+                    Body::Opacity.on_effect_end = self.endAnimation;
+                }
+            }
+        }
+
+        module Footer
+        {
+            method initialize(context)
+            {
+                if (PluginModule::sUpdatedFriendRank == nil)
+                    return;
+
+                if (!Grim2Util::Ranking::isEnableLicenseRanking())
+                    return;
+
+                var item = hidden::TipsItem.doCopy();
+                item.FriendRankingNew.text = manager.translate("Ranking", "UPDATE_FRIEND_RANKING_AT_QUICK");
+
+                var [num, rank_str] = OrdinalUtil::getOrdinalNumberSeparate(PluginModule::sUpdatedFriendRank);
+                item.Num.text = PluginModule::sUpdatedFriendRank;
+                item.Place.text = rank_str;
+
+                self.HBox::Tips::HBox.appendChild(context, item);
+            }
+        }
+    }
+}

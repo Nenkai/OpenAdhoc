@@ -1,0 +1,219 @@
+
+
+
+
+
+
+
+
+
+
+
+function showErrorInvalidCar(context, mgarage_car)
+{
+    var short_name = gtengine::MSpecDB::getCarShortName(mgarage_car.car_code);
+    main::sound.play("disable");
+    ERROR(context, "CommonGTMode", "ERROR_INVALID_VOUCHER_CAR", short_name);
+}
+
+function rideCar(context, mgarage_car, verbose)
+{
+    if (mgarage_car.invalid)
+    {
+        showErrorInvalidCar(context, mgarage_car);
+        return;
+    }
+
+    var mgarage = GAME_STATUS.user_profile.garage;
+    var riding_id = mgarage.getRidingGarageId();
+    if (riding_id != mgarage_car.garage_id)
+    {
+        var short_name = gtengine::MSpecDB::getCarShortName(mgarage_car.car_code);
+        if (verbose != true || QUERY(context, "CommonGTMode", "DO_YOU_RIDE_CAR", short_name))
+        {
+            mgarage.rideCar(mgarage_car.garage_id);
+            var cp = mgarage.getCar(mgarage_car.garage_id);
+            SoundUtil::PlayCarStartSound(cp);
+        }
+    }
+    else
+    {
+        main::sound.play("disable");
+        if (verbose == true)
+            ERROR(context, "CommonGTMode", "NOW_RIDING");
+    }
+}
+
+function checkSell(context, mgarage, mgarage_car, show_error)
+{
+    var garage_id = mgarage_car.garage_id;
+    var cp = mgarage.getCar(garage_id);
+
+    if (cp == nil)
+        return false;
+
+    var car_code = cp.getCarCode();
+    var is_voucher_car = SPECDB.count("SELECT COUNT(ID) FROM GENERIC_CAR WHERE SpecifyFlags1 & %d AND ID=%d"
+        .format(gtengine::GenericFlag::IS_VOUCHER_CAR, cp.getCarCode())).toBool();
+
+    if (is_voucher_car)
+    {
+        if (show_error)
+        {
+            main::sound.play("disable");
+            ERROR(context, "CommonGTMode", "ERROR_SELL_VOUCHER_CAR");
+        }
+
+        return false;
+    }
+
+    if (mgarage.getRidingGarageId() == garage_id)
+    {
+        if (show_error)
+        {
+            main::sound.play("disable");
+            ERROR(context, "CommonGTMode", "ERROR_RIDING_CAR_SELL");
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+function sell(context, mgarage, mgarage_car)
+{
+    if (!checkSell(context, mgarage, mgarage_car, true))
+        return false;
+
+    var garage_id = mgarage_car.garage_id;
+    var cp = mgarage.getCar(garage_id);
+    var car_code = cp.getCarCode();
+    var is_exist_carcode = SPECDB.executeQuery1R1C("SELECT ID FROM GENERIC_CAR WHERE ID=%d".format(car_code)) != nil;
+    
+    if (!is_exist_carcode)
+    {
+        var user = main::PDINetwork.getClientName();
+        main::Grim2.requestPutLog("NG=40:NU=%{user}");
+        ERROR(context, "CommonGTMode", "ERROR_SELL_VOUCHER_CAR");
+        return false;
+    }
+
+    var price = main::gtengine::MSpecDB::getCarPrice(car_code);
+    var dont_sell = SPECDB.count("SELECT COUNT(ID) FROM GENERIC_CAR WHERE SpecifyFlags1 & %d AND ID=%d"
+        .format(gtengine::GenericFlag::DONT_SELL, cp.getCarCode())).toBool();
+
+    var car_price_max = (2000000000 * 0.01).toInt();
+    if (price > car_price_max)
+    {
+        var user = main::PDINetwork.getClientName();
+        main::Grim2.requestPutLog("NG=41:NU=%{user}");
+        ERROR(context, "CommonGTMode", "ERROR_SELL_VOUCHER_CAR");
+        return false;
+    }
+
+    if (dont_sell || price <= 0 || mgarage_car.priceless)
+    {
+        if (!QUERY_D_NO(context, "CommonGTMode", "QUERY_CAR_LEAVE"))
+            return false;
+
+        if (!QUERY_D_NO(context, "CommonGTMode", "QUERY_CAR_LEAVE_REALLY"))
+            return false;
+
+        mgarage.removeCar(mgarage_car.garage_id);
+        OK_AUTO_CLOSE(context, "CommonGTMode", "MSG_REMOVE_CAR");
+    }
+    else
+    {
+        var sell_price = price * 0.3;
+        var sell_price_str = main::pdiext::MMisc::GetMoneyString(sell_price);
+
+        if (main::GAME_STATUS.user_profile.checkCashOverLimit(sell_price))
+        {
+            if (!QUERY_D_NO(context, "CommonGTMode", "QUERY_CAR_SELL_IF_CASH_LIMIT", sell_price_str))
+                return false;
+        }
+        else 
+        {
+            if (!QUERY_D_NO(context, "CommonGTMode", "QUERY_CAR_SELL", sell_price_str))
+                return false;
+        }
+
+        main::GAME_STATUS.user_profile.addCash(context, sell_price);
+        main::sound.play("buy_shop");
+        Grim2Util::PUTLOG::CREDIT::income("car", sell_price, cp.getCarLabel());
+        mgarage.removeCar(mgarage_car.garage_id);
+    }
+
+    OK_AUTO_CLOSE(context, "CommonGTMode", "MSG_SELL_CAR");
+    return true;
+}
+
+function setFavorite(context, garage_id, flag, show_error)
+{
+    var result = false;
+    var mgarage = GAME_STATUS.user_profile.garage;
+    var ref_mgarage_car = mgarage.referGarageCar(garage_id);
+
+    if (flag == nil)
+        flag = !ref_mgarage_car.favorite;
+
+    if (flag)
+    {
+        if (ref_mgarage_car.invalid)
+            result = false;
+
+        if (ref_mgarage_car.favorite)
+        {
+            result = false;
+        }
+        else if (mgarage.getCarCount(["favorite" : true]) < gFavoriteCarMax)
+        {
+            ref_mgarage_car.favorite = flag;
+            result = true;
+        }
+        else
+        {
+            if (show_error)
+                ERROR(context, "CommonGTMode", "ERROR_FAVORITE_IS_FULL");
+
+            result = false;
+        }
+    }
+    else if (!ref_mgarage_car.favorite)
+    {
+        result = false;
+    }
+    else
+    {
+        ref_mgarage_car.favorite = flag;
+        result = true;
+    }
+
+    return result;
+}
+
+function captureThumbnail(context, mgarage, is_stockyard, mgarage_car, scene_face)
+{
+    if (QUERY(context, "CommonGTMode", "QUERY_UPDATE_CAR_IMAGE"))
+    {
+        var capture_thumbnail = function(context)
+        {
+            var cp = mgarage.getCar(mgarage_car.garage_id);
+            if (is_stockyard)
+                GarageUtil::Thumbnail::capture(context, scene_face, mgarage_car.garage_id, cp, GarageUtil::Thumbnail::Type::Stockyard);
+            else
+                GarageUtil::Thumbnail::capture(context, scene_face, mgarage_car.garage_id, cp, GarageUtil::Thumbnail::Type::Garage);
+            
+            return true;
+        };
+
+        DialogUtil::openConfirmExecDialog(context, 
+            nil, 
+            manager.translate("CommonGTMode", "NOW_UPDATE_CAR_IMAGE"),
+            nil, 
+            nil,
+            capture_thumbnail,
+            nil);
+    }
+}

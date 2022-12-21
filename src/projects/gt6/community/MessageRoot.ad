@@ -1,0 +1,1093 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module MessageRoot
+{
+    function updateMessage(context)
+    {
+        var mail_list = [];
+        var max_mail_id = GAME_STATUS.user_profile.mail.getMaxMailId();
+        var request = GTMail.requestAllMailList(max_mail_id, (args) => {});
+
+        if (Grim2Util::joinAwait(context, request))
+        {
+            var mail_list = GTMail.decodeMailList(request);
+            GAME_STATUS.user_profile.mail.add(mail_list);
+        }
+
+        return mail_list.size > 0;
+    }
+
+    function isFriend(user_id)
+    {
+        var pdinetwork_user_id = PDINetwork.getFriendList(user_id);
+        return pdinetwork_user_id != nil;
+    }
+
+    function sendMessage(context, user_id, subject)
+    {
+        if (!isFriend(user_id))
+        {
+            var my_user_id = Grim2.getLoginUserId();
+            var request = UserProfile2.requestUserProfile(my_user_id, (args) => {});
+            if (Grim2Util::joinAwait(context, request))
+            {
+                var u = UserProfile2.decodeUserProfile(request);
+                if (u["profile_level"] & (1 << 1) != 0)
+                {
+                    ERROR(context, "Community", "MESSAGE_OFF_FOR_ME");
+                    return false;
+                }
+            }
+
+            var your_profile = MessageRoot.user_profile_map[user_id];
+            if (your_profile == nil)
+                return false;
+
+            if (your_profile["profile_level"] & (1 << 1) != 0)
+            {
+                ERROR(context, "Community", "MESSAGE_OFF_FOR_YOU");
+                return false;
+            }
+        }
+
+        return SendMessageRoot.openMessage(context, user_id, subject);
+    }
+
+    function getRejectText(what)
+    {
+        var map = [
+            "CET" : "CLUB_EVENT_TITLE",
+            "CED" : "CLUB_EVENT_DESCRIPTION",
+            "CEPH": "CLUB_EVENT_PHOTO",
+            "CERT": "CLUB_EVENT_RESULT_TITLE",
+            "BTT" : "BBS_TOPIC_TITLE",
+            "BTC" : "BBS_TOPIC_COMMENT",
+            "BC"  : "BBS_COMMENT",
+            "BCPH": "BBS_COMMENT_PHOTO",
+            "MC"  : "MESSAGE_COMMENT",
+            "UN"  : "PROFILE_NICKNAME",
+            "UC"  : "PROFILE_COMMENT",
+            "UR"  : "PROFILE_RECENT",
+            "UPH" : "PROFILE_PHOTO",
+            "UPPC": "PUBLISH_PHOTO_COMMENT",
+            "UPPH": "PUBLISH_PHOTO",
+            "CT"  : "CLUB_TITLE",
+            "CD"  : "CLUB_DESCRIPTION",
+            "CR"  : "CLUB_NEWS",
+            "CPH" : "CLUB_PHOTO",
+        ];
+
+        var keyword = map[what];
+        if (keyword == nil)
+        {
+            return manager.translate("Community", "REJECT_GENERIC");
+        }
+        else
+        {
+            return manager.translate("Community", "REJECT_%{keyword}");
+        }
+    }
+
+    function isSystemMessage(user_id)
+    {
+        return user_id == "-";
+    }
+
+    function getUserId(user_id)
+    {
+        return user_id == "-" ? manager.translate("Community", "SYSTEM_MESSAGE") : user_id;
+    }
+
+    attribute modal_page;
+    attribute closed;
+    attribute user_profile_map;
+    attribute result;
+    attribute no_link;
+    attribute dirty;
+
+    hidden.visible = false;
+
+    method open(context, no_link)
+    {
+        self.dirty = false;
+        self.no_link = no_link;
+        self.result = nil;
+        self.user_profile_map = Map();
+        self.closed = true;
+        self.modal_page = main::SequenceUtil::ModalPage(context, MessageRoot);
+        self.modal_page.open();
+        
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        Community.clearCallback();
+        GTMail.clearCallback();
+        UserProfile2.clearCallback();
+
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        
+        if (self.dirty)
+            SaveDataUtilGT6::saveEveryWhere(context);
+
+        PageUtil::visibleUnderPages(context, self);
+
+        MessageRoot.setFocus(nil);
+        
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        if (self.modal_page != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+        }
+
+        self.no_link = nil;
+        self.dirty = nil;
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        ContextMain.disableInput();
+
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+
+        actor.on_effect_end = (context) =>
+        {
+            actor.on_effect_end = nil;
+            PageUtil::invisibleUnderPages(context, self);
+            ContextMain.enableInput();
+            MessageRoot.closed = false;
+        };
+
+        self.CloseActor.stop();
+
+        Pane::Main::Mode::Top_User.insensitive = true;
+        Pane::Main::Mode::Top_Friend.insensitive = true;
+        Pane::Main::Mode::Message.insensitive = true;
+        
+        updateMessage(context);
+        setNotYetRead(context);
+
+        Pane::Main::Title.setText(context, manager.translate("Community", "MESSAGE_LIST"));
+
+        Pane::Menu::Mode.changeMode(context, Pane::Menu::Mode::Top::VBox, "User");
+        Pane::SubMenu::Mode.changeMode(context, Pane::SubMenu::Mode::Top::VBox);
+        Pane::Main::Mode.changeMode(context, Pane::Main::Mode::Top_User);
+
+
+        Pane::Main::Mode.setEmpty(false, "");
+        return STATE_YIELD;
+    }
+    
+    method onFinalize(context)
+    {
+        Pane::Main::Mode::Message.finalize(context);
+        self.user_profile_map = nil;
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (event.keysym == CELL_PAD_CTRL_SELECT)
+        {
+            var w = self.getFocusWidget();
+            if (w != nil && w.defined("getReportInfo"))
+            {
+                var p = w.getReportInfo(context);
+                if (p != nil)
+                {
+                    sound.play("ok");
+                    SendReportRoot.open(context, p);
+                    return STATE_YIELD;
+                }
+            }
+        }
+
+        return STATE_EXIT;
+    }
+    
+    method onFocusEnter(context, event)
+    {
+        var show_report = false;
+        var w = self.getFocusWidget();
+
+        if (w != nil && w.defined("getReportInfo"))
+        {
+            var p = w.getReportInfo(context);
+            if (p != nil)
+            {
+                show_report = true;
+            }
+        }
+
+        SBox::ReportHelp.set(context, show_report);
+        return 0;
+    }
+
+    method setNotYetRead(context)
+    {
+        var new_count = GAME_STATUS.user_profile.mail.getNewCount();
+        Pane::Menu::Mode::Top::VBox::User::Count::Label.text = new_count;
+        Pane::Menu::Mode::Top::VBox::User::Count.visible = new_count > 0;
+    }
+
+    module Pane
+    {
+        module Menu::Mode
+        {
+            attribute active_menu;
+
+            method initialize(context, widget, args)
+            {
+                var target = widget;
+                for (var w = target.first; w != nil; w = w.next)
+                    w.active = false;
+
+                if (args != nil)
+                {
+                    var w = target[args];
+                    if (w != nil)
+                        w.active = true;
+                }
+            }
+
+            method changeMode(context, widget, args)
+            {
+                var reverse = self.active_menu == nil ? true : (self.active_menu.sx - widget.sx) >= 0;
+
+                Pane::Menu::Mode::X.reverse = reverse;
+                Pane::Menu::Mode::X.start();
+
+                if (self.active_menu != nil)
+                    self.active_menu.insensitive = true;
+
+                self.active_menu = widget;
+                widget.insensitive = false;
+                initialize(context, widget, args);
+
+                MessageRoot.setFocus(widget.first.Button);
+            }
+
+            module Top::VBox
+            {
+                module User
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+
+                        Pane::Main::Title.setText(context, manager.translate("Community", "MESSAGE_LIST"));
+                        Pane::Menu::Mode.initialize(context, Pane::Menu::Mode::Top::VBox, self.name);
+                        Pane::Main::Mode.changeMode(context, Pane::Main::Mode::Top_User);
+
+                        return STATE_YIELD;
+                    }
+                }
+
+                module Friend
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+
+                        Pane::Main::Title.setText(context, manager.translate("Community", "SELECT_TARGET"));
+                        Pane::Menu::Mode.initialize(context, Pane::Menu::Mode::Top::VBox, self.name);
+                        Pane::Main::Mode.changeMode(context, Pane::Main::Mode::Top_Friend);
+
+                        return STATE_YIELD;
+                    }
+                }
+            }
+
+            module Message::VBox
+            {
+                module Back
+                {
+                    method backImpl(context)
+                    {
+                        Pane::Main::Title.setText(context, manager.translate("Community", "MESSAGE_LIST"));
+                        Pane::Menu::Mode.changeMode(context, Pane::Menu::Mode::Top::VBox, "User");
+                        Pane::SubMenu::Mode.changeMode(context, Pane::SubMenu::Mode::Top::VBox);
+                        Pane::Main::Mode.changeMode(context, Pane::Main::Mode::Top_User);
+                        MessageRoot.setNotYetRead(context);
+                    }
+
+                    method onCancel(context)
+                    {
+                        sound.play("cancel");
+                        backImpl(context);
+                        return STATE_YIELD;
+                    }
+
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+                        backImpl(context);
+                        return STATE_YIELD;
+                    }
+                }
+            }
+        }
+
+        module Main::Title
+        {
+            method setText(context, text)
+            {
+                self.TextFace.text = text;
+            }
+        }
+
+        module Main::Mode
+        {
+            attribute active_main;
+
+            method onInitialize(context)
+            {
+                for (var w = self.first; w != nil; w = w.next)
+                {
+                    if (w["ListBox"] != nil)
+                    {
+                        var adj = menu::MAdjustment();
+                        w.VScrollArrow.adjustment = adj;
+                        w.ListBox.v_adjustment = adj;
+                    }
+                }
+            }
+
+            method changeMode(context, widget, args)
+            {
+                if (self.active_main != nil)
+                {
+                    self.active_main.insensitive = true;
+                    self.active_main.Opacity.reverse = true;
+                    self.active_main.Opacity.start();
+                }
+
+                self.active_main = widget;
+                widget.Opacity.reverse = false;
+                widget.Opacity.start();
+                widget.initialize(context, args);
+                widget.insensitive = false;
+            }
+
+            method setEmpty(visible, text, image_key)
+            {
+                Main::Empty.visible = visible;
+
+                if (text == "")
+                    Main::Empty::TextFace.text = "";
+                else
+                    Main::Empty::TextFace.text = manager.translate("Community", text);
+
+                if (image_key != nil)
+                {
+                    Main::Empty::ImageFace.image_path = "/piece/gt6/community/icon_%{image_key}_l.img";
+                }
+            }
+
+            module Top_User
+            {
+                method initialize(context)
+                {
+                    var listbox = self.ListBox;
+                    listbox.setItemCount(0);
+                    listbox.setItemTemplate(context, hidden::UserItem);
+
+                    var user_list = GAME_STATUS.user_profile.mail.getUserList();
+                    listbox.data_list = user_list;
+                    listbox.setItemCount(user_list.size);
+                    listbox.can_focus = user_list.size > 0;
+                    Pane::Main::Mode.setEmpty(user_list.size == 0, "EMPTY_MESSAGE", "message");
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("cancel");
+                    MessageRoot.setFocus(Pane::Menu::Mode::Top::VBox::User::Button);
+                    return STATE_YIELD;
+                }
+
+                module ListBox
+                {
+                    method onFocusNotify(context, new_index, old_index)
+                    {
+                        var show_report = false;
+                        var w = self.getItemWidget(new_index);
+                    
+                        if (w != nil)
+                        {
+                            if (ReportUtil::MessageData(w.message) != nil)
+                            {
+                                show_report = true;
+                            }
+                        }
+                    
+                        SBox::ReportHelp.set(context, show_report);
+                        return 0;
+                    }
+
+                    method getReportInfo(context)
+                    {
+                        var w = self.getItemWidget(self.focus_index);
+                        if (w == nil)
+                            return nil;
+
+                        return ReportUtil::MessageData(w.message);
+                    }
+                }
+            }
+
+            module Top_Friend
+            {
+                method initialize(context)
+                {
+                    var listbox = self.ListBox;
+                    listbox.setItemCount(0);
+                    listbox.setItemTemplate(context, hidden::FriendItem);
+                    var friend_list = getFriendListByPresence(context);
+                    listbox.data_list = friend_list;
+                    listbox.setItemCount(friend_list.size);
+                    listbox.can_focus = friend_list.size > 0;
+                    Pane::Main::Mode.setEmpty(friend_list.size == 0, "EMPTY_FRIEND", "friend");
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("cancel");
+                    MessageRoot.setFocus(Pane::Menu::Mode::Top::VBox::Friend::Button);
+                    return STATE_YIELD;
+                }
+            }
+
+            module Message
+            {
+                attribute user_id;
+
+                method initialize(context, user_id)
+                {
+                    self.user_id = user_id;
+
+                    Pane::SubMenu::Mode::Message::VBox::Profile.visible = !isSystemMessage(user_id);
+                    Pane::SubMenu::Mode::Message::VBox::New.visible = !isSystemMessage(user_id);
+
+                    var message_list = GAME_STATUS.user_profile.mail.getMessageList(user_id);
+
+                    self.ScrolledWindow::clip::space.y = 0.0;
+
+                    var target = self.ScrolledWindow::clip::space::VBox;
+                    target.clearChildren(context);
+
+                    foreach (var message in message_list)
+                    {
+                        var item = hidden::MessageItem.doCopy();
+                        target.appendChild(context, item);
+                        item.initialize(context, message);
+                    }
+                }
+
+                method reload(context)
+                {
+                    var res = updateMessage(context);
+                    if (res)
+                    {
+                        initialize(context, self.user_id);
+                    }
+                }
+
+                method finalize(context)
+                {
+                    var target = self.ScrolledWindow::clip::space::VBox;
+                    target.clearChildren(context);
+                }
+
+                method onCancel(context)
+                {
+                    sound.play("cancel");
+                    MessageRoot.setFocus(Pane::Menu::Mode::Message::VBox::Back::Button);
+                    return STATE_YIELD;
+                }
+
+                module Reload
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+                        Message.reload(context);
+                        return STATE_YIELD;
+                    }
+                }
+            }
+        }
+
+        module SubMenu::Mode
+        {
+            attribute active_sub_menu;
+
+            method changeMode(context, widget, args)
+            {
+                var reverse = self.active_sub_menu == nil ? true : (self.active_sub_menu.sx - widget.sx) >= 0;
+                Pane::SubMenu::Mode::X.reverse = reverse;
+                Pane::SubMenu::Mode::X.start();
+
+                if (self.active_sub_menu != nil)
+                    self.active_sub_menu.insensitive = true;
+
+                self.active_sub_menu = widget;
+                widget.insensitive = false;
+            }
+
+            module Top::VBox
+            {
+
+            }
+
+            module Message::VBox
+            {
+                method onCancel(context)
+                {
+                    sound.play("cancel");
+                    MessageRoot.setFocus(Pane::Menu::Mode::Message::VBox::Back::Button);
+                    return STATE_YIELD;
+                }
+
+                module Profile
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+                       
+                        var max_mail_id_before = GAME_STATUS.user_profile.mail.getMaxMailId();
+                        var user_id = Pane::Main::Mode::Message.user_id;
+                        UIKitProject::ProfileRoot.open(context, user_id);
+
+                        var max_mail_id_after = GAME_STATUS.user_profile.mail.getMaxMailId();
+                        if (max_mail_id_before != max_mail_id_after)
+                        {
+                            Pane::Main::Mode::Message.initialize(context, Pane::Main::Mode::Message.user_id);
+                        }
+
+                        return STATE_YIELD;
+                    }
+                }
+
+                module New
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+    
+                        var user_id = Pane::Main::Mode::Message.user_id;
+                        var subject = "";
+                        var res = sendMessage(context, user_id, subject);
+    
+                        if (res)
+                        {
+                            Pane::Main::Mode::Message.initialize(context, user_id);
+                        }
+    
+                        return STATE_YIELD;
+                    }
+                }
+
+                module DeleteAll
+                {
+                    method onActivate(context)
+                    {
+                        sound.play("ok");
+    
+                        var res = QUERY(context, "Community", "QUERY_DELETE_MESSAGE_ALL");
+    
+                        if (res)
+                        {
+                            var user_id = Pane::Main::Mode::Message.user_id;
+                            GAME_STATUS.user_profile.mail.removeByUser(user_id);
+    
+                            MessageRoot.dirty = true;
+                            GENERIC_RESULT(context, true);
+    
+                            Pane::Main::Mode::Message.initialize(context, user_id);
+                        }
+    
+                        return STATE_YIELD;
+                    }
+                }
+            }
+        }
+    }
+
+    module SBox::ReportHelp
+    {
+        method set(context, show)
+        {
+            self.Opacity.reverse = !show;
+            self.Opacity.start();
+        }
+    }
+
+    module hidden
+    {
+        module UserItem
+        {
+            attribute initialized_ = false;
+            attribute user_id;
+            attribute message;
+
+            method onRealize(context)
+            {
+                self.Head::TextFaceID.text = "";
+                self.Head::TextFaceTitle.text = "";
+                self.Head::TextFaceDate.text = "";
+                self.Body::TextFace.text = "";
+            }
+
+            method initialize(context, user_id)
+            {
+                self.user_id = user_id;
+
+                var message_list = GAME_STATUS.user_profile.mail.getMessageList1(user_id);
+                if (message_list.size == 0)
+                    return;
+
+                self.message = message_list[0];
+
+                var [mail_id, user_id0, sender, subject, body, date] = self.message;
+                var d = pdistd::MTime();
+                d.setBySecond(date);
+
+                var has_new = GAME_STATUS.user_profile.mail.hasNewMessage(user_id);
+                self.New.visible = has_new;
+                self.Head::TextFaceID.text = getUserId(user_id);
+                self.Head::TextFaceDate.text = dateTimeString(localtime(d));
+
+                if (isSystemMessage(user_id))
+                {
+                    self.Image::Bg.visible = false;
+                    self.Image::Dummy.visible = false;
+                    self.Image::ImageFace.visible = false;
+
+                    self.Image::SystemMessage.visible = true;
+                    self.Image::SystemMessage.image_path = "/piece/gt6/community/system_message.img";
+                    
+                    var [dummy, what] = subject.split(",");
+                    self.Body::TextFace.text = getRejectText(what);
+                }
+                else
+                {
+                    self.Body::TextFace.text = body;
+
+                    var u = MessageRoot.user_profile_map[user_id];
+                    if (u == nil)
+                    {
+                        var me = self;
+                        UserProfile2.requestUserProfile(user_id, (args) => 
+                        {
+                            var [context, request] = args;
+                            if (request.isDone())
+                            {
+                                var user_profile = UserProfile2.decodeUserProfile(request);
+                                MessageRoot.user_profile_map[user_id] = user_profile;
+
+                                me.Head::TextFaceTitle.text = checkNickName(context, user_profile);
+                                
+                                var photo_id = user_profile["photo_id_avatar"];
+                                setImage(me.Image::ImageFace, photo_id);
+                            }
+                        })
+                    }
+                    else
+                    {
+                        self.Head::TextFaceTitle.text = checkNickName(context, u);
+
+                        var photo_id = u["photo_id_avatar"];
+                        setImage(self.Image::ImageFace, photo_id);
+                    }
+                }
+
+                self.Bg_SystemMessage.visible = isSystemMessage(user_id);
+                self.initialized_ = true;
+            }
+
+            method on_activate(context)
+            {
+                var user_id = self.user_id;
+                if (user_id == nil)
+                    return;
+
+                Pane::Main::Title.setText(context, getUserId(user_id));
+                Pane::Menu::Mode.changeMode(context, Pane::Menu::Mode::Message::VBox);
+                Pane::SubMenu::Mode.changeMode(context, Pane::SubMenu::Mode::Message::VBox);
+                Pane::Main::Mode.changeMode(context, Pane::Main::Mode::Message, user_id);
+            }
+        }
+
+        module FriendItem
+        {
+            attribute initialized_ = false;
+            attribute user_profile;
+
+            method onRealize(context)
+            {
+                self.Head::TextFaceID.text = "";
+                self.Foot::TextFaceNickname.text = "";
+                self.Foot::Country::TextFace.text = "";
+                self.Foot::Presence::Label.text = "";
+                self.Foot::Presence::Label_a.text = "";
+            }
+
+            method initialize(context, friend)
+            {
+                var [user_profile, presence, np_presence] = friend;
+                self.user_profile = user_profile;
+
+                self.Head::TextFaceID.text = user_profile["user_id"];
+                self.Foot::TextFaceNickname.text = checkNickName(context, user_profile);
+
+                var country = user_profile["country"];
+                setFlagImage(self.Foot::Country::ImageFace, country);
+                self.Foot::Country::TextFace.text = manager.translate("Country", country.upcase());
+
+                var photo_id = user_profile["photo_id_avatar"];
+                setImage(self.Image::ImageFace, photo_id);
+
+                var [online, text] = getPresenceInfo(context, presence, np_presence);
+                self.Foot::Presence.active = online;
+                self.Foot::Presence::Label.text = text;
+                self.Foot::Presence::Label_a.text = text;
+                self.initialized_ = true;
+            }
+
+            method on_activate(context)
+            {
+                var user_profile = self.user_profile;
+                if (user_profile == nil)
+                    return;
+
+                var user_id = user_profile["user_id"];
+                var subject = "";
+                sendMessage(context, user_id, subject);
+            }
+        }
+
+        module MessageItem
+        {
+            attribute initialized_ = false;
+            attribute message;
+            attribute club;
+            attribute event;
+
+            method onRealize(context)
+            {
+                self.Head::TextFaceTitle.text = "";
+                self.Head::TextFaceDate.text = "";
+                self.Body::TextFace.text = "";
+                self.Me::TextFace.text = "";
+                self.Friend::TextFace.text = "";
+                self.Body::Club::TextFaceName.text = "";
+                self.Body::Club::TextFaceDescription.text = "";
+                self.Body::Event::TextFaceName.text = "";
+                self.Body::Event::TextFaceDescription.text = "";
+                self.Body::Club.visible = false;
+                self.Body::Event.visible = false;
+                self.Body::Label.text = "";
+            }
+
+            method initProfile(context, w, user_id)
+            {
+                w.TextFace.text = getUserId(user_id);
+
+                if (isSystemMessage(user_id))
+                {
+                    w.Image::Bg.visible = false;
+                    w.Image::Dummy.visible = false;
+                    w.Image::ImageFace.visible = false;
+                    w.Image::BalloonItem.visible = false;
+                    w.Image::SystemMessage.visible = true;
+                    w.Image::SystemMessage.image_path = "/piece/gt6/community/system_message.img";
+                    return;
+                }
+
+                var u = MessageRoot.user_profile_map[user_id];
+                if (u == nil)
+                {
+                    var request = UserProfile2.requestUserProfile(user_id, (args) => {});
+                    
+                    if (Grim2Util::joinAwait(context, request))
+                    {
+                        var user_profile = UserProfile2.decodeUserProfile(request);
+                        MessageRoot.user_profile_map[user_id] = user_profile;
+
+                        var photo_id = user_profile["photo_id_avatar"];
+                        setImage(w.Image::ImageFace, photo_id);
+                    }
+                    
+                }
+                else
+                {
+                    var photo_id = u["photo_id_avatar"];
+                    setImage(w.Image::ImageFace, photo_id);
+                }
+            }
+
+            method initializeReject(context, message)
+            {
+                var [mail_id, user_id, sender, subject, body, date, new_flag] = message;
+                var [dummy, what, value3, value4, value5, value6] = subject.split(",");
+
+                var target = self.Body_SystemMessage;
+                target.Label.text = getRejectText(what);
+                target.TextFaceInformation.text = nolinebreak(manager.translate("Community", "REJECT_CAUTION"));
+
+                var photo_id = "";
+
+                if (what == "CEPH")
+                    photo_id = value5;
+                else if (what == "BCPH")
+                    photo_id = value6;
+                else if (what == "UPH" || what == "UPPH" || what == "CPH")
+                    photo_id = value4;
+
+                if (photo_id != "")
+                {
+                    if (what == "BCPH" || what == "UPPH")
+                        setThumbnailImage(target.Photo::Image::ImageFace, photo_id);
+                    else
+                        setImage(target.Photo::Image::ImageFace, photo_id);
+                }
+                else
+                {
+                    target.Photo.visible = false;
+                }
+            }
+
+            method initialize(context, message)
+            {
+                self.message = message;
+                var [mail_id, user_id, sender, subject, body, date, new_flag] = message;
+
+                var d = pdistd::MTime();
+                d.setBySecond(date);
+                
+                self.New.visible = new_flag;
+                self.Head::TextFaceTitle.text = getUserId(sender);
+                self.Head::TextFaceDate.text = dateTimeString(localtime(d));
+                self.Body::TextFace.text = body;
+                self.Body_SystemMessage::TextFace.text = body;
+                self.Body_SystemMessage::TextFace.visible = body != "";
+                self.Body::Label.visible = false;
+                self.Body::TextFaceDeleted.visible = false;
+                self.Body.visible = isSystemMessage(sender);
+                self.Body_SystemMessage.visible = isSystemMessage(sender);
+
+                if (subject != "")
+                {
+                    self.Body::Label.visible = true;
+                    var [what] = subject.split(",");
+
+                    if (what == "EVENT")
+                    {
+                        var [dummy, club_id, club_event_id] = subject.split(",");
+                        self.Body::Label.text = manager.translate("Community", "MESSAGE_RECOMMEND_EVENT");
+                        
+                        var target = self.Body::Event;
+                        target.visible = true;
+
+                        var me = self;
+
+                        Community.requestEvent(club_id, club_event_id, (args) => 
+                        {
+                            var [context, request] = args;
+                            if (request.isDone())
+                            {
+                                var event = Community.decodeEvent(request);
+                                if (event["club_event_id"] == 0)
+                                {
+                                    target.TextFaceName.text = manager.translate("Community", "NO_CLUB_EVENT_FOUND");
+                                }
+                                else
+                                {
+                                    target.TextFaceName.text = checkText(context, list2text(event["title_list"]), event["title_hidden"], "DELETED_TITLE");
+                                    target.TextFaceDescription.text = checkText(context, list2text(event["description_list"]), event["description_hidden"], "DELETED_DESCRIPTION");
+                                    setImage(target.Image::ImageFace, event["photo_id"]);
+                                }
+
+                                me.event = event;
+                            }
+                        });
+                    }
+                    else if (what == "CLUB")
+                    {
+                        var [dummy, club_id] = subject.split(",");
+                        self.Body::Label.text = "   ";
+                        
+                        var target = self.Body::Club;
+                        target.visible = true;
+
+                        var me = self;
+
+                        Community.requestClub(club_id, (args) => 
+                        {
+                            var [context, request] = args;
+                            if (request.isDone())
+                            {
+                                var club = Community.decodeClub(request);
+                                var key = "MESSAGE_RECOMMEND_CLUB";
+
+                                if (club["club_id"] == 0)
+                                {
+                                    target.TextFaceName.text = manager.translate("Community", "NO_CLUB_FOUND");
+                                }
+                                else
+                                {
+                                    target.TextFaceName.text = checkText(context, club["title"], club["title_hidden"], "DELETED_TITLE");
+                                    target.TextFaceDescription.text = checkText(context, list2text(club["description_list"]), club["description_hidden"], "DELETED_DESCRIPTION");
+                                    
+                                    if (!club["open"])
+                                        key = "MESSAGE_RECOMMEND_CLUB_PRIVATE";
+                                    
+                                    me.Body::Label.text = manager.translate("Community", key);
+                                    setImage(target.Image::ImageFace, club["photo_id"]);
+                                }
+
+                                me.club = club;
+                            }
+                        });
+                    }
+                    else if (what == "REJECT")
+                    {
+                        initializeReject(context, message);
+                    }
+                }
+
+                if (user_id == sender)
+                {
+                    self.Me.visible = true;
+                    self.Friend.visible = false;
+                    initProfile(context, self.Me, sender);
+                }
+                else
+                {
+                     self.Me.visible = false;
+                     self.Friend.visible = true;
+                     initProfile(context, self.Friend, sender);
+                } 
+
+                GAME_STATUS.user_profile.mail.read(mail_id);
+                self.initialized_ = true;
+            }
+
+            method linkCallback(context)
+            {
+                var subject = self.message[3];
+                if (subject == "")
+                    return;
+
+                var [what] = subject.split(",");
+
+                if (self.club == nil && (what == "CLUB" || what == "EVENT"))
+                {
+                    var [dummy, club_id] = subject.split(",");
+                    var request = Community.requestClub(club_id, (args) => {});
+                    
+                    var res = Grim2Util::joinAwait(context, request);
+
+                    if (res)
+                    {
+                        self.club = Community.decodeClub(request);
+                    }
+                }
+
+                if (self.event == nil && what == "EVENT")
+                {
+                    var [dummy, club_id, club_event_id] = subject.split(",");
+                    var request = Community.requestEvent(club_id, club_event_id, (args) => {});
+                    
+                    var res = Grim2Util::joinAwait(context, request);
+
+                    if (res)
+                    {
+                        self.event = Community.decodeEvent(request);
+                    }
+                }
+
+                MessageRoot.result = [self.club, self.event];
+                MessageRoot.close(context);
+            }
+
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var message = self.message;
+                if (message != nil)
+                {
+                    var [mail_id] = message;
+                    var club0;
+                    var event0;
+
+                    if (self.club != nil && self.club["club_id"] != 0)
+                    {
+                        club0 = self.club;
+                    }
+
+                    if (self.event != nil && self.event["club_event_id"] != 0)
+                    {
+                        event0 = self.event;
+                    }
+
+                    var res = ViewMessageRoot.openMessage(context, message, club0, event0, MessageRoot.no_link);
+                    if (res)
+                        linkCallback(context);
+                }
+
+                return STATE_YIELD;
+            }
+
+            method getReportInfo(context)
+            {
+                return ReportUtil::MessageData(self.message);
+            }
+        }
+    }
+}

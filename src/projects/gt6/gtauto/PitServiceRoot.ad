@@ -1,0 +1,964 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module PitServiceRoot
+{
+    hidden.visible = false;
+
+    attribute modal_page;
+    attribute riding_car;
+    attribute car_price;
+
+    method open(context, open_mode)
+    {
+        self.modal_page = main::SequenceUtil::ModalPage(context, PitServiceRoot);
+        self.modal_page.open();
+    }
+
+    method close(context)
+    {
+        if (nil != self.modal_page)
+        {
+            ContextMain.disableInput();
+
+            SceneFace.startCover(true, true);
+            SceneFace.finalize(context);
+
+            PageUtil::visibleUnderPages(context, self);
+            self.Fade.backward();
+            self.Fade.start();
+            var delay_time = self.Fade.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+
+            ContextMain.enableInput();
+        }
+    }
+
+    function ApplyGarageCar(context, work_menus)
+    {
+        if (WorkMenus::BodyRepair & work_menus) 
+            GTAutoUtil::applyCarWashAndRepair(PitServiceRoot.riding_car);
+        else if (WorkMenus::CarWash & work_menus) 
+            GTAutoUtil::applyCarWash(PitServiceRoot.riding_car)
+        
+        if (WorkMenus::ChangeOil & work_menus) 
+            PitServiceRoot.riding_car.setReplaceOil();
+        
+        if (WorkMenus::RigidityImprovement & work_menus) 
+        {
+            var parts_type_index = GTAutoUtil::getPartsTypeIndex("STIFFNESS");
+            var parts_index = GTAutoUtil::getPartsIndex("STIFFNESS", "ONE");
+            PitServiceRoot.riding_car.ownParts(parts_type_index, parts_index);
+        }
+
+        if (WorkMenus::RestoreRigidity & work_menus) 
+            PitServiceRoot.riding_car.body_life = 0.0;
+        
+        if (WorkMenus::EngineOverhaul & work_menus) 
+            PitServiceRoot.riding_car.engine_life = 0.0;
+    
+        GAME_STATUS.user_profile.garage.updateCar(PitServiceRoot.riding_car);
+    }
+
+    function PayMoney(context, wages, category)
+    {
+        if (main::GAME_STATUS.user_profile.payTuningCost(wages))
+        {
+            Grim2Util::PUTLOG::CREDIT::withdraw("pit", wages, category);
+            CursorProject::StartMenuRoot::StartMenu.reflectCurrentStatus(context);
+            return true;
+        }
+        else 
+        {
+            main::sound.play("disable");
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                manager.translate("CommonGTMode", "Message_EnoughMoney"));
+
+            return false;
+        }
+    }
+
+    function displayTotalDistance(context, running_km)
+    {
+        var unit_text, km_mile;
+        if (GAME_STATUS.user_profile.option.unit_velocity)
+        {
+            unit_text = context.translate(GTAutoProject, "Unit", "LENGTH_MILE");
+            km_mile = running_km / 1.6;
+        }
+        else
+        {
+            unit_text = context.translate(GTAutoProject, "Unit", "LENGTH_KILOMETER");
+            km_mile = running_km;
+        }
+
+        if (km_mile > 999999.9)
+            km_mile = 999999.94;
+
+        var km_mile_text = pdiext::GetNumberString(10 * km_mile, 1);
+
+        TotalDistance.distance.text = km_mile_text;
+        TotalDistance.unit.text = pdiext::MUnit::GetUnitOfDistance();
+    }
+
+    module CarWashImpl
+    {
+        function get_wages() { return 5000 / 100; }
+        function is_insensitive() { return false; }
+
+        function update(context, item)
+        {
+            item.CrPrice::Price.text = main::pdiext::MMisc::GetMoneyString(get_wages());
+        }
+
+        function on_activate(context, item)
+        {
+            main::sound.play("ok");
+
+            if (!QUERY(context, PitServiceRoot, "Query_WantThisService"))
+                return;
+
+            if (!PayMoney(context, get_wages(), "wash"));
+                return;
+
+            ApplyGarageCar(context, item.work_menus);
+
+            SceneFace.visibleSceneFaceSlowly(false);
+
+            var need_capture = false;
+            PitWorkRoot.openModal(context, GAME_STATUS.user_profile.garage.getRidingGarageId(), need_capture);
+
+            SceneFace.applyCarWash(context);
+            SceneFace.visibleSceneFaceSlowly(true);
+
+            return STATE_YIELD;
+        }
+    }
+
+    module ChangeOilImpl
+    {
+        function is_insensitive()
+        {
+            var mgarage = GAME_STATUS.user_profile.garage;
+            var mgarage_car = mgarage.referGarageCar(mgarage.getRidingGarageId());
+            var is_aspiration_motor = gtengine::AspirationType::MOTOR == mgarage_car.aspiration_type;
+
+            var is_racing_kart = gtengine::MSpecDB::checkFlag(PitServiceRoot.riding_car.getCarCode(), gtengine::GenericFlag::IS_RACING_KART);
+            var is_chaparral_vgt = PitServiceRoot.riding_car.getCarCode() == gtengine::MSpecDB::getCarCode("chaparral_vision_gt_14");
+
+            return is_aspiration_motor || is_racing_kart || is_chaparral_vgt;
+        }
+
+        function get_wages() { return 25000 / 100; }
+
+        function update(context, item)
+        {
+            item.insensitive = is_insensitive();
+            if (item.insensitive)
+                item.CrPrice::Price.text = "--";
+            else
+                item.CrPrice::Price.text = main::pdiext::MMisc::GetMoneyString(get_wages());
+        }
+
+        function update_condition(context, item)
+        {
+            var yellow_zone = 5000 * 1000;
+            var red_zone = 6000 * 1000;
+
+            item.visible = !is_insensitive();
+            if (item.visible) 
+            {
+                if (PitServiceRoot.riding_car.oil_life < yellow_zone)
+                {
+                    item.set_condition(context, Condition::GREEN);
+                }
+                else if (PitServiceRoot.riding_car.oil_life < red_zone)
+                {
+                    var gradation_ratio = (PitServiceRoot.riding_car.oil_life - yellow_zone) / (red_zone - yellow_zone);
+                    if (gradation_ratio > 1.0)
+                        gradation_ratio = 1.0;
+                    item.set_condition(context, Condition::YELLOW, Condition::RED, gradation_ratio);
+                }
+                else
+                {
+                    item.set_condition(context, Condition::RED);
+                }
+            }
+        }
+
+        function on_activate(context, item)
+        {
+            main::sound.play("ok");
+
+            if (!QUERY(context, PitServiceRoot, "Query_WantThisService"))
+                return;
+
+            if (!PayMoney(context, get_wages(), "oil"));
+                return;
+
+            ApplyGarageCar(context, item.work_menus);
+
+            SceneFace.visibleSceneFaceSlowly(false);
+
+            var need_capture = false;
+            PitWorkRoot.openModal(context, GAME_STATUS.user_profile.garage.getRidingGarageId(), need_capture);
+
+            SceneFace.visibleSceneFaceSlowly(true);
+
+            Condition.update(context);
+
+            return STATE_YIELD;
+        }
+    }
+
+    module BodyRepairImpl
+    {
+        function get_wages() { return GTAutoUtil::getCarRepairCost(PitServiceRoot.riding_car); }
+
+        function is_insensitive() { return false; }
+
+        function update(context, item)
+        {
+            item.CrPrice::Price.text = main::pdiext::MMisc::GetMoneyString(get_wages());
+        }
+
+        function on_activate(context, item)
+        {
+            main::sound.play("ok");
+
+            if (!QUERY(context, PitServiceRoot, "Query_WantThisService"))
+                return;
+
+            if (!PayMoney(context, get_wages(), "repair"));
+                return;
+
+            ApplyGarageCar(context, item.work_menus);
+
+            SceneFace.visibleSceneFaceSlowly(false);
+
+            var need_capture = false;
+            PitWorkRoot.openModal(context, GAME_STATUS.user_profile.garage.getRidingGarageId(), need_capture);
+
+            SceneFace.applyCarWashAndRepair(context);
+            SceneFace.visibleSceneFaceSlowly(true);
+
+            return STATE_YIELD;
+        }
+    }
+
+    module RigidityImprovementImpl
+    {
+        function get_wages() { return GTAutoUtil::getPartsPrice(PitServiceRoot.riding_car, "STIFFNESS", "ONE"); }
+
+        function is_insensitive() { return false; }
+
+        function update(context, item)
+        {
+            var parts_type_index = GTAutoUtil::getPartsTypeIndex("STIFFNESS");
+            var parts_index = GTAutoUtil::getPartsIndex("STIFFNESS", "ONE");
+            item.insensitive = !PitServiceRoot.riding_car.isExistParts(parts_type_index, parts_index);
+            if (item.insensitive) 
+            {
+                item.CrPrice::Price.text = "--";
+                item.setInstalledFlag(false);
+            } 
+            else 
+            {
+                item.CrPrice::Price.text = main::pdiext::MMisc::GetMoneyString(get_wages());
+                item.setInstalledFlag(PitServiceRoot.riding_car.isHavingParts(parts_type_index, parts_index));
+            }
+        }
+
+        function on_activate(context, item)
+        {
+            if (item.is_installed) 
+            {
+                main::sound.play("disable");
+                return;
+            }
+
+            main::sound.play("ok");
+
+            if (!QUERY(context, PitServiceRoot, "Query_WantThisService"))
+                return;
+
+            if (!PayMoney(context, get_wages(), "stiffness"));
+                return;
+
+            ApplyGarageCar(context, item.work_menus);
+
+            SceneFace.visibleSceneFaceSlowly(false);
+
+            var need_capture = false;
+            PitWorkRoot.openModal(context, GAME_STATUS.user_profile.garage.getRidingGarageId(), need_capture);
+
+            SceneFace.applyCarWashAndRepair(context);
+            SceneFace.visibleSceneFaceSlowly(true);
+
+            Condition.update(context);
+
+            return STATE_YIELD;
+        }
+    }
+
+    module RestoreRigidityImpl
+    {
+        function is_insensitive() { return false; }
+
+        function get_wages()
+        {
+            var price = -1;
+            var car_price = PitServiceRoot.car_price;
+            var base_price = car_price * 0.5;
+
+            if (base_price > 50000000 / 100)
+            {
+                price = 50000000 / 100;
+            } 
+            else 
+            {
+                if (base_price > 50000 / 100)
+                {
+                    price = (base_price.toInt() / (50000 / 100) * (50000 / 100)).toInt();
+                    if (price < 500000 / 100)
+                        price = 500000 / 100;
+                } 
+                else
+                    price = 50000 / 100;
+            }
+
+            return price;
+        }
+
+        function update(context, item)
+        {
+            item.CrPrice::Price.text = main::pdiext::MMisc::GetMoneyString(get_wages());
+        }
+
+        function update_condition(context, item)
+        {
+            var yellow_zone = 500 * 1000;
+            var red_zone = 20000 * 1000;
+
+            var cp = PitServiceRoot.riding_car;
+            if (cp.body_life < yellow_zone)
+            {
+                item.set_condition(context, Condition::GREEN);
+            }
+            else if (cp.body_life < red_zone)
+            {
+                var gradation_ratio = (PitServiceRoot.riding_car.body_life - yellow_zone) / (red_zone - yellow_zone);
+                if (gradation_ratio > 1.0)
+                    gradation_ratio = 1.0;
+                item.set_condition(context, Condition::YELLOW, Condition::RED, gradation_ratio);
+            }
+            else
+            {
+                item.set_condition(context, Condition::RED);
+            }
+        }
+
+        function on_activate(context, item)
+        {
+            main::sound.play("ok");
+
+            if (!QUERY(context, PitServiceRoot, "Query_WantThisService"))
+                return;
+
+            if (!PayMoney(context, get_wages(), "rigidity"));
+                return;
+
+            ApplyGarageCar(context, item.work_menus);
+
+            SceneFace.visibleSceneFaceSlowly(false);
+
+            var need_capture = false;
+            PitWorkRoot.openModal(context, GAME_STATUS.user_profile.garage.getRidingGarageId(), need_capture);
+
+            SceneFace.applyCarWashAndRepair(context);
+            SceneFace.visibleSceneFaceSlowly(true);
+
+            Condition.update(context);
+
+            return STATE_YIELD;
+        }
+    }
+
+    module EngineOverhaulImpl
+    {
+        function is_insensitive() { return PitServiceRoot.riding_car.getCarCode() == gtengine::MSpecDB::getCarCode("chaparral_vision_gt_14"); }
+
+        function get_wages()
+        {
+            var price = -1;
+            var car_price = PitServiceRoot.car_price;
+            var base_price = car_price * 0.3;
+            if (base_price > 50000000 / 100)
+            {
+                price = 50000000 / 100;
+            } 
+            else 
+            {
+                if (base_price > 50000 / 100)
+                {
+                    price = (base_price.toInt() / (50000 / 100) * (50000 / 100)).toInt();
+                    if (price < 100000 / 100)
+                        price = 100000 / 100;
+                } 
+                else
+                    price = 50000 / 100;
+            }
+
+            return price;
+        }
+
+        function update(context, item)
+        {
+            item.insensitive = is_insensitive();
+
+            if (item.insensitive)
+                item.CrPrice::Price.text = "--";
+            else
+                item.CrPrice::Price.text = main::pdiext::MMisc::GetMoneyString(get_wages());
+        }
+
+        function update_condition(context, item)
+        {
+            var yellow_zone = 5000 * 1000;
+            var red_zone = 10000 * 1000;
+
+            item.visible = !is_insensitive();
+            if (item.visible) 
+            {
+                var cp = PitServiceRoot.riding_car;
+                if (cp.engine_life < yellow_zone)
+                {
+                    item.set_condition(context, Condition::GREEN);
+                }
+                else if (cp.engine_life < red_zone)
+                {
+                    var gradation_ratio = (PitServiceRoot.riding_car.engine_life - yellow_zone) / (red_zone - yellow_zone);
+                    if (gradation_ratio > 1.0)
+                        gradation_ratio = 1.0;
+                    item.set_condition(context, Condition::YELLOW, Condition::RED, gradation_ratio);
+                }
+                else
+                {
+                    item.set_condition(context, Condition::RED);
+                }
+            }
+        }
+
+        function on_activate(context, item)
+        {
+            main::sound.play("ok");
+
+            if (!QUERY(context, PitServiceRoot, "Query_WantThisService"))
+                return;
+
+            if (!PayMoney(context, get_wages(), "engine"));
+                return;
+
+            ApplyGarageCar(context, item.work_menus);
+
+            SceneFace.visibleSceneFaceSlowly(false);
+
+            var need_capture = false;
+            PitWorkRoot.openModal(context, GAME_STATUS.user_profile.garage.getRidingGarageId(), need_capture);
+
+            SceneFace.visibleSceneFaceSlowly(true);
+            Condition.update(context);
+
+            return STATE_YIELD;
+        }
+    }
+
+    class PitmenuInfo
+    {
+        attribute label;
+        attribute impl;
+        attribute work_menus;
+        method __init__(label, impl, work_menus)
+        {
+            self.label = label;
+            self.impl = impl;
+            self.work_menus = work_menus;
+        }
+    }
+
+    module WorkMenus
+    {
+        static None = 0;
+        static CarWash = 1;
+        static ChangeOil = 2;
+        static BodyRepair = 4;
+        static RigidityImprovement = 8;
+        static RestoreRigidity = 16;
+        static EngineOverhaul = 32;
+    }
+
+    static sPitmenuInfoList = [
+        PitmenuInfo("CarWash", CarWashImpl, WorkMenus::CarWash),
+        PitmenuInfo("ChangeOil", ChangeOilImpl, WorkMenus::ChangeOil),
+
+        PitmenuInfo("RigidityImprovement", RigidityImprovementImpl, WorkMenus::RigidityImprovement | WorkMenus::CarWash | WorkMenus::BodyRepair),
+        PitmenuInfo("RestoreRigidity", RestoreRigidityImpl, WorkMenus::RestoreRigidity | WorkMenus::CarWash | WorkMenus::BodyRepair),
+        PitmenuInfo("EngineOverhaul", EngineOverhaulImpl, WorkMenus::EngineOverhaul | WorkMenus::ChangeOil)
+    ];
+
+    class ConditionInfo
+    {
+        attribute image;
+        attribute condition_label;
+        attribute impl;
+        method __init__(image, condition_label, impl)
+        {
+            self.image = image;
+            self.condition_label = condition_label;
+            self.impl = impl;
+        }
+    }
+
+    static sConditionInfoList = [
+        ConditionInfo("alert_oil", "OilCondition", ChangeOilImpl),
+        ConditionInfo("alert_body", "RigidityCondition", RestoreRigidityImpl),
+        ConditionInfo("alert_engine", "EngineCondition", EngineOverhaulImpl)
+    ];
+
+    method onInitialize(context)
+    {
+        self.riding_car = GAME_STATUS.user_profile.garage.getRidingCar();
+        self.car_price = gtengine::MSpecDB::getCarPrice(riding_car.getCarCode());
+
+        Pitmenus.init(context, sPitmenuInfoList);
+        Condition.init(context, sConditionInfoList);
+        Condition.update(context);
+
+        displayTotalDistance(context, riding_car.odometer * 0.001);
+
+        SceneFace.initialize(context);
+
+        ContextMain.disableInput();
+        var actor = self.Fade;
+        actor.forward();
+        actor.restart();
+        actor.on_effect_end = function (context)
+        {
+            actor.on_effect_end = nil;
+            PageUtil::invisibleUnderPages(context, self);
+            SceneFace.loadCar(context, riding_car);
+            ContextMain.enableInput();
+            GTAutoRoot::showTutorial(context);
+        };
+
+        menu::FrameInterval = 2;
+        ORG.setEnableStereoRendering(true);
+    }
+
+    method onFinalize(context)
+    {
+        menu::FrameInterval = 1;
+        ORG.setEnableStereoRendering(false);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.close(context);
+        return STATE_YIELD;
+    }
+
+    method onKeyPress(context, event)
+    {
+        var preopen_garage_id = GAME_STATUS.user_profile.garage.getRidingGarageId();
+        if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+        {
+            if (preopen_garage_id != GAME_STATUS.user_profile.garage.getRidingGarageId())
+            {
+                self.riding_car = GAME_STATUS.user_profile.garage.getRidingCar();
+                self.car_price = gtengine::MSpecDB::getCarPrice(self.riding_car.getCarCode());
+                SceneFace.loadCar(context, self.riding_car);
+                Pitmenus.update(context);
+                Condition.update(context);
+                displayTotalDistance(context, self.riding_car.odometer*0.001);
+            }
+            return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+
+    module DebugWindow
+    {
+        method update()
+        {
+            PitServiceRoot::DebugWindow::oil_life.text =    "oil_life    : %d km".format(PitServiceRoot.riding_car.oil_life/1000);
+            PitServiceRoot::DebugWindow::body_life.text =   "body_life   : %d km".format(PitServiceRoot.riding_car.body_life/1000);
+            PitServiceRoot::DebugWindow::engine_life.text = "engine_life : %d km".format(PitServiceRoot.riding_car.engine_life/1000);
+            PitServiceRoot::DebugWindow::scratch.text =     "scratch     : %f".format(PitServiceRoot.riding_car.getScratchIndex());
+        }
+    }
+
+    module Pitmenus
+    {
+        method onInitialize() 
+        { 
+            Description.text = ""; 
+        }
+
+        method update(context)
+        {
+            for (var w = self.VBox.first; w != nil; w = w.next)
+            {
+                w.update(context);
+            }
+        }
+
+        method init(context, pitmenu_info_list)
+        {
+            self.VBox.clearChildren(context);
+            foreach (var pitmenu_info in pitmenu_info_list)
+            {
+                var w = hidden::PitmenuItem.doCopy();
+                w.init(context, pitmenu_info);
+                self.VBox.appendChild(context, w);
+            }
+        }
+    }
+
+    module hidden::PitmenuItem
+    {
+        attribute description_text;
+        attribute impl;
+        attribute work_menus;
+        attribute is_installed;
+
+        method onRealize(manager)
+        {
+            self.Label.text = "";
+            self.Label_i.text = "";
+            self.CrPrice::Price.text = "";
+            self.InstalledFlag.visible = false;
+            self.Marks::wash_mark.visible = false;
+            self.Marks::oil_mark.visible = false;
+            self.Marks::repair_mark.visible = false;
+        }
+
+        method update(context)
+        {
+            if (self.impl != nil)
+                self.impl[$"update"](context, self);
+        }
+
+        method init(context, pitmenu_info)
+        {
+            self.impl = pitmenu_info.impl;
+            self.work_menus = pitmenu_info.work_menus;
+            self.Label.text = context.translate(PitServiceRoot, "Menu_" + pitmenu_info.label);
+            self.Label_i.text = self.Label.text;
+            self.description_text = context.translate(PitServiceRoot, "Description_" + pitmenu_info.label);
+            self.is_installed = false;
+            self.Marks::wash_mark.visible = WorkMenus::CarWash & self.work_menus;
+            self.Marks::oil_mark.visible = WorkMenus::ChangeOil & self.work_menus;
+
+            self.update(context);
+        }
+
+        method setInstalledFlag(is_installed)
+        {
+            self.is_installed = is_installed;
+            self.InstalledFlag.visible = is_installed;
+            self.CrPrice.visible = !is_installed;
+            self.Marks.visible = !is_installed;
+        }
+
+        method onActivate(context)
+        {
+            if (self.impl != nil)
+                self.impl[$"on_activate"](context, self);
+
+            return STATE_YIELD;
+        }
+
+        method onFocusEnter(context)
+        {
+            PitServiceRoot::Pitmenus::Description::ScalarInterpolator.restart();
+            PitServiceRoot::Pitmenus::Description.text = self.description_text;
+
+            return 1;
+        }
+    }
+
+    module Condition
+    {
+        static GREEN = 0;
+        static YELLOW = 1;
+        static RED = 2;
+
+        method init(context, condition_info_list)
+        {
+            self.clearChildren(context);
+    
+            foreach (var condition_info in condition_info_list)
+            {
+                var w = hidden::ConditionItem.doCopy();
+                w.init(context, condition_info);
+                self.appendChild(context, w);
+            }
+        }
+    
+        method update(context)
+        {
+            for (var w = self.first; w != nil; w = w.next)
+            {
+                var impl = w.info.impl;
+                if (impl != nil)
+                    impl[$"update_condition"](context, w);
+            }
+        }
+    }
+
+    module hidden::ConditionItem
+    {
+        attribute info;
+
+        function getMColorObject(condition_color)
+        {
+            switch (condition_color)
+            {
+                case Condition::GREEN:
+                    return Green;
+
+                case Condition::YELLOW:
+                    return Yellow;
+
+                case Condition::RED:
+                    return Red;
+            }
+
+            return nil;
+        }
+
+        function getConditionText(context, condition_color, condition_label)
+        {
+            switch (condition_color)
+            {
+                case Condition::GREEN:
+                    return context.translate(PitServiceRoot, "%{condition_label}_Green");
+
+                case Condition::YELLOW:
+                    return context.translate(PitServiceRoot, "%{condition_label}_Yellow");
+
+                case Condition::RED:
+                    return context.translate(PitServiceRoot, "%{condition_label}_Red");
+            }
+
+            return "";
+        }
+
+        method init(context, condition_info)
+        {
+            self.Icon.image_path = "/image/gt6/gtauto/%{condition_info.image}.dds";
+            self.Label.text = "";
+            self.info = condition_info;
+        }
+
+        method set_condition(context, src_condition_color, dst_condition_color, gradation_ratio)
+        {
+            var src_color = getMColorObject(src_condition_color);
+            var dst_color = getMColorObject(dst_condition_color);
+
+            var color = menu::MColorObject();
+            if (dst_color != nil && gradation_ratio != nil)
+            {
+                color.r = (dst_color.r - src_color.r) * gradation_ratio + src_color.r;
+                color.g = (dst_color.g - src_color.g) * gradation_ratio + src_color.g;
+                color.b = (dst_color.b - src_color.b) * gradation_ratio + src_color.b;
+            }
+            else
+            {
+                color.r = src_color.r;
+                color.g = src_color.g;
+                color.b = src_color.b;
+            }
+
+            self.Signal.setColor(color);
+            self.Label.text = getConditionText(context, src_condition_color, self.info.condition_label);
+            self.Alert.visible = src_condition_color == Condition::RED;
+        }
+    }
+
+    module SceneFace
+    {
+        attribute current_cp_;
+        attribute thread_;
+        attribute finalized_ = false;
+        
+        method initialize(context)
+        {
+            SceneCover::Fade.forward();
+            SceneCover::Fade.reset();
+            self.visible = false;
+            self.finalized_ = false;
+        }
+
+        method finalize(context)
+        {
+            self.clearCar();
+            self.visible = false;
+            self.finalized_ = true;
+        }
+
+        method onFinalize(context)
+        {
+            self.finalize(context);
+        }
+
+        method applyCarWash(context)
+        {
+            self.execCommand("cleanCarDirtiness tire body car0");
+        }
+
+        method applyCarRepair(context)
+        {
+            self.execCommand("cleanCarDirtiness scratch car0");
+            Pitmenus.update(context);
+        }
+
+        method applyCarWashAndRepair(context)
+        {
+            self.execCommand("cleanCarDirtiness tire body scratch car0");
+            Pitmenus.update(context);
+        }
+
+        method startCover(cover, warp)
+        {
+            if (cover)
+                SceneCover::Fade.backward();
+            else
+                SceneCover::Fade.forward();
+
+            SceneCover::Fade.start();
+
+            if (warp == true)
+                SceneCover::Fade.warp();
+        }
+
+        method visibleSceneFaceSlowly(visible)
+        {
+            if (!visible)
+            {
+                SceneCover::Fade.backward();
+
+                SceneCover::Fade.on_effect_end = function(context)
+                {
+                    self.visible = false;
+                    SceneCover::Fade.on_effect_end = nil;
+                }
+            }
+            else
+            {
+                self.visible = true;
+                self.waitLoadCar();
+
+                SceneCover::Fade.forward();
+                SceneCover::Fade.on_effect_end = nil;
+            }
+
+            SceneCover::Fade.start();
+        }
+
+        method waitSceneCover()
+        {
+            for (;;)
+            {
+                if (self.finalized_)
+                    return false;
+
+                if (SceneCover::Fade.ramain_time == 0)
+                    return true;
+
+                Thread::Sleep(0.1);
+            }
+        }
+
+        method waitLoadCar()
+        {
+            for (;;)
+            {
+                if (self.finalized_)
+                    return false;
+
+                if (self.current_cp_ == nil)
+                    return false;
+
+                if (!self.isUnderSetup())
+                    return true;
+
+                Thread::Sleep(0.1);
+            }
+        }
+
+        method loadCar(context, cp)
+        {
+            if (self.thread_ != nil)
+            {
+                self.thread_.terminate();
+                self.thread_ = nil;
+            }
+
+            self.thread_ = Thread(function(context) 
+            {
+                startCover(true);
+
+                if (!waitSceneCover())
+                    return;
+
+                if (self.current_cp_ != nil)
+                {
+                    self.execCommandImmidiate("clearEntity car0");
+                    self.current_cp_ = nil;
+                }
+
+                SceneFaceUtil::loadScene(SceneFace, "GTAUTO_PitService", cp);
+                self.current_cp_ = cp;
+
+                if (!waitLoadCar())
+                    return;
+
+                startCover(false);
+            }, context);
+
+            self.thread_.start();
+            self.visible = true;
+        }
+
+        method clearCar()
+        {
+            if (self.thread_ != nil)
+            {
+                self.thread_.terminate();
+                self.thread_ = nil;
+            }
+
+            if (self.current_cp_ != nil)
+            {
+                self.execCommandImmidiate("clearEntity car0");
+                self.current_cp_ = nil;
+            }
+        }
+    }
+}

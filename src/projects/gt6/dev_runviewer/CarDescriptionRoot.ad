@@ -1,0 +1,325 @@
+///////////////////////////////////////////
+// CarDescriptionRoot 
+// RText Car Description Checker
+///////////////////////////////////////////
+
+
+
+
+
+
+
+
+
+
+
+module CarDescriptionRoot
+{
+    attribute tuner_list;
+    attribute language;
+    attribute rtext_map;
+    attribute language_list;
+
+    method open(context)
+    {
+        SequenceUtil::startPage(context, CarDescriptionRoot);
+    }
+
+    method close(context)
+    {
+        SequenceUtil::startPage(context, TopRoot);
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+
+        return 2;
+    }
+
+    method onInitialize(context)
+    {
+        hidden.visible = false;
+
+        self.tuner_list = SPECDB.executeQuery1C("SELECT DISTINCT T.TunerString FROM TUNER T, GENERIC_CAR G WHERE T.ID = G.Tuner ORDER BY T.TunerString", []);
+        
+        self.tuner_list.unshift("ALL");
+        OptionMenuUtil::initialize(context, CarDescriptionRoot, CarList::Tuner::OptionMenu, hidden::PulldownItem, self.tuner_list);
+        CarList::Tuner::OptionMenu.setIndex(context, 0);
+
+        var adj = menu::MAdjustment();
+        CarList::SBox::VScrollbar.adjustment = adj;
+        CarList::SBox::ListBox.v_adjustment = adj;
+
+        DataList.initialize(context);
+
+        self.language = "JP";
+        self.rtext_map = Map();
+
+        self.language_list = ["JP", "US", "GB", "FR", "DE", "IT", "ES", "PT", "NL", "PL", "RU", "TR", "EL", "CZ", "HU", "BP", "MS", "KR", "TW"];
+        foreach (var lang in language_list)
+        {
+            var rtext = pdistd::MRTextDB();
+            rtext.load("/description/gt6/%{lang}.rt2");
+            self.rtext_map[lang] = rtext;
+        }
+
+        TextFaceLanguage.text = self.language;
+
+        CarDescriptionRoot.setFocus(CarList::SBox::ListBox);
+
+        ButtonHelpGT6.set(context, [["Triangle", "Select Language"], 
+            ["Square", "Verify"]]);
+        
+        
+        
+        return 2;
+    }
+
+    method onFinalize(context)
+    {
+        foreach (var [lang, rtext] in self.rtext_map)
+        {
+
+            rtext.unload();
+        }
+        self.rtext_map = nil;
+
+        OptionMenuUtil::finalize(context, CarList::Tuner::OptionMenu);
+
+        return 2;
+    }
+
+    method selectLanguage(context)
+    {
+        var data = UIKitProject::SelectRoot::Data();
+        data.title_ = "Select Language";
+        data.translate_page_ = CarDescriptionRoot;
+        data.candidates_ = self.language_list;
+        data.enable_multi_ = false;
+
+        var res = UIKitProject::SelectRoot.open(context, data);
+        if (res == nil)
+        {
+            return;
+        }
+        var index = res[0];
+        self.language = self.language_list[index];
+        pdistd::SetLanguage(main::pdistd::Language[self.language]);
+        TextFaceLanguage.text = self.language;
+        var listbox = CarList::SBox::ListBox;
+        listbox.onActivate(context);
+    }
+
+    method verify(context)
+    {
+        var sql = "SELECT G.CarLabel FROM GENERIC_CAR G, TUNER T WHERE G.Tuner = T.ID ORDER BY G.CarLabel";
+        var car_label_list = SPECDB.executeQuery1C(sql, []);
+
+        var catch_list = [];
+        var description_list = [];
+        var rtext = self.rtext_map[self.language];
+
+        foreach (var car_label in car_label_list)
+        {
+            if (car_label.beginWith("testcar"))
+            {
+                continue;
+            }
+
+            var catch0 = rtext.get("CarCatch", car_label);
+            var description0 = rtext.get("CarDescription", car_label);
+
+            if (catch0 == car_label)
+            {
+                catch_list.push(car_label);
+            }
+            if (description0 == car_label)
+            {
+                description_list.push(car_label);
+            }
+        }
+
+        var text_list = ["Catch:\n"];
+        foreach (var c in catch_list)
+        {
+            text_list.push("%{c}\n");
+        }
+        text_list.push("\nDescription:\n");
+        foreach (var d in description_list)
+        {
+            text_list.push("%{d}\n");
+        }
+        DialogUtil::openTextReaderDialog(context, "BAD LIST", text_list);
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (event.keysym == 65470)
+        {
+            selectLanguage(context)
+            return 2;
+        }
+        else if (event.keysym == 65471)
+        {
+            verify(context);
+            return 2;
+        }
+
+        return 0;
+    }
+
+    function initializeCarData(context, car_label)
+    {
+        var jp_text = SPECDB.executeQuery1R1C("SELECT Name FROM CAR_NAME_JAPAN WHERE Label = ?", [car_label]);
+        var en_text = SPECDB.executeQuery1R1C("SELECT Name FROM CAR_NAME_ALPHABET WHERE Label = ?", [car_label]);
+
+        CarName::TextFace.text = "%{jp_text}/%{en_text}";
+
+        var tuner = SPECDB.executeQuery1R1C("SELECT TunerString FROM Tuner T, GENERIC_CAR G WHERE T.ID = G.Tuner AND CarLabel = ?", [car_label]);
+        Tuner::ImageFace.image_path = "/piece/gt6/tunner_logo_L/%{tuner}.img";
+        
+        var rtext = CarDescriptionRoot.rtext_map[CarDescriptionRoot.language];
+
+        var car_catch = rtext.get("CarCatch", car_label);
+        var car_description = rtext.get("CarDescription", car_label);
+
+        CarName::TextFaceCatch.text = pdistd::TextConv(car_catch);
+        CarDescriptionRoot::DataList::SBox::ScrolledWindow::clip::space::TextFace.text = pdistd::TextConv(car_description);
+        
+        var clip = DataList::SBox::ScrolledWindow::clip;
+        clip.space.y = 0f;
+        clip.manual_target_y = 0f;
+    }
+
+
+    module CarList
+    {
+        module Tuner::OptionMenu
+        {
+            method onValueChanged(context)
+            {
+                var tuner = CarDescriptionRoot.tuner_list[self.index];
+                CarList::SBox::ListBox.initialize(context, tuner);
+                __prototype__::onValueChanged(context);
+            }
+        }
+
+
+        module SBox::ListBox
+        {
+            attribute car_label_list;
+
+            method initialize(context, tuner)
+            {
+                var sql = "SELECT G.CarLabel FROM GENERIC_CAR G, TUNER T WHERE G.Tuner = T.ID "
+                if (tuner != "ALL")
+                {
+                    sql += "AND T.TunerString = ? ";
+                }
+                sql += "ORDER BY G.CarLabel";
+                self.car_label_list = SPECDB.executeQuery1C(sql, [tuner]);
+
+
+                var listbox = self;
+                listbox.setItemTemplate(context, hidden::ListItem);
+                listbox.setItemCount(0);
+                listbox.postRedraw();
+                listbox.setItemCount(self.car_label_list.size);
+                listbox.focus_index = 0;
+            }
+
+            method onVisibleNotify(context, indexes)
+            {
+                foreach (var i in indexes)
+                {
+                    if (self.getItemVisible(i))
+                    {
+                        var w = self.getItemWidget(i);
+                        if (w == nil || !w.initialized_)
+                        {
+                            w = self.getItemWidget(i, context);
+                            w.initialize(context, self.car_label_list[i]);
+                        }
+                    }
+                    else
+                    {
+                        self.setItemWidget(i, context, nil);
+                    }
+                }
+            }
+
+            method onActivate(context)
+            {
+                sound.play("ok");
+                var item = self.getItemWidget(self.focus_index);
+                var car_label = item.car_label;
+
+                initializeCarData(context, car_label);
+                return 2;
+            }
+
+            method onKeyPress(context, event)
+            {
+                if (event.keysym == 65361)
+                {
+                    CarDescriptionRoot.setFocus(CarList::Tuner::OptionMenu);
+                    return 2;
+                }
+                return 0;
+            }
+        }
+
+    }
+
+
+    module DataList
+    {
+        method initialize(context)
+        {
+            var sw = SBox::ScrolledWindow;
+            sw.clip.scroll_mode = 2;
+            sw.VScrollbar.adjustment = sw.clip.v_adjustment;
+            sw.clip.space.y = 0f;
+            sw.clip.manual_target_y = 0f;
+        }
+        module SBox::ScrolledWindow
+        {
+            method onKeyPress(context, event)
+            {
+                var scrollclip = self.clip;
+                var line_height = scrollclip.space.TextFace.line_height;
+                var status = 0;
+                if (event.keysym == 65362)
+                {
+                    if (scrollclip.manualTargetIncY(line_height))
+                    {
+                        status = 1;
+                    }
+                }
+                if (event.keysym == 65364)
+                {
+                    if (scrollclip.manualTargetIncY(-line_height))
+                    {
+                        status = 1;
+                    }
+                }
+                return 0;
+            }
+        }
+    }
+
+    module hidden
+    {   
+        module ListItem
+        {
+            attribute car_label;
+            method initialize(context, car_label)
+            {
+                self.car_label = car_label
+                self.TextFace.text = car_label;
+            }
+        }
+    }
+}

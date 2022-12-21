@@ -1,0 +1,522 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module FavoriteDemoCarRoot
+{
+    attribute fv_checker_;
+    attribute fv_cars_max_;
+    attribute fv_car_count_;
+
+    method open(context)
+    {
+        SettingFrame.appear();
+        SequenceUtil::pushPage(context, self);
+    }
+
+    method close(context)
+    {
+        var delay_time = SettingFrame.hide();
+        SequenceUtil::popPage(context, self, delay_time);
+    }
+
+    method getFavoriteMax()
+    {
+        return self.fv_cars_max_;
+    }
+
+    method getFavoriteSize()
+    {
+        return self.fv_car_count_;
+    }
+
+    method getFavoriteCars()
+    {
+        var cars = [];
+        foreach (var [code, value] in FavoriteDemoCarRoot.fv_checker_)
+        {
+            if (value)
+                cars.push(code);
+        }
+
+        return cars;
+    }
+
+    method setFavorite(car_code, is_favorite)
+    {
+        if (isFavorite(car_code) == is_favorite)
+            return;
+
+        self.fv_checker_[car_code] = is_favorite;
+        if (is_favorite)
+            self.fv_car_count_++;
+        else
+            self.fv_car_count_--;
+
+        if (self.fv_car_count_ < 0)
+            self.fv_car_count_ = 0;
+
+        CarList.updateFavoriteCount();
+    }
+
+    method isFavorite(car_code)
+    {
+        var v = self.fv_checker_[car_code] == true ? true : false;
+        return v;
+    }
+
+    method reflectFavoriteCarCount()
+    {
+        if (self.fv_car_count_ > 0)
+            SettingFrame::Pane::ScrolledBody::clip::space::RegistedCars::vbox::label.text = "%{self.fv_car_count_} / %{self.fv_cars_max_}";
+        else
+            SettingFrame::Pane::ScrolledBody::clip::space::RegistedCars::vbox::label.text = "%{COLOR_RED}%{self.fv_car_count_}%{COLOR_DEFAULT} / %{self.fv_cars_max_}";
+    }
+
+    method reflect(context)
+    {
+        var option = main::GAME_STATUS.user_profile.option;
+        var fv_cars = option.getLimitedDemoCars();
+        self.fv_checker_ = [:];
+        self.fv_cars_max_ = option.kiosk_limit_democar_list.size;
+        self.fv_car_count_ = 0;
+
+        foreach (var car in fv_cars)
+            FavoriteDemoCarRoot.setFavorite(car, true);
+
+        reflectFavoriteCarCount();
+
+        SettingFrame::Pane::ScrolledBody::clip::space::LimitCar::OptionMenu.setIndex(context, 1 - option.kiosk_limit_democar);
+        
+        SettingFrame::Pane::ScrolledBody::clip::space::FilteringCarModel::OptionMenu.setIndex(context, 1);
+
+        var item_off = hidden::None.doCopy();
+        item_off.defineStatic("tuner_code", gtengine::MSpecDB::NO_CODE);
+        SettingFrame::Pane::ScrolledBody::clip::space::FilteringCarTuner::OptionMenu::popup::vbox.appendChild(context, item_off);
+
+        var focus_index = 0;
+        var lang = main::pdistd::MLocale::getLanguage();
+        var orderby_clause = "ORDER BY %{lang}";
+        var tuner_list = SPECDB.queryList("SELECT ID, TunerString FROM TUNER %{orderby_clause}");
+
+        for (var i = 0; i < tuner_list.size; i++)
+        {
+            var tuner_info = tuner_list[i];
+            var item = hidden::PulldownItem.doCopy();
+            item["label"].text = context.translate(FavoriteDemoCarRoot, "TunerName", tuner_info.TunerString);
+            item["label"].adjustScale();
+            item.defineAttribute("tuner_code", tuner_info.ID);
+            SettingFrame::Pane::ScrolledBody::clip::space::FilteringCarTuner::OptionMenu::popup::vbox.appendChild(context, item);
+        }
+
+        SettingFrame::Pane::ScrolledBody::clip::space::FilteringCarTuner::OptionMenu.applyAppend(context);
+        SettingFrame::Pane::ScrolledBody::clip::space::FilteringCarTuner::OptionMenu.setIndex(context, 0);
+    }
+
+    method apply(context)
+    {
+        var option = main::GAME_STATUS.user_profile.option;
+        option.kiosk_limit_democar = 1 - SettingFrame::Pane::ScrolledBody::clip::space::LimitCar::OptionMenu.index;
+
+        CarList::ListWindow::clip::ListBox.apply();
+        var cars = FavoriteDemoCarRoot.getFavoriteCars();
+        option.setLimitDemoCars(cars);
+    }
+
+    method onInitialize(context)
+    {
+        hidden.visible = false;
+
+        PleaseWait::FadeEffect.reverse = false;
+        PleaseWait::FadeEffect.reset();
+
+        reflect(context);
+        CarList.updateFavoriteCount();
+        SettingFrame.adjust_scrolled_body();
+
+        FavoriteDemoCarRoot.setFocus(SettingFrame::Pane::ScrolledBody::clip::space::LimitCar::OptionMenu);
+    }
+
+    method onFinalize(context)
+    {
+        SettingFrame::Pane::ScrolledBody::clip::space::FilteringCarTuner::OptionMenu::popup::vbox.clearWindow(context);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        FavoriteDemoCarRoot.apply();
+        FavoriteDemoCarRoot.close(context);
+        return 2;
+    }
+
+    module SettingFrame::Pane::ScrolledBody::clip::space::RegistedCars::vbox::View
+    {
+        method onActivate(context)
+        {
+            PleaseWait.begin(context);
+
+            var cars = FavoriteDemoCarRoot.getFavoriteCars();
+            if (cars.size == 0)
+            {
+                PleaseWait.end(context);
+                main::sound.play("disable");
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(FavoriteCarRoot, "MESSAGE_NO_CARS_REGISTERED"));
+                return;
+            }
+
+            var where_clause = "WHERE ID IN (%s)".format(cars.join(","));
+            var orderby_clause = " ORDER BY PP, Year DESC";
+            cars = SPECDB.executeQuery1C("SELECT ID FROM GENERIC_CAR %{where_clause} %{orderby_clause}");
+
+            PleaseWait.end(context);
+
+            SettingFrame.hide();
+            SettingFrame.insensitive = true;
+
+            CarList.open(context, cars);
+
+            SettingFrame.insensitive = false;
+            SettingFrame.appear();
+            return 2;
+        }
+    }
+
+    module SettingFrame::Pane::ScrolledBody::clip::space::Regist::vbox::Button
+    {
+        method onActivate(context)
+        {
+            PleaseWait.begin(context);
+
+            var where_clause = "WHERE g.Tuner = t.ID";
+            var item = SettingFrame::Pane::ScrolledBody::clip::space::FilteringCarModel::OptionMenu.getItem();
+
+            if (item.name == "Premium")
+                where_clause += " AND g.SpecifyFlags1 & %{gtengine::GenericFlag::USE_PREMIUM_MODEL}";
+            else if (item.name == "Standard")
+                where_clause += " AND (g.SpecifyFlags1 & %{gtengine::GenericFlag::USE_PREMIUM_MODEL}) = 0";
+            else if (item.name == "VisionGT")
+                where_clause += " AND CarLabel like '%vision_gt%'";
+
+            item = SettingFrame::Pane::ScrolledBody::clip::space::FilteringCarTuner::OptionMenu.getItem();
+            if (item.tuner_code != gtengine::MSpecDB::NO_CODE)
+                where_clause += " AND g.Tuner=%{item.tuner_code}";
+            
+            var lang = main::pdistd::MLocale::getLanguage();
+            var orderby_clause = "ORDER BY t.%{lang}, g.PP";
+
+            var cars = SPECDB.executeQuery1C("SELECT g.ID FROM GENERIC_CAR g, TUNER t %{where_clause} %{orderby_clause}");
+            if (cars.size == 0)
+            {
+                PleaseWait.end(context);
+                main::sound.play("disable");
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(FavoriteCarRoot, "MESSAGE_CARS_NOT_FOUND"));
+                return;
+            }
+
+            PleaseWait.end(context);
+            SettingFrame.hide();
+            SettingFrame.insensitive = true;
+
+            CarList.open(context, cars);
+
+            SettingFrame.insensitive = false;
+            SettingFrame.appear();
+            return 2;
+        }
+    }
+
+    module PleaseWait
+    {
+        method begin(context)
+        {
+            PleaseWait::FadeEffect.reverse = false;
+            PleaseWait::FadeEffect.start();
+        }
+
+        method end(context)
+        {
+            context.wait(0.5f);
+
+            PleaseWait::FadeEffect.reverse = true;
+            PleaseWait::FadeEffect.start();
+        }
+    }
+
+    module CarList
+    {
+        attribute prev_focus_;
+
+        method onInitialize(context)
+        {
+            self.insensitive = true;
+            self.CloseActor.stop();
+            self.OpenActor.reset();
+
+            self.ButtonHelpGT6.set(context, [
+                ["Square", manager.translate(FavoriteCarRoot, "LABEL_REGISTER_ALL")],
+                ["Triangle", manager.translate(FavoriteCarRoot, "LABEL_CLEAR_ALL")],
+            ]);
+        }
+
+        method open(context, cars)
+        {
+            ListWindow::clip::ListBox.setItem(context, cars);
+            self.CloseActor.stop();
+            self.OpenActor.restart();
+
+            self.insensitive = false;
+            self.prev_focus_ = FavoriteDemoCarRoot.getFocusWidget();
+            FavoriteDemoCarRoot.setFocus(ListWindow::clip::ListBox);
+
+            SequenceUtil::enterEventLoop(context, self);
+            FavoriteDemoCarRoot.reflectFavoriteCarCount();
+            FavoriteDemoCarRoot.setFocus(self.prev_focus_);
+
+            self.prev_focus_ = nil;
+            self.insensitive = true;
+            self.OpenActor.stop();
+            self.CloseActor.restart();
+        }
+
+        method onCancel(context)
+        {
+            SequenceUtil::leaveEventLoop(context, self);
+            return 2;
+        }
+
+        method updateFavoriteCount()
+        {
+            var w = ListWindow::Head::FavoriteCount;
+            w.label_L.text = FavoriteDemoCarRoot.getFavoriteSize();
+            w.label_S.text = "/" + FavoriteDemoCarRoot.getFavoriteMax();
+        }
+    
+
+        module ListWindow::clip::ListBox
+        {
+            attribute cars_;
+            attribute check_active_ = false;
+
+            method setItem(context, cars)
+            {
+                self.setItemCount(0);
+                self.postRedraw();
+                context.wait();
+
+                self.cars_ = cars;
+                self.setItemTemplate(context, hidden::CarItem);
+                self.setItemCount(cars.size);
+            }
+
+            method apply()
+            {
+                for (var i = 0; i < self.getItemCount(); i++)
+                {
+                    var item = self.getItemWidget(i);
+                    if (item != nil)
+                        FavoriteDemoCarRoot.fv_checker_[item.car_code] = item.CheckBox.active;
+                }
+            }
+
+            method onVisibleNotify(context, indexes)
+            {
+                foreach (var i in indexes)
+                {
+                    if (self.getItemVisible(i))
+                    {
+                        var item = self.getItemWidget(i);
+                        if (item == nil)
+                        {
+                            item = self.getItemWidget(i, context);
+                            item.init(context, self.cars_[i], i + 1);
+                        }
+                    }
+                }
+            }
+
+            method onKeyPress(context, event)
+            {
+                var status = 0;
+                var skip_span = 5;
+
+                if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
+                {
+                    foreach (var car in self.cars_)
+                        FavoriteDemoCarRoot.setFavorite(car, false);
+
+                    for (var i = 0; i < self.getItemCount(); i++)
+                    {
+                        var item = self.getItemWidget(i);
+                        if (item != nil)
+                            item.init(context, self.cars_[i], i + 1);
+                    }
+
+                    return 2;
+                }
+
+                if (event.keysym == CELL_PAD_CTRL_SQUARE)
+                {
+                    var add_size = 0;
+                    foreach (var car in self.cars_)
+                    {
+                        if (!FavoriteDemoCarRoot.isFavorite(car))
+                            add_size++;
+                    }
+
+                    if (FavoriteDemoCarRoot.getFavoriteSize() + add_size <= FavoriteDemoCarRoot.getFavoriteMax())
+                    {
+                        foreach (var car in self.cars_)
+                            FavoriteDemoCarRoot.setFavorite(car, true);
+
+                        for (var i = 0; i < self.getItemCount(); i++)
+                        {
+                            var item = self.getItemWidget(i);
+                            if (item != nil)
+                                item.init(context, self.cars_[i], i + 1);
+                        }
+
+                        return 2;
+                    }
+                    else
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(FavoriteCarRoot, "MESSAGE_SIZE_OVER"));
+                        return 2;
+                    }
+                }
+
+                if (event.keysym == CELL_PAD_CTRL_L3_RIGHT)
+                {
+                    var next_index = ListBox.focus_index;
+                    next_index += skip_span;
+
+                    if (next_index > ListBox.getItemCount() - 1)
+                        next_index = ListBox.getItemCount() - 1;
+
+                    if (ListBox.focus_index != next_index)
+                        main::sound.play("cursor");
+
+                    ListBox.focus_index = next_index;
+                    return 2;
+                }
+
+                if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+                {
+                    var next_index = ListBox.focus_index;
+                    next_index -= skip_span;
+
+                    if (next_index < 0)
+                        next_index = 0;
+
+                    if (ListBox.focus_index != next_index)
+                        main::sound.play("cursor");
+
+                    ListBox.focus_index = next_index;
+                    return 2;
+                }
+
+                if (event.keysym == CELL_PAD_CTRL_L3_UP || event.keysym == CELL_PAD_CTRL_L3_DOWN)
+                {
+                    var assign = main::pdiext::MSystemConfiguration::GetEnterButtonAssign();
+
+                    var key;
+                    if (assign == "circle")
+                        key = 0x80;
+                    else
+                        key = 0x20;
+
+                    var state = context.getUpdateContext().getPadButtonState(0);
+                    if (state & key)
+                    {
+                        var idx;
+                        if (event.keysym == CELL_PAD_CTRL_L3_UP)
+                            idx = self.focus_index - 1;
+                        else if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+                            idx = self.focus_index + 1;
+
+                        var item = self.getItemWidget(idx);
+                        if (item != nil)
+                        {
+                            if (self.check_active_)
+                            {
+                                if (!item.CheckBox.active)
+                                {
+                                    if (FavoriteDemoCarRoot.getFavoriteSize() < FavoriteDemoCarRoot.getFavoriteMax())
+                                    {
+                                        item.CheckBox.active = true;
+                                        FavoriteDemoCarRoot.setFavorite(item.car_code, true);
+                                    }
+                                    else
+                                    {
+                                        main::sound.play("disable");
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                item.CheckBox.active = false;
+                                FavoriteDemoCarRoot.setFavorite(item.car_code, false);
+                            }
+                        }
+                    }
+                }
+
+                return 0;
+            }
+
+            method onActivate(context)
+            {
+                var item = self.getItemWidget(self.focus_index);
+                if (!item.CheckBox.active)
+                {
+                    if (FavoriteDemoCarRoot.getFavoriteSize() < FavoriteDemoCarRoot.getFavoriteMax())
+                    {
+                        item.CheckBox.active = true;
+                        self.check_active_ = true;
+                        FavoriteDemoCarRoot.setFavorite(item.car_code, true);
+                    }
+                    else
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, "list size over");
+                    }
+                }
+                else
+                {
+                    item.CheckBox.active = false;
+                    self.check_active_ = false;
+                    FavoriteDemoCarRoot.setFavorite(item.car_code, false);
+                }
+
+                return 2;
+            }
+        }
+    }
+
+    module hidden::CarItem
+    {
+        attribute car_code;
+
+        method init(context, car_code, num)
+        {
+            var info = SPECDB.query1("SELECT ID, Tuner, MainColor, PP, CarLabel, SpecifyFlags1 FROM GENERIC_CAR WHERE ID=?", [car_code]);
+            self.Number::Label.text = num;
+            self.Thumbnail.image_path = "car/thumbnail_S/%s_%02d".format(info.CarLabel, info.MainColor);
+            self.Name::Label.text = gtengine::MSpecDB::getCarShortName(info.ID);
+            self.Dealer::Label.text = manager.translate("TunerName", gtengine::MSpecDB::getTunerString(info.Tuner));
+            self.PP::Label.text = "%s %s".format(manager.translate("Unit", "PERFORMANCE_POINT"), info.PP.toInt());
+            self.CheckBox.active = FavoriteDemoCarRoot.isFavorite(car_code);
+            self.Model::Label.text = info.SpecifyFlags1 & gtengine::GenericFlag::USE_PREMIUM_MODEL ? "%{COLOR_RED}Premium" : "%{COLOR_GREEN}Standard";
+            self.car_code = car_code;
+        }
+    }
+}

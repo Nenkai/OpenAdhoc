@@ -1,0 +1,136 @@
+
+
+//---------------------------------------------------------------------------------------
+// LoadingUtil.ad
+//
+// Utility module for asynchronously waiting for the course and cars to load
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module LoadingUtil
+{
+    static sThread = nil;
+    static sThreadResult = false;
+
+    function busy_wait(context, func, sec)
+    {
+        while (!func())
+            Thread::Sleep(sec);
+    }
+
+    function load_sequence(context, reduce_entry_num, end_hook)
+    {
+        if (reduce_entry_num == nil)
+            reduce_entry_num = 0;
+
+        var success = RaceOperator.allocateResource(reduce_entry_num);
+        if (!RaceOperator.isTheater() && !ORG.isBuildComplete())
+        {
+            sThreadResult = false;
+            return;
+        }
+
+        ORG.requestLoadingCourse();
+
+        var check_in_success = RaceOperator.checkIn(false);
+        if (!check_in_success)
+        {
+            sThreadResult = false;
+            return;
+        }
+
+        while (true)
+        {
+            var res = RaceOperator.hasEntryDone();
+            if (res == nil)
+            {
+                sThreadResult = false;
+                return;
+            }
+
+            if (res)
+                break;
+
+            Thread::Sleep(0.5f);
+        }
+
+        RaceOperator.processAfterCheckIn();
+
+        if (RaceOperator.isOnline())
+        {
+            while (ORG.enterCourse() == false)
+                Thread::Sleep(0.5f);
+            
+            busy_wait(context, ORG.inCourse, 0.5f);
+        }
+
+        if (RaceOperator.isOnline())
+        {
+            ORG.setNetworkStartSync();
+            busy_wait(context, ORG.checkReadySession, 0.5f);
+            ORG.setMatchingComplete();
+        }
+
+        if (end_hook != nil)
+            end_hook(context);
+
+        sThreadResult = true;
+        sThread = nil;
+    }
+
+    function requestAsync(context, reduce_entry_num, end_hook)
+    {
+        sThreadResult = nil;
+
+        var load_sequence_func;
+        if (PluginModule.defined("load_sequence"))
+            load_sequence_func = PluginModule::load_sequence;
+        else
+            load_sequence_func = load_sequence;
+
+        sThread = Thread(load_sequence_func, context, reduce_entry_num, end_hook);
+        sThread.start();
+    }
+
+    function loadSync(context)
+    {
+        requestAsync(context);
+        while (sThread != nil && sThread.is_alive)
+            Thread::Sleep(1);
+
+        return sThreadResult;
+    }
+
+    function terminate()
+    {
+        if (sThread != nil)
+        {
+            sThread.terminate();
+            sThread = nil;
+        }
+    }
+
+    function canStartRace()
+    {
+        if (ORG.isRestartSequence())
+            return false;
+
+        if (!ORG.inCourse())
+            return false;
+
+        if (!ORG.isFinishedFirstLoad())
+            return false;
+
+        if (!ORG.hasLoadingCarDone())
+            return false;
+
+        if (!ORG.inCourseAllEntries())
+            return false;
+
+        return true;
+    }
+}

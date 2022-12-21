@@ -1,0 +1,213 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module FriendListRoot
+{
+    hidden.visible = false;
+
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute club_user_list;
+
+    method open(context, club_id)
+    {
+        self.club_user_list = [];
+
+        var request = Community.requestClubFriendList(club_id, (args) => {});
+        if (Grim2Util::joinAwait(context, request))
+        {
+            var club_user_list = Community.decodeClubUserList(request);
+            foreach (var g in club_user_list)
+            {
+                if (g["level"] == 1)
+                    self.club_user_list.push(g);
+            }
+        }
+
+        if (self.club_user_list.size == 0)
+        {
+            ERROR(context, "Community", "NO_FRIEND_IN_CLUB");
+            return false;
+        }
+
+        self.result = nil;
+        self.closed = false;
+        self.popup = SequenceUtil::ModalPage(context, FriendListRoot);
+        self.popup.open();
+        
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        Community.clearCallback();
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        
+        var actor = self.CloseActor;
+        actor.forward();
+        actor.restart();
+
+        if (self.popup != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.popup.close(delay_time);
+            self.popup = nil;
+        }
+
+        self.club_user_list = nil;
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        ContextMain.disableInput();
+
+        var actor = self.OpenActor;
+        actor.forward();
+        actor.restart();
+
+        actor.on_effect_end = (context) => 
+        {
+            actor.on_effect_end = nil;
+            ContextMain.enableInput();
+            FriendListRoot.closed = false;
+        };
+
+        self.CloseActor.stop();
+
+        var listbox = Pane::ListBox;
+        listbox.setItemCount(0);
+        listbox.setItemTemplate(context, hidden::FriendItem);
+        
+        var adj = menu::MAdjustment();
+        Pane::VScrollArrow.adjustment = adj;
+        listbox.v_adjustment = adj;
+
+        var friend_list = getFriendListInClub(context);
+        listbox.data_list = friend_list;
+        listbox.setItemCount(friend_list.size);
+
+        ButtonHelp.active = pdiext::MSystemConfiguration::GetEnterButtonAssign() == "circle";
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    method getFriendListInClub(context)
+    {
+        var friend_list0 = getFriendList(context, true);
+        var friend_list = [];
+        foreach (var friend in friend_list0)
+        {
+            var [user_profile, presence] = friend;
+            foreach (var g in self.club_user_list)
+            {
+                if (g["user_id"] == user_profile["user_id"])
+                {
+                    friend_list.push(friend);
+                    break;
+                }
+            }
+        }
+
+        friend_list.sort((a, b) => 
+        {
+            var [uA, pA] = a;
+            var [uB, pB] = b;
+            return uA["user_id"].upcase() < uB["user_id"].upcase();
+        });
+
+        return friend_list;
+    }
+
+    module hidden
+    {
+        module FriendItem
+        {
+            attribute initialized_ = false;
+            attribute user_profile;
+            attribute level;
+
+            method onRealize(context)
+            {
+                self.Head::TextFaceID.text = "";
+                self.Foot::TextFaceNickname.text = "";
+                self.Foot::Country::TextFace.text = "";
+                self.Foot::Presence::Label.text = "";
+                self.Foot::Presence::Label_a.text = "";
+            }
+
+            method initialize(context, friend)
+            {
+                var [user_profile, presence, np_presence] = friend;
+                self.user_profile = user_profile;
+
+                var user_id = user_profile["user_id"];
+
+                self.Head::TextFaceID.text = user_id;
+                self.Foot::TextFaceNickname.text = checkNickName(context, user_profile);
+
+                var country = user_profile["country"];
+                setFlagImage(self.Foot::Country::ImageFace, country);
+
+                self.Foot::Country::TextFace.text = manager.translate("Country", country.upcase());
+
+                var photo_id = user_profile["photo_id_avatar"];
+                setImage(self.Image::ImageFace, photo_id);
+
+                var [online, text] = getPresenceInfo(context, presence, np_presence);
+                self.Foot::Presence.active = online;
+                self.Foot::Presence::Label.text = text;
+                self.Foot::Presence::Label_a.text = text;
+                self.Head::Label.text = "";
+                self.initialized_ = true;
+            }
+
+            method on_activate(context)
+            {
+                var user_profile = self.user_profile;
+                if (user_profile == nil)
+                    return;
+
+                UIKitProject::ProfileRoot.open(context, self.user_profile["user_id"]);
+            }
+        }
+    }
+}

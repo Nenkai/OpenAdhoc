@@ -1,0 +1,365 @@
+
+
+
+
+
+
+
+
+
+
+
+module CommunityCache
+{
+    class Manager
+    {
+        method __init__()
+        {
+            self.club_id_map = Map();
+            self.club_map = Map();
+            self.favorite_club_list = nil;
+            self.gp_map = Map();
+            self.user_profile_map = Map();
+            self.event_list_map = Map();
+            self.comment_list_map = Map();
+            self.news_map = Map();
+            self.event_map = Map();
+            self.event_result_map = Map();
+            self.event_user_list_map = Map();
+        }
+
+        method isClubMember(context, user_id, club_id, refresh)
+        {
+            if (refresh != nil)
+                self.club_id_map[user_id] = nil;
+
+            var l = self.club_id_map[user_id];
+            if (l == nil)
+            {
+                var request = Community.requestClubIdListByUser(user_id, 0, (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    var club_user_list = Community.decodeClubUserList(request);
+                    var list = [];
+                    foreach (var g in club_user_list)
+                    {
+                        if (g["level"] == 1)
+                            list.push(g["club_id"]);
+                    }
+
+                    self.club_id_map[user_id] = list;
+                }
+            }
+
+            l = self.club_id_map[user_id];
+            if (l == nil)
+                return false;
+
+            return l.indexOf(club_id) != -1;
+        }
+
+        method clearClubMember()
+        {
+            self.club_id_map[Grim2.getLoginUserId()] = nil;
+        }
+
+        method getClub(context, club_id, refresh)
+        {
+            var club = self.club_map[club_id];
+            if (club == nil || refresh != nil)
+            {
+                var request = Community.requestClub(club_id, (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    var club = Community.decodeClub(request);
+                    self.club_map[club_id] = club;
+                }
+            }
+
+            return club;
+        }
+
+        method getClubIf(context, club_id)
+        {
+            return self.club_map[club_id];
+        }
+
+        method updateClub(club_id, club)
+        {
+            self.club_map[club_id] = club;
+        }
+
+        method clearClub(user_id, club_id)
+        {
+            self.club_map[club_id] = nil;
+            self.club_id_map[user_id] = nil;
+        }
+
+        method getFavoriteClubList(context, user_id, refresh)
+        {
+            if (refresh != nil)
+                self.favorite_club_list = nil;
+
+            if (self.favorite_club_list == nil)
+            {
+                var request = Community.requestClubListByFavorite(user_id, (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    self.favorite_club_list = Community.decodeClubList(request);
+                }
+            }
+
+            return self.favorite_club_list == nil ? [] : self.favorite_club_list;
+        }
+
+        method clearClubFavorite()
+        {
+            self.favorite_club_list = nil;
+        }
+
+        method getGp(event, refresh)
+        {
+            var club_event_id = event["club_event_id"];
+            var gp = self.gp_map[club_event_id];
+            if (gp == nil || refresh != nil)
+            {
+                gp = regulation2gp(event["regulation"]);
+                self.gp_map[club_event_id] = gp;
+            }
+
+            return gp;
+        }
+
+        method updateClubList(context, club_list0)
+        {
+            foreach (var club in club_list0)
+            {
+                self.club_map[club["club_id"]] = club;
+            }
+        }
+
+        method getUserProfile(user_id)
+        {
+            return self.user_profile_map[user_id];
+        }
+
+        method updateUserProfile(user_id, user_profile)
+        {
+            self.user_profile_map[user_id] = user_profile;
+        }
+
+        method getEventList(context, club, user_id, refresh)
+        {
+            var club_id = club["club_id"];
+            var event_list = self.event_list_map[club_id];
+            if (event_list == nil || refresh != nil)
+            {
+                var request = Community.requestEventListByClub(club_id, (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    var event_list0 = Community.decodeEventList(request);
+                    var event_user_list = [];
+
+                    var request1 = Community.requestEventIdListByUser(user_id, club_id, 0, (args) => {});
+                    if (Grim2Util::joinAwait(context, request1))
+                        event_user_list = Community.decodeEventUserList(request1);
+
+                    var thread_list = [];
+                    var thread_type = 1;
+                    var latest_comment = 0;
+
+                    var request2 = Bbs2.requestGetThreadList(club_id, thread_type, latest_comment, (args) => { });
+                    if (Grim2Util::joinAwait(context, request2))
+                        thread_list = Bbs2.decodeThreadList(request2);
+
+                    var event_list = [];
+                    foreach (var event in event_list0)
+                    {
+                        event["_join"] = _isEventJoined(event_user_list, event["club_event_id"]);
+                        event["_comment_count"] = 0;
+                        foreach (var bbs_thread in thread_list)
+                        {
+                            if (event["bbs_thread_id"] == bbs_thread["thread_id"])
+                                event["_comment_count"] = bbs_thread["comment_count"];
+                        }
+
+                        event_list.push([club, event]);
+                    }
+                }
+            }
+
+            self.event_list_map[club_id] = event_list;
+            return event_list;
+        }
+
+        method clearEventList(club_id)
+        {
+            self.event_list_map[club_id] = nil;
+        }
+
+        method getCommentList(context, club_id, thread_id, refresh)
+        {
+            var comment_list = self.comment_list_map[thread_id];
+            if (comment_list == nil || refresh)
+            {
+                comment_list = [];
+                var request = Bbs2.requestGetCommentList(club_id, thread_id, (args) => { });
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    comment_list = Bbs2.decodeCommentList(request);
+                    foreach (var comment in comment_list)
+                    {
+                        comment["_club_id"] = club_id;
+                        comment["_thread_id"] = thread_id;
+                        comment["_result"] = false;
+                    }
+
+                    self.comment_list_map[thread_id] = comment_list;
+                }
+            }
+
+            return comment_list;
+        }
+
+        method updateCommentList(thread_id, comment_list)
+        {
+            self.comment_list_map[thread_id] = comment_list;
+        }
+
+        method updateNewComment(context, club_id, thread_id)
+        {
+            var comment_list = self.comment_list_map[thread_id];
+            if (comment_list == nil)
+                return false;
+
+            var max_comment_id = 0;
+            if (comment_list.size > 0)
+            {
+                var max_comment = comment_list[0];
+                max_comment_id = max_comment["comment_id"];
+            }
+
+            var new_comment_list = [];
+            var request = Bbs2.requestGetCommentListNewer(club_id, thread_id, max_comment_id, (args) => { });
+            if (Grim2Util::joinAwait(context, request))
+            {
+                new_comment_list = Bbs2.decodeCommentList(request);
+                foreach (var comment in new_comment_list)
+                {
+                    comment["_club_id"] = club_id;
+                    comment["_thread_id"] = thread_id;
+                    comment["_result"] = false;
+                }
+            }
+
+            self.comment_list_map[thread_id] = new_comment_list + comment_list;
+            return new_comment_list.size > 0;
+        }
+
+        method getNews(context, news_id)
+        {
+            return self.news_map[news_id];
+        }
+
+        method updateNews(news_id, news)
+        {
+            self.news_map[news_id] = news;
+        }
+
+        method getEvent(context, club_id, club_event_id, refresh)
+        {
+            var event = self.event_map[club_event_id];
+            if (event == nil || (refresh != nil && refresh))
+            {
+                var request = Community.requestEvent(club_id, club_event_id, (args) => { });
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    event = Community.decodeEvent(request);
+                    self.event_map[club_event_id] = event;
+                }
+            }
+
+            return event;
+        }
+
+        method getEventIf(context, club_id, club_event_id)
+        {
+            return self.event_map[club_event_id];
+        }
+
+        method updateEvent(club_event_id, event)
+        {
+            self.event_map[club_event_id] = event;
+        }
+
+        method getEventResultList(context, club_id, club_event_id, refresh)
+        {
+            var event_result_list = self.event_result_map[club_event_id];
+            if (event_result_list == nil || refresh != nil)
+            {
+                var request = Community.requestEventResultList(club_id, club_event_id, (args) => { });
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    event_result_list = Community.decodeEventResultList(request);
+                    foreach (var r in event_result_list)
+                    {
+                        r["_result"] = true;
+                        r["comment_id"] = "";
+                    }
+
+                    self.event_result_map[club_event_id] = event_result_list;
+                }
+            }
+
+            return not_nil(event_result_list, []);
+        }
+
+        method clearEventResultList(club_event_id)
+        {
+            self.event_result_map[club_event_id] = nil;
+        }
+
+        method getMyEventUserList(context, refresh)
+        {
+            var user_id = Grim2.getLoginUserId();
+            var event_user_list = self.event_user_list_map[user_id];
+            if (event_user_list == nil || refresh != nil)
+            {
+                var request = Community.requestEventIdListByUser(user_id, 0, 0, (args) => { });
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    event_user_list = Community.decodeEventUserList(request);
+                }
+            }
+
+            return not_nil(event_user_list, []);
+        }
+
+        method _isEventJoined(event_user_list, club_event_id)
+        {
+            var result = false;
+            foreach (var event_user in event_user_list)
+            {
+                if (event_user["club_event_id"] == club_event_id)
+                {
+                    result = true;
+                    break;
+                }
+            }
+
+            return result;
+        }
+
+        attribute club_id_map;
+        attribute club_map;
+        attribute favorite_club_list;
+        attribute gp_map;
+        attribute user_profile_map;
+        attribute event_list_map;
+        attribute comment_list_map;
+        attribute news_map;
+        attribute event_map;
+        attribute event_result_map;
+        attribute event_user_list_map;
+    }
+}   

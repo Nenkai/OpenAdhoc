@@ -1,0 +1,327 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class BootState
+{
+    attribute is_new_game;
+    attribute need_migration;
+    attribute init_save_data_done;
+    attribute recovery_save_data;
+    attribute eula_done;
+    attribute sequence_done;
+    attribute is_corrupted_user_db;
+    attribute resume_gp;
+    attribute disable_background_login;
+
+    method __init__()
+    {
+        self.is_new_game = false;
+        self.need_migration = false;
+        self.init_save_data_done = false;
+        self.recovery_save_data = false;
+        self.eula_done = false;
+        self.sequence_done = false;
+        self.is_corrupted_user_db = false;
+        self.resume_gp = nil;
+        self.disable_background_login = false;
+    }
+}
+
+static boot_state = BootState();
+
+function boot_sequence_common(context, type)
+{
+    var network_available = type == "gt6" || type == "academy" || type == "demo";
+
+    if (type == "runviewer" && AppOpt.defined("network_available"))
+        network_available = true;
+
+    var no_load = false;
+    if (type == "behavior")
+        no_load = true;
+    else
+    {
+        if (AppOpt.defined("disable_loaddata"))
+            no_load = true;
+    }
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initStatic");
+    yield; if (pdiext::MSystemCondition::IsExitGame())
+        return;
+
+    initStatic();
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initFundamentalNetworkObjects");
+    initFundamentalNetworkObjects();
+
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "ResidentProject1");
+    yield; if (pdiext::MSystemCondition::IsExitGame())
+        return;
+    initResidentProject1();
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initGameData");
+    yield; if (pdiext::MSystemCondition::IsExitGame())
+        return;
+    initGameData(context);
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "processStoragePatch");
+    yield; if (pdiext::MSystemCondition::IsExitGame())
+        return;
+
+    processStoragePatch(context);
+    if (!no_load)
+    {
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "request loading SaveData");
+        yield; if (pdiext::MSystemCondition::IsExitGame())
+            return;
+        if (!SaveDataUtilGT6::isExistSaveData())
+            boot_state.is_new_game = true;
+        else
+        {
+            if (!SaveDataUtilGT6::isExistCurrentSaveData())
+            {
+
+                boot_state.need_migration = true;
+
+                StopWatchUtil::begin();
+                SaveDataUtilGT6::loadEveryWhereForGame(nil, true);
+                StopWatchUtil::end();
+            }
+            else
+            {
+                StopWatchUtil::begin();
+                SaveDataUtilGT6::loadEveryWhereForGame(nil, false);
+                StopWatchUtil::end();
+            }
+        }
+    }
+
+    var keyState = context.getUpdateContext().getPadButtonState(0);
+    if (keyState & 64 && 
+        keyState & 16 && 
+        keyState & 32768 && 
+        keyState & 16384)
+    {
+        boot_state.disable_background_login = true;
+    }
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initNetworkObjects");
+    yield; if (pdiext::MSystemCondition::IsExitGame())
+        return;
+		
+	initNetworkObjects(context, type);
+    if (PDINetwork.isDummy())
+        network_available = false;
+    
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initOrganizer");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+    initOrganizer();
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "RaceOperator");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+    initRaceOperator();
+
+
+    if (network_available) {
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "OnlineUtility");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        OnlineUtility.setOrganizer(main::ORG);
+
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "OnlineSession");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        main::OnlineSession = gtengine::MOnlineSession();
+        OnlineSession.enableNetworkEventCallback();
+
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "Lobby");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        Lobby.setOrganizer(main::ORG);
+
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "PDINetwork");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        PDINetwork.initialize("Gran Turismo 6");
+        PDINetwork.startUpdate();
+
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "beginInitTrophy");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        beginInitTrophy();
+
+        if (type == "runviewer") 
+            main::networkServerEnabled = true;
+
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initGrim");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        initGrim(type);
+
+
+        main::Login = pdiapp::MLoginGT6();
+        
+        if (!boot_state.disable_background_login)
+        {
+            log("[" + __FILE__ + ":" + __LINE__ + "]:" + "login");
+            yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+            login(context, type, false);
+        } 
+        else 
+        {
+            log("[" + __FILE__ + ":" + __LINE__ + "]:" + "skip background login process.");
+            pdistd::MLoggerManager::SetLogLevel(pdistd::LoggerLogLevel::Debug, "STime");
+        }
+    }
+    else
+    {
+        boot_state.eula_done = true;
+        main::Login = pdiapp::MLoginGT6();
+    }
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "ResidentProject2");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+    initResidentProject2();
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initSpecDB");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+    initSpecDB(type);
+    LoginUtil::checkBackgroundProgress(context);
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initMenuDB");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+    initMenuDB();
+    LoginUtil::checkBackgroundProgress(context);
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initUserDB");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+    initUserDB();
+    LoginUtil::checkBackgroundProgress(context);
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initSound");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+    initSound();
+    LoginUtil::checkBackgroundProgress(context);
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initBehavior");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+    initBehavior();
+    LoginUtil::checkBackgroundProgress(context);
+
+    if (type == "runviewer")
+    {
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "Additional config");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        initConfig();
+    }
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "SaveData");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+
+    boot_state.is_new_game = initSaveData(context, boot_state.is_new_game, no_load);
+    boot_state.init_save_data_done = true;
+    LoginUtil::checkBackgroundProgress(context);
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "InitializePlayList");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+    SoundUtil::InitializePlaylist();
+    LoginUtil::checkBackgroundProgress(context);
+
+
+
+    var special_server = nil;
+    if (AppOpt["server_special_value"] != nil) 
+        special_server = AppOpt["server_special_value"];
+    else if (GAME_STATUS.user_profile.option.server_special_value != "")
+        special_server = GAME_STATUS.user_profile.option.server_special_value;
+
+    if (special_server != nil) {
+        LoginUtil::sync(context);
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "logout");
+        Grim2.setInitialize(false);
+
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        Grim2.setSpecialRequestHeader("X-gt-special", special_server);
+
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "login");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        login(context, type, true);
+    }
+    else if (boot_state.disable_background_login)
+    {
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "login");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        login(context, type, true);
+    }
+
+    log("[" + __FILE__ + ":" + __LINE__ + "]:" + "initDebug");
+    yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+    initDebug();
+    if (type == "behavior")
+        pdiext::SetDrawPerfMeter(false);
+    
+
+    if (type != "behavior" && type != "runviewer") {
+        if (!boot_state.is_new_game) {
+            var option = GAME_STATUS.user_profile.option;
+            if (option.extra_language != pdistd::Language::SYSTEM) {
+                pdistd::SetLanguage(option.extra_language);
+                applyLanguage();
+            }
+        }
+    }
+
+
+
+    if (LoginUtil::isOnline())
+        PresentsRoot.informAgreedEula();
+    
+    if (network_available)
+    {
+        Login.setEulaCurrentVersion(&GAME_STATUS.user_profile.context.eula_currver);
+
+        LoginUtil::sync(context);
+        Login.setWaitInterfaceReady(false);
+
+        LoginUtil::checkSaveDataBind();
+
+        if (LoginUtil::isOnline())
+        {
+            log("[" + __FILE__ + ":" + __LINE__ + "]:" + "checkEula");
+            var withoutFailedMessage = false;
+            Login.checkNpEula(withoutFailedMessage);
+            if (!withoutFailedMessage)
+                LoginUtil::checkError(context);
+        }
+        boot_state.eula_done = true;
+
+
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "GTService");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        initGTService(context, type);
+
+        BotUtil::setup(context);
+
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "loadVoucherData");
+        loadVoucherData(context);
+
+
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "endInitTrophy");
+        yield; if (pdiext::MSystemCondition::IsExitGame()) return;
+        endInitTrophy(context);
+
+
+        log("[" + __FILE__ + ":" + __LINE__ + "]:" + "putLogUserStatus");
+        putLogUserStatus();
+        putMultiMonitorServerLog();
+        resumeSuspendRace(context, type);
+        tryStartMultiMonitorClient(context);
+        boot_state.sequence_done = true;
+    }
+}

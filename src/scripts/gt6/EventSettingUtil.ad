@@ -1,0 +1,688 @@
+
+
+//---------------------------------------------------------------------------------------
+// EventSettingUtil.ad
+//
+// Utility module for managing online event settings.
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module main::EventSettingUtil
+{
+    module Util
+    {
+        function getMatchingValue(array, key)
+        {
+            foreach (var [k, v] in array)
+            {
+                if (k == key)
+                    return v;
+            }
+
+            return nil;
+        }
+
+        function getMatchingIndex(array, key)
+        {
+            var index = 0;
+            foreach (var [k, v] in array)
+            {
+                if (k == key)
+                    return index;
+
+                ++index;
+            }
+
+            return -1;
+        }
+
+        function createValueArray(array)
+        {
+            var list = Array(array.size);
+            var index = 0;
+
+            foreach (var [k, v] in array)
+            {
+                list[index++] = v;
+            }
+
+            return list;
+        }
+    }
+
+    class TypeNameList
+    {
+        attribute list_;
+        attribute page_;
+
+        method __init__(list, page)
+        {
+            self.list_ = list;
+            self.page_ = page;
+        }
+
+        method getList()
+        {
+            return self.list_;
+        }
+
+        method getPage()
+        {
+            return self.page_;
+        }
+
+        method getLocalizeKey(value)
+        {
+            return Util::getMatchingValue(self.list_, value);
+        }
+
+        method getName(value)
+        {
+            var key = self.getLocalizeKey(value);
+            return key == nil ? "--" : manager.translate(self.page_, key);
+        }
+    }
+
+    class IDataProvider
+    {
+        method getCourse(courseCode) { }
+        method getCourseNameShort(courseCode) { }
+        method getAvilableCourseList() { }
+        method resolveRoomConfigInconsistency(rc, courseInfo) { }
+        method getCourseCategoryText(context, courseInfo) { }
+        method getCourseLengthText(courseInfo) { }
+        method getCourseLongestStraightText(courseInfo) { }
+        method getCourseHeightText(courseInfo) { }
+        method getRoomGameModeList() { }
+        method getKartTagId() { }
+    }
+
+    class StandardDataProvider extends IDataProvider
+    {
+        attribute sCourseList;
+        attribute sKartTagId;
+
+        static sSelectCourseListSql = "SELECT ID, Name, Label, Length, Kart, KartOnly, CourseCategory, DLC, Oval,"
+                                      " Straight, Elevation, Corner, Logo, ModelName, BaseTimeMin, BaseTimeMax, StartDateTime,"
+                                      " CelsiusBase0, CelsiusMin0, CelsiusMax0, DriftOk,"
+                                      " Name AS CourseName, Name AS CourseNameShort,"
+                                      " Condition, ChangeTime, ChangeWeather, WeatherValue, Reverse, PitStopCount, LoadingBg, Scenery,"
+                                      " 0 AS generated_course_id, (NOT Loop) AS OneWay, '' AS CourseMap"
+                                      " FROM COURSE";
+
+        method __init__()
+        {
+            if (self.sCourseList == nil)
+                self.sCourseList = self._loadCourseList();
+            
+            if (self.sKartTagId == nil)
+                self.sKartTagId = SPECDB.executeQuery1R1C("SELECT ID FROM CAR_TAG WHERE LABEL = 'Kart'");
+        }
+
+        method _loadCourseList(sql)
+        {
+            if (sql == nil)
+                sql = self.sSelectCourseListSql;
+
+            var res = [];
+            foreach (var it in SPECDB.query(sql))
+                res.push(it);
+
+            var reverse = manager.translate("CourseData", "direction_reverse");
+            var change_weather = manager.translate("CourseData", "track_change_weather");
+            var change_time = manager.translate("CourseData", "track_change_time");
+
+            foreach (var info in res)
+            {
+                info.CourseNameShort = manager.translate("CourseName", info.Name);
+
+                info.CourseName = info.CourseNameShort
+                                     + (info.Reverse ? " / %{reverse}" : "")
+                                     + (info.ChangeWeather ? " / %{change_weather}" : "")
+                                     + (info.ChangeTime ? " / %{change_time}" : "");
+            }
+
+            return res;
+        }
+
+        method _getCourseListIndex(course, list, defaultValue = 0)
+        {
+            if (list == nil)
+                list = self.sCourseList;
+
+            var index = defaultValue;
+            var count = list.size;
+
+            for (var i = 0; i < count; ++i)
+            {
+                if (list[i].ID == course)
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            return index;
+        }
+
+        method getCourseList()
+        {
+            return self.sCourseList;
+        }
+
+        method getCourse(courseCode)
+        {
+            return self.sCourseList[self._getCourseListIndex(courseCode)];
+        }
+
+        method getCourseNameShort(courseCode)
+        {
+            return self.getCourse(courseCode).CourseNameShort;
+        }
+
+        method getAvailableCourseList()
+        {
+            return self.sCourseList;
+        }
+
+        method isCourseAvailable(courseCode)
+        {
+            var list = self.getAvailableCourseList();
+            var index = self._getCourseListIndex(courseCode, list, -1);
+            return index >= 0;
+        }
+
+        method resolveRoomConfigInconsistency(rc, courseInfo)
+        {
+
+        }
+
+        method getCourseCategoryText(context, courseInfo)
+        {
+            return manager.translate("CourseData", "CATEGORY_%{courseInfo.CourseCategory}");
+        }
+
+        method getCourseLengthText(courseInfo)
+        {
+            if (courseInfo.generated_course_id > 0)
+            {
+                return pdiext::MUnit::GetCourseLengthString(courseInfo.Length, false);
+            }
+            else
+            {
+                return SpecDatabaseUtil::Course::getLengthText(courseInfo, false);
+            }
+        }
+
+        method getCourseLongestStraightText(courseInfo)
+        {
+            if (courseInfo.generated_course_id > 0)
+            {
+                return pdiext::MUnit::GetCourseLengthString(courseInfo.Straight, false);
+            }
+            else
+            {
+                return SpecDatabaseUtil::Course::getLongestStraightText(courseInfo, false);
+            }
+        } 
+
+        method getCourseHeightText(courseInfo)
+        {
+            if (courseInfo.generated_course_id > 0)
+            {
+                return pdiext::MUnit::GetCourseHeightString(courseInfo.Elevation, false);
+            }
+            else
+            {
+                return SpecDatabaseUtil::Course::getHeightText(courseInfo, false);
+            }
+        }
+
+        method getKartTagId()
+        {
+            return self.sKartTagId;
+        }
+    }
+
+    static sSaveSlotNameList = Array(5);
+    for (var i = 0; i < 5; ++i)
+        sSaveSlotNameList[i] = "Slot %d".format(i);
+    
+    static sDataPathFormat = "/APP_CACHE/event_setting%d.dat";
+
+    module Converter
+    {
+        function convert1_2(rc)
+        {
+            rc.is_autocratic = true;
+            rc.event_setting_version = 2;
+            return true;
+        }
+
+        function convert2_3(rc)
+        {
+            rc.club_id = 0;
+            rc.club_event_id = 0;
+            rc.event_setting_version = 3;
+            return true;
+        }
+
+        function convert3_4(rc)
+        {
+            rc.room_type = gtengine::RoomType::NONE;
+            rc.event_setting_version = 4;
+            return true;
+        }
+
+        function convert4_5(rc)
+        {
+            rc.updateEventSettingHash();
+            rc.event_setting_version = 5;
+            return true;
+        }
+
+        function convert5_6(rc)
+        {
+            rc.force_pitcrew_off = false;
+            rc.event_setting_version = 6;
+            return true;
+        }
+
+        function convert6_7(rc)
+        {
+            rc.updateEventSettingHash();
+            rc.event_setting_version = 7;
+            return true;
+        }
+
+        function convert7_8(rc)
+        {
+            rc.updateEventSettingHash();
+            rc.event_setting_version = 8;
+            return true;
+        }
+
+        static CurrentVersion = 8;
+        static sFunctionMap = [
+            1: convert1_2,
+            2: convert2_3,
+            3: convert3_4,
+            4: convert4_5,
+            5: convert5_6,
+            6: convert6_7,
+            7: convert7_8,
+        ];
+
+        function convert(rc)
+        {
+            while (rc.event_setting_version != 8)
+            {
+                var currentVersion = rc.event_setting_version;
+                var func = sFunctionMap[currentVersion];
+                if (func == nil)
+                    return nil;
+
+                if (!func(rc))
+                    return nil;
+                else
+                    ;
+            }
+
+            return rc;
+        }
+    }
+
+    function GetCurrentEventSettingVersion()
+    {
+        return Converter::CurrentVersion;
+    }
+
+    function loadSettingFromXml(xml)
+    {
+        var res = GameParameterUtil::parseXML(xml);
+        if (res.size == 1)
+        {
+            var gp = res[0];
+            var track = gp.event.track;
+            if (track.generated_course_id > 0)
+            {
+                var ted = track.edit_data;
+                var gd = gtengine::MCourseGenerateData();
+                gd.setRefer(ted);
+                gd.maker_id = track.generated_course_id;
+                gp.event.race_parameter.course_code = gd;
+            }
+            else
+                gp.event.race_parameter.course_code = track.course_code;
+
+            if (gp.online_room.event_setting_version != 8)
+            {
+                var rc = Converter::convert(gtengine::MRoomConfig(gp));
+                if (rc == nil)
+                    return nil;
+
+                if (!rc.validateEventSettingHash())
+                    return nil;
+                gp = rc.createGameParameter();
+            }
+            else
+            {
+                var rc = gtengine::MRoomConfig(gp);
+                if (!rc.validateEventSettingHash())
+                    return nil;
+            }
+
+            return gp;
+        }
+
+        return nil;
+    }
+
+    // ERROR: This might be genuinely broken, rc isn't normally passed
+    function _convertEventSettingData(index, dataVersion)
+    {
+        var rc;
+        if (dataVersion == 4)
+        {
+            rc = _convertEventSettingData4_5(index, rc); // ERROR: Might cause problems as rc isn't defined, compiler will push one but it'll be nil..
+            if (rc != nil)
+                dataVersion = 5;
+        }
+
+        if (dataVersion == 5)
+        {
+            rc = _convertEventSettingData5_6(index, rc);
+            if (rc != nil)
+                dataVersion = 6;
+        }
+
+        if (dataVersion == 6)
+        {
+            rc = _convertEventSettingData6_7(index, rc);
+            if (rc != nil)
+                dataVersion = 7;
+        }
+
+        if (dataVersion == 7)
+        {
+            rc = _convertEventSettingData7_8(index, rc);
+            if (rc != nil)
+                dataVersion = 8;
+        }
+
+        if (dataVersion == 8)
+            return rc;
+        return nil;
+    }
+
+    function _loadDataForConvert(index)
+    {
+        var data = _readDataInternal(index);
+        if (data == nil)
+            return nil;
+
+        var rc = deserializeSetting(data);
+        return rc;
+    }
+
+    function _convertEventSettingData4_5(index, rc)
+    {
+        if (rc == nil)
+            rc = _loadDataForConvert(index);
+
+        if (rc == nil)
+            return nil;
+
+        if (rc.room_policy == gtengine::RoomPolicy::FREE_RUN ||
+            rc.room_policy == gtengine::RoomPolicy::DRIFT)
+            rc.room_policy = gtengine::RoomPolicy::ENJOY_RACE;
+
+        return rc;
+    }
+
+    function _convertEventSettingData5_6(index, rc)
+    {
+        if (rc == nil)
+            rc = _loadDataForConvert(index);
+
+        if (rc == nil)
+            return nil;
+
+        rc.restrictor_limit = gtengine::MGameParameter::INVALID_VALUE_INT;
+        return rc;
+    }
+
+    function _convertEventSettingData6_7(index, rc)
+    {
+        if (rc == nil)
+            rc = _loadDataForConvert(index);
+
+        if (rc == nil)
+            return nil;
+
+        if (rc.start_type == gtengine::StartType::GRID)
+            rc.start_type = gtengine::StartType::GRID_FLYING;
+
+        return rc;
+    }
+
+    function _convertEventSettingData7_8(index, rc)
+    {
+        if (rc == nil)
+            rc = _loadDataForConvert(index);
+
+        if (rc == nil)
+            return nil;
+
+        rc.event_setting_version = 1;
+        return rc;
+    }
+
+    function _writeInternal(index, data, version)
+    {
+        KeyValueUtil::begin();
+        KeyValueUtil::set("event_setting", "set%02d_version".format(index), version);
+        KeyValueUtil::set("event_setting", "set%02d".format(index), data);
+        KeyValueUtil::commit();
+    }
+
+    function _writeDefaultIndex(index)
+    {
+        KeyValueUtil::begin();
+        KeyValueUtil::set("event_setting", "default_index", index);
+        KeyValueUtil::commit();
+    }
+
+    function serializeSetting(rc)
+    {
+        var tmp = gtengine::MRoomConfig();
+        tmp.deepCopy(rc);
+        tmp.club_id = 0;
+        tmp.club_event_id = 0;
+        tmp.room_type = gtengine::RoomType::NONE;
+        tmp.updateEventSettingHash();
+
+        var gp = tmp.getGameParameter();
+        gp.event.track.course_code = gp.event.race_parameter.course_code;
+        var xml = GameParameterUtil::createXML([gp]);
+        return xml;
+    }
+
+    function openSaveSettingDialog(context, rc)
+    {
+        if (rc.event_setting_version != 8)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                manager.translate("OnlineMessage", "UNABLE_TO_SAVE_THIS_EVENT_SETTING"));
+        }
+        else
+            __projects__::UIKitProject::EventListRoot.openForSave(context, rc);
+    }
+
+    function saveSetting(index, rc)
+    {
+        if (index < 0 || index >= 5)
+            return false;
+
+        var buf = serializeSetting(rc);
+        _writeInternal(index, buf, 8);
+        return true;
+    }
+
+    function deleteSetting(index)
+    {
+        if (index >= 0 && index < 5)
+        {
+            _writeInternal(index, "", "");
+            if (index == _readDefaultIndex())
+                _writeDefaultIndex(-1);
+            return true;
+        }
+        else
+            return false;
+    }
+
+    function getVacantIndex()
+    {
+        for (var i = 0; i < 5; ++i)
+        {
+            var dat = _readInternal(i, 8);
+            var rc = dat == nil ? nil : deserializeSetting(dat);
+            if (rc == nil)
+                return i;
+        }
+
+        return -1;
+    }
+
+    function _readDataInternal(index)
+    {
+        var data = KeyValueUtil::get("event_setting", "set%02d".format(index));
+        if (data == "")
+            return nil;
+        return data;
+    }
+
+    function _readInternal(index, acceptableVersion)
+    {
+        var version = KeyValueUtil::get("event_setting", "set%02d_version".format(index));
+        if (version == "")
+            return nil;
+
+        if (version != acceptableVersion)
+        {
+            var converted = _convertEventSettingData(index, version);
+            if (converted == nil)
+                return nil;
+            var buf = serializeSetting(converted);
+            _writeInternal(index, buf, 8);
+        }
+
+        return _readDataInternal(index);
+    }
+
+    function _readDefaultIndex()
+    {
+        var index = KeyValueUtil::get("event_setting", "default_index");
+        if (index == "" || index < 0 || index >= 5)
+            return nil;
+        return index;
+    }
+
+    function deserializeSetting(xml)
+    {
+        var gp = loadSettingFromXml(xml);
+        return gp != nil ? gtengine::MRoomConfig(gp) : nil;
+    }
+
+    function getDefaultSetting(context)
+    {
+        var defaultIndex = _readDefaultIndex();
+        if (defaultIndex != nil)
+        {
+            var dat = _readInternal(defaultIndex, 8);
+            var rc = dat == nil ? nil : deserializeSetting(dat);
+            return rc;
+        }
+        else
+            return nil;
+    }
+
+    function getDefaultSettingIndex()
+    {
+        return _readDefaultIndex();
+    }
+
+    function setDefaultSettingIndex(index)
+    {
+        _writeDefaultIndex(index);
+    }
+
+    function getSettingList(context)
+    {
+        var list = [];
+        for (var i = 0; i < 5; ++i)
+        {
+            var dat = _readInternal(i, 8);
+
+            var rc;
+            if (dat != nil)
+                rc = deserializeSetting(dat);
+            list.push([i, rc]);
+        }
+
+        return list;
+    }
+
+    function getSettingSlotCount()
+    {
+        return 5;
+    }
+
+    function overwriteLoadedConfigWithCurrent(current, rc, keepNetworkSetting)
+    {
+        rc.room_type = current.room_type;
+        rc.scope = current.scope;
+        rc.club_id = current.club_id;
+        rc.club_event_id = current.club_event_id;
+
+        if (current.room_policy == gtengine::RoomPolicy::NONE)
+            rc.room_policy = gtengine::RoomPolicy::NONE;
+        else if (rc.room_policy == gtengine::RoomPolicy::NONE)
+            rc.room_policy = gtengine::RoomPolicy::ENJOY_RACE;
+
+        if (keepNetworkSetting)
+        {
+            rc.quality_control_template_type = current.quality_control_template_type;
+            rc.auto_grant_ownership = current.auto_grant_ownership;
+            rc.topology = current.topology;
+            rc.nat_restriction = current.nat_restriction;
+            rc.voice_chat = current.voice_chat;
+            rc.voice_quality = current.voice_quality;
+            rc.room_max = current.room_max;
+        }
+    }
+
+    function resetAlarmTime(rc)
+    {
+        if (rc.alarm_time_value > 0)
+        {
+            var time = pdiext::getBetterTime();
+
+            rc.alarm_time = (((((time.hour * 60) + time.minute) + rc.alarm_time_value) * 6) 
+                            + (time.second / 10).toInt()) % 8640;
+        }
+    }
+
+    function getTedThumbnailPath(ted, course_id)
+    {
+        var mapImagePath = "/APP_CACHE/event_setting_course_map/thumb_%s.png".format(course_id);
+        if (gtengine::createTedThumbnail(ted, mapImagePath))
+            return mapImagePath;
+        return nil;
+    }
+}

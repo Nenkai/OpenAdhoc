@@ -1,0 +1,1014 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module SierraSSRoot
+{
+    hidden.visible = false;
+
+    static sDifficulty = [
+        "EASY",
+        "NORMAL",
+        "HARD"
+    ];
+
+    attribute gp;
+
+    method open(context)
+    {
+        SequenceUtil::enableStartMenuRoot();
+        SequenceUtil::startPageSimple(context, self);
+    }
+
+    method close(context)
+    {
+        GTModeProject.history[$"SierraSSRoot::SelectedMode"] = nil;
+        GTModeProject.history[$"SierraSSRoot::SelectedEvent"] = nil;
+
+        GTModeRoot.open(context);
+    }
+
+    method initializeGameRecord(folder_info)
+    {
+        var event_id_list = folder_info["event_id_list"];
+        var event_type = folder_info["event_type"];
+        var folder_id = folder_info["id"];
+        var category = 0;
+        var is_online = false;
+
+        if (folder_info["championship"])
+        {
+            var championship_event_id = folder_id;
+            event_id_list.push(championship_event_id);
+        }
+
+        GAME_STATUS.user_profile.record.event_record.initializeRecord(event_id_list, event_type, folder_id, category, is_online);        
+    }
+
+    method getFolderInfo(context, event_name)
+    {
+        var xml = "/game_parameter/gt6/event/%s.xml".format(event_name);
+        var folder_info_list = EventRace2.decodeOfflineEventList(xml);
+        
+        if (folder_info_list.size == 0)
+            return nil;
+
+        GAME_STATUS.user_profile.context.event_name = event_name;
+        return folder_info_list[0];
+    }
+    
+    method opneGameParameterXml(context, folder_id)
+    {
+        var xml = "/game_parameter/gt6/event/r%03d.xml".format(folder_id);
+        return GameParameterUtil::createFromFile(xml);
+    }
+
+    method getEventIndex(event_id)
+    {
+        if (self.gp == nil)
+            return nil;
+
+        for (var i = 0; i < gp.events.size; i++)
+        {
+            if (gp.events[i].event_id == event_id)
+                return i;
+        } 
+
+        return nil;
+    }
+
+    method getEvent(event_id)
+    {
+        if (self.gp == nil)
+            return nil;
+
+        for (var i = 0; i < gp.events.size; i++)
+        {
+            if (gp.events[i].event_id == event_id)
+                return gp.events[i];
+        }
+
+        return nil;
+    }
+
+    function RecursiveRestartActors(w)
+    {
+        ActorUtil::ResetInterpolators(w);
+        if (w.isInstanceOf(menu::MCourseMapFace))
+            w.span::SpanActor.restart();
+
+        if (w.isInstanceOf(menu::MComposite))
+        {
+            for (var w2 = w.first; w2 != nil; w2 = w2.next)
+                RecursiveRestartActors(w2);
+        }
+    }
+
+    method checkPresentCars(context)
+    {
+        var event_list = [
+            1000557,
+            1000558,
+            1000559,
+            1000698,
+        ];
+
+        foreach (var event_id in event_list)
+        {
+            var result = RaceEventUtil::getResult(event_id);
+            if (result != gtengine::FinishResult::RANK_1)
+                continue;
+
+            var event = self.getEvent(event_id);
+            var entry_base = event.reward.entry_base;
+            if (entry_base.car.code == gtengine::MSpecDB::NO_CODE)
+                continue;
+
+            var cp = LaunchRaceUtil::makeCarParameterFromEntryBase(entry_base);
+            if (cp == nil || cp.getCarCode() == gtengine::MSpecDB::NO_CODE)
+                continue;
+
+            cp.setNewCar();
+
+            if (!KeyValueUtil::getFlag_NotNil("sierra_timerally_present", event_id))
+            {
+                if (main::GAME_STATUS.user_profile.garage.isFull())
+                {
+                    sound.play("disable");
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                        manager.translate(CarShowroomRoot, "Message_GarageFullAtPresentCar"));
+                    return;
+                }
+
+                KeyValueUtil::set("sierra_timerally_present", event_id, true);
+
+                var head_txt = manager.translate("RaceEvent", "THE_GOLD");
+                var message = manager.translate("CommonGTMode", "PRESENT_SEASONAL_EVENT_CAR").build(head_txt);
+
+                CarDeliveryRoot.openModal(context, CarDeliveryRoot::OPEN_MODE::PRESENT, cp, message, false, cp.isTuned(false));
+            }
+        }
+    }
+
+    method onInitialize(context)
+    {
+        var folder_info = self.getFolderInfo(context, "ss_sierra");
+        if (folder_info == nil)
+        {
+            context.pushEvent(main::menu::MFunctionEvent(self.close, context));
+            return;
+        }
+
+        var gp = self.opneGameParameterXml(context, folder_info["id"]);
+        if (gp == nil)
+        {
+            context.pushEvent(main::menu::MFunctionEvent(self.close, context));
+            return;
+        }
+
+        self.gp = gp;
+        self.initializeGameRecord(folder_info);
+
+        SierraSSRoot::CourseLogo::FadeIn.reset();
+        ContextMain.disableInput();
+        SierraSSRoot.setFocus(nil);
+
+        GTModeProject.PlayMenuBGM(context, SierraSSRoot);
+
+        context.pushEvent(main::menu::MFunctionEvent(postInitialize, context));
+    }
+
+    method postInitialize(context)
+    {
+        ContextMain.enableInput();
+        checkPresentCars(context);
+
+        ContextMain.filterKeyEvent();
+
+        MovieFace.play_movie(context);
+
+        var selected_mode = GTModeProject.history[$"SierraSSRoot::SelectedMode"];
+        var selected_event = GTModeProject.history[$"SierraSSRoot::SelectedEvent"];
+
+        GTModeProject.history[$"SierraSSRoot::SelectedMode"] = nil;
+        GTModeProject.history[$"SierraSSRoot::SelectedEvent"] = nil;
+
+        if (selected_mode != nil && selected_event != nil)
+        {
+            var event_select_w = self[selected_mode];
+            var event_w = event_select_w["HBox"][selected_event];
+            event_select_w.appear(context, false);
+            SierraSSRoot.setFocus(event_w);
+        }
+        else
+        {
+            ModeSelect.appear(context, false);
+            SierraSSRoot.setFocus(ModeSelect::HBox::TimeRally);
+        }
+
+        var completed_message = KeyValueUtil::getInt("sierra_timerally", "completed_message");
+        var completed_ss = KeyValueUtil::getInt("sierra_timerally", "completed_ss");
+
+        if (completed_ss >= 1 && completed_message < completed_ss)
+        {
+            if (completed_ss < 4)
+            {
+                var arrived_ss = completed_ss + 1;
+                var arrived_ss_label = manager.translate(SierraSSRoot, "Label_SS%{arrived_ss}");
+                DialogUtil::openTutorialDialog(context, 
+                    manager.translate(SierraSSRoot, "ArriveNewSS").build(arrived_ss_label));
+            }
+            else
+            {
+                DialogUtil::openTutorialDialog(context, 
+                    manager.translate(SierraSSRoot, "Complete1Lap"));
+
+                KeyValueUtil::setCourseUnlock("andalusia_01", true);
+            }
+
+            KeyValueUtil::set("sierra_timerally", "completed_message", completed_ss);
+        }
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (CursorProject::StartMenuRoot::StartMenu.checkKeyPress(context, event))
+            return STATE_YIELD;
+
+        return STATE_EXIT;
+        
+
+    }
+
+    module MovieFace
+    {
+        method onInitialize(context)
+        {
+            self.visible = false;
+        }
+
+        method onFinalize(context)
+        {
+            self.unload();
+        }
+
+        method play_movie(context)
+        {
+            var movie_file = "SIERRA";
+            var movie = MENUDB.query1("SELECT * FROM t_movie WHERE Name = ?", [movie_file]);
+            if (movie == nil)
+                return;
+
+            var key = Tv2.decodeContentsKey(movie.Key);
+            self.unload();
+
+            self.setVideoSize(movie.Width, movie.Height);
+
+            self.audio_level = SoundUtil::GetMovieVolume();
+
+            self.audio_track = -1;
+
+            self.setKey(key);
+
+            var file = "/movies/%{movie.FileName}";
+            self.load(context, file);
+            self.setFrameHook(0, "onMovieStart");
+            self.visible = true;
+        }
+
+        method onMovieStart(context)
+        {
+            SierraSSRoot::CourseLogo::FadeIn.start();
+        }
+    }
+
+    module ModeSelect
+    {
+        method appear(context, warp)
+        {
+            var delay = 0;
+            for (var w = self.HBox.first; w != nil; w = w.next)
+            {
+                w.MoveY.forward();
+                w.MoveY.setStartDuration(0, delay);
+                w.MoveY.setEndDuration(0, 0);
+
+                delay += 0.05;
+
+                w.MoveY.start();
+
+                if (warp)
+                    w.MoveY.warp();
+            }
+
+            var has_new_event = false;
+
+            for (var w = ModeTimeRally::HBox.first; w != nil; w = w.next)
+            {
+                if (w["New"] != nil && w.New.visible)
+                {
+                    has_new_event = true;
+                    break;
+                }
+            }
+            self.HBox::TimeRally::New.visible = has_new_event;
+
+            has_new_event = false;
+
+            for (var w = ModePractice::HBox.first; w != nil; w = w.next)
+            {
+                if (w.active && w.New.visible)
+                {
+                    has_new_event = true;
+                    break;
+                }
+            }
+            self.HBox::Practice::New.visible = has_new_event;
+
+            self.Display::FadeIn.forward();
+            self.Display::FadeIn.start();
+            if (warp)
+                self.Display::FadeIn.warp();
+
+            SierraSSRoot::Tint::FadeIn.backward();
+            SierraSSRoot::Tint::FadeIn.start();
+            if (warp)
+                SierraSSRoot::Tint::FadeIn.warp();
+
+            self.insensitive = false;
+        }
+
+        method hide(context, warp)
+        {
+            var delay = 0;
+            for (var w = self.HBox.last; w != nil; w = w.prev)
+            {
+                w.MoveY.backward();
+                w.MoveY.setStartDuration(0, delay);
+                w.MoveY.setEndDuration(0, 0);
+
+                delay += 0.05;
+
+                w.MoveY.start();
+
+                if (warp)
+                    w.MoveY.warp();
+            }
+
+            if (!warp)
+                context.wait(HBox.first.MoveY.total_time);
+            
+            self.Display::FadeIn.backward();
+            self.Display::FadeIn.start();
+
+            if (warp)
+                self.Display::FadeIn.warp();
+
+            self.insensitive = true;
+        }
+
+        method onInitialize(context)
+        {
+            self.hide(context, true);
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            self.close(context);
+
+            return STATE_YIELD;
+        }
+
+        module HBox::TimeRally
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+                ModeSelect.hide(context, false);
+                ModeTimeRally.appear(context, false);
+                SierraSSRoot.setFocus(ModeTimeRally::HBox::Challenge_1);
+                return STATE_YIELD;
+            }
+        }
+
+        module HBox::Practice
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+                ModeSelect.hide(context, false);
+                ModePractice.appear(context, false);
+                SierraSSRoot.setFocus(ModePractice::HBox::SS_1);
+                return STATE_YIELD;
+            }
+        }
+    }
+
+    module ModeTimeRally
+    {
+        method appear(context, warp)
+        {
+            var delay = 0;
+            for (var w = self.HBox.first; w != nil; w = w.next)
+            {
+                w.MoveY.forward();
+                w.MoveY.setStartDuration(0, delay);
+                w.MoveY.setEndDuration(0, 0);
+
+                delay += 0.05;
+
+                w.MoveY.start();
+
+                if (warp)
+                    w.MoveY.warp();
+            }
+
+            var event_index = SierraSSRoot.getEventIndex(1000557);
+            if (event_index != nil)
+            {
+                var event = SierraSSRoot.gp.events[event_index];
+                Display::CourseMapFace.setup(context, event);
+                Display::CourseMapFace.restartSpan();
+            }
+
+            self.Display::FadeIn.forward();
+            self.Display::FadeIn.start();
+            if (warp)
+                self.Display::FadeIn.warp();
+
+            SierraSSRoot::Tint::FadeIn.forward();
+            SierraSSRoot::Tint::FadeIn.start();
+            if (warp)
+                SierraSSRoot::Tint::FadeIn.warp();
+
+            self.insensitive = false;
+
+            var showed_tutorial = KeyValueUtil::getFlag_NotNil("sierra_timerally", "showed_tutorial");
+            if (!warp && !showed_tutorial)
+            {
+                self.Display::FadeIn.backward();
+                self.Display::FadeIn.start();
+    
+                Tutorial.open(context);
+
+                self.Display::FadeIn.forward();
+                self.Display::FadeIn.start();    
+
+                KeyValueUtil::set("sierra_timerally", "showed_tutorial", true);
+            }
+        }
+
+        method hide(context, warp)
+        {
+            var delay = 0;
+            for (var w = self.HBox.last; w != nil; w = w.prev)
+            {
+                w.MoveY.backward();
+                w.MoveY.setStartDuration(0, delay);
+                w.MoveY.setEndDuration(0, 0);
+
+                delay += 0.05;
+
+                w.MoveY.start();
+
+                if (warp)
+                    w.MoveY.warp();
+            }
+
+            if (!warp)
+                context.wait(HBox.first.MoveY.total_time);
+            
+            self.Display::FadeIn.backward();
+            self.Display::FadeIn.start();
+
+            if (warp)
+                self.Display::FadeIn.warp();
+
+            self.insensitive = true;
+        }
+
+        method onInitialize(context)
+        {
+            self.hide(context, true);
+
+            HBox::Challenge_1.defineAttribute("event_id", 1000557);
+            HBox::Challenge_2.defineAttribute("event_id", 1000558);
+            HBox::Challenge_3.defineAttribute("event_id", 1000559);
+            HBox::Challenge_4.defineAttribute("event_id", 1000698);
+
+            HBox::Challenge_4::New.visible = KeyValueUtil::getFlag("sierra_new_flag", 1000698) != false;
+
+            for (var w = self.HBox.first; w != nil; w = w.next)
+                self.initTropy(context, w);
+        }
+
+        method initTropy(context, w)
+        {
+            var result = RaceEventUtil::getResult(w.event_id);
+            var order = result + 1;
+
+            switch (order)
+            {
+                case 1:
+                    w.Trophy::Image.image_path = "/image/gt6/event/trophy_gold.dds";
+                    break;
+
+                case 2:
+                    w.Trophy::Image.image_path = "/image/gt6/event/trophy_silver.dds";
+                    break;
+                        
+                case 3:
+                    w.Trophy::Image.image_path = "/image/gt6/event/trophy_bronze.dds";
+                    break;
+
+                default:
+                    w.Trophy::Image.image_path = "";
+                    break;
+            }
+        }
+
+        method onActivate(context, event)
+        {
+            var w = event.widget;
+            sound.play("next");
+
+            if (KeyValueUtil::getFlag("sierra_new_flag", w.event_id) != false)
+            {
+                KeyValueUtil::set("sierra_new_flag", w.event_id, false);
+            }
+
+            var gp = SierraSSRoot.gp;
+            gp.event_index = SierraSSRoot.getEventIndex(w.event_id);
+
+            GTModeProject.history[$"LastPageName"] = SierraSSRoot.name;
+            GTModeProject.history[$"SierraSSRoot::SelectedMode"] = self.name;
+            GTModeProject.history[$"SierraSSRoot::SelectedEvent"] = w.name;
+
+            GameParameterUtil::executeEvent(context, gp, GAME_STATUS);
+            return STATE_YIELD;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            self.hide(context, false);
+            ModeSelect.appear(context, false);
+            SierraSSRoot.setFocus(ModeSelect::HBox::TimeRally);
+            return STATE_YIELD;
+        }
+
+        method onKeyPress(context, event)
+        {
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_TRIANGLE:
+                    sound.play("ok");
+
+                    self.Display::FadeIn.backward();
+                    self.Display::FadeIn.start();
+
+                    Tutorial.open(context);
+
+                    self.Display::FadeIn.forward();
+                    self.Display::FadeIn.start();
+
+                    return STATE_YIELD;
+                    break;
+
+                case CELL_PAD_CTRL_SELECT:
+                    if (GTModeProject::IsDevelop(context))
+                    {
+                        var event_record = GAME_STATUS.user_profile.record.event_record;
+                        var w = event.widget;
+                        var event_id = w.event_id;
+                        var result = RaceEventUtil::getResult(event_id);
+                        if (--result < -1)
+                            result = gtengine::FinishResult::RANK_3;
+
+                        event_record.updateResultOnly(event_id, result);
+                        self.initTropy(context, w);
+                        return STATE_YIELD;
+                    }
+            }
+
+            return STATE_EXIT;
+        }
+
+        module Display
+        {
+            module CourseMapFace
+            {
+                method setup(context, event)
+                {
+                    var course_info = main::SPECDB.query1("SELECT ModelName, Scenery FROM COURSE WHERE ID=?", [event.track.course_code]);
+                    CourseMapFaceUtil::initialize(context, self, course_info, event);
+
+                    self.span::SpanActor.stop();
+                }
+
+                method restartSpan()
+                {
+                    self.span::SpanActor.restart();
+                }
+            }
+        }
+    }
+
+    module ModePractice
+    {
+        method appear(context, warp)
+        {
+            var delay = 0;
+            for (var w = self.HBox.first; w != nil; w = w.next)
+            {
+                w.MoveY.forward();
+                w.MoveY.setStartDuration(0, delay);
+                w.MoveY.setEndDuration(0, 0);
+
+                delay += 0.05;
+
+                w.MoveY.start();
+
+                if (warp)
+                    w.MoveY.warp();
+            }
+
+            self.Display::FadeIn.forward();
+            self.Display::FadeIn.start();
+            if (warp)
+                self.Display::FadeIn.warp();
+
+            SierraSSRoot::Tint::FadeIn.forward();
+            SierraSSRoot::Tint::FadeIn.start();
+            if (warp)
+                SierraSSRoot::Tint::FadeIn.warp();
+
+            self.insensitive = false;
+        }
+
+        method hide(context, warp)
+        {
+            var delay = 0;
+            for (var w = self.HBox.last; w != nil; w = w.prev)
+            {
+                w.MoveY.backward();
+                w.MoveY.setStartDuration(0, delay);
+                w.MoveY.setEndDuration(0, 0);
+
+                delay += 0.05;
+
+                w.MoveY.start();
+
+                if (warp)
+                    w.MoveY.warp();
+            }
+
+            if (!warp)
+                context.wait(HBox.first.MoveY.total_time);
+
+            self.Display::FadeIn.backward();
+            self.Display::FadeIn.start();
+
+            if (warp)
+                self.Display::FadeIn.warp();
+
+            self.insensitive = true;
+        }
+
+        method onInitialize(context)
+        {
+            self.hide(context, true);
+
+            HBox::SS_1.defineAttribute("event_id", 1000560);
+            HBox::SS_2.defineAttribute("event_id", 1000561);
+            HBox::SS_3.defineAttribute("event_id", 1000562);
+            HBox::SS_4.defineAttribute("event_id", 1000563);
+            HBox::FullLap.defineAttribute("event_id", 1000564);
+
+            var completed_ss = KeyValueUtil::getInt("sierra_timerally", "completed_ss");
+
+            HBox::SS_1.active = true;
+            HBox::SS_2.active = completed_ss >= 1;
+            HBox::SS_3.active = completed_ss >= 2;
+            HBox::SS_4.active = completed_ss >= 3;
+            HBox::FullLap.active = completed_ss >= 4;
+
+            HBox::SS_1::New.visible = false;
+            HBox::SS_2::New.visible = KeyValueUtil::getFlag("sierra_new_flag", 1000561) != false;
+            HBox::SS_3::New.visible = KeyValueUtil::getFlag("sierra_new_flag", 1000562) != false;
+            HBox::SS_4::New.visible = KeyValueUtil::getFlag("sierra_new_flag", 1000563) != false;
+            HBox::FullLap::New.visible = KeyValueUtil::getFlag("sierra_new_flag", 1000564) != false;
+
+            for (var w = Display::SS_Label.first; w != nil; w = w.next)
+                w.visible = false;
+
+            for (var w = Display::SS_AnimLabel.first; w != nil; w = w.next)
+                w.opacity = 0;
+        }
+
+        method onActivate(context, event)
+        {
+            var w = event.widget;
+            if (!w.active)
+            {
+                sound.play("disable");
+                return STATE_YIELD;
+            }
+
+            sound.play("next");
+
+            if (KeyValueUtil::getFlag("sierra_new_flag", w.event_id) != false)
+                KeyValueUtil::set("sierra_new_flag", w.event_id, false);
+
+            var gp = SierraSSRoot.gp;
+            gp.event_index = SierraSSRoot.getEventIndex(w.event_id);
+
+            GTModeProject.history[$"LastPageName"] = SierraSSRoot.name;
+            GTModeProject.history[$"SierraSSRoot::SelectedMode"] = self.name;
+            GTModeProject.history[$"SierraSSRoot::SelectedEvent"] = w.name;
+
+            GameParameterUtil::executeEvent(context, gp, GAME_STATUS);
+            return STATE_YIELD;
+        }
+
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            self.hide(context, false);
+            ModeSelect.appear(context, false);
+            SierraSSRoot.setFocus(ModeSelect::HBox::Practice);
+            return STATE_YIELD;
+        }
+
+        method onFocusEnter(context, event)
+        {
+            var focus_w = event.widget;
+            var event_index = SierraSSRoot.getEventIndex(focus_w.event_id);
+
+            if (event_index != nil)
+            {
+                var event = SierraSSRoot.gp.events[event_index];
+                Display::CourseMapFace.setup(context, event);
+                Display::CourseMapFace.restartSpan();
+            }
+
+            if (Display::SS_Label.visible)
+            {
+                for (var w = Display::SS_Label.first; w != nil; w = w.next)
+                    w.visible = false;
+
+                Display::SS_Label[focus_w.name].visible = true;
+            }
+
+            if (Display::SS_AnimLabel.visible)
+            {
+                for (var w = Display::SS_AnimLabel.first; w != nil; w = w.next)
+                    w.opacity = 0;
+
+                var w = Display::SS_AnimLabel[focus_w.name];
+                w.BG::Actor.setEndValue(0, w.w);
+                w.BG::Actor.restart();
+                w.ColorFace::Actor.restart();
+                w.TextFace::Actor.restart();
+                w.opacity = 1;
+            }
+
+            if (Display::SS_Graph.visible)
+            {
+                var start_x = Display::SS_Graph[focus_w.name].cx;
+                var start_y = Display::SS_Graph[focus_w.name].cy;
+                var mid_x = start_x + 80;
+                var mid_y = start_y;
+
+                var end_x = Display::SS_Label[focus_w.name].x;
+                var end_y = (Display::SS_Label[focus_w.name].y + Display::SS_Label[focus_w.name].h) - Display::SS_Graph::GraphFace.line_width;
+
+                Display::SS_Graph::GraphFace.points = [
+                    [start_x / 1920.0, start_y / 1080.0],
+                    [mid_x / 1920.0, mid_y / 1080.0],
+                    [end_x / 1920.0, end_y / 1080.0],
+                ];
+            }
+
+            return 1;
+
+
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (GTModeProject::IsDevelop(context) && event.keysym == CELL_PAD_CTRL_SELECT)
+            {
+                var completed_ss = KeyValueUtil::getInt("sierra_timerally", "completed_ss");
+                if (completed_ss == nil)
+                    completed_ss = 0;
+
+                completed_ss++;
+                if (completed_ss > 4)
+                    completed_ss = 0;
+
+                KeyValueUtil::set("sierra_timerally", "completed_ss", completed_ss);
+
+                switch (completed_ss)
+                {
+                    case 0:
+                        for (var w = ModePractice::HBox::SS_2; w != nil; w = w.next)
+                        {
+                            w.active = false;
+                            KeyValueUtil::set("sierra_new_flag", w.event_id, true);
+                        }
+
+                        break;
+
+                    case 1:
+                        ModePractice::HBox::SS_2.active = true;
+                        break;
+
+                    case 2:
+                        ModePractice::HBox::SS_3.active = true;
+                        break;
+
+                    case 3:
+                        ModePractice::HBox::SS_4.active = true;
+                        break;
+
+                    case 4:
+                        ModePractice::HBox::FullLap.active = true;
+                        break;
+
+                }
+
+                return STATE_YIELD;
+            }
+
+            return STATE_EXIT;
+        }
+
+        module Display
+        {
+            module CourseMapFace
+            {
+                method setup(context, event)
+                {
+                    var course_info = main::SPECDB.query1("SELECT ModelName, Scenery FROM COURSE WHERE ID=?", [event.track.course_code]);
+                    CourseMapFaceUtil::initialize(context, self, course_info, event);
+    
+                    self.span::SpanActor.stop();
+                }
+    
+                method restartSpan()
+                {
+                    self.span::SpanActor.restart();
+                }
+            }
+        }
+    }
+
+    module Tutorial
+    {
+        attribute goto_next = false;
+
+        method open(context)
+        {
+            ContextMain.disableInput();
+
+            context.cursor_visible = false;
+            var focus_w = SierraSSRoot.getFocusWidget();
+            self.insensitive = false;
+            SierraSSRoot.setFocus(self);
+
+            self.reset();
+            self.FadeIn.forward();
+            self.FadeIn.start();
+            context.wait(self.FadeIn.total_time);
+
+            Thread(update, context).start();
+
+            SequenceUtil::enterEventLoop(context, self);
+
+            self.FadeIn.backward();
+            self.FadeIn.start();
+
+            context.wait(self.FadeIn.total_time);
+            SierraSSRoot.setFocus(focus_w);
+            self.insensitive = true;
+            context.cursor_visible = true;
+
+            ContextMain.enableInput();
+        }
+
+        method close(context)
+        {
+            SequenceUtil::leaveEventLoop(context, self);
+        }
+
+        method reset()
+        {
+            self.ButtonHelp.visible = false;
+            self.FadeIn.reset();
+
+            for (var w = self.Tips.first; w != nil; w = w.next)
+            {
+                w.visible = false;
+                w.FadeOut.reset();
+            }
+        }
+
+        method update(context)
+        {
+            self.goto_next = false;
+            var prev_w;
+
+            for (var w = self.Tips.first; w != nil; w = w.next)
+            {
+                if (prev_w != nil)
+                {
+                    self.Tips::FadeOut.restart();
+                    context.wait(self.Tips::FadeOut.total_time);
+                    prev_w.visible = false;
+                    prev_w = nil;
+                }
+
+                self.Tips::FadeOut.reset();
+                SierraSSRoot::RecursiveRestartActors(w);
+
+                w.visible = true;
+                ContextMain.enableInput();
+                self.ButtonHelp.visible = true;
+
+                while (true)
+                {
+                    if (self.goto_next)
+                        break;
+
+                    Thread::Sleep(0.01);
+                }
+
+                ContextMain.disableInput();
+
+                self.ButtonHelp.visible = false;
+
+                prev_w = w;
+                self.goto_next = false;
+            }
+
+            self.close(context);
+        }
+
+        method next_tips()
+        {
+            self.goto_next = true;
+        }
+
+        method onInitialize(context)
+        {
+            self.insensitive = true;
+            self.reset();
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            self.next_tips();
+
+            return STATE_YIELD;
+        }
+
+        method onKeyPress(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_CROSS)
+                return STATE_EXIT;
+            else
+                return STATE_YIELD;
+        }
+
+        module ButtonHelp
+        {
+            method onInitialize(context)
+            {
+                var assign = main::pdiext::MSystemConfiguration::GetEnterButtonAssign();
+                if (assign == "circle")
+                {
+                    self.Circle.visible = true;
+                    self.Cross.visible = false;
+                }
+                else
+                {
+                    self.Circle.visible = false;
+                    self.Cross.visible = true;
+                }
+            }
+        }
+    }
+}

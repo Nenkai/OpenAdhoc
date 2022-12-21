@@ -1,0 +1,236 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ForumEditRoot
+{
+    attribute club;
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+
+    class Data
+    {
+        attribute title;
+        attribute description;
+        attribute activity;
+    }
+
+    function verify(context)
+    {
+        var data = Data();
+        var title = trim(ScrolledWindow::clip::space::VBox::Title::VBox::InputTextBox::Text::input.value);
+
+        if (title == "")
+        {
+            ERROR(context, "Community", "NO_FORUM_TITLE");
+            return nil;
+        }
+
+        var [filter_title_res, sanitized_title] = filterText(context, title, true);
+        if (!filter_title_res)
+            return nil;
+
+        data.title = sanitized_title;
+        var description = trim(ScrolledWindow::clip::space::VBox::Description::VBox::InputTextBox::Text::input.value);
+
+        if (description == "")
+        {
+            ERROR(context, "Community", "NO_FORUM_DESCRIPTION");
+            return nil;
+        }
+
+        var [filter_description_res, sanitized_description] = filterText(context, description, true);
+        if (!filter_description_res) // BUGFIX: 'filter_title_res'
+            return nil;
+
+        data.description = sanitized_description;
+        data.activity = ScrolledWindow::clip::space::VBox::Notice::VBox::CheckButton::Check.active ? 1 : 0;
+        return data;
+    }
+
+    method open(context, club)
+    {
+        self.result = nil;
+        self.closed = false;
+        self.club = club;
+        self.popup = SequenceUtil::ModalPage(context, ForumEditRoot);
+        self.popup.open();
+
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        FadeActor.out = true;
+
+        if (self.popup != nil)
+        {
+            self.popup.close(FadeActor.period);
+            self.popup = nil;
+        }
+
+        self.club = nil;
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        self.setFocus(ScrolledWindow::clip::space::VBox::About::Cancel);
+        return STATE_YIELD;
+    }
+
+    method onInitialize(context)
+    {
+        ScrolledWindow::clip::space::VBox::Title::VBox::InputTextBox::Text::input.value = "";
+        ScrolledWindow::clip::space::VBox::Title::VBox::InputTextBox::Text::input.setCount(context, 0);
+
+        ScrolledWindow::clip::space::VBox::Description::VBox::InputTextBox::Text::input.value = "";
+        ScrolledWindow::clip::space::VBox::Description::VBox::InputTextBox::Text::input.setCount(context, 0);
+
+        ScrolledWindow::clip::space::VBox::Notice::VBox::CheckButton::Check.active = false;
+        return STATE_YIELD;
+    }
+
+    method onFinalize(context)
+    {
+        return STATE_YIELD;
+    }
+
+    method onUpdate(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!LoginUtil::isOnline())
+        {
+            context.pushEvent(menu::MFunctionEvent(close, context));
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::About
+    {
+        method onCancel(context)
+        {
+            sound.play("cancel");
+            ForumEditRoot.close(context);
+            return STATE_YIELD;
+        }
+
+        method onActivate(context)
+        {
+            sound.play("ok");
+            ForumEditRoot.close(context);
+            return STATE_YIELD;
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::Title::VBox::InputTextBox::Text::input
+    {
+        method setCount(context, count)
+        {
+            InputTextBox::Count.text = "%d / %d".format(count, 30);
+        }
+
+        method onTextClose(context, event)
+        {
+            setCount(context, self.value.length);
+            return 0;
+        }
+
+        method onKeyRelease(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_SQUARE || event.keysym == KEY_BACKSPACE || event.keysym == KEY_DELETE)
+            {
+                setCount(context, self.value.length);
+            }
+
+            return 0;
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::Description::VBox::InputTextBox::Text::input
+    {
+        method setCount(context, count)
+        {
+            InputTextBox::Count.text = "%d / %d".format(count, 140);
+        }
+
+        method onTextClose(context, event)
+        {
+            setCount(context, self.value.length);
+            return 0;
+        }
+
+        method onKeyRelease(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_SQUARE || event.keysym == KEY_BACKSPACE  || event.keysym == KEY_DELETE)
+            {
+                setCount(context, self.value.length);
+            }
+
+            return 0;
+        }
+    }
+
+    module ScrolledWindow::clip::space::VBox::Notice
+    {
+        module VBox::OK
+        {
+            method onActivate(context)
+            {
+                sound.play("ok");
+
+                var data = verify(context);
+                if (data == nil)
+                    return STATE_YIELD;
+
+                var club_id = ForumEditRoot.club["club_id"];
+                var res = false;
+
+                var request = Bbs2.requestCreateThread(club_id, data.title, data.description, data.activity, (args) => {});
+                if (Grim2Util::joinAwait(context, request))
+                {
+                    var thread_id = Bbs2.decodeResultLong(request);
+                    if (thread_id == -1L)
+                    {
+                        ERROR(context, "Community", "ERROR_FORUM_THREAD_MAX", 10);
+                        return STATE_YIELD;
+                    }
+
+                    res = true;
+                }
+
+                GENERIC_RESULT(context, res);
+
+                if (res)
+                {
+                    ForumEditRoot.result = true;
+                    ForumEditRoot.close(context);
+                }
+                else
+                {
+                    checkGrimSession(context);
+                }
+
+                return STATE_YIELD;
+            }
+        }
+    }
+}

@@ -1,0 +1,366 @@
+
+
+
+
+
+
+module Regulation
+{
+    module ReportType
+    {
+        static Normal = 0;
+        static CarSpec = 1;
+        static CarModel = 2;
+        static DrivingOption = 3;
+    }
+
+    function isKart(carCode)
+    {
+        return gtengine::MSpecDB::checkFlag(carCode, gtengine::GenericFlag::IS_RACING_KART);
+    }
+
+    function isSpecialOneMakeRegulation(rc)
+    {
+        if (rc == nil)
+            rc = OnlineSession.getRoomConfig();
+
+        // BUGFIX: Fixed assignment in if
+        if (rc.car_select_method == gtengine::CarSelectMethod::ONE_MAKE && rc.cars.size == 1 && isKart(rc.cars[0].code))
+            return true;
+
+        var carTagName = __projects__::EventSettingProject::sCarTagList.getLocalizeKey(rc.car_tag_id);
+        if (carTagName == "Kart")
+            return true;
+
+        return false;
+    }
+
+    function isRidingCarSpecialOneMake(cp)
+    {
+        if (cp == nil)
+            cp = sRidingCar;
+
+        var carCode = cp.getCarCode();
+        if (isKart(carCode))
+            return true;
+
+        return false;
+    }
+
+    function canEntryWithRidingCar(context, cp)
+    {
+        if (cp == nil)
+            cp = sRidingCar;
+
+        var rc = OnlineSession.getRoomConfig();
+        if (isKart(cp.getCarCode()) && rc.kart_permitted != 1)
+            return false;
+
+        if (rc.is_only_rental_car && !cp.rentacar)
+            return false;
+
+        if (rc.is_only_garage_car && cp.rentacar)
+            return false;
+
+        return true;
+    }
+
+    async function check(context, cp, dp)
+    {
+        if (cp == nil)
+            cp = sRidingCar;
+
+        if (dp == nil)
+            dp = GAME_STATUS.user_profile.residence.getPlayer(0);
+
+        var [passed, validated, original] = await () => OnlineSession.examineRegulationLocal(cp, dp);
+        if (passed)
+            return canEntryWithRidingCar(context, cp);
+        else
+            return false;
+    }
+
+    function checkAndLeaveEntry(context, cp, dp, showMessage = true)
+    {
+        if (!check(context, cp, dp))
+        {
+            if (RaceOnlineRoomProject::amIEntried())
+            {
+                RaceOnlineRoomProject::doLeaveEntry(context);
+                if (showMessage)
+                {
+                    var message = manager.translate("OnlineMessage", "UNABLE_TO_ENTRY_UNDER_NEW_REGULATIONS");
+                    RaceOnlineRoomProject::putSystemChatMessage(context, gtengine::NoticeType::ForceEntryCanceled, message, 30);
+                }
+            }
+
+            var rc = OnlineSession.getRoomConfig();
+
+            // BUGFIX: Same thing
+            if (rc.car_select_method == gtengine::CarSelectMethod::ONE_MAKE && rc.cars.size == 1)
+            {
+                var ridingGarageCar = !sRidingCar.rentacar;
+                var ridingCarCode = sRidingCar.getCarCode();
+
+                RaceOnlineRoomProject::updateGarageCar();
+                
+                sRidingCar = gtengine::MCarParameter(rc.cars[0].code);
+                RaceOnlineRoomProject::changeRidingCarColorAtRandom();
+                RaceOnlineRoomProject::changeCurrentCar(context);
+
+                var rentalCarCode = sRidingCar.getCarCode();
+                if (ridingGarageCar || rentalCarCode != ridingCarCode)
+                {
+                    var message = manager.translate("OnlineMessage", "CURRENT_CAR_HAS_BEEN_CHANGED_TO_RENTAL_CAR")
+                        .build(gtengine::MSpecDB::getCarName(rentalCarCode));
+
+                    putSystemChatMessage(context, gtengine::NoticeType::Unknown, message, 30);    
+                }
+            }
+
+            if (rc.is_only_garage_car && sRidingCar.rentacar)
+            {
+                RaceOnlineRoomProject::changeCurrentCarToGarageCar();
+                RaceOnlineRoomProject::changeCurrentCar(context);
+
+                var message = manager.translate("OnlineMessage", "CURRENT_CAR_HAS_BEEN_CHANGED_FROM_RENTAL_CAR")
+                    .build(gtengine::MSpecDB::getCarName(sRidingCar.getCarCode()));
+
+                putSystemChatMessage(context, gtengine::NoticeType::Unknown, message, 30);    
+            }
+        }
+    }
+
+    method openViolationDialog(context, validated, original)
+    {
+        var title = manager.translate(RaceOnlineRoomProject::RegulationReportPopup, "DIALOG_TITLE");
+        var message = self.createViolatedMessage(validated, original);
+
+        DialogUtil::openTextReaderDialog(context, title, message);
+    }
+
+    method addCarNameList(carCode, list)
+    {
+        var found = false;
+        var carname = gtengine::MSpecDB::getCarName(carCode);
+
+        foreach (var c in list)
+        {
+            if (c == carname)
+                found = true;
+        }
+
+        if (!found)
+            list.push(carname);
+    }
+
+    method createViolatedMessage(context, validated, original, cb)
+    {
+        var rc = OnlineSession.getRoomConfig();
+        var LIMIT = manager.translate("Regulation", "limit");
+        var NEED = manager.translate("Regulation", "need");
+        var ON = LocalizedText::ON;
+        var OFF = LocalizedText::OFF;
+        var INVALID = gtengine::MGameParameter::INVALID_VALUE_INT;
+
+        if (validated["carTag"] != nil)
+        {
+            var carNameTable = pdistd::MLocale::getLanguage() == "JP" ? "CAR_NAME_JAPAN" : "CAR_NAME_ALPHABET";
+            var sql = "SELECT N.ShortName FROM CAR_TAG_RELATION AS R INNER JOIN %{carNameTable}"
+                       " AS N"
+                       " ON R.CarID = N.LabelID WHERE R.TagID = "
+                       "%{validated["carTag"]} ORDER BY RANDOM()";
+
+            var str = "";
+            var i = 0;
+            var etcCount = 0;
+            foreach (var it in SPECDB.query(sql))
+            {
+                if (i++ >= 5)
+                    ++etcCount;
+                else
+                    str += it.ShortName + "\n";
+            }
+
+            if (etcCount > 0)
+            {
+                str += manager.translate("Regulation", "cars_abbreviation").build(etcCount);
+            }
+
+            str.chop();
+
+            cb(context, manager.translate("Regulation", "tag"), str, nil, ReportType::CarModel);
+        }
+
+        if (validated["carCode"] != nil)
+        {
+            var str = "";
+            var cars = [];
+            for (var i = 0; i < rc.cars.size; i++)
+            {
+                var car_code = rc.cars[i].code;
+                if (car_code != gtengine::MSpecDB::NO_CODE)
+                {
+                    self.addCarNameList(car_code, cars);
+                }
+            }
+
+            str += cars.join("\n");
+
+            cb(context, manager.translate("Regulation", "cars"), str, nil, ReportType::CarModel);
+        }
+
+        if (validated["carTuner"] != nil)
+        {
+            var str = "";
+            for (var i = 0; i < rc.tuners.size; ++i)
+            {
+                str += EventSettingProject::sCarTunerList.getName(rc.tuners[i]) + "\n";
+            }
+
+            cb(context, manager.translate("Regulation", "tuners"), str, 
+                EventSettingProject::sCarTunerList.getName(original["carTuner"]), ReportType::CarModel);
+        }
+        else if (validated["carCountry"] != nil)
+        {
+            var str = "";
+            for (var i = 0; i < rc.countries.size; ++i)
+            {
+                str += EventSettingProject::sCarCountryList.getName(rc.countries[i]) + "\n";
+            }
+
+            cb(context, manager.translate("Regulation", "countries"), str, 
+                EventSettingProject::sCarCountryList.getName(original["carCountry"]), ReportType::CarModel);
+
+        }
+
+        if (validated["isTuned"] != nil)
+        {
+            cb(context, manager.translate("Regulation", "tuning"), manager.translate("OnlineMessage", "PROHIBITED"), 
+                ReportType::CarSpec);
+        }
+
+        if (validated["hasNitro"] != nil)
+        {
+            cb(context, manager.translate("Regulation", "NOS"), manager.translate("OnlineMessage", "PROHIBITED"), 
+                ReportType::CarSpec);
+        }
+
+        if (validated["pp"] != nil)
+        {
+            cb(context, 
+                manager.translate("Regulation", "pp"), 
+                LIMIT.build(validated["pp"]), 
+                original["pp"], 
+                ReportType::CarSpec);
+        }
+
+        if (validated["power"] != nil)
+        {
+            cb(context, 
+                manager.translate("Regulation", "power"), 
+                LIMIT.build(EventSettingProject::getPowerString(validated["power"])), 
+                EventSettingProject::getPowerString(original["power"]), 
+                ReportType::CarSpec);
+        }
+
+        if (validated["frontTire"] != nil)
+        {
+            cb(context, 
+                manager.translate("Regulation", "tire_f"), 
+                LIMIT.build(TireUtil::getName(validated["frontTire"])), 
+                TireUtil::getName(original["frontTire"]), 
+                ReportType::CarSpec);
+        }
+
+        if (validated["rearTire"] != nil)
+        {
+            cb(context, 
+                manager.translate("Regulation", "tire_r"), 
+                LIMIT.build(TireUtil::getName(validated["rearTire"])), 
+                TireUtil::getName(original["rearTire"]), 
+                ReportType::CarSpec);
+        }
+
+        if (validated["tireList"] != nil)
+        {
+            cb(context, 
+                manager.translate("Regulation", "need_tire_change"), 
+                manager.translate("OnlineMessage", "INSUFFICIENT_EXCHANGEABLE_TIRE"),
+                nil, 
+                ReportType::CarSpec);
+        }
+
+        if (validated["weight"] != nil)
+        {
+            cb(context, 
+                manager.translate("Regulation", "weight"), 
+                NEED.build(EventSettingProject::getWeightString(validated["weight"])), 
+                EventSettingProject::getWeightString(original["weight"]), 
+                ReportType::CarSpec);
+        }
+
+        if (validated["driveTrain"] != nil)
+        {
+            cb(context, 
+                manager.translate("Regulation", "drivetrain"), 
+                EventSettingProject::getAvailableDriveTrainTypeString(validated["driveTrain"]), 
+                EventSettingProject::sDriveTrainTypeList.getName(original["driveTrain"]), 
+                ReportType::CarSpec);
+        }
+
+        if (validated["simulation"] != nil)
+        {
+            cb(context, 
+                manager.translate("TrialSetting", "SkidRecoveryForce"), 
+                validated["simulation"] ? OFF : ON,
+                original["simulation"] ? OFF : ON, 
+                ReportType::DrivingOption);
+        }
+
+        if (validated["tcs"] != nil)
+        {
+            cb(context, 
+                manager.translate("TrialSetting", "TCSLevel"), 
+                validated["tcs"],
+                original["tcs"], 
+                ReportType::DrivingOption);
+        }
+
+        if (validated["activeSteering"] != nil)
+        {
+            cb(context, 
+                manager.translate("TrialSetting", "ActiveSteering"), 
+                getActiveSteeringString(validated["activeSteering"]), 
+                getActiveSteeringString(original["activeSteering"]), 
+                ReportType::DrivingOption);
+        }
+
+        if (validated["asm"] != nil)
+        {
+            cb(context, 
+                manager.translate("TrialSetting", "ASM"), 
+                validated["asm"] ? ON : OFF,
+                original["asm"] ? ON : OFF, 
+                ReportType::DrivingOption);
+        }
+
+        if (validated["abs"] != nil)
+        {
+            cb(context, 
+                manager.translate("TrialSetting", "ABSLevel"), 
+                validated["abs"] ? ON : OFF,
+                original["abs"] ? ON : OFF, 
+                ReportType::DrivingOption);
+        }
+
+        if (validated["drivingLine"] != nil)
+        {
+            cb(context, 
+                manager.translate("TrialSetting", "DRIVING_LINE"), 
+                validated["drivingLine"] ? ON : OFF,
+                original["drivingLine"] ? ON : OFF, 
+                ReportType::DrivingOption);
+        }
+    }
+}

@@ -1,0 +1,413 @@
+
+
+//---------------------------------------------------------------------------------------
+// GameMuseum.ad
+//
+// Creates the save profile entity
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module GameMuseum
+{
+    function clearInitializer()
+    {
+        undef CreateStructure;
+        undef Initialize;
+        undef ReinitializeDB;
+        undef clearInitializer;
+    }
+
+    function CreateStructure()
+    {
+        var st = STStructure("Impl");
+        GameMuseum.defineModule(st);
+        st.define("target_language", STString(4));
+
+        DefineMethod();
+
+        return st;
+    }
+
+    function Initialize(instance)
+    {
+        instance.initialize();
+    }
+
+    function InitializeDB()
+    {
+        var sqlite = getSqlite();
+        DBUtil::initializeTable(sqlite, "t_museum", 3);
+        DBUtil::initializeTable(sqlite, "t_museum_id_list", 3);
+        DBUtil::initializeTable(sqlite, "t_museum_count", 3);
+
+        var sql_list = [
+            "CREATE TABLE IF NOT EXISTS %s (id INTEGER, museum_id INTEGER, language TEXT, dealer TEXT, year INTEGER, caption TEXT, online INTEGER, dealer_id INTEGER, PRIMARY KEY (id))".format("t_museum"),
+            "CREATE INDEX IF NOT EXISTS %s_idx1 ON %s (museum_id)".format("t_museum", "t_museum"),
+            "CREATE INDEX IF NOT EXISTS %s_idx2 ON %s (language)".format("t_museum", "t_museum"),
+            "CREATE INDEX IF NOT EXISTS %s_idx3 ON %s (dealer)".format("t_museum", "t_museum"),
+            "CREATE TABLE IF NOT EXISTS %s (id INTEGER, museum_id INTEGER, language TEXT, dealer TEXT, dealer_id INTEGER, PRIMARY KEY (id))".format("t_museum_id_list"),
+            "CREATE INDEX IF NOT EXISTS %s_idx1 ON %s (museum_id)".format("t_museum_id_list", "t_museum_id_list"),
+            "CREATE INDEX IF NOT EXISTS %s_idx2 ON %s (language)".format("t_museum_id_list", "t_museum_id_list"),
+            "CREATE INDEX IF NOT EXISTS %s_idx3 ON %s (dealer)".format("t_museum_id_list", "t_museum_id_list"),
+            "CREATE TABLE IF NOT EXISTS %s (id INTEGER, museum_id INTEGER, count INTEGER, PRIMARY KEY (id))".format("t_museum_count"),
+            "CREATE INDEX IF NOT EXISTS %s_idx1 ON %s (museum_id)".format("t_museum_count", "t_museum_count"),
+
+        ];
+
+        var dummy_param = [];
+        var sql_list0 = Array();
+        foreach (var sql in sql_list)
+        {
+            sql_list0.push([sql, dummy_param]);
+        }
+
+        var res = sqlite.executeTransaction(sql_list0);
+    }
+
+    function ReinitializeDB(instance)
+    {
+        instance.initialize();
+    }
+
+    function getSqlite()
+    {
+        return GlobalStatus::getSqlite();
+    }
+
+    function DefineMethod()
+    {
+        module Impl
+        {
+            method initialize()
+            {
+                self.target_language = pdistd::MLocale::getLanguage();
+            }
+
+            method canUpdate()
+            {
+                var sqlite = getSqlite();
+                var version = DBUtil::getTableVersion(sqlite, "t_museum");
+
+                return version == 3;
+            }
+
+            method begin()
+            {
+               var sqlite = getSqlite();
+               sqlite.begin();
+            }
+
+            method commit()
+            {
+               var sqlite = getSqlite();
+               sqlite.commit();
+            }
+
+            method getMuseumIdListCount()
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT COUNT (*) FROM %s WHERE language = ?".format("t_museum_id_list");
+                var res = sqlite.executeQuery(sql, [getLanguage()]);
+                var count = getResult1(res);
+
+                return count == nil ? 0 : count;
+            }
+
+            method getDealerList()
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT DISTINCT dealer FROM %s WHERE language = ? ORDER BY dealer".format("t_museum_id_list");
+                var res = sqlite.executeQuery(sql, [getLanguage()]);
+                var dealer_list = Array();
+
+                foreach (var r in res)
+                    dealer_list.push(r[0]);
+
+                return dealer_list;
+            }
+
+            method getDealerListIhave()
+            {
+                var sqlite = getSqlite();
+                var sql = ("SELECT DISTINCT dealer FROM %s WHERE language = ? AND "
+                           "museum_id in (SELECT museum_id FROM %s WHERE language = ?) ORDER BY dealer").format("t_museum_id_list", "t_museum_count");
+
+                var language = getLanguage();
+                var res = sqlite.executeQuery(sql, [language, language]);
+                var dealer_list = Array();
+
+                foreach (var r in res)
+                    dealer_list.push(r[0]);
+
+                return dealer_list;
+            }
+
+            method updateMuseumIdList(museum_id_list)
+            {
+                var sqlite = getSqlite();
+                sqlite.begin();
+                
+                var success = deleteMuseumIdList();
+                if (success)
+                {
+                    var sql = "INSERT INTO %s (museum_id, language, dealer, dealer_id) VALUES (?, ?, ?, ?)".format("t_museum_id_list");
+                    var language = getLanguage();
+
+                    foreach (var museum_id in museum_id_list)
+                    {
+                        var res = sqlite.execute(sql, [museum_id["museum_id"], language, museum_id["dealer"], museum_id["dealer_id"]]);
+                        if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+
+                        if (isFailed(res))
+                        {
+                            success = false;
+                            break;
+                        }
+                    }
+                }
+
+                success ? sqlite.commit() : sqlite.rollback();
+
+                return success;
+            }
+
+            method getMuseumIdListForRunviewer(dealer)
+            {
+                var sqlite = getSqlite();
+                var result_list;
+                if (dealer == nil)
+                {
+                    var sql = "SELECT * FROM %s WHERE language = ? ORDER BY id".format("t_museum_id_list");
+                    result_list = sqlite.executeQuery(sql, [getLanguage()]);
+                }
+                else
+                {
+                    var sql = "SELECT * FROM %s WHERE language = ? AND dealer = ? ORDER BY id".format("t_museum_id_list");
+                    result_list = sqlite.executeQuery(sql, [getLanguage(), dealer]);
+                }
+
+                return result_list;
+            }
+
+            method getMuseumCountIhave(dealer)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT COUNT (*) FROM %s WHERE count > 0 AND museum_id IN (SELECT museum_id FROM %s WHERE language = ? AND dealer = ?)".format("t_museum_count", "t_museum_id_list");
+                var res = sqlite.executeQuery(sql, [getLanguage(), dealer]);
+                var count = getResult1(res);
+
+                return count == nil ? 0 : count;
+            }
+
+            method getMuseumIdList(dealer)
+            {
+                var result_list = [];
+                result_list += getMuseumIdListImpl(dealer, "count > 0");
+                result_list += getMuseumIdListImpl(dealer, "count = 0");
+                
+                return result_list;
+            }
+
+            method getMuseumIdListIhave(dealer)
+            {
+                return getMuseumIdListImpl(dealer, "count > 0");
+            }
+
+            method updateMuseum(museum)
+            {
+                return updateMuseum2([museum]);
+            }
+
+            method updateMuseum2(museum_list)
+            {
+                var sqlite = getSqlite();
+                sqlite.begin();
+                var sql_update = "UPDATE %s SET dealer = ?, year = ?, caption = ?, online = ?, dealer_id = ? WHERE museum_id = ? AND language = ?".format("t_museum");
+                var sql_insert = "INSERT INTO %s (museum_id, language, dealer, year, caption, online, dealer_id) VALUES (?, ?, ?, ?, ?, ?, ?)".format("t_museum");
+
+                var res = nil;
+                var language = getLanguage();
+                foreach (var museum in museum_list)
+                {
+                    var params = [
+                        museum["dealer"],
+                        museum["year"],
+                        museum["caption"],
+                        museum["online"],
+                        museum["dealer_id"],
+                        museum["museum_id"],
+                        language
+                    ];
+
+                    res = sqlite.execute(sql_update, params);
+                    if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+
+                    if (isFailed(res))
+                        break;
+                    
+                    if (sqlite.changes() == 0)
+                    {
+                        var params1 = [
+                            museum["museum_id"],
+                            language,
+                            museum["dealer"],
+                            museum["year"],
+                            museum["caption"],
+                            museum["online"],
+                            museum["dealer_id"],
+                        ];
+
+                        res = sqlite.execute(sql_insert, params1);
+                        if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+                        
+                        if (isFailed(res))
+                            break;
+                    }
+                }
+
+                var failed = isFailed(res);
+                if (failed)
+                    sqlite.rollback();
+                else
+                    sqlite.commit();
+
+                return !failed;
+            }
+
+            method getMuseum(museum_id)
+            {
+                var sqlite = getSqlite();
+                var query = "SELECT *, COALESCE ((SELECT count FROM %s WHERE museum_id = ?), 0) AS count FROM %s WHERE language = ? AND museum_id = ?".format("t_museum_count", "t_museum");
+                var res = sqlite.executeQuery(query, [museum_id, getLanguage(), museum_id]);
+                if (res.size == 0)
+                    return nil;
+
+                var museum = res[0];
+                return museum;
+            }
+
+            method getCountList(dealer)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT museum_id, count FROM %s WHERE museum_id IN (SELECT museum_id FROM %s WHERE language = ? AND dealer = ?)".format("t_museum_count", "t_museum_id_list");
+                return sqlite.executeQuery(sql, [getLanguage(), dealer]);
+            }
+
+            method increment(museum_id)
+            {
+                var sqlite = getSqlite();
+                var sql = "UPDATE %s SET count = count + 1 WHERE museum_id = ?".format("t_museum_count");
+                var res = sqlite.execute(sql, [museum_id]);
+                if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+
+                var row_count = sqlite.changes();
+                if (row_count == 0)
+                {
+                    sql = "INSERT INTO %s (museum_id, count) VALUES (?, 1)".format("t_museum_count");
+                    res = sqlite.execute(sql, [museum_id]);
+                    if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+                }
+
+                return !isFailed(res);
+            }
+
+            method decrement(museum_id)
+            {
+                var sqlite = getSqlite();
+                var sql = "UPDATE %s SET count = count - 1 WHERE museum_id = ?".format("t_museum_count");
+                var res = sqlite.execute(sql, [museum_id]);
+                if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+
+                return !isFailed(res);
+            }
+
+            method setLanguage(language)
+            {
+                self.target_language = language;
+            }
+
+            method isAvailable(museum_id)
+            {
+                var sqlite = getSqlite();
+                var sql = "SELECT COUNT (*) FROM %s WHERE language = ? AND museum_id = ?".format("t_museum_id_list");
+                var res = sqlite.executeQuery(sql, [getLanguage(), museum_id]);
+                var count = getResult1(res);
+                if (count == nil)
+                    return false;
+
+                return count > 0;
+            }
+
+            method removeIf(museum_id_list)
+            {
+                var sqlite = getSqlite();
+                var sql_list = [];
+                var language = getLanguage();
+
+                foreach (var museum_id in museum_id_list)
+                {
+                    var params = [museum_id];
+                    var sql = "DELETE FROM %s WHERE museum_id = ?".format("t_museum_count");
+                    sql_list.push([sql, params]);
+
+                    params = [language, museum_id];
+                    sql = "DELETE FROM %s WHERE language = ? and museum_id = ?".format("t_museum");
+                    sql_list.push([sql, params])
+                }
+
+                var res = sqlite.executeTransaction(sql_list);
+                if (isFailed(res))
+                    return false;
+
+                return true;
+            }
+
+            method getMuseumIdListImpl(dealer, condition)
+            {
+                var sqlite = getSqlite();
+                var query_format = "SELECT ML.*, COALESCE ((SELECT MC.count FROM %s MC WHERE MC.museum_id = ML.museum_id), 0) AS count FROM %s ML "
+                                    + "WHERE language = ? AND dealer = ? AND %s ORDER BY dealer_id";
+
+                var query = query_format.format("t_museum_count", "t_museum_id_list", condition);
+                return sqlite.executeQuery(query, [getLanguage(), dealer]);
+            }
+
+            method deleteMuseumIdList()
+            {
+                var sqlite = getSqlite();
+                var sql = "DELETE FROM %s WHERE language = ?".format("t_museum_id_list");
+                var res = sqlite.execute(sql, [getLanguage()]);
+                if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+
+                return !isFailed(res);
+
+            }
+
+            method getLanguage()
+            {
+                return self.target_language;
+            }
+            
+            method getResult1(res)
+            {
+                if (res.size == 0)
+                    return nil;
+
+                var row = res[0];
+                if (row.size == 0)
+                    return nil;
+
+                return res[0][0];
+            }
+
+            method isFailed(res)
+            {
+                return res != 101;
+            }
+        }
+    }
+}

@@ -1,0 +1,840 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static MenuItemNONE = 0;
+static MenuItemTEXT = 1;
+static MenuItemSLIDER = 2;
+static MenuItemINPUT = 3;
+
+class MenuItem
+{
+    attribute type;
+    attribute label;
+    attribute tip;
+    attribute on_init_func;
+    attribute on_update_func;
+    attribute on_activate_func;
+    attribute on_keypress_func;
+    attribute arg;
+    attribute base_color;
+    attribute on_focus_func;
+
+    method __init__(_type, _label, _tip, _init_func, _update_func, _activate_func, _keypress_func, _arg)
+    {
+        self.type = _type;
+        self.label = _label;
+        self.tip = _tip;
+        self.on_init_func = _init_func;
+        self.on_update_func = _update_func;
+        self.on_activate_func = _activate_func;
+        self.on_keypress_func  = _keypress_func;
+        self.arg = _arg;
+        self.base_color = nil;
+    }
+}
+
+class SelectMenuData
+{
+    attribute target_ref;
+    attribute candidates;
+    attribute none_txt;
+    attribute on_decide_func;
+
+    method __init__(target_ref, candidates)
+    {
+        self.target_ref = target_ref;
+        self.candidates = candidates;
+        self.none_txt = nil;
+        self.on_decide_func = nil;
+    }
+}
+
+class SliderMenuData
+{
+    attribute target_ref;
+    attribute range;
+    attribute step;
+    attribute bias;
+    attribute zero_text;
+    attribute unit_text;
+    attribute bar_on;
+    attribute step_thr;
+    attribute decideCB;
+    attribute arg;
+
+    method __init__(target_ref, range, zero_text, unit_text, decideCB, arg)
+    {
+        self.target_ref = target_ref;
+        self.range = range;
+        self.step = 1;
+        self.bias = 1;
+        self.zero_text = zero_text;
+        self.unit_text = unit_text;
+        self.bar_on = true;
+        self.step_thr = 10;
+        self.decideCB = decideCB;
+        self.arg = arg;
+    }
+}
+
+class ToggleMenuData
+{
+    attribute target_ref;
+    attribute candidates;
+	
+    method __init__(target_ref, candidates)
+    {
+        self.target_ref = target_ref;
+        self.candidates = candidates;
+    }
+}
+
+
+class InputMenuData
+{
+    attribute target_ref;
+    attribute value;
+    attribute range;
+    attribute open_cb;
+    attribute close_cb;
+    attribute return_cb;
+    attribute is_number;
+
+    method __init__(default_val, range, close_cb, return_cb, target_ref, is_number)
+    {
+        self.target_ref = target_ref;
+        self.value = default_val;
+        self.range = range;
+        self.close_cb = close_cb;
+        self.return_cb = return_cb;
+        self.is_number = false;
+        if (is_number != nil)
+            self.is_number = is_number;
+    }
+}
+
+class DateTimeData
+{
+    attribute holder_datetime_ref;
+    attribute datetime_name;
+    attribute year;
+    attribute month;
+    attribute day;
+    attribute hour;
+    attribute minute;
+    attribute second;
+    attribute arg;
+
+    method __init__(holder_datetime_ref, datetime_name, year, month, day, hour, minute, second, arg)
+    {
+        self.holder_datetime_ref = holder_datetime_ref;
+        self.datetime_name = datetime_name;
+        self.year = year;
+        self.month = month;
+        self.day = day;
+        self.hour = hour;
+        self.minute = minute;
+        self.second = second;
+        self.arg = arg;
+    }
+}
+
+module RunviewerUtil
+{
+    function fileToList(path, need_pair)
+    {
+        if (need_pair == nil)
+            need_pair = false;
+
+        var st = main::pdistd::ReadFile(path);
+        if (st["result"] == 0)
+        {
+            var buf = st["buffer"];
+            buf = buf.toString();
+
+            var splitter;
+            if (buf.find("\r\n") != -1)
+                splitter = "\r\n";
+            else if (buf.find("\n") != -1)
+                splitter = "\n";
+            else if (buf.find("\r") != -1)
+                splitter = "\r";
+
+            var lines = buf.split(splitter);
+            var list = [];
+            foreach (var line in lines)
+            {
+                line = line.chop();
+                line = line.trim();
+                if (line.beginsWith("#"))
+                    continue;
+                if (line.size == 0)
+                    continue;
+                if (need_pair)
+                    list.push([line, nil]);
+                else
+                    list.push(line);
+            }
+            return list;
+        }
+        else
+        {
+            return nil;
+        }
+    }
+
+    function SearchFocusIndex(value, list)
+    {
+        if (list == nil)
+            return 0;
+
+        var focus_index = 0;
+        for (var i = 0; i < list.size; i++)
+        {
+            if (value == nil)
+            {
+                if (list[i].label == nil)
+                {
+                    focus_index = i;
+                    break;
+                }
+            }
+            else if (list[i].label != nil) // && value != nil
+            {
+                if (list[i].label == value)
+                {
+                    focus_index = i;
+                    break;
+                }
+            }
+        }
+
+        return focus_index;
+    }
+
+    function on_select_jumpmenu(context, index, menuitem, item, arg)
+    {
+        var smdata = arg[0];
+        TopRoot.open_menu(context, menuitem.label, arg, index, 0);
+    }
+
+    function CreateJump(title, tip, menuitems)
+    {
+        var jump_menuitem = MenuItem(MenuItemTEXT, title, tip, nil, nil, on_select_jumpmenu);
+        jump_menuitem.arg = menuitems;
+        return jump_menuitem;
+    }
+
+    function on_update_selectmenu(context, index, menuitem, item)
+    {
+        var smdata = menuitem.arg[0];
+        foreach (var it in smdata.candidates)
+        {
+            if (it[0] == *smdata.target_ref)
+            {
+                var value = it[1];
+                if (value == nil)
+                    value = it[0];
+
+                if (value == "none" && smdata.none_txt != nil)
+                    value = smdata.none_txt;
+                item["value"].text = value;
+                break;
+            }
+        }
+    }
+
+    function on_select_selectmenu(context, index, menuitem, item, arg)
+    {
+        var smdata = arg[0];
+        TopRoot.open_menu(context, menuitem.label, arg[1], index, SearchFocusIndex(*smdata.target_ref, arg[1]));
+    }
+
+    function on_update_sub_selectmenu(context, index, menuitem, item)
+    {
+        var smdata = menuitem.arg;
+        var col;
+        var label = menuitem.label;
+        if (label == *smdata.target_ref)
+            col = main::menu::MColorObject(1f, 1f, 0f);
+        else
+        {
+            col = main::menu::MColorObject(1f, 1f, 1f);
+        }
+        item["label"].text_color = col;
+        item["value"].text_color = col;
+
+        var value = smdata.candidates[index][1];
+        if (value == nil)
+        {
+            item["label"].text = "";
+            value = label;
+        }
+
+        if (value == "none" && smdata.none_txt != nil)
+            value = smdata.none_txt;
+        item["value"].text = value;
+    }
+
+    function on_select_sub_selectmenu(context, index, menuitem, item, arg)
+    {
+        var smdata = arg;
+        *smdata.target_ref = menuitem.label;
+        if (smdata.on_decide_func != nil)
+        {
+            smdata.on_decide_func(context, *smdata.target_ref);
+        }
+
+        TopRoot.close_menu(context);
+    }
+	
+    function CreateSelect(target_ref, title, tip, candidates, none_txt, decide_func)
+    {
+        var select_menuitem = MenuItem(MenuItemTEXT, title, tip, nil, on_update_selectmenu, on_select_selectmenu);
+        var smdata = SelectMenuData(target_ref, candidates);
+
+        smdata.none_txt = none_txt;
+        smdata.on_decide_func = decide_func;
+
+        var menuitems = [];
+
+        for (var i = 0; i < candidates.size; i++)
+        {
+            var label = candidates[i][0];
+            var menuitem = MenuItem(MenuItemTEXT, label, "", nil, on_update_sub_selectmenu, on_select_sub_selectmenu);
+            menuitem.arg = smdata;
+            menuitems.push(menuitem);
+        }
+        select_menuitem.arg = [smdata, menuitems];
+        return select_menuitem;
+    }
+
+    ////////////////////////////////////////
+    ////////// Sliders
+    ////////////////////////////////////////
+
+    function on_init_slider(context, menuitem, item)
+    {
+        var slider = item.slider;
+        var smdata = menuitem.arg;
+        slider.range = smdata.range;
+        slider.step = smdata.step;
+        if (*smdata.target_ref != nil)
+            slider.value = *smdata.target_ref;
+        else
+            slider.value = smdata.range[0];
+        slider.setup(context, smdata.bias, smdata.zero_text, 
+            smdata.unit_text, smdata.bar_on, smdata.step_thr);
+        slider.decide_cb = menuitem.on_activate_func;
+        slider.arg = smdata;
+    }
+
+    function on_activate_slider(context, value, slider)
+    {
+        var smdata = slider.arg;
+        *smdata.target_ref = value;
+        if (smdata.decideCB != nil)
+            smdata.decideCB(context, smdata, value);
+    }
+
+    function CreateSlider(target_ref, title, tip, range, zero_text, unit_text, decideCB, arg, step, step_thr)
+    {
+        var smdata = SliderMenuData(target_ref, range, zero_text, unit_text, decideCB, arg);
+
+        if (step != nil)
+            smdata.step = step;
+        if (step_thr != nil)
+            smdata.step_thr = step_thr;
+
+        var slider_menuitem = MenuItem(MenuItemSLIDER, title, tip, 
+            on_init_slider, nil, on_activate_slider);
+        slider_menuitem.arg = smdata;
+        return slider_menuitem;
+    }
+
+    ////////////////////////////////////////
+    ////////// Toggles
+    ////////////////////////////////////////
+    function on_update_select_toggle(context, index, menuitem, item)
+    {
+        var tmdata = menuitem.arg[0];
+        if (*tmdata.target_ref != nil)
+            item["value"].text = tmdata.candidates[*tmdata.target_ref][1];
+        else
+            item["value"].text = "";
+    }
+
+    function on_select_toggle(context, index, menuitem, item, arg)
+    {
+        var [tmdata, decideCB] = arg;
+        var i = 0;
+        while (i < tmdata.candidates.size)
+        {
+            if (tmdata.candidates[i][0] == *tmdata.target_ref)
+            {
+                i++;
+                break;
+            }
+            i++;
+        }
+        if (i >= tmdata.candidates.size)
+            i = 0;
+        *tmdata.target_ref = i;
+        item["value"].text = tmdata.candidates[*tmdata.target_ref][1];
+        if (decideCB != nil)
+            decideCB(context, i);
+    }
+
+    function CreateToggle(target_ref, title, tip, candidates, decideCB)
+    {
+        var tmdata = ToggleMenuData(target_ref, candidates);
+        var select_toggle_menuitem = MenuItem(MenuItemTEXT, title, tip, nil, 
+            on_update_select_toggle, on_select_toggle);
+        select_toggle_menuitem.arg = [tmdata, decideCB];
+        return select_toggle_menuitem;
+    }
+
+    ////////////////////////////////////////
+    ////////// Text Input
+    ////////////////////////////////////////
+    static current_input_menu_data;
+
+    function on_init_input(context, menuitem, item)
+    {
+        var imdata = menuitem.arg;
+        
+        if (imdata.target_ref != nil)
+            imdata.value = *imdata.target_ref;
+        item.Input.visible = true;
+        item.Input.input.value = imdata.value;
+        item.Input.input.arg = imdata;
+        item.Input.input.open_cb = on_input_open;
+        item.Input.input.close_cb = on_input_close;
+        item.Input.input.return_cb = on_input_return;
+    }
+
+    function on_input_open(context, input, arg) { }
+
+    function on_input_close(context, text, input, arg)
+    {
+        var imdata = arg;
+        if (imdata.close_cb != nil)
+            imdata.close_cb(context, text);
+        if (imdata.target_ref != nil)
+        {
+            if (!imdata.is_number)
+                *imdata.target_ref = text;
+            else
+                *imdata.target_ref = text.toInt();
+        }
+
+        current_input_menu_data = nil;
+    }
+
+    function on_input_return(context, text, input, arg)
+    {
+        var imdata = arg;
+        if (imdata.return_cb != nil)
+            imdata.return_cb(context, text);
+        if (imdata.target_ref != nil)
+        {
+            if (!imdata.is_number)
+                *imdata.target_ref = text;
+            else
+                *imdata.target_ref = text.toInt();
+        }
+    }
+
+    function CreateInput(title, tip, value, range, close_cb, return_cb, target_ref, is_number)
+    {
+        var imdata = InputMenuData(value, range, close_cb, return_cb, target_ref, is_number);
+        var input_menuitem = MenuItem(MenuItemINPUT, title, tip, 
+            on_init_input, nil, nil);
+        input_menuitem.arg = imdata;
+        return input_menuitem;
+    }
+
+    function CreateInputText(target_ref, title, tip)
+    {
+        return CreateInput(title, tip, *target_ref, nil, nil, nil,
+            target_ref, false); // false = text
+    }
+
+    function CreateInputNumber(target_ref, title, tip)
+    {
+        return CreateInput(title, tip, *target_ref, nil, nil, nil,
+            target_ref, true); // true = number
+    }
+
+
+    ////////////////////////////////////////
+    ////////// Date Time Input
+    ////////////////////////////////////////
+
+    function on_update_datetime(context, index, menuitem, item)
+    {
+        var dt_data = menuitem.arg[0];
+        var datetime = (*dt_data.holder_datetime_ref).getObjectAttribute(dt_data.datetime_name);
+        item["value"].text = datetime.toString();
+    }
+
+
+    function on_select_datetime(context, index, menuitem, item, arg)
+    {
+        var menuitems = arg[1];
+        TopRoot.open_menu(context, menuitem.label, menuitems, index);
+    }
+
+    function decide_year_cb(context, smdata, value)
+    {
+        var dt_data = smdata.arg;
+        var datetime = (*dt_data.holder_datetime_ref).getObjectAttribute(dt_data.datetime_name);
+        datetime.year = value;
+        (*dt_data.holder_datetime_ref).setObjectAttribute(dt_data.datetime_name, datetime);
+    }
+	
+    function decide_month_cb(context, smdata, value)
+    {
+        var dt_data = smdata.arg;
+        var datetime = (*dt_data.holder_datetime_ref).getObjectAttribute(dt_data.datetime_name);
+        datetime.month = value;
+        (*dt_data.holder_datetime_ref).setObjectAttribute(dt_data.datetime_name, datetime);
+    }
+	
+    function decide_day_cb(context, smdata, value)
+    {
+        var dt_data = smdata.arg;
+        var datetime = (*dt_data.holder_datetime_ref).getObjectAttribute(dt_data.datetime_name);
+        datetime.day = value;
+        (*dt_data.holder_datetime_ref).setObjectAttribute(dt_data.datetime_name, datetime);
+    }
+	
+    function decide_hour_cb(context, smdata, value)
+    {
+        var dt_data = smdata.arg;
+        var datetime = (*dt_data.holder_datetime_ref).getObjectAttribute(dt_data.datetime_name);
+        datetime.hour = value;
+        (*dt_data.holder_datetime_ref).setObjectAttribute(dt_data.datetime_name, datetime);
+    }
+	
+    function decide_minute_cb(context, smdata, value)
+    {
+        var dt_data = smdata.arg;
+        var datetime = (*dt_data.holder_datetime_ref).getObjectAttribute(dt_data.datetime_name);
+        datetime.minute = value;
+        (*dt_data.holder_datetime_ref).setObjectAttribute(dt_data.datetime_name, datetime);
+    }
+	
+    function decide_second_cb(context, smdata, value)
+    {
+        var dt_data = smdata.arg;
+        var datetime = (*dt_data.holder_datetime_ref).getObjectAttribute(dt_data.datetime_name);
+        datetime.second = value;
+        (*dt_data.holder_datetime_ref).setObjectAttribute(dt_data.datetime_name, datetime);
+    }
+
+    function CreateDateTime(holder_datetime_ref, datetime_name, title, tip)
+    {
+        var datetime_menuitem = MenuItem(MenuItemTEXT, title, tip, nil, 
+            on_update_datetime, on_select_datetime);
+        var datetime = (*holder_datetime_ref).getObjectAttribute(datetime_name);
+        var dt_data = DateTimeData(holder_datetime_ref, 
+            datetime_name,
+            datetime.year, 
+            datetime.month, 
+            datetime.day, 
+            datetime.hour, 
+            datetime.minute, 
+            datetime.second);
+        
+        var menuitems = [CreateSlider(&datetime.year, "西暦", "西暦を変更します", [1970, 2030], nil, nil, 
+            decide_year_cb, dt_data),
+        CreateSlider(&datetime.month, "月", "月を変更します", [1, 12], nil, nil, 
+            decide_month_cb, dt_data),
+        CreateSlider(&datetime.day, "日", "日を変更します", [1, 31], nil, nil, 
+            decide_day_cb, dt_data),
+        CreateSlider(&datetime.hour, "時", "時を変更します", [0, 23], nil, nil, 
+            decide_hour_cb, dt_data),
+        CreateSlider(&datetime.minute, "分", "分を変更します", [0, 59], nil, nil, 
+            decide_minute_cb, dt_data),
+        CreateSlider(&datetime.second, "秒", "秒を変更します", [0, 59], nil, nil, 
+            decide_second_cb, dt_data),
+        ];
+        datetime_menuitem.arg = [dt_data, menuitems];
+
+        return datetime_menuitem;
+    }
+
+
+    ///////////////////////////////////
+    //// File Selector
+    ///////////////////////////////////
+    function CreateSelectInFile(target_ref, path, title, tip, none_txt)
+    {
+        var candidates = fileToList(path, true);
+        if (candidates == nil)
+            candidates = [ ["none", "none"] ];
+        return CreateSelect(target_ref, title, tip, candidates, none_txt);
+    }
+
+    class FEXMenu
+    {
+        attribute file ;
+        attribute func;
+        attribute ends_with;
+        attribute write_mode;
+        attribute arg;
+
+        method __init__(file, func, ends_with, write_mode, arg)
+        {
+            self.file = file;
+            self.func = func;
+            if (ends_with == nil)
+                ends_with = "";
+            self.ends_with = ends_with;
+            self.write_mode = write_mode;
+            self.arg = arg;
+        }
+    }
+
+
+    static DIRCOL = main::menu::MColorObject(0.05f, 0.05f, 0.1f);
+    static FILECOL = main::menu::MColorObject(0.05f, 0.05f, 0.05f);
+    static NEWCOL = main::menu::MColorObject(0.05f, 0.1f, 0.1f);
+    static TXTCOL = main::menu::MColorObject(0.05f, 0.1f, 0.1f);
+    static GPBCOL = main::menu::MColorObject(0.05f, 0.1f, 0.05f);
+    static IMGCOL = main::menu::MColorObject(0.1f, 0.1f, 0.05f);
+
+    function entry_sort_function(e1, e2)
+    {
+        return e1["name"] < e2["name"];
+    }
+
+    function on_fex_file(context, index, menuitem, item, fexmenu)
+    {
+        if (fexmenu.func != nil)
+            fexmenu.func(context, index, menuitem, item, fexmenu);
+        else
+        {
+            if (fexmenu.file.endsWith(".gpb"))
+            {
+                var gpb = main::pdistd::MGpb();
+                gpb.loadHeaderOnly(fexmenu.file);
+                var keylist = gpb.getKeyList();
+                var menuitems = [];
+                menuitems.push(GPBCOL);
+                for (var i = 0; i < keylist.size; i++)
+                {
+                    var menuitem = MenuItem(MenuItemTEXT, keylist[i][0], "", nil, 
+                    "%d".format(keylist[i][1]), nil);
+                    menuitems.push(menuitem);
+                }
+                TopRoot.open_menu(context, fexmenu.file, menuitems, index, 0);
+            } 
+            else if (fexmenu.file.endsWith(".img")) 
+            {
+                // possibly go to
+                var lines = fileToList(fexmenu.file);
+                var menuitems = [];
+                menuitems.push(TXTCOL);
+                for (var i = 0; i < lines.size; i++)
+                {
+                    var menuitem = MenuItem(MenuItemTEXT, lines[i], "", nil, nil, nil);
+                    menuitems.push(menuitem);
+                }
+                TopRoot.open_menu(context, fexmenu.file, menuitems, index, 0);
+            }
+        }
+    }
+
+    function on_fex_dir(context, index, menuitem, item, fexmenu)
+    {
+        var entries = main::pdistd::GetFileEntries(fexmenu.file);
+
+        if (entries == nil || entries.size == 0)
+        {
+            if (!fexmenu.write_mode)
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, "[{0}]を開けないか、\nファイルが存在していません。".build(fexmenu.file));
+                return;
+            }
+        }
+        else
+        {
+            entries.sort(entry_sort_function);
+        }
+        
+        var menu = Array();
+
+        if (fexmenu.write_mode)
+        {
+            var menuitem = MenuItem(MenuItemTEXT, "新規ファイル", "", nil, nil, on_fex_file);
+            menuitem.arg = FEXMenu(fexmenu.file + "/", fexmenu.func, fexmenu.ends_with, fexmenu.write_mode);
+            menuitem.base_color = NEWCOL;
+            menu.push(menuitem);
+        }
+
+        if (entries != nil && entries.size != 0)
+        {
+            entries.each(entry => 
+            {
+                var filename = entry["name"];
+                if (filename.beginWith("."))
+                    return;
+                if (entry["type"] == "DIRECTORY")
+                {
+                    var menuitem = MenuItem(MenuItemTEXT, filename, "", nil, nil, on_fex_dir);
+                    menuitem.arg = FEXMenu(fexmenu.file + "/" + filename, fexmenu.func, fexmenu.ends_with, fexmenu.write_mode, fexmenu.arg);
+                    menuitem.base_color = DIRCOL;
+                    menu.push(menuitem);
+                }
+                else if ((entry["type"] == "COMPRESSED" || entry["type"] == "REGULAR") 
+                    && 
+                    filename.endsWith(fexmenu.ends_with))
+                {
+                    var size = entry["size"];
+                    var compressed_size = entry["compressed_size"];
+
+                    var st = pdistd::GetFileStatus(fexmenu.file + "/" + filename);
+                    var str = st["_time"].toString();
+                    if (compressed_size != 0 && compressed_size != size)
+                        str = str + "    " + pdiext::GetNumberString(compressed_size) + "(" + pdiext::GetNumberString(size) + ")";
+                    else 
+                        str = str + "    " + pdiext::GetNumberString(size);
+                    
+                    var menuitem = MenuItem(MenuItemTEXT, filename, "", nil, str, on_fex_file);
+                    menuitem.arg = FEXMenu(fexmenu.file + "/" + filename, fexmenu.func, fexmenu.ends_with, fexmenu.write_mode, fexmenu.arg);
+                    menuitem.base_color = FILECOL;
+                    menu.push(menuitem);
+                }
+            });
+        }
+
+        TopRoot.open_menu(context, menuitem.label, menu, index, 0);
+    }
+
+    function CreateFileExplorer(dir, func, ends_with, title, tip, on_update, arg)
+    {
+        var select_fex_menuitem = MenuItem(MenuItemTEXT, title, tip, nil, on_update, on_fex_dir);
+        select_fex_menuitem.arg = FEXMenu(dir, func, ends_with, false, arg);
+        return select_fex_menuitem;
+    }
+    function CreateFileExplorerForWrite(dir, func, ends_with, title, tip, on_update, arg)
+    {
+        var select_fex_menuitem = MenuItem(MenuItemTEXT, title, tip, nil, on_update, on_fex_dir);
+        select_fex_menuitem.arg = FEXMenu(dir, func, ends_with, true, arg);
+        return select_fex_menuitem;
+    }
+
+    function OpenFileExplorer(context, dir, func, ends_with, is_write_mode = false, index_to_return = 0, parent_menuitem, arg)
+    {
+        if (parent_menuitem == nil)
+            parent_menuitem = MenuItem(MenuItemTEXT, "", nil, nil, nil, nil);
+        var fexmenu = FEXMenu(dir, func, ends_with, is_write_mode, arg);
+        on_fex_dir(context, index_to_return, parent_menuitem, nil, fexmenu);
+    }
+
+    function on_update_information(context, index, menuitem, item)
+    {
+        var text = "nil";
+        if (menuitem.arg != nil && menuitem.arg[1] != nil)
+            text = menuitem.arg[1];
+        item["value"].text = text;
+    }
+
+    function on_activate(context, index, menuitem, item, arg)
+    {
+        var activate_func = arg[0];
+        var activate_arg = arg[2];
+        activate_func(context, activate_arg);
+    }
+
+    function on_activate_information_common(context, index, title, displaylist)
+    {
+        if (displaylist != nil)
+        {
+            var menu = [];
+            foreach (var cols in displaylist)
+            {
+                if (cols.isInstanceOf(main::menu::MColorObject))
+                {
+                    menu.push(cols);
+                    continue;
+                }
+
+                var title = cols[0];
+                var text = cols[1];
+                var tip = "";
+                if (cols.size >= 3)
+                    tip = cols[2];
+                var next_display_list_func = nil;
+                if (cols.size >= 4)
+                    next_display_list_func = cols[3];
+
+                var on_activate_func = nil;
+                if (cols.size >= 5)
+                    on_activate_func = cols[4];
+                var on_activate_arg = nil;
+                if (cols.size >= 6)
+                    on_activate_arg = cols[5];
+
+                if (on_activate_func != nil)
+                {
+                    var mitem = MenuItem(MenuItemTEXT, title, tip, nil, 
+                        on_update_information, on_activate);
+                    mitem.arg = [on_activate_func, text, on_activate_arg];
+                    menu.push(mitem);
+                }
+                else 
+                {
+                    var mitem = MenuItem(MenuItemTEXT, title, tip, nil, 
+                        on_update_information, on_activate_information);
+                    mitem.arg = [next_display_list_func, text];
+                    menu.push(mitem);
+                }
+            }
+
+            TopRoot.open_menu(context, title, menu, index, 0);
+        }
+    }
+    function on_activate_information(context, index, menuitem, item, arg)
+    {
+        var display_list_func = arg[0];
+        if (display_list_func == nil)
+            return;
+        var display_list_arg = arg[1];
+        var displaylist = display_list_func(context, display_list_arg);
+        on_activate_information_common(context, index, menuitem.label, displaylist);
+    }
+
+    function CreateInformation(display_list_func, title, tip, arg)
+    {
+        var menuitem = MenuItem(MenuItemTEXT, title, tip, nil, nil, on_activate_information);
+        menuitem.arg = [display_list_func, arg];
+        return menuitem;
+    }
+
+
+    function OpenInformation(context, index, title, displaylist)
+    {
+        on_activate_information_common(context, index, title, displaylist);
+    }
+}

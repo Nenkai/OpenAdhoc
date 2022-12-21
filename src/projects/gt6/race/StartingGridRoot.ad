@@ -1,0 +1,328 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module StartingGridRoot
+{
+    attribute isActive = false;
+    attribute waitThread;
+    attribute hasQualifier = true;
+    attribute enableSlash = false;
+
+    method open(context, qualifier = true)
+    {
+        isActive = true;
+        hasQualifier = qualifier;
+
+        ORG.pauseHandleAvailable = false;
+
+        SequenceUtil::pushPage(context, StartingGridRoot);
+    }
+
+    method requestClose(context)
+    {
+        if (!isActive)
+            return;
+
+        isActive = false;
+        blind.visible = true;
+        blind::ScalarInterpolator.restart();
+        
+        waitThread = Thread((context) => {
+            Thread::Sleep(0.4);
+            StartingGridRoot.prepareToClose(context);
+        }, context);
+        waitThread.start();
+    }
+
+    method prepareToClose(context)
+    {
+        if (gSequenceCondition.is_spectator_mode)
+            ORG.setCamera(gtengine::CameraType::SPECTATOR);
+        else
+            ORG.setCamera(gtengine::CameraType::WAIT_RACER);
+
+        Container.visible = false;
+
+        waitThread = Thread((context) => {
+            Thread::Sleep(0.4);
+            StartingGridRoot.close(context);
+        }, context);
+        waitThread.start();
+    }
+
+    method close(context)
+    {
+        RaceMenuUtil::setClosed();
+        ORG.pauseHandleAvailable = true;
+        SequenceUtil::popPage(context, StartingGridRoot);
+    }
+
+    method abort(context)
+    {
+        if (!isActive)
+            return;
+
+        isActive = false;
+
+        if (gSequenceCondition.is_spectator_mode)
+            ORG.setCamera(gtengine::CameraType::SPECTATOR);
+        else
+            ORG.setCamera(gtengine::CameraType::WAIT_RACER);
+
+        close(context);
+    }
+
+    method setupEntry(context, item, order, slot_id, delay_ratio)
+    {
+        item.No::label.text = "--";
+
+        foreach (var name in ["Driver", "Car"])
+        {
+            item[name].label.text = "--";
+            item[name].labela.text = "--";
+        }
+
+        var odd = order & 1;
+        foreach (var name in ["Driver", "Flag", "Car"])
+        {
+            item[name].bg0.visible = !odd;
+            item[name].bg1.visible = odd;
+        }
+
+        item.No.setBg(gtengine::GameMode::SINGLE_RACE);
+
+        var cp;
+        if (slot_id != nil)
+        {
+            cp = ORG.getEntriedCarParameter(slot_id);
+        }
+
+        if (cp == nil)
+        {
+            foreach (var name in ["No", "Driver", "Car"])
+            {
+                item[name].label.opacity = 0.6;
+            }
+
+            item.Flag.image.image_path = "";
+            item.Car.Chip.visible = false;
+
+            if (StartingGridRoot.enableSlash)
+            {
+                var rp = ORG.getCurrentRaceParameter();
+                item.No.slash.visible = order >= rp.racers_max;
+            }
+
+            return;
+        }
+
+        item.No.label.text = "%d".format(order + 1);
+        var pilot_id = ORG.getRidingDriverIndex(slot_id);
+        var dp = ORG.getEntriedDriverParameter(slot_id, pilot_id);
+
+        if (dp != nil)
+        {
+            item.Driver.label.text = dp.display_name;
+            item.Driver.labela.text = item.Driver.label.text;
+        
+            var country = dp.region == "" ? "unknown" : dp.region.downcase();
+            item.Flag::image.image_path = "/piece/flag_ranking/%{country}.img";
+        }
+
+        item.Car.Chip.color.setCarParameter(cp);
+        item.Car.Chip.visible = true;
+        item.Car.label.text = gtengine::MSpecDB::getCarShortName(cp.getCarCode());
+        item.Car.labela.text = item.Car.label.text;
+
+        var active_target = cp.isTargetLocal();
+        item.Driver.active = active_target;
+        item.Car.active = active_target;
+    }
+
+    method updateBoard(context)
+    {
+        if (context.getCurrentPage() == nil || context.getCurrentPage().name != "StartingGridRoot")
+            return;
+
+        var order_list = RaceOperator.race_parameter.getSlotIDListOnGrid();
+        BoardUtil::update(context, StartingGridRoot, setupEntry, order_list);
+    }
+
+    function onTickTimeout(context)
+    {
+        for (;;)
+        {
+            updateBoard(context);
+            Thread::Sleep(0.5);
+        }
+    }
+
+    method onInitialize(context)
+    {
+        var scale = pdiext::MSystemConfiguration::is4x3() ? 0.75 : 1.00;
+        self.scale_x = scale;
+        self.scale_y = scale;
+        blind.visible = false;
+        Container.visible = true;
+
+        ORG.force30fps_mode = true;
+        var rp = ORG.getCurrentRaceParameter();
+        if (rp.start_type != gtengine::StartType::ROLLING3 && rp.start_type != gtengine::StartType::ROLLING_DL)
+        {
+            ORG.setCameraWithMount(gtengine::CameraType::ONLINE_QUICK, gtengine::CameraQuickMount::GRIDWAIT);
+        }
+
+        context.cursor_visible = false;
+
+        if (gSequenceCondition.is_online)
+            UIKitProject::MessengerRoot.hideWindow();
+
+        Container.setupBoard(context);
+
+        Container::ScalarInterpolator.reverse = false;
+        Container::ScalarInterpolator.start();
+
+        context.pushEvent(menu::MFunctionEvent(Container.Info2.startAnimation, context, 0));
+
+        if (PluginModule.defined("onStartingGridRootOpen"))
+        PluginModule::onStartingGridRootOpen(context);
+
+        context.resumeEventLoop();
+    }
+
+    method onFinalize(context)
+    {
+        waitThread = nil;
+        enableSlash = false;
+
+        ORG.force30fps_mode = false;
+
+        Container::Info2::Body::StartingGrid.finalize(context);
+        Container::Info2::Body::CourseInformation.finalize(context);
+        Container::Info2.finalize(context);
+
+        BoardUtil::finalize(context, nil, 
+            Container::Info2::Body::StartingGrid::FrameL,
+            Container::Info2::Body::StartingGrid::FrameR);
+    }
+
+    method onCountDown(context, count)
+    {
+        if (count < 10)
+            StartingGridRoot.requestClose(context);
+    }
+
+    module Container
+    {
+        method setupBoard(context)
+        {
+            var course_info = gtengine::MSpecDB::getCourseRow(getCurrentCourse());
+            if (course_info != nil)
+            {
+                var gp = gtengine::MGameParameter();
+                gp.deepCopy(OnlineSession.getGameParameter());
+
+                var rp = ORG.getCurrentRaceParameter();
+                if (rp != nil)
+                    gp.event.race_parameter.deepCopy(rp);
+
+                Info2::Header.initialize(context, gp);
+                Info2::Footer.initialize(context, gp);
+                Info2::Body::StartingGrid.initialize(context, gp, course_info);
+
+                Info2::Header.next_animation_widget_list = [Info2::Body::StartingGrid];
+                Info2::Body::StartingGrid.next_animation_widget = nil;
+            }
+
+            var rp = ORG.getCurrentRaceParameter();
+            var order_list = rp.getSlotIDListOnGrid();
+
+            BoardUtil::initialize(
+                context, 
+                StartingGridRoot,
+                setupEntry,
+                nil, 
+                Info2::Body::StartingGrid::FrameL,
+                Info2::Body::StartingGrid::FrameR,
+                Template::StartingGridBoard,
+                order_list);
+        }
+
+        module Info2
+        {
+            module Header
+            {
+                method initialize(context, gp)
+                {
+                    self.InformationTitle.text = manager.translate("QuickMenu", "STARTING_GRID");
+                    var text = "";
+
+                    switch (gp.event.game_mode)
+                    {
+                        case gtengine::GameMode::SINGLE_RACE:
+                        case gtengine::GameMode::TIME_ATTACK:
+                            text = getRaceTypeName(context, gtengine::GameMode, gp.event.game_mode);
+                            break;
+
+                        case gtengine::GameMode::SPLIT_BATTLE:
+                            text = getRaceTypeName(context, gtengine::GameMode, gp.event.game_mode);
+                            break;
+
+                        case gtengine::GameMode::ONLINE_TIME_ATTACK:
+                        case gtengine::GameMode::ONLINE_SINGLE_RACE:
+                        case gtengine::GameMode::ONLINE_DRIFT_ATTACK:
+                        case gtengine::GameMode::ONLINE_BATTLE:
+                        case gtengine::GameMode::EVENT_RACE:
+                            text = gSequenceCondition.gp.event.information.title.getText();
+                            break;
+
+                        case gtengine::GameMode::ONLINE_ROOM:
+                            text = getTitleWithPhase();
+                            break;
+
+                        default:
+                            break;
+                    }
+
+                    self.EventTitle.text = text;
+
+                    if (gSequenceCondition.is_online)
+                        ModeLogo::StrokePoint.is_enable = true;
+                    else
+                        ModeLogo::StrokePoint.is_enable = false;
+                }
+            }
+
+            module Footer
+            {
+                method initialize(context, gp)
+                {
+                    if (StartingGridRoot.hasQualifier)
+                    {
+                        self.HBox.Tips.HBox.TextFace.text = manager.translate("RaceProject::StartingGridRoot", "STARTING_GRID_BEFORE_FINAL");
+                    }
+                    else
+                    {
+                        self.HBox.Tips.HBox.TextFace.text = manager.translate("RaceProject::StartingGridRoot", "STARTING_GRID_SINGLE");
+                    }
+                }
+
+                method finalize(context)
+                {
+                    
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,362 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module CheckTrophy
+{
+    static sUpsetVictoryUnlocked = false;
+    static sUpsetVictoryTargetSlotId = -1;
+    static sUpsetVictoryOvertookTime = 0;
+    static sIsOneMakeRace = false;
+
+    function initialize()
+    {
+        var unlockList = PDINetwork.getTrophyUnlockState();
+        if (unlockList != nil)
+            sUpsetVictoryUnlocked = unlockList[gtengine::TrophyType::UPSET_VICTORY];
+        
+        if (!sUpsetVictoryUnlocked)
+        {
+            var TYPE_ONE_MAKE = 4;
+            sIsOneMakeRace = GAME_STATUS.user_profile.context.career_mode_type == TYPE_ONE_MAKE;
+
+            if (sIsOneMakeRace && gSequenceCondition.game_mode == gtengine::GameMode::LICENSE ||
+                gSequenceCondition.game_mode == gtengine::GameMode::MISSION)
+                sIsOneMakeRace = false;
+        }
+    }
+
+    function checkWinBySlowCar()
+    {
+        if ((gSequenceCondition.isASpecPlaying() || !gSequenceCondition.isBSpecPlaying()) ||
+            gSequenceCondition.is_online)
+            return;
+
+        var limit_pp = gSequenceCondition.gp.event.regulation.limit_pp;
+        if (limit_pp == gtengine::MGameParameter::INVALID_VALUE_INT || limit_pp < 550)
+            return;
+
+        var slotId = RaceOperator.getPlayerSlot();
+        if (slotId < 0)
+            return;
+
+        var lt = ORG.getLiveTimingRecord();
+        var entries = lt.getEntries(true, 1);
+        if (entries.size < 1 || entries[0].entry_id != slotId)
+            return;
+
+        var cp = ORG.getEntriedCarParameter(slotId);
+        if (cp == nil)
+            return;
+            
+        cp.beginInfo();
+        var pp = cp.getPP1000();
+        cp.endInfo();
+
+        if (pp >= limit_pp)
+            return;
+
+        var ppDiff = limit_pp - pp;
+        var array = [
+            [ppDiff >= 50, gtengine::TrophyType::WIN_BY_SLOW_CAR],
+            [limit_pp >= 620 && ppDiff >= 100, gtengine::TrophyType::WIN_BY_SLOW_CAR2],
+        ];
+
+        foreach (var [condition, trophyId] in array)
+        {
+            if (condition)
+                PDINetwork.unlockTrophyAsync(trophyId);
+        }
+    }
+
+    function checkLapped()
+    {
+        if ((gSequenceCondition.isASpecPlaying() || !gSequenceCondition.isBSpecPlaying()) ||
+            gSequenceCondition.is_online ||
+            gSequenceCondition.game_mode == gtengine::GameMode::SPLIT_BATTLE ||
+            gSequenceCondition.gp.event.race_parameter.complete_type == gtengine::CompleteType::BYTIME)
+            return;
+
+        var lt = ORG.getLiveTimingRecord();
+        var racersNum = lt.countEnabled(1);
+        var topLaps = lt.getTopLaps(1);
+        if (racersNum >= 2 && topLaps >= 2)
+        {
+            var mySlotId = RaceOperator.getPlayerSlot();
+            var myLaps = 0;
+            var minLaps = nil;
+            var entries = lt.getEntries(true, 1);
+
+            var i = 0;
+
+            foreach (var entry in entries)
+            {
+                if (entry.entry_id == mySlotId)
+                {
+                    if (i == 0)
+                        myLaps = entry.total_laps;
+                    else
+                        return;
+                }
+                else
+                {
+                    if (minLaps == nil || entry.total_laps < minLaps)
+                        minLaps = entry.total_laps;
+                }
+
+                ++i;
+            }
+
+            var lapDiff = myLaps != nil && minLaps != nil ? myLaps - minLaps : 0;
+            var requiredGap = 1;
+            if (lapDiff >= requiredGap)
+                PDINetwork.unlockTrophyAsync(gtengine::TrophyType::LAPPED);
+        }
+    }
+
+    function checkNarrowMargin()
+    {
+        if (!(gSequenceCondition.isASpecPlaying() || gSequenceCondition.isBSpecPlaying()) ||
+            gSequenceCondition.is_online ||
+            gSequenceCondition.game_mode == gtengine::GameMode::SPLIT_BATTLE ||
+            gSequenceCondition.gp.event.race_parameter.race_type != gtengine::RaceType::COMPETITION)
+            return;
+
+        var slotId = RaceOperator.getPlayerSlot();
+        if (slotId < 0)
+            return;
+
+        var lt = ORG.getLiveTimingRecord();
+        var entries = lt.getEntries(true, 1);
+        if (entries.size < 2 || entries[0].entry_id != slotId)
+            return;
+
+        if (entries[0].total_time == pdiext::MAX_LAPTIME1000 ||
+            entries[1].total_time == pdiext::MAX_LAPTIME1000)
+            return;
+
+        var diff = entries[1].total_time - entries[0].total_time;
+        if (diff <= 10)
+            PDINetwork.unlockTrophyAsync(gtengine::TrophyType::BY_A_NARROW_MARGIN);
+    }
+
+    function checkNostalgicRacer()
+    {
+        if ((gSequenceCondition.isASpecPlaying() || !gSequenceCondition.isBSpecPlaying()) ||
+            gSequenceCondition.is_online ||
+            gSequenceCondition.game_mode == gtengine::GameMode::SPLIT_BATTLE)
+            return;
+
+        var slotId = RaceOperator.getPlayerSlot();
+        if (slotId < 0)
+            return;
+
+        var lt = ORG.getLiveTimingRecord();
+        var entries = lt.getEntries(true, 1);
+        if (entries.size < 2 || entries[0].entry_id != slotId)
+            return;
+    
+        var cp = ORG.getEntriedCarParameter(slotId);
+        if (cp == nil)
+            return;
+
+        var carYear = gtengine::MSpecDB::getCarYear(cp.getCarCode());
+        if (carYear > 0 && carYear <= 1959)
+            PDINetwork.unlockTrophyAsync(gtengine::TrophyType::OLD_RACER);
+    }
+
+    function onStartVehicle(slot_id)
+    {
+        if (sUpsetVictoryUnlocked || !sIsOneMakeRace)
+            return;
+
+        var slotId = RaceOperator.getPlayerSlot();
+        if (slotId < 0)
+            return;
+
+        sUpsetVictoryTargetSlotId = slotId;
+    }
+
+    function onOvertake(slot_id, from, to, time)
+    {
+        if (sUpsetVictoryUnlocked || 
+            sUpsetVictoryTargetSlotId < 0 || 
+            sUpsetVictoryTargetSlotId != slot_id ||
+            gSequenceCondition.isDemo())
+            return;
+
+        if (to == 0)
+            sUpsetVictoryOvertookTime = time;
+        else
+            sUpsetVictoryOvertookTime = 0;
+    }
+
+    function checkUpsetVictory()
+    {
+        if (!sIsOneMakeRace ||
+            (gSequenceCondition.isASpecPlaying() || !gSequenceCondition.isBSpecPlaying()) ||
+            gSequenceCondition.is_online ||
+            gSequenceCondition.game_mode == gtengine::GameMode::SPLIT_BATTLE)
+            return;
+
+        var slotId = RaceOperator.getPlayerSlot();
+        if (slotId < 0)
+            return;
+
+        var lt = ORG.getLiveTimingRecord();
+        var entries = lt.getEntries(true, 1);
+        if (entries.size < 2 || entries[0].entry_id != slotId)
+            return;
+
+        var totalTime = entries[0].total_time;
+        var diffTime = Math::abs(totalTime - sUpsetVictoryOvertookTime).toInt();
+        if (diffTime < 5 * 1000)
+            PDINetwork.unlockTrophyAsync(gtengine::TrophyType::UPSET_VICTORY);
+    }
+
+    function checkAfterRace(condition_satisfied)
+    {
+        if (condition_satisfied)
+        {
+            checkLapped();
+            checkWinBySlowCar();
+            checkNarrowMargin();
+            checkNostalgicRacer();
+            checkUpsetVictory();
+        }
+    }
+
+    function checkLuckyTime(slot_id, laps, laptime, is_penalty_lap)
+    {
+        if (laps > 0 && laptime != pdiext::MAX_LAPTIME1000 && !is_penalty_lap)
+        {
+            var msec = laptime % 1000;
+            switch (msec) // Bad PDI code ahead
+            {
+                case 0:
+                case 111:
+                case 222:
+                case 333:
+                case 444:
+                case 555:
+                case 666:
+                case 777:
+                case 888:
+                case 999:
+                    PDINetwork.unlockTrophyAsync(gtengine::TrophyType::FEVER_TIME);
+                    break;
+
+                default:
+                    break;
+            }
+        }
+    }
+
+    static sStableLapTimesCount = 0;
+    static sLastFastest = pdiext::MAX_LAPTIME1000;
+
+    function checkStableLapTimes(slot_id, laps, laptime, is_penalty_lap)
+    {
+        if (laps < 1 || laptime == pdiext::MAX_LAPTIME1000 || is_penalty_lap)
+        {
+            sStableLapTimesCount = 0;
+            sLastFastest = pdiext::MAX_LAPTIME1000;
+            return;
+        }
+
+        var race = ORG.getRace();
+        if (race == nil)
+            return;
+
+        var entryStatus = race.getEntry(slot_id);
+        if (entryStatus == nil)
+            return;
+
+        if (sLastFastest == pdiext::MAX_LAPTIME1000)
+        {
+            var fastest = entryStatus.getFastestLapTime();
+            sLastFastest = fastest;
+            sStableLapTimesCount = 0;
+            return;
+        }
+
+        var diff = Math::abs(sLastFastest - laptime).toInt();
+        if (diff < 200)
+        {
+            if (++sStableLapTimesCount == 3)
+                PDINetwork.unlockTrophyAsync(gtengine::TrophyType::STABLE_LAPTIME);   
+        }
+        else
+        {
+            var fastest = entryStatus.getFastestLapTime();
+            sLastFastest = fastest;
+            sStableLapTimesCount = 0;
+        }
+    }
+
+    function onLapCount(slot_id, laps, laptime, is_penalty_lap)
+    {
+        if (gSequenceCondition.is_buffer_replay_mode ||
+            gSequenceCondition.is_demo_mode ||
+            (gSequenceCondition.isASpecPlaying() || !gSequenceCondition.isBSpecPlaying()) ||
+            gSequenceCondition.is_online)
+            return;
+
+        var mySlotId = RaceOperator.getPlayerSlot();
+        if (mySlotId != slot_id)
+            return;
+
+        checkLuckyTime(slot_id, laps, laptime, is_penalty_lap);
+        checkStableLapTimes(slot_id, laps, laptime, is_penalty_lap);
+    }
+
+    function checkFinalRound(mySlotId)
+    {
+        var gp = gSequenceCondition.gp;
+        var eventNum = gp.events.size;
+        if (eventNum < 2)
+            return;
+
+        PDINetwork.unlockTrophyAsync(gtengine::TrophyType::FIRST_CHAMPION);
+
+        var pointListArray = GAME_STATUS.user_profile.context.playing_point_list;
+        if (pointListArray.size < eventNum)
+            return;
+
+        var totalPointList = Array(16);
+        for (var i = 0; i < totalPointList.size; ++i)
+        {
+            var list = Array(2);
+            list[0] = i;
+            list[1] = 0;
+            totalPointList[i] = list;
+        }
+
+        for (var i = 0; i < eventNum - 1; ++i)
+        {
+            var pointList = pointListArray[i];
+            for (var slotId = 0; slotId < pointList.size; ++slotId)
+                totalPointList[slotId][1] += pointList[slotId];
+        }
+
+        totalPointList.sort((a, b) => a[1] > b[1]);
+
+        for (var i = 0; i < 2; ++i)
+        {
+            if (totalPointList[i][0] == mySlotId)
+                return;
+        }
+
+        PDINetwork.unlockTrophyAsync(gtengine::TrophyType::FINAL_ROUND);
+    }
+}

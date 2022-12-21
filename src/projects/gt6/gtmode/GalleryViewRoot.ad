@@ -1,0 +1,197 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module GalleryViewRoot
+{
+    module OPEN_MODE
+    {
+        static CAR_DEALER = 0;
+        static GARAGE = 1;
+        static VISION_GT = 2;
+    }
+
+    attribute open_mode;
+    attribute modal_page;
+    attribute closed;
+    attribute enable_stereo_rendering;
+
+    method open(context, open_mode, cp)
+    {
+        self.open_mode = open_mode;
+        self.opacity = 0.0;
+        
+        SceneFace.loadCar(context, cp);
+
+        var cursor_visible = context.cursor_visible;
+        context.cursor_visible = false;
+
+        var logo = MENUDB.executeQuery1R1C("SELECT Logo FROM t_award_car WHERE CarLabel=?", [cp.getCarLabel()]);
+        if (logo != nil)
+            AwardLogo.image_path = "piece/award_logo/%s.img".format(logo);
+        else
+            AwardLogo.image_path = "";
+
+        var frame_interval = menu::FrameInterval;
+        menu::FrameInterval = 2;
+
+        self.modal_page = main::SequenceUtil::ModalPage(context, self);
+        self.modal_page.open();
+
+        menu::FrameInterval = frame_interval;
+        context.cursor_visible = cursor_visible;
+    }
+
+    method close(context)
+    {
+        SceneFace.clearCar(context);
+
+        if (self.enable_stereo_rendering != nil)
+        {
+            ORG.setEnableStereoRendering(self.enable_stereo_rendering);
+            self.enable_stereo_rendering = nil;
+        }
+
+        PageUtil::visibleUnderPages(context, self);
+
+        var actor = self.Fade;
+        actor.on_effect_end = nil;
+        actor.backward();
+        actor.start();
+
+        if (self.modal_page != nil)
+        {
+            var delay_time = actor.Fade.total_time;
+            self.modal_page.close(delay_time);
+            self.modal_page = nil;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        ContextMain.disableInput();
+        
+        var actor = self.Fade;
+        actor.forward();
+        actor.restart();
+        actor.on_effect_end = (context) => 
+        {
+            if (actor.on_effect_end == nil)
+                return;
+
+            PageUtil::invisibleUnderPages(context, self);
+            self.enable_stereo_rendering = ORG.getEnableStereoRendering();
+            ORG.setEnableStereoRendering(true);
+
+            ContextMain.enableInput();
+            actor.on_effect_end = nil;
+        };
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.close(context);
+        return 2;
+    }
+
+    module SceneFace
+    {
+        attribute current_cp_;
+        attribute thread_;
+
+        method onInitialize(context)
+        {
+            self.visible = false;
+            SceneCover::Fade.forward();
+            SceneCover::Fade.reset();
+        }
+
+        method loadCar(context, cp)
+        {
+            self.thread_ = Thread(context => 
+            {
+                SceneFace.visible = true;
+                SceneFace.x = 1920;
+                SceneCover::Fade.forward();
+                SceneCover::Fade.reset();
+
+                var scene_alias = "colorSelect";
+                var is_riding_kart = gtengine::MSpecDB::checkFlag(cp.getCarCode(), gtengine::GenericFlag::IS_RACING_KART);
+
+                if (GalleryViewRoot.open_mode == OPEN_MODE::CAR_DEALER)
+                {
+                    if (is_riding_kart)
+                        scene_alias = "colorSelect_kart";
+                    else
+                        scene_alias = "colorSelect";
+                }
+                else if (GalleryViewRoot.open_mode == OPEN_MODE::GARAGE)
+                {
+                    if (is_riding_kart)
+                        scene_alias = "blackBG_kart";
+                    else
+                        scene_alias = "blackBG";
+                }
+                else if (GalleryViewRoot.open_mode == OPEN_MODE::VISION_GT)
+                {
+                    scene_alias = MENUDB.executeQuery1R1C("SELECT GalleryView FROM t_vision_gt WHERE CarLabel=?", [cp.getCarLabel()]);
+                }
+
+                SceneFaceUtil::loadScene(SceneFace, scene_alias, cp);
+                SceneFace.current_cp_ = cp;
+
+                while (true)
+                {
+                    if (GalleryViewRoot.opacity == 1.0 && !self.isUnderSetup())
+                        break;
+
+                    Thread::Sleep(0.5);
+                }
+
+                SceneFace.x = 0;
+                SceneCover::Fade.forward();
+                SceneCover::Fade.start();
+            }, context);
+
+            self.thread_.start();
+        }
+
+        method setCarVariation(car_color)
+        {
+            self.execCommand("setCarVariation %{car_color} car0");
+        }
+
+        method clearCar(context)
+        {
+            if (self.thread_ != nil)
+            {
+                self.thread_.terminate();
+                self.thread_ = nil;
+            }
+
+            SceneCover::Fade.backward();
+            SceneCover::Fade.start();
+
+            while (SceneCover::Fade.ramain_time)
+                context.wait(0.1);
+
+            SceneFace.visible = false;
+            if (self.current_cp_ != nil)
+            {
+                self.execCommandImmidiate("clearEntity car0");
+                self.current_cp_ = nil;
+            }
+        }
+    }
+}

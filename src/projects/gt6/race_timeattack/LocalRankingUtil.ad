@@ -1,0 +1,167 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module LocalRankingUtil
+{
+    static TABLE_VERSION = 104;
+
+    class Data
+    {
+        attribute id;
+        attribute car_code;
+        attribute car_color;
+        attribute datetime;
+        attribute best_time;
+        attribute tire_f;
+        attribute tire_r;
+        attribute physics_pro;
+        attribute local_userid;
+
+        method __init__()
+        {
+            id = Long(-1);
+            car_code = Long(gtengine::MSpecDB::NO_CODE);
+            car_color = Long(-1);
+            datetime = Long(0);
+            best_time = Long(pdiext::MAX_LAPTIME1000);
+            tire_f = Long(-1);
+            tire_r = Long(-1);
+            physics_pro = Long(-1);
+            local_userid = Long(-1);
+        }
+
+        method create(cp, dp, time)
+        {
+            car_code = cp.getCarCode();
+            car_color = cp.color;
+
+            var now = pdiext::getBetterTime();
+            datetime = now.getBySecond();
+
+            best_time = time;
+            [tire_f, tire_r] = cp.getTireCategories();
+            physics_pro = dp.physics_pro;
+            local_userid = cp.getPaintColor(0); // ??
+        }
+
+        method get_paint_color()
+        {
+            return local_userid;
+        }
+    }
+
+    function get_table_name(course_code, edit_course_ranking_id)
+    {
+        var course_label = gtengine::MSpecDB::getCourseLabel(course_code);
+        var table_postfix = edit_course_ranking_id != nil ? "_0x%08x".format(edit_course_ranking_id) : "";
+        if (course_label.endWith("_daynight"))
+            course_label = course_label.removeLastOf("_daynight");
+
+        if (course_label.endWith("_wet"))
+            course_label = course_label.removeLastOf("_wet"); 
+
+        return "t_local_ranking_" + course_label + table_postfix;
+    }
+
+    function initialize(course_code, edit_course_ranking_id)
+    {
+        var table_name = get_table_name(course_code, edit_course_ranking_id);
+        DBUtil::initializeTable(USERDB, table_name, TABLE_VERSION);
+
+        var sql = "CREATE TABLE IF NOT EXISTS " + table_name + " ("
+                  "id INTEGER, "
+                  "car_code INTEGER, "
+                  "car_color INTEGER, "
+                  "datetime INTEGER, "
+                  "best_time INTEGER, " 
+                  "tire_f INTEGER, "
+                  "tire_r INTEGER, "
+                  "physics_pro INTEGER, "
+                  "local_userid INTEGER, "
+                  "PRIMARY KEY (id))";
+
+        var res = USERDB.execute0(sql);
+        if (!(res == SQLITE_OK))
+        {
+            ErrorUtil::warningDBFailed(res, __FILE__, __LINE__);
+            return false;
+        }         
+    }
+
+    function getList(course_code, up_to, edit_course_ranking_id)
+    {
+        initialize(course_code, edit_course_ranking_id);
+
+        var query = DBUtil::getSelectQuery(get_table_name(course_code, edit_course_ranking_id), Data);
+        var cond = " ORDER BY best_time";
+        var res = USERDB.executeQuery(query + cond);
+        var list = DBUtil::getDataList(Data, res);
+       
+        if (up_to != nil)
+        {
+            for (var i = list.size; i < up_to; ++i)
+                list.push(Data());
+        }
+
+        return list;
+    }
+
+    function insert(course_code, cp, dp, best_time, up_to, edit_course_ranking_id)
+    {
+        initialize(course_code, edit_course_ranking_id);
+        var data = Data();
+        data.create(cp, dp, best_time);
+
+        var table_name = get_table_name(course_code, edit_course_ranking_id);
+        DBUtil::insert(USERDB, table_name, data);
+
+        var sql = "SELECT MAX(id) FROM " + table_name;
+        var res = USERDB.executeQuery(sql);
+        var id = res.size == 0 ? nil : res[0][0];
+        if (up_to != nil)
+        {
+            sql = "DELETE FROM " + table_name + " WHERE id NOT IN " + 
+                  "(SELECT id FROM " + table_name + " ORDER BY best_time limit %{up_to})";
+
+            res = USERDB.execute(sql);
+        }
+
+        var order = -1;
+        var list = getList(course_code, nil, edit_course_ranking_id);
+
+        for (var i = 0; i < list.size; ++i)
+        {
+            if (list[i].id == id)
+            {
+                order = i;
+                break;
+            }
+        }
+
+        return order;
+    }
+
+    function clear(course_code, edit_course_ranking_id)
+    {
+        var table_name = get_table_name(course_code, edit_course_ranking_id);
+        DBUtil::dropTable(USERDB, table_name);
+        DBUtil::initializeTable(USERDB, get_table_name(course_code, edit_course_ranking_id), TABLE_VERSION);
+    }
+
+    function delete(course_code, edit_course_ranking_id)
+    {
+        var table_name = get_table_name(course_code, edit_course_ranking_id);
+        DBUtil::dropTable(USERDB, table_name);
+    }
+}

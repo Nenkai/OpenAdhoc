@@ -1,0 +1,251 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module QuickMatchUtil
+{
+    module Stats
+    {
+        static CounterKeyPrefix = "QuickMatch_";
+
+        module Type
+        {
+            static RaceCount = 0;
+            static EntryCount = 1;
+
+            static TypeTextList = [
+                RaceCount : "RaceCount",
+                EntryCount : "EntryCount",
+            ];
+        }
+
+        function createCounterKey(type, eventId)
+        {
+            var key = CounterKeyPrefix + Type::TypeTextList[type] + "_" + eventId;
+            return key;
+        }
+
+        function onStartRace(context, eventId, memberCount)
+        {
+            Grim2.requestIncrementCounter(createCounterKey(Type::RaceCount, eventId));
+            Grim2.requestIncrementCounter(createCounterKey(Type::EntryCount, eventId), memberCount);
+        }
+
+        function createCounterList(request, isMultipleType, isMultipleEvent)
+        {
+            var list = Grim2.decodeCounter(request, true);
+            if (isMultipleType && isMultipleEvent)
+            {
+                var ret = Map();
+                foreach (var [k, v] in list)
+                {
+                    var k = k.substr(CounterKeyPrefix.length);
+                    var pos = k.find("_");
+                    if (pos < 0)
+                        continue;
+
+                    var typeText = k.substr(0, pos);
+                    var findRes = Type::TypeTextList.find_all((a) => a[1] == typeText);
+                    if (findRes.size == 0)
+                        continue;
+
+                    var typeValue = findRes[0][0];
+                    var typeName = findRes[0][1];
+
+                    var eid = k.substr(pos + 1).toULong();
+                    var element = ret[eid];
+                    if (element == nil)
+                    {
+                        var map = Map();
+                        map[typeName] = v;
+                        ret[eid] = map;
+                    }
+                    else
+                    {
+                        element[typeName] = v;
+                    }
+                }
+
+                return ret;
+            }
+            else 
+            {
+                return list.size > 0 ? list[0]["value"] : -1;
+            }
+        }
+
+        function getCount(context, eventId, type, async = false, func)
+        {
+            var isMultipleType = false;
+            var isMultipleEvent = eventId.isInstanceOf(Array);
+            var eventIdList = isMultipleEvent ? eventId : [eventId];
+
+            var keyArray = [];
+            if (type == nil)
+            {
+                foreach (var [k, v] in Type::TypeTextList)
+                {
+                    foreach (var eid in eventIdList)
+                    {
+                        keyArray.push(createCounterKey(k, eid));
+                    }
+                }
+            }
+            else
+            {
+                foreach (var eid in eventIdList)
+                {
+                    keyArray.push(createCounterKey(type, eid));
+                }
+            }
+
+            var key = keyArray.join(",");
+            isMultipleType = keyArray.size > 1;
+
+            var request = Grim2.requestGetCounter(key, func);
+            if (async)
+                return request;
+
+            if (!Grim2Util::join(context, request))
+                return (isMultipleType || isMultipleEvent) ? [:] : -1;
+
+            return nil;
+        }
+    }
+
+    module MatchingRegion
+    {
+        static ASIA = 1;
+        static AMERICA = 2;
+        static EUROPE = 3;
+    }
+
+    function getMatchingRegion()
+    {
+        var regionCode = pdiext::MProductInformation::GetGameRegionCode();
+        switch (regionCode)
+        {
+            case "scej":
+            case "sceh":
+                return MatchingRegion::ASIA;
+
+            case "scea":
+            case "scel":
+                return MatchingRegion::AMERICA;
+
+            case "scee":
+            case "sceb":
+                default:
+                return MatchingRegion::EUROPE;
+        } 
+    }
+
+    function createMatchingEventId(gp)
+    {
+        var eventId = gp.event.event_id;
+        var space = gp.online_room.matching_space;
+        var isRegional = space == gtengine::MatchingSpace::REGIONAL;
+
+        var spaceBit = isRegional ? 1u : 0u;
+        var region = 0u;
+
+        if (isRegional)
+            region = UInt(getMatchingRegion());
+
+        var roomVersion = OnlineUtility.getRoomVersion().toULong();
+        
+        var upper32 = ((spaceBit << 27) & 0x8000000) |  // 5 bits region
+                      ((region << 24) & 0x7000000) | // 3 bits region
+                      ((eventId) & 0xFFFFFF); // 24 bits eventId
+
+        // Room version is an int consisting of multiple bit fields for different versions
+        var ret = ((upper32 << 32) & 0xFFFFFFFF00000000) | (roomVersion & 0xFFFFFFFF);
+        return ret;
+    }
+
+    function getEventIdFromMatchingEventId(matchingEventId)
+    {
+        return (matchingEventId >> 32) & 0xFFFFFF;
+    }
+
+    function getMatchingEventId32(matchingEventId)
+    {
+        return (matchingEventId >> 32) & 0xFFFFFFFF;
+    }
+
+    function getEventIdFromMatchingEventId32(matchingEventId32)
+    {
+        return matchingEventId32 & 0xFFFFFF;
+    }
+
+    function createMatchingEventId32(gp)
+    {
+        return getMatchingEventId32(createMatchingEventId(gp));
+    }
+
+    static sCrowdedThresholdList = Grim2.getServerOption("game", "qmatch.crowded_threshold", "1,20,40,60,100").split(",");
+    static sCrowdedLevelList = Map();
+    static sGetCrowdedLevelCallback;
+
+    function convertActualNumberToCrowdedLevel(num)
+    {
+        var level = 0;
+
+        foreach (var threshold in sCrowdedThresholdList)
+        {
+            if (num < threshold.toInt())
+                break;
+
+            ++level;
+        }
+
+        return level;
+    }
+
+    function onLobbyStatusResponse(args)
+    {
+        var [context, request] = args;
+        if (request.isDone() && !request.isError())
+        {
+            var res = Matching2.decodeLobbyStatus(request);
+            foreach (var data in res)
+            {
+                var matchingId = data["event_id"];
+                var eventId = getEventIdFromMatchingEventId(matchingId);
+                var count = data["user_count"];
+                var level = convertActualNumberToCrowdedLevel(count);
+                sCrowdedLevelList[eventId] = level;
+
+                if (sGetCrowdedLevelCallback != nil)
+                    sGetCrowdedLevelCallback(context, eventId, level);
+            }
+        }
+    }
+
+    function setGetCrowdedLevelCallback(func)
+    {
+        sGetCrowdedLevelCallback = func;
+    }
+
+    function getCrowdedLevelRequest(context, func)
+    {
+        var req = Matching2.requestLobbyStatus(1, onLobbyStatusResponse);
+        setGetCrowdedLevelCallback(func);
+    }
+
+    function finalize()
+    {
+        Matching2.clearCallback();
+        Grim2.clearCallback();
+    }
+}
