@@ -80,7 +80,7 @@ The [Adhoc toolchain](https://github.com/Nenkai/GTAdhocToolchain) is required to
 ⚠️ It is also recommended to add the path to the toolchain (i.e `adhoc.exe`) to your **PATH**.
 
 Compilation process
-* `adhoc build -i <.ad source file or .xaml project file>`
+* `adhoc build -i <.ad source file or .yaml project file>`
 
 or 
 * "Run Build Task (CTRL+SHIFT+B)" with the VS Code Adhoc Extension on any source file or project file.
