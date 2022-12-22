@@ -5,7 +5,7 @@ OpenAdhoc is an open-source re-implementation of Gran Turismo Scripts based on t
 This repository contains compilable game scripts re-created from originally compiled scripts. The goal is to allow source-code level editing for GT4, GT5, GT6 (and potentially others). Scripts operate nearly as the whole of game logic, while the executable mostly serves as the engine and exposes libraries to the script interface.
 
 * Unaltered code is located on the `master` branch
-* Code for the GT6 Spec II Mod is located on the `spec` branch.
+* Code for the GT6 Spec II Mod is located on the `gt6-spec-ii` branch.
 
 ## Games & Progress
 
