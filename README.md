@@ -103,12 +103,14 @@ The Adhoc toolchain allows dissasembling scripts into an assembly-like text form
 ## Glossary
 * adc - Adhoc Compiled Script
 * Adhoc - Proprietary scripting language for Gran Turismo. Can also refer to bytecode when compiled from pure Adhoc or Swift (GT7)
+* Branch - Build type of the game. For GT6 it normally is `gt6`, but it can also be `runviewer`.
 * GPB - An image/resource container for all the assets a project or root uses.
 * MWidget - UI Layout definition for a root.
 * MProject - UI Layout definition for a project, generally many MWidgets combined into one MProject.
 * MPackage - A compressed container for splitted `adc` and `mproject/mwidget` files.
 * Project - A group of menus.
 * Root - A single menu.
+* Runviewer - Name of the debug menu.
 * TinyWeb - Web Server that GT6 and beyond can host which can be used to host pages for external access, or for executing Web Modules.
 * Web Module - An adhoc script which returns a web response. 
 
