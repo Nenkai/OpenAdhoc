@@ -70,8 +70,11 @@ This repository contains compilable game scripts re-created from originally comp
 ### GT5 Completion Progress
 Only `arcade` is currently available.
 
-### GT4
+### GT4/TT/GT Sport
 Nothing at the moment.
+
+### GT7
+Out of scope. GT7 uses swift compiled to adhoc bytecode.
 
 ## ⚙️ Compilation
 
@@ -91,7 +94,7 @@ The Adhoc toolchain allows dissasembling scripts into an assembly-like text form
 
 ### Things that are okay to discard
 * Following line numbers - While the custom toolchain does not currently support defines/macros, it is something that was used therefore can leave holes into the code, same goes for missing comments. It is therefore prefered not to follow line numbers for better readability.
-* Logic order - It is common that scripts were written using such pattern: `nil != myObject` or `"Dog" == myString`. For readability, literals and other variables should always appear on the left-hand side as such: `myObject != nil`.
+* Logic order - It is common that scripts were written using such pattern: `nil != myObject` or `"Dog" == myString`. For readability, literals should always be on the right-hand side such as `myObject != nil`.
 
 ### Things that should be preserved, or recommended to have
 * All code of any kind should be present in the scripts.
