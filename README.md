@@ -102,7 +102,7 @@ The Adhoc toolchain allows dissasembling scripts into an assembly-like text form
 
 ## Glossary
 * adc - Adhoc Compiled Script
-* Adhoc - Proprietary scripting language for Gran Turismo. Can also refer to bytecode when compiled from pure Adhoc or Swift (GT7)
+* Adhoc - Proprietary scripting language for Gran Turismo. Can also refer to bytecode when compiled from pure Adhoc or Swift (GT7). Not to be confused with PSP Ad hoc
 * Branch - Build type of the game. For GT6 it normally is `gt6`, but it can also be `runviewer`.
 * GPB - An image/resource container for all the assets a project or root uses.
 * MWidget - UI Layout definition for a root.
