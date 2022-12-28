@@ -1,0 +1,254 @@
+/*********************************************
+ * Utility for writing NP Tickets from adhoc *
+ *********************************************
+ 
+module TicketElementType
+{
+    static Compound = 0;
+    static UInt32 = 1;
+    static UInt64 = 2;
+    static String = 4;
+    static Timestamp = 7;
+    static Binary = 8;
+    static Ticket = 0x3000;
+    static Signature = 0x3002;
+    static Role = 0x3004;
+    static Entitlements = 0x3010; // Always empty?
+    static Date = 0x3011;
+}
+
+class TicketElementBase
+{
+
+}
+
+class TicketBinaryElement extends TicketElementBase
+{
+    attribute data;
+
+    method __init__(data)
+    {
+        if (!data.isInstanceOf(ByteData))
+            throw Exception("Error: Only ByteData is supported in TicketBinaryElement");
+
+        self.data = data;
+    }
+
+    method serialize(writer)
+    {
+        writer.writeShort(TicketElementType::Binary);
+        writer.writeShort(data.size);
+
+        writer.writeBuffer(data);
+    }
+}
+
+class TicketUIntElement extends TicketElementBase
+{
+    attribute value;
+
+    method __init__(value)
+    {
+        if (!value.isInstanceOf(UInt))
+            throw Exception("Error: Only UInt is supported in TicketUIntElement");
+
+        self.value = value;
+    }
+
+    method serialize(writer)
+    {
+        writer.writeShort(TicketElementType::UInt32);
+        writer.writeShort(4);
+
+        writer.writeUInt(value);
+    }
+}
+
+class TicketULongElement extends TicketElementBase
+{
+    attribute value;
+
+    method __init__(value)
+    {
+        if (!value.isInstanceOf(ULong))
+            throw Exception("Error: Only ULong is supported in TicketULongElement");
+
+        self.value = value;
+    }
+
+    method serialize(writer)
+    {
+        writer.writeShort(TicketElementType::UInt64);
+        writer.writeShort(8);
+
+        writer.writeULong(value);
+    }
+}
+
+class TicketTimeElement extends TicketElementBase
+{
+    attribute timestamp;
+
+    method __init__(timestamp)
+    {
+        if (!timestamp.isInstanceOf(pdistd::MTime))
+            throw Exception("Error: Only MTime is supported in TicketTimeElement");
+
+        self.timestamp = timestamp;
+    }
+
+    method serialize(writer)
+    {
+        writer.writeShort(TicketElementType::Timestamp);
+        writer.writeShort(8);
+
+        writer.writeULong(1);
+    }
+}
+
+class TicketStringElement extends TicketElementBase
+{
+    attribute str;
+
+    method __init__(str)
+    {
+        if (!str.isInstanceOf(String))
+            throw Exception("Error: Only String is supported in TicketStringElement");
+
+        self.str = str;
+    }
+
+    method serialize(writer)
+    {
+        writer.writeShort(TicketElementType::String);
+        writer.writeShort(str.length);
+
+        writer.writeBuffer(ByteData(str));
+    }
+}
+
+class TicketCompoundElement extends TicketElementBase
+{
+    attribute elements = Array();
+
+    method addElement(elem)
+    {
+        elements.push(elem);
+    }
+
+    method serialize(writer)
+    {
+        writer.writeShort(TicketElementType::Compound);
+
+        var size_field_offset = writer.tell(0);
+        writer.seek(size_field_offset + 2);
+        var data_start_offset = size_field_offset + 2;
+
+        foreach (var e in elements)
+            e.serialize(writer);
+
+        var data_end_offset = writer.tell(0);
+        writer.seek(size_field_offset);
+        writer.writeShort(data_end_offset - data_start_offset);
+
+        writer.seek(data_end_offset);
+    }
+}
+
+class TicketBodyElement extends TicketElementBase
+{
+    attribute elements = Array();
+
+    method addElement(elem)
+    {
+        elements.push(elem);
+    }
+
+    method serialize(writer)
+    {
+        writer.writeShort(TicketElementType::Ticket);
+
+        // Extra short if version >= 4
+        writer.writeShort(0x1234);
+
+        var size_field_offset = writer.tell(0);
+        writer.seek(size_field_offset + 2);
+        var data_start_offset = size_field_offset + 2;
+
+        foreach (var e in elements)
+            e.serialize(writer);
+
+        var data_end_offset = writer.tell(0);
+        writer.seek(size_field_offset);
+        writer.writeShort(data_end_offset - data_start_offset);
+
+        writer.seek(data_end_offset);
+    }
+}
+
+class NPTicket
+{
+    attribute version_major;
+    attribute version_minor;
+    attribute elements = Array();
+
+    method __init__(version_major, version_minor)
+    {
+        self.version_major = version_major;
+        self.version_minor = version_minor;
+    }
+
+    method addElement(elem)
+    {
+        elements.push(elem);
+    }
+
+    method serialize()
+    {
+        var ticket = ByteData(0, 0x100);
+
+        var writer = IO::ByteWriter(ticket);
+        var version_major = 4;
+        var packet_id = 0;
+    
+        var version_and_id = ((version_major << 4) | packet_id & 0b1111).toByte();
+    
+        writer.writeByte(version_and_id);
+        writer.writeByte(0); // Version Minor
+        writer.writeInt(0); // header size
+
+        foreach (var elem in elements)
+        {
+            elem.serialize(writer);
+        }
+
+        // Resize to the size we wrote
+        ticket.resize(writer.tell(0));
+
+        return ticket;
+    }
+}
+
+/*
+var ticket = NPTicket(4, 0);
+var base_compound = TicketCompoundElement();
+
+var body = TicketBodyElement();
+body.addElement(TicketBinaryElement(ByteData(0))); // Serial
+body.addElement(TicketUIntElement(UInt(0))); // IssuerId
+body.addElement(TicketTimeElement(pdistd::MTime::getCurrentTime())); // Issued Date
+body.addElement(TicketTimeElement(pdistd::MTime("2030/01/01 00:00:00"))); // Expiry Date
+body.addElement(TicketULongElement(ULong(123456))); // Account Id
+body.addElement(TicketStringElement("Adhoc")); // Online Id
+body.addElement(TicketBinaryElement(ByteData("fr.."))); // Region
+body.addElement(TicketStringElement("help")); // Domain
+body.addElement(TicketBinaryElement(ByteData("AAAAAAAAAA"))); // Service ID
+base_compound.addElement(body);
+
+ticket.addElement(base_compound);
+
+var serialized = ticket.serialize();
+pdistd::WriteFile("ticket.bin", serialized);
+
+obj.requestLogin(pdistd::MBlob(serialized), (args) => {});
+*/
