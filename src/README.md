@@ -1,8 +1,13 @@
 # Source Layout
 
+
 * `products` defines each UI element that can be used.
-* `project_files` houses the project files required to compile a project.
-* `projects` contain each menu group, to be compiled from the `project_files`.
+* `projects` contain each menu group. Projects are compiled with the corresponding `<project_name>.yaml` file.
 * `scripts` contain the bootstrap/main, and util scripts used by the projects.
-* `templates` contain un-original, script templates.
-* `web_scripts` contain un-original, util web modules to be used with TinyWeb.
+* `templates` contain **un-original**, script templates.
+* `utils` contain **un-original**, utility scripts
+* `web_scripts` contain **un-original**, util web modules to be used with TinyWeb.
+
+## GT4 Folders
+* `config` - Some configuration scripts run at boot.
+* `usedcar` - Used car dealership listings, scripts normally generated.
