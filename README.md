@@ -70,7 +70,14 @@ This repository contains compilable game scripts re-created from originally comp
 ### GT5 Completion Progress
 Only `arcade` is currently available.
 
-### GT4/TT/GT Sport
+### GT4(O) Completion Progress
+<details>
+
+* boot (Completed)
+* gtmode (40%)
+</details>
+
+### TT/GT Sport
 Nothing at the moment.
 
 ### GT7
