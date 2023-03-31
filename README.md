@@ -74,6 +74,7 @@ Only `arcade` is currently available.
 <details>
 
 * boot (Completed)
+* cursor (Completed)
 * gtmode (40%)
 </details>
 
