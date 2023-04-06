@@ -1,0 +1,777 @@
+//---------------------------------------------------------------------------------------
+// gtmode.ad
+//
+// GT Mode Project
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+
+module GTmodeProject
+{
+    #include "../share/dialog.ad"
+    #include "../share/page_util.ad"
+    #include "../share/course_define.ad"
+    #include "../share/nation.ad"
+    #include "../share/dealer_define.ad"
+    #include "../share/parts_shop_name.ad"
+    #include "../share/race_util.ad"
+    #include "../share/regulation.ad"
+    #include "../share/shot_screen.ad"
+    #include "wheel.ad"
+    #include "../share/memorycard.ad"
+
+    #define MISSION_COUNT 34
+
+    static color_transition = nil;
+    static cross_transition = nil;
+    static block_transition = nil;
+
+    static last_focus = nil;
+
+    static description = nil;
+    static Common = nil;
+
+    static getcourse_list = [];
+
+    function pushGetCourse(pair)
+    {
+        getcourse_list.push(pair);
+    }
+
+    function showGetCourse(context, endFunc)
+    {
+        if (getcourse_list.size > 0)
+        {
+            context.pushEvent(main::menu::MScriptEvent(context, GTmodeProject, "getcourseCB", [endFunc]));
+        }
+        else if (endFunc != nil)
+            endFunc(context);
+    }
+
+    function getcourseCB(context, endFunc)
+    {
+        for (var i = 0; i < getcourse_list.size; i++)
+        {
+            var crs = getcourse_list[i][0];
+            var place = getcourse_list[i][1];
+            var crs_name = context.translate(GTmodeProject, "CourseNameCaption", crs);
+            var place_name = context.translate(TopRoot, "place_" + place);
+            var message = context.translate(TopRoot, "you can run a course").build(crs_name, place_name);
+            GetCourseDialog::open(context, message, crs);
+        }
+
+        getcourse_list = [];
+        if (endFunc != nil)
+            endFunc(context);
+    }
+
+    function onLoad(context)
+    {
+        main::sound.load();
+        
+        context.loadGpb("projects/gtmode", "Template");
+
+        switch (main::menu::MSystem::GetRegionCode())
+        {
+            case "jp":
+                description = main::menu::MGpb("description/JP/JP_" + main::menu::MSystem::GetContainmentVersion() + "_description.gpb");
+                break;
+
+            case "kr":
+                description = main::menu::MGpb("description/KR/KR_" + main::menu::MSystem::GetContainmentVersion() + "_description.gpb");
+                break;
+        }
+
+        context.createRenderContext(1);
+        var render_context = context.getRenderContext(0);
+
+        color_transition = main::menu::MColorTransition();
+        cross_transition = main::menu::MColorTransition();
+        block_transition = main::menu::MColorTransition();
+
+        render_context.transition = cross_transition;
+        render_context.transition.panIn(render_context);
+
+        var present_list = PresentRoot::makeEntitledPresentListByProject();
+        var page = nil;
+
+        if (main::game.isSuspended())
+        {
+            page = TopRoot;
+            do
+            {
+
+            } while (main
+                ::game.menuPop() != nil)
+        }
+        else if (present_list.size > 0)
+        {
+            present_list = PresentRoot::current_list;
+            page = PresnetRoot;
+        }
+        else if (main::game.major_menu_project == "gtmode" && main::game.major_menu_page != "")
+        {
+            if (GTmodeProject.defined(main::game.major_menu_page))
+                page = GTmodeProject[main::game.major_menu_page];
+            else
+                page = TopRoot;
+
+            main::game.major_menu_project == ""; // Typo?
+            main::game.major_menu_page = "";
+        }
+        else
+        {
+            page = TopRoot;
+        }
+
+        Common = Template::Common.doCopy();
+        Common["Header"]["DateJP"]["tsuki"].localized_text_page = "GTmodeProject::Template";
+        Common["Header"]["DateJP"]["hi"].localized_text_page = "GTmodeProject::Template";
+
+        if (page != nil)
+        {
+            if (page.defined("onStart"))
+                page["onStart"](context.getRenderContext(0));
+            else
+                render_context.startPage(page);
+        }
+
+        main::game.major_menu_project = "gtmode";
+
+        var [achievement, score] = getRaceEventRecordStatistics();
+        if (achievement < 250.0)
+            main::game.met_type = 0;
+        else if (achievement < 500.0)
+            main::game.met_type = 1;
+        else
+            main::game.met_type = 2;
+    }
+
+    static restart_flg = false;
+
+    function onUnload(context)
+    {
+        Common = nil;
+        description = nil;
+        context.unloadGpb("Template");
+        main::sound.unload();
+    }
+
+    function needSave()
+    {
+        main::game.setNeedSave();
+    }
+
+    function saveAuto(context, root, end_func, progress)
+    {
+        if (progress == nil)
+            progress = 1;
+
+        main::game.major_menu_project = "gtmode";
+        main::game.major_menu_page = root.name;
+
+        context.pushEvent(main::menu::MScriptEvent(context, GTmodeProject, "doAutoSave", [root, end_func, progress]));
+    }
+
+    function saveAutoBlock(context, root, end_func, progress)
+    {
+        if (progress == nil)
+            progress = 1;
+
+        main::game.major_menu_project = "gtmode";
+        main::game.major_menu_page = root.name;
+
+        doAutoSave(context, root, end_func, progress);
+    }
+
+    function doAutoSave(context, root, end_func, progress, makeEnable)
+    {
+        setCursor(context, "wait");
+
+        if (progress)
+            openProgressDialog(context, context.translate(GTmodeProject, "MemoryCard", "now_saving"));
+
+        var r = autoSave2(context, root["Common"]["Header"]["Memorycard"], makeEnable, nil);
+        if (progress)
+            closeProgressDialog(context);
+
+        setCursor(context);
+        if (r && end_func != nil)
+            end_func(context);
+
+        context.flushKeyEvent();
+        return r;
+    }
+
+    function refreshRideCar(root, context)
+    {
+        var garage = main::game.garage;
+        var car = root["Common"]["Header"]["Car"];
+        var visible = car.visible;
+        var label = car["label"];
+
+        if (garage.hasRidingCar())
+        {
+            garage.riding_car.short_name = label.text;
+            label.abbreviate();
+            car["chip"].setData(garage.riding_car);
+            car["chip"].doInitialize(context);
+            car["chip"].visible = true;
+        }
+        else
+        {
+            car["chip"].visible = false;
+            label.text = "--";
+        }
+
+        refreshHeaderAlignment(root);
+        car.visible = visible;
+    }
+
+    function refreshMoney(root)
+    {
+        var label = root["Common"]["Header"]["Money"]["label"];
+        label.text = "%s".format(main::game.money);
+        refreshHeaderAlignment(root);
+    }
+
+    function refreshDate(context, root)
+    {
+        var calendar = main::game.calendar;
+        var today = calendar.today;
+        var date = nil;
+
+        if (main::menu::MUnit::IsCalendarTypeDayFirst())
+        {
+            root["Common"]["Header"]["DateJP"].visible = false;
+            date = root["Common"]["Header"]["DateUS"];
+        }
+        else
+        {
+            date = root["Common"]["Header"]["DateJP"];
+            root["Common"]["Header"]["DateUS"].visible = false;
+        }
+
+        date.visible = true;
+        date["month"].text = context.translate(TopRoot, "month" + today[1]);
+        date["day"].text = today[2];
+    }
+
+    function refreshHeaderAlignment(root)
+    {
+        var margin = 8.0;
+        var common = root["Common"];
+        var header = common["Header"];
+        var money = header["Money"];
+        var car = header["Car"];
+        var title = header["Title"];
+
+        var money_left = (money.x + money.w) - money["label"].getTextSize()[0] - money["cr"].w;
+        money["cr"].x = money_left - money.x;
+
+        car["label"].x = (car.w - car["label"].getTextSize()[0]) - margin;
+        car["label"].align = 3;
+        car["chip"].x = car["label"].x - 12.0;
+        car["chip0"].x = car["chip"].x + 1.0;
+        car.x = money_left - car.w;
+
+        var title_label = title["label"];
+        title_label.w = car.x - (title.x + title_label.x) - 12.0;
+        title_label.scale_x = 1.0;
+        title_label.scale_y = 1.0;
+        title_label.adjustScale();
+    }
+
+    function checkPresent(context)
+    {
+        present_list = PresentRoot::makeEntitledPresentListByPage();
+        for (var i = 0; i < present_list.size; i++)
+        {
+            var id = present_list[i];
+            var column = PresentRoot::makeTimeColumn(id);
+            var code = column[3];
+            
+            switch (column[2])
+            {
+                case "course":
+                    if (CourseData.defined(code))
+                    {
+                        pushGetCourse([code, column[4]]);
+                        main::game.setCourseAvailable(code);
+
+                        if (CourseData[code].has_reverse)
+                            main::game.setCourseAvailable("r_" + code);
+                    }
+                    break;
+            }
+
+            main::game.present.setByTime(id);
+        }
+    }
+
+    function checkRegulation(race_code, result_array)
+    {
+        var race_spec = main::menu::MRaceData(race_code);
+        var need_license = race_spec.getNeedLicense();
+        
+        print "need_license=%{need_license}\n";
+
+        result_array.push(nil);
+        result_array.push(nil);
+
+        return true;
+    }
+
+    function checkLicense(context, root, category)
+    {
+        if (!main::game.race_record.isLicensePassed(category))
+        {
+            main::sound.play("disable");
+            var license_name = context.translate(root, "LicenseName", category + "0000");
+            openConfirmDialog(context, 2, context.translate(root, "you must have license").format(license_name));
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+
+    function checkEntryTire(context, race_code, course_code)
+    {
+        var [success, tire] = setLimitedTire(main::game.garage.riding_car, race_code, course_code);
+        var tire_name = nil;
+
+        if (tire != nil)
+            tire_name = context.translate(TopRoot, "reguration_tire_%02d".format(tire));
+        
+        if (success)
+        {
+            if (tire_name != nil)
+            {
+                main::sound.play("ok");
+                openConfirmDialog(context, 0, context.translate(TopRoot, "you change tire")).format(tire_name);
+            }
+            else
+                return true;
+        }
+        else
+        {
+            main::sound.play("disable");
+            if (tire_name != nil)
+                openConfirmDialog(context, 2, context.translate(TopRoot, "you do not have necessary tire").format(tire_name));
+
+            return false;
+        }
+    }
+
+    function sureNoGarageFull(context)
+    {
+        if (!main::game.garage.isFull())
+            return true;
+        else
+        {
+            main::sound.play("ok");
+            if (openConfirmDialog(context, 1, context.translate(TopRoot, "you cannot get present")))
+                return true;
+            else
+                return false;
+        }
+    }
+
+    function enterPageNation(context, root, title, nation)
+    {
+        enterPage(context, root, title, 1);
+        var title = root["Common"]["Header"]["Title"];
+        var kokki = title["kokki"];
+        var label = title["label"];
+        
+        if (NationData.defined(nation + "2"))
+        {
+            var l2 = NationData[nation + "2"];
+            label.x = kokki.w;
+            label.w = Template::original_label_w;
+            label.adjustScale();
+            kokki.visible = true;
+            kokki.image_path = "image/arcade/common/l2" + ".png";
+            kokki.doInitialize(context);
+        }
+        else
+        {
+            label.x = 0.0;
+            label.w = Template::original_label_w;
+            kokki.visible = false;
+        }
+    }
+
+    function enterPage(context, root, title, no_translate)
+    {
+        __enterPage(context, root, title, no_translate);
+        showGetCourse(context);
+    }
+
+    function enterPage2(context, root, getcourseEndFunc)
+    {
+        __enterPage(context, root, "", 1);
+        showGetCourse(context, getcourseEndFunc);
+    }
+
+    function __enterPage(context, root, title, no_translate)
+    {
+        if (no_translate == nil)
+            no_translate = false;
+
+        root.appendChild(context, Common);
+        var common = root["Common"];
+        common["ToolTip"]["tip"].attach();
+
+        var header = common["Header"];
+        if (title == nil)
+            title = "";
+
+        if (!no_translate)
+            title = context.translate(root, title);
+
+        header["Title"]["label"].x = 0.0;
+        header["Title"]["label"].text = title;
+        header["Title"]["kokki"].visible = false;
+
+        refreshRideCar(root, context);
+        refreshMoney(root);
+        refreshDate(context, root);
+    }
+
+    function leavePage(context, root)
+    {
+        var common = root["Common"];
+        if (common != nil)
+            root.removeChild(context, common);
+    }
+
+    function setPageTitle(context, root, title)
+    {
+        var header = root["Common"]["Header"];
+        if (title == nil)
+            title = "";
+
+        header["Title"]["label"].text = title;
+    }
+
+    function setHeaderStyle(context, root, title, carname, money, date)
+    {
+        var header = root["Common"]["Header"];
+        header["Title"].visible = title;
+        header["Car"].visible = carname;
+        header["Money"].visible = money;
+        header["Date"].visible = date;
+    }
+
+    function setFadeActor(widget)
+    {
+        var actor = main::menu::MFadeActor(widget, 1.0);
+        actor.repeat = true;
+        actor.period = 0.25;
+        widget.actor = actor;
+    }
+
+    function sureRiding(context)
+    {
+        if (!main::game.garage.hasRidingCar())
+        {
+            main::sound.play("disable");
+            openConfirmDialog(context, 2, context.translate(TopRoot, "PleaseRideACar"));
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+
+    function sureNoStrange(context)
+    {
+        if (!main::game.garage.hasRidingCar())
+            return true;
+
+        var cg = main::game.garage.riding_car;
+        var open_model_type = main::menu::MCarData::GetOpenModelType(cg.car_code);
+        if (cg.isStrange())
+        {
+            main::sound.play("disable");
+            openConfirmDialog(context, 2, context.translate(TopRoot, "NoStrangeCar").format(cg.name));
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+
+    function sureNoOpenModel(context)
+    {
+        if (!main::game.garage.hasRidingCar())
+            return true;
+
+        var cg = main::game.garage.riding_car;
+        var open_model_type = main::menu::MCarData::GetOpenModelType(cg.car_code);
+        if (cg.isStrange())
+        {
+            main::sound.play("disable");
+            openConfirmDialog(context, 2, context.translate(TopRoot, "NoOpenModelCar").format(cg.name));
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+
+    function sureNoTestCar(context)
+    {
+        if (!main::game.garage.hasRidingCar())
+            return true;
+
+        var cg = main::game.garage.riding_car;
+        var open_model_type = main::menu::MCarData::IsTestCar(cg.car_code);
+        if (cg.isStrange())
+        {
+            main::sound.play("disable");
+            openConfirmDialog(context, 2, context.translate(TopRoot, "NoOpenModelCar").format(cg.name));
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+
+    function sureNoSuspended(context, event_hall)
+    {
+        if (main::game.isSuspended())
+        {
+            var race_name = getEventNameByRaceCode(context, GTmodeProject, race_code);
+            var session = main::game.suspended_session + 1;
+
+            if (!event_hall)
+            {
+                main::sound.play("disable");
+                openConfirmDialog(context, 2, context.translate(TopRoot, "YouAreDuringRace").format(race_name, session));
+            }
+
+            if (openConfirmDialog(context, 1, context.translate(TopRoot, "Do you restart the race?").build(race_name, session)))
+            {
+                if (main::game.loadMenuStack())
+                {
+                    main::game.course_code = "";
+                    main::game.race_code = main::game.suspended_racecode;
+                    main::game.major_menu_project = "gtmode";
+                    main::game.major_menu_page = EventCourseRoot.name;
+                    exit_menu(context, "championship");
+                }
+                else
+                {
+                    main::game.abandonRace();
+                    openConfirmDialog(context, 2, context.translate(TopRoot, "fail to restart the race").build(race_name, session));
+                }
+            }
+            else if (openConfirmDialog(context, 1, context.translate(TopRoot, "Do you abandon the race?").build(race_name, session)))
+            {
+                main::game.abandonRace();
+                main::game.major_menu_project = "";
+                main::game.major_menu_page = "";
+                TopRoot::Info.visible = false;
+                openConfirmDialog(context, 0, context.translate("you abandoned the race").format(race_name, session));
+            }
+
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+
+    function sureEnoughMoney(context, amount)
+    {
+        if (!main::game.isEnoughmoney(amount))
+        {
+            main::sound.play("disable");
+            openConfirmDialog(context, 2, context.translate(TopRoot, "NotEnoughMoney"));
+            return false;
+        }
+        else
+        {
+            return true;
+        }
+    }
+
+    function getCarNum(CarData, category)
+    {
+        var name = category + "_carnum";
+        if (CarData.defined(name))
+            return CarData[name];
+        else
+            return 0;
+    }
+
+    function canEntryGTWorldChamp()
+    {
+        var events = EventData::BeginnerHallEvents;
+        for (var i = 1; i < events.size; i++)
+        {
+            if (wonRace(events[i].race_code))
+                return false;
+        }
+
+        events = EventData::ProfessionalHallEvents;
+        for (var i = 1; i < events.size; i++)
+        {
+            var race = events[i].race_code;
+            if (race == "pr_gtworld_1000")
+                continue;
+
+            if (!wonRace(race))
+                return false;
+        }
+
+        return true;
+    }
+
+    function canEntryExtreme()
+    {
+        return wonRace("pr_gtworld_1000");
+    }
+
+    function canEntryEndurance()
+    {
+        var [achieve, score] = getRaceEventRecordStatistics();
+        return achieve >= 250.0;
+    }
+
+    function haveRunEvent(event_list_name)
+    {
+        if (!EventData.defined(event_list_name))
+            return false;
+
+        var events = EventData[event_list_name];
+        var have = false;
+
+        for (var i = 0; i < events.size; i++)
+        {
+            var list = extractSubRaceCode(events[i].race_code);
+            for (var j = 0; j < list.size; j++)
+            {
+                var unit = main::game.race_record.getUnit(list[j]);
+                if (unit.result != "NONE")
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    function haveRunMission()
+    {
+        for (var i = 0; i < MISSION_COUNT; i++)
+        {
+            var unit = main::game.race_record.getUnit("l0m%04d").format(i + 1);
+            if (unit.result != "NONE")
+                return true;
+        }
+
+        return false;
+    }
+
+    function restart(context)
+    {
+        restart_flg = true;
+        main::game.major_menu_page = "";
+        start_page(context, nil);
+    }
+
+    function exit_menu(context, code)
+    {
+        start_page(context, nil);
+        main::game.next_sequence = code;
+        main::game.major_menu_project = "gtmode";
+    }
+
+    function exit_menu_quick(context, code)
+    {
+        context.finish();
+        main::game.next_sequence = code;
+        main::game.major_menu_project = "gtmode";
+    }
+
+    function exit_kick_project(context, project_name)
+    {
+        main::game.next_menu_project = project_name;
+        exit_menu(context, "menu");
+    }
+
+    function getWheelName(context, name, used)
+    {
+        if (used != nil && used != 0)
+        {
+            var m0 = name.substr(0, 2);
+            var idx = name.substr(4, 8).toInt();
+            idx += name.at(2);
+            idx += name.at(3);
+            
+            var name = m0 + "%04d".format(idx);
+            return name.upcase();
+        }
+        else
+        {
+            return context.translate(GTmodeProject, "WheelName", name);
+        }
+    }
+
+    function getWingName(context, name)
+    {
+        if (name == nil)
+            return nil;
+        else
+            return context.translate(WingShopRoot, name);
+    }
+
+    function setColorTransition(context)
+    {
+        context.translate(color_transition);
+    }
+
+    function setCrossTransition(context)
+    {
+        context.translate(cross_transition);
+        context.transition.period = 0.5;
+    }
+
+    function setBlockTransition(context)
+    {
+        context.transition = block_transition;
+    }
+
+    function craft(context, event, command_list, func)
+    {
+        if (main::game.calendar.getElapsedDate() > 365 && craft_index < command_list.size && event.keysym == command_list[craft_index])
+        {
+            craft_index++;
+            if (craft_index >= command_list.size)
+            {
+                main::sound.play("return");
+                func(context);
+                craft_index = 0;
+            }
+        }
+        else
+        {
+            craft_index = 0;
+        }
+
+        return 0;
+    }
+}

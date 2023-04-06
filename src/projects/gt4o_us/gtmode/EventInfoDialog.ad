@@ -1,0 +1,361 @@
+//---------------------------------------------------------------------------------------
+// EventInfoDialog.ad
+//
+// Prompt/modal displaying event information
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+
+module GTmodeProject::EventInfoDialog
+{
+    static event;
+    static result;
+    static original_y = Pane.y;
+    static violated;
+    static license_violated;
+    static can_bspec;
+
+    function setMoveActor(widget)
+    {
+        var actor = main::menu::MMoveActor(widget, widget.x, 480.0);
+        widget.actor = actor;
+        widget.actor.ratio = 0.2;
+    }
+
+    function setFadeActorRoot()
+    {
+        var actor = main::menu::MMoveActor(ROOT, 1.0);
+        actor.repeat = false;
+        actor.ratio = 0.5;
+        ROOT.actor = actor;
+    }
+
+    setMoveActor(Pane);
+    setFadeActorRoot();
+
+    static license_name_table = [
+        "l0b",
+        "l0a",
+        "lib",
+        "lia",
+        "l0s",
+    ];
+
+    function onInitialize(context)
+    {
+        Pane::Title::label.text = getEventNameByRaceCode(context, ROOT, event.race_code);
+        Pane::VBox::RegulationHeader::label.adjustScale();
+
+        var code = extractSubRaceCode(event.race_code);
+        var series = getSeriesRaceCount(event.race_code);
+        var race = main::menu::MRaceData(code[0]);
+
+        for (var i = 0; i < 6; i++)
+        {
+            var rank = i + 1;
+            var item = Pane::VBox::Prize["Rank" + rank];
+            item["rank"].text = rank.toString();
+            item["prize"].text = main::menu::MUtility::GetMoneyString(race.getPrize(i));
+        }
+
+        var box = Pane::VBox::Regulation::clip::space;
+        box.actor = main::menu::MMoveActor(box, 0.0, 0.0);
+        box.actor.ratio = 0.2;
+        box.actor.out = true;
+        box.actor.warp();
+
+        switch (getRacePrefix(code[0]))
+        {
+            case EVENT_PREFIX_RALLY_HALL:
+                can_bspec = false;
+                break;
+
+            default:
+                can_bspec = true;
+                break;
+        }
+
+        var regulation = getViolatedRegulation(main::game.garage.riding_car, code[0]);
+        violated = regulation.violated;
+        license_violated = false;
+
+        if (race.getNeedLicense() > 0)
+            license_violated = !main::game.race_record.isLicensePassed(license_name_table[race.getNeedLicense()]);
+
+        var gc_prize = main::menu::MUtility::GetMoneyString(race.getPrizeGC());
+        add_regulation_row(context, box, "GameMode", context.translate(ROOT, series == 0 ? "SingleRace" : "ChampionshipRace").format(gc_prize));
+
+        if (race.getNeedCarType() != 0)
+            add_regulation_row(context, box, "CarTypeSpec", context.translate(ROOT, "CarTypeSpec_" + race.getNeedCarType()), regulation.cartype != nil);
+
+        if (race.getNeedDrivetrain() != 0)
+            add_regulation_row(context, box, "DrivetrainSpec", context.translate(ROOT, "DrivetrainSpec_" + race.getNeedDrivetrain()), regulation.drivetrain != nil);
+
+        if (race.getNeedAspiration() != 0)
+            add_regulation_row(context, box, "AspirationSpec", context.translate(ROOT, "AspirationSpec_" + race.getNeedAspiration()), regulation.aspiration != nil);
+
+        add_regulation_row(context, box, "TireRequired", context.translate(ROOT, "TireRequired_" + race.getNeedTire()), regulation.tiretype != nil);
+
+        if (race.getNeedPs() != 0)
+        {
+            var ps_string = "%d %s".format(main::menu::MUnit::GetPowerForDisplay(race.getNeedPs()).toInt(), main::menu::MUnit::GetUnitOfPower());
+            var doc = context.translate(ROOT, "NeedPowerDoc").format(ps_string);
+            add_regulation_row(context, box, "NeedPower", doc, regulation.need_ps != nil);
+        }
+
+        if (race.getNeedPrice() != 0)
+            add_regulation_row(context, box, "NeedPrice", context.translate(ROOT, "NeedPriceDoc").format(race.getNeedPrice()), regulation.need_price != nil);
+
+        if (race.getLimitedWeight() != 0)
+            add_regulation_row(context, box, "LimitedWeight", context.translate(ROOT, "LimitedWeightDoc").format(race.getLimitedWeight()), regulation.limit_weight != nil);
+
+        if (race.getLimitedLength() != 0)
+            add_regulation_row(context, box, "LimitedLength", context.translate(ROOT, "LimitedLengthDoc").format(race.getLimitedLength()), regulation.length != nil);
+
+        if (race.getNeedCountryID() != 0)
+            add_regulation_row(context, box, "NeedNation", context.translate(ROOT, "NeedNation_" + race.getNeedCountryID()), regulation.country != nil);
+
+        var [min, max] = race.getNeedYearRange();
+        if (min > 0 || max > 0)
+        {
+            var doc = min > 0 ? context.translate(ROOT, "NeedYearDoc").format(min, max)
+                              : context.translate(ROOT, "NeedYearDocMax").format(min, max);
+
+            add_regulation_row(context, box, "NeedYear", doc, regulation.year != nil);
+        }
+
+        var cars_allowed = context.translate(ROOT, "AllCarsAllowed");
+        var carlist = race.getAllowedCarList();
+
+        if (carlist != nil && carlist.size > 0)
+        {
+            cars_allowed = "\n";
+            var num = carlist.size <= 5 ? carlist.size : 5;
+            for (var i = 0; i < num; i++)
+            {
+                var cg = main::menu::MCarGarage(carlist[i]);
+                var name = cg.short_name_no_year;
+                if (name == nil || name == "")
+                    name = carlist[i];
+                
+                cars_allowed += name;
+                if (i < num - 1)
+                    cars_allowed += "\n";
+            }
+
+            if (carlist.size > 5)
+                cars_allowed += "\n" + context.translate(ROOT, "and the others");
+        }
+
+        add_regulation_row(context, box, "CarsAllowed", cars_allowed, regulation.carlist != nil);
+
+        if (car_bspec)
+            add_license_row(context, box, "LicenseRequired", context.translate(ROOT, "NeedLicense_" + race.getNeedLicense()), license_violated);
+        else
+            add_regulation_row(context, box, "LicenseRequired", context.translate(ROOT, "NeedLicense_" + race.getNeedLicense()), license_violated);
+
+        box.adjustSize();
+        Pane::VBox::Regulation.updateGeometry();
+    }
+
+    function onFinalize(context)
+    {
+        Pane::VBox::Regulation::clip::space.clearChildren(context);
+        Pane::VBox::Regulation::clip::space.actor = nil;
+        event = nil;
+        violated = nil;
+        license_violated = nil;
+        can_bspec = nil;
+    }
+
+    function add_regulation_row(context, target, header_key, text, violated)
+    {
+        var header = Teplate::RegHeader.doCopy();
+        var desc = Template::RegDesc.doCopy();
+        header["text"] = context.translate(ROOT, header_key);
+        header["text"].adjustScale();
+
+        if (violated != nil && violated)
+        {
+            desc["text"].visible = false;
+            desc["textv"].visible = true;
+
+            var actor = main::menu::MFadeActor(desc["textv"], 1.0, 0.5);
+            actor.repeat = true;
+            actor.period = 0.1;
+            desc["textv"].actor = actor;
+            desc["textv"].text = text;
+        }
+        else
+        {
+            desc["text"].visible = true;
+            desc["textv"].visible = false;
+            desc["text"].text = text;
+        }
+
+        target.appendChild(context, header);
+        target.appendChild(context, desc);
+
+        return desc;
+    }
+
+    function add_license_row(context, target, header_key, text, violated)
+    {
+        var header = Teplate::RegHeader.doCopy();
+        var desc = Template::RegDescLicense.doCopy();
+        header["text"] = context.translate(ROOT, header_key);
+        header["text"].adjustScale();
+
+        if (violated != nil && violated && can_bspec == true)
+        {
+            desc["text"].visible = false;
+            desc["textv"].visible = true;
+
+            var actor = main::menu::MFadeActor(desc["textv"], 1.0, 0.5);
+            desc["textv"].text = text + "\n" + context.translate(ROOT, "you can run with BSpec only");
+        }
+        else
+        {
+            desc["text"].visible = true;
+            desc["textv"].visible = false;
+            desc["text"].text = text;
+        }
+
+        target.appendChild(context, header);
+        target.appendChild(context, desc);
+
+        return desc;
+    }
+
+    function open(context, eventinfo)
+    {
+        var event = eventinfo;
+        context.cursor_visible = false;
+        Pane.actor.destinationY = 480.0;
+        Pane.actor.out = true;
+        Pane.actor.warp();
+
+        ROOT.actor.out = true;
+        ROOT.actor.warp();
+
+        context.pushPage(ROOT);
+        ROOT.setFocus(Pane::Buttons::OK);
+
+        Pane.actor.out = false;
+        ROOT.actor.out = false;
+
+        context.sync(0.5);
+        context.cursor_visible = true;
+        context.getUpdateContext().enterEventLoop();
+        return result;
+    }
+
+    function close(context)
+    {
+        ROOT.setFocus(nil);
+        context.cursor_visible = false;
+
+        if (result)
+            Pane.actor.destinationY = -Pane.h;
+        else
+            Pane.actor.destinationY = 480.0;
+
+        Pane.actor.out = true;
+        ROOT.actor.out = true;
+        context.sync(0.2);
+        context.closePage(ROOT);
+        context.getUpdateContext().leaveEventLoop();
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        result = false;
+        close(context);
+        return STATE_YIELD;
+    }
+
+    function onKeyPress(context, event)
+    {
+        var box = Pane::VBox::Regulation::clip::space;
+        var range = box.h - Pane::VBox::Regulation::clip.h;
+        var y = box.actor.destinationY;
+        var step = 40.0;
+
+        switch (event.keysym)
+        {
+            case PS2_PAD_CTRL_L3_UP:
+                y += step;
+
+                if (y > 0.0)
+                    y = 0.0;
+
+                if (box.actor.destinationY != y)
+                {
+                    box.actor.destinationY = y;
+                    main::sound.play("cursor");
+                }
+
+                return STATE_YIELD;
+
+            case CELL_PAD_CTRL_L3_DOWN:
+                y -= step;
+
+                if (y < -range)
+                    y = -range;
+
+                if (box.actor.destinationY != y)
+                {
+                    box.actor.destinationY = y;
+                    main::sound.play("cursor");
+                }
+
+                return STATE_YIELD;
+        }
+
+        return STATE_EXIT;
+    }
+}
+
+module GTmodeProject::EventInfoDialog::Pane::Buttons::Cancel
+{
+    function onActivate(context)
+    {
+        main::sound.play("cancel");
+        result = false;
+        close(context);
+        return STATE_YIELD;
+    }
+}
+
+module GTmodeProject::EventInfoDialog::Pane::Buttons::OK
+{
+    function onActivate(context)
+    {
+        if (violated)
+        {
+            main::sound.play("disable");
+            openConfirmDialog(context, 2, context.translate(ROOT, "regulation violated"));
+            return STATE_YIELD;
+        }
+
+        if (can_bspec == false && license_violated)
+        {
+            main::sound.play("disable");
+            var code = extractSubRaceCode(event.race_code);
+            var race = main::menu::MRaceData(code[0]);
+            var message = context.translate(ROOT, "NeedLicense") + race.getNeedLicense();
+            openConfirmDialog(context, 2, context.translate(ROOT, message));
+            return STATE_YIELD;
+        }
+
+        main::sound.play("ok");
+        result = true;
+        close(context);
+        return STATE_YIELD;
+    }
+}
