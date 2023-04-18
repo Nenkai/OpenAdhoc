@@ -1,0 +1,202 @@
+
+
+
+
+
+
+
+
+
+
+
+module GTmodeProject::CarViewRoot
+{
+    static current_car;
+
+    function setMoveActor(widget, x)
+    {
+        var actor = main::menu::MMoveActor(widget, widget.x, x + widget.y);
+        widget.actor = actor;
+        widget.actor.ratio = 0.2;
+    }
+
+    TunerLogo.defineStatic("org_cx", TunerLogo.x + (TunerLogo.w / 2.0));
+    TunerLogo.defineStatic("org_cy", TunerLogo.y + (TunerLogo.h / 2.0));
+
+    setMoveActor(Pane, 0.0, 200.0);
+    Pane.actor.out = false;
+    Pane.actor.warp();
+
+    function onInitialize(context)
+    {
+        enterPage(context, ROOT, "Garage");
+
+        CarFace.action_type = "normal";
+        CarFace.quality_level = 1;
+        set_car(context);
+
+        var did = main::menu::MCarData::GetDescriptionID(current_car.getCarLabel());
+        if (description != nil)
+        {
+            var doc = description.get("%08d".format(did));
+            if (doc != nil)
+            {
+                ROOT["Common"]["ToolTip"]["tip"].value = doc;
+                ROOT["Common"]["ToolTip"]["tip"].lock = true;
+            }
+        }
+
+        current_car.updateCurrentStatus();
+        var label = current_car.getCarLabel();
+        var year = main::menu::MCarData::GetModelYear(label);
+        Pane::Info::Year::label.text = "%s : %d".format(context.translate(ROOT, "Year_format"), year);
+
+        var train = current_car.getDTrainType();
+        if (train == nil)
+            train = "--";
+
+        Pane::Info::DTrain::label.text = "%s : %s".format(context.translate(ROOT, "Type_format"), train);
+        Pane::Info::Power::label.text = "%s : %s".format(context.translate(ROOT, "Power_format"), current_car.getCurrentPs("%d%s/%s%s"));
+        Pane::Info::Power::label.text = "%s : %s".format(context.translate(ROOT, "Torque_format"), current_car.getCurrentTq("%.2t%s/%s%s"));
+        Pane::Info::Mileage::label.text = "%s : %s".format(context.translate(ROOT, "Mileage_format"), current_car.getOdometer("%.1t%s"));
+    }
+
+    function onFinalize(context)
+    {
+        ROOT["Common"]["ToolTip"]["tip"].lock = false;
+        current_car = nil;
+        leavePage(context, ROOT);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        start_page(context, GarageRoot);
+    }
+
+    function set_car(context)
+    {
+        CarFace.car_garage = current_car;
+        CarFace.syncLoading();
+        CarFace.setColorIndex(current_car.getColorIndex());
+
+        var label = CarFace.car_data.getCarLabel();
+        CarLogo.from_disk = true;
+        CarLogo.image_path = "piece/car_logo2/" + label + ".img";
+        CarLogo.doInitialize(context);
+
+        var tuner = main::menu::MCarData::GetTuner(current_car.car_code);
+        TunerLogo.from_disk = true;
+        TunerLogo.image_path = "piece/tuner_logo2/" + tuner + ".img";
+        TunerLogo.doInitialize(context);
+        TunerLogo.adjustSize();
+        TunerLogo.w *= 0.8;
+        TunerLogo.h *= 0.8;
+        TunerLogo.x = TunerLogo::org_cx - (TunerLogo.w / 2.0);
+        TunerLogo.y = TunerLogo::org_cy - (TunerLogo.h / 2.0);
+
+        ColName.text = current_car.getColorName();
+        CarFace::move_car();
+    }
+}
+
+module GTmodeProject::CarViewRoot::CarFace
+{
+    function move_car()
+    {
+        if (CarFace.car_model != nil)
+        {
+            CarFace.car_model.motion = 1;
+            CarFace.car_model.tx = 0.0;
+            CarFace.car_model.ry = 90.0;
+            CarFace.car_model.tz = 0.0;
+            CarFace.car_model.warp();;
+            CarFace.car_model.posInterpolateSpeed = 0.025;
+        }
+    }
+}
+
+module GTmodeProject::CarViewRoot::Pane::Change
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+
+        var maanger = nil;
+        while (1)
+        {
+            manager = checkGameData(context, 0, manager);
+            if (manager != nil)
+            {
+                var r = main::game.garage.pushRidingCar(manager);
+                if (r == "OK")
+                {
+                    var hasPrevCar = main::game.garage.hasRidingCar();
+                    var prevCar = main::menu::MCarGarage();
+
+                    if (hasPrevCar)
+                        prevCar.copyFrom(main::game.garage.riding_car);
+
+                    main::game.garage.setRidingCar(current_car.getGarageIndex(), current_car);
+                    if (doAutoSave(context, ROOT, nil, 0, 0))
+                    {
+                        refreshRideCar(ROOT, context);
+                        start_page(context, GarageRoot);
+                        break;
+                    }
+                    else
+                    {
+                        main::game.garage.cancelRidingCar(hasPrevCar ? prevCar.getGarageIndex() : -1, prevCar);
+                    }
+                }
+                else
+                {
+                    if (reportGameDataError(context, 0, 1, r))
+                        continue;
+
+                    openConfirmDialog(context, false, context.translate(ROOT, "cancel change car"));
+                }
+            }
+        }
+    }
+}
+
+module GTmodeProject::CarViewRoot::Pane::Assessment
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        Pane.actor.out = true;
+
+        var res = BuyCarDialog::open(context, current_car, 1, 0);
+        Pane.actor.out = false;
+
+        if (res)
+        {
+            var price = current_car.getUsedSellPrice();
+            res = nil;
+
+            if (price > 0)
+                res = openConfirmDialog(context, 1, context.translate(ROOT, "sell car ok?"));
+            else
+                res = openConfirmDialog(context, 1, context.translate(ROOT, "throw this car out ok?"));
+
+            if (res)
+            {
+                var idx = current_car.getGarageIndex();
+                var ride = main::game.garage.delCar(idx);
+                main::game.incMoney(price);
+                main::sound.play("buy");
+                CarFace.car_model.fadein = false;
+                refreshRideCar(ROOT, context);
+                refreshMoney(ROOT);
+
+                openConfirmDialog(context, 0, context.translate(ROOT, price > 0 ? "sell car" : "throw car"));
+                main::game.calendar.putSellCarEvent(current_car.car_code, current_car.getColorIndex(), price);
+                start_page(context, GarageRoot);
+            }
+        }
+
+        return STATE_YIELD;
+    }
+}
