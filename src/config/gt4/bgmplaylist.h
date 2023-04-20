@@ -24,7 +24,7 @@ function make_range(start, end)
         list.push(i);
     }
 
-    return i;
+    return list;
 }
 
 function make_range_not_repeat(list, start, end)
