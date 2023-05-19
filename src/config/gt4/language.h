@@ -16,8 +16,8 @@ function getUsingLanguage(index) // Picked by engine
 {
     if (UsingLanguages.size <= index)
         return "";
-
-    return UsingLanguages[index];
+    else
+        return UsingLanguages[index];
 }
 
 function setStaticLanguage()
