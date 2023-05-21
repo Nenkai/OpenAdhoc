@@ -76,6 +76,7 @@ Only `arcade` is currently available.
 * boot (Completed)
 * cursor (Completed)
 * gtmode (Completed)
+* option (Completed)
 </details>
 
 ### TT/GT Sport
