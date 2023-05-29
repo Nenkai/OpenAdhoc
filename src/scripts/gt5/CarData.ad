@@ -1,0 +1,760 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+#define CAR_TABLE_NAME = "t_car_data"
+
+module CarData
+{
+    static TABLE_VERSION = 1312;
+    
+    class Data
+    {
+        attribute car_code;
+        attribute is_standard;
+        attribute tuner_label;
+        attribute name_jp;
+        attribute name_en;
+        attribute dirt_ok;
+        attribute night_ok;
+        attribute pp;
+        attribute country;
+        attribute drive_train;
+        attribute year;
+        attribute power;
+        attribute power_rpm;
+        attribute mass;
+        attribute arcade;
+        attribute car_dealer;
+        attribute voucher;
+        attribute purchase_levle;
+        attribute kart;
+        attribute dlc;
+
+        method create(car_code, arcade, car_dealer, dlc)
+        {
+            if (car_code == gtengine::MSpecDB::NO_CODE64)
+                return false;
+
+            var cp = gtengine::MCarParameter(car_code);
+
+            cp.beginInfo();
+            var pp = cp.getPP1000();
+            var [cp_power, cp_power_rpm] = cp.getPower();
+            var cp_weight = cp.getWeight();
+            cp.endInfo();
+
+            var [has_premium, country, tuner_label, drive_train, year, power, 
+                 name_jp, name_en, power_rpm, mass, have_dirt_tire, is_voucher_car, purchase_level] 
+                 = gtengine::MSpecDB::getCarDataForGarage(car_code);
+
+            self.car_code = car_code;
+            self.is_standard = !has_premium;
+            self.tuner_label = tuner_label;
+            self.name_jp = name_jp;
+            self.name_en = name_en;
+            self.dirt_ok = have_dirt_tire;
+            self.night_ok = true;
+            self.pp = pp.toInt();
+            self.country = country;
+            self.drive_train = drive_train;
+            self.year = year;
+            self.power = cp_power.toInt();
+            self.power_rpm = cp_power_rpm;
+            self.mass = cp_weight;
+            self.arcade = arcade;
+            self.car_dealer = car_dealer;
+            self.voucher = is_voucher_car;
+            self.purchase_level = purchase_level;
+            self.kart = gtengine::MSpecDB::checkGenericFlag("is_racing_kart", car_code);
+            self.dlc = dlc;
+            return true;
+        }
+    }
+
+    function insertCarDataFromXML(xml_file_path)
+    {
+        var result = main::pdiapp::XmlUtil::loadCarMap("xml_file_path", "CarData", "car", "code");
+        var array = result.array;
+
+        SQLITE.begin();
+        foreach (var car_code in array)
+        {
+            var data = Data();
+            var map = result.map;
+            var arcade = map[car_code]["arcade"] != nil ? map[car_code]["arcade"].toBool() : false;
+            var car_dealer = map[car_code]["car_dealer"] != nil ? map[car_code]["car_dealer"].toBool() : false;
+            var dlc = map[car_code]["dlc"] != nil ? map[car_code]["dlc"].toBool() : false;
+            if (data.create(car_code, arcade, car_dealer))
+                DBUtil::insert("t_car_data", data);
+        }
+
+        SQLITE.commit();
+    }
+
+    function initialize()
+    {
+        var create_new_table = DBUtil::initializeTable(CAR_TABLE_NAME, TABLE_VERSION);
+        if (create_new_table)
+        {
+            var sql = "CREATE TABLE IF NOT EXISTS "
+                      CAR_TABLE_NAME
+                      " ("
+                      "id INTEGER NOT NULL PRIMARY KEY,"
+                      "car_code INTEGER NOT NULL, "
+                      "is_standard INTEGER NOT NULL, "
+                      "tuner_label TEXT NOT NULL, "
+                      "name_JP TEXT NOT NULL, "
+                      "name_EN TEXT NOT NULL, "
+                      "dirt_ok INTEGER NOT NULL, "
+                      "night_ok INTEGER NOT NULL, "
+                      "pp INTEGER NOT NULL, "
+                      "country TEXT NOT NULL, "
+                      "drive_train TEXT NOT NULL, "
+                      "year INTEGER NOT NULL, "
+                      "power INTEGER NOT NULL, "
+                      "power_rpm TEXT NOT NULL, "
+                      "mass INTEGER NOT NULL, "
+                      "arcade INTEGER NOT NULL, "
+                      "car_dealer INTEGER NOT NULL, "
+                      "voucher INTEGER NOT NULL, "
+                      "purchase_level INTEGER NOT NULL,"
+                      "kart INTEGER NOT NULL, "
+                      "dlc INTEGER NOT NULL "
+                      ")";
+
+            var res = SQLITE.execute0(sql);
+            DB_ASSERT(res == SQLITE_DONE, res);
+            insertCarDataFromXML("textdata/gt5/carlist.xml");
+        }
+
+        var res = SQLITE.executeQuery("SELECT COUNT (*) FROM " + CAR_TABLE_NAME + " WHERE id");
+        var row_size = res.size == 0 ? 0 : res[0][0];
+
+        if (row_size == 0)
+        {
+            insertCarDataFromXML("textdata/gt5/carlist.xml");
+
+            var res = SQLITE.executeQuery("SELECT COUNT (*) FROM " + CAR_TABLE_NAME + " WHERE id");
+            var row_size = res.size == 0 ? 0 : res[0][0];
+            DB_ASSERT(row_size > 0, 0);
+        }
+    }
+
+    function getCarList(is_standard, tuner_label, dirt_ok, night_ok)
+    {
+        var query = "SELECT car_code FROM %{CAR_TABLE_NAME}";
+        var conditions = [];
+
+        if (is_standard != nil)
+            conditions.push("is_standard='%s'".format(is_standard));
+
+        if (tuner_label != nil)
+            conditions.push("tuner_label='%s'".format(tuner_label));
+
+        if (dirt_ok != nil)
+            conditions.push("dirt_ok='%d'".format(dirt_ok.toInt()));
+
+        if (night_ok != nil)
+            conditions.push("night_ok='%d'".format(night_ok.toInt()));
+
+        if (conditions.size > 0)
+            query += " WHERE " + conditions.join(" AND ");
+
+        var rows = SQLITE.executeQuery(query);
+        var result = Array(rows.size);
+
+        for (var i = 0; i < rows.size; i++)
+            result[i] = rows[i][0];
+        
+        return result;
+    }
+
+    function getCarList2(select = "SELECT car_code", where = "", orderby = "")
+    {
+        var query = "%{select} FROM %{CAR_TABLE_NAME} ";
+        if (where != "")
+            query += where;
+
+        if (orderby != "")
+            query += " " + orderby;
+
+        return SQLITE.executeQuety(query);
+    }
+
+    function RandomPickup(limit, where = "")
+    {
+        if (limit == nil)
+            limit = 1;
+
+        var order_by = "ORDER BY RANDOM() LIMIT %{limit}";
+        var rows = getCarList2("SELECT car_code", where, order_by);
+        var result = Array(rows.size);
+        for (var i = 0; i < rows.Size; i++)
+            result[i] = rows[i][0];
+
+        return result;
+    }
+
+    function getTunerLabelList(is_standard, dirt_ok, night_ok)
+    {
+        var query = "SELECT DISTINCT tuner_label FROM %{CAR_TABLE_NAME}";
+        var conditions = [];
+
+        if (is_standard != nil)
+            conditions.push("is_standard='%s'".format(is_standard));
+
+        if (dirt_ok != nil)
+            conditions.push("dirt_ok='%d'".format(dirt_ok.toInt()));
+
+        if (night_ok != nil)
+            conditions.push("night_ok='%d'".format(night_ok.toInt()));
+
+        if (conditions.size > 0)
+            query += " WHERE " + conditions.join(" AND ");
+
+        var rows = SQLITE.executeQuery(query);
+        var result = Array(rows.size);
+
+        for (var i = 0; i < rows.size; i++)
+            result[i] = rows[i][0];
+        
+        return result;
+    }
+
+    function getCarDataImpl(where)
+    {
+        var query = DBUtil::getSelectQuery(CAR_TABLE_NAME, Data());
+        query += where;
+
+        var res = SQLITE.executeQuery(query);
+        var data_list = DBUtil::getDataList(Data, res);
+        if (data_list.size > 0)
+            return data_list[0];
+        else
+
+            return nil;
+    }
+
+    function getCarData(car_code)
+    {
+        return getCarDataImpl(" WHERE car_code='%d'".format(car_code));
+    }
+
+    class CarParameterProxy
+    {
+        attribute buf;
+        attribute car_code;
+        attribute country;
+        attribute year;
+        attribute power;
+        attribute power_rpm;
+        attribute mass;
+        attribute color;
+        attribute has_premium;
+        attribute short_name;
+        attribute tuner_label;
+        attribute drive_train;
+        attribute paint_color;
+        attribute pp;
+        attribute invalid;
+        
+        method __init__(car_code, country, year, power, power_rpm, mass, has_premium, short_name, tuner_label, drive_train, pp)
+        {
+            self.buf = buf;
+            self.car_code = car_code;
+            self.country = country;
+            self.year = year;
+            self.power = power;
+            self.power_rpm = power_rpm;
+            self.mass = mass;
+            self.color = main::gtengine::MSpecDB::getCarVariationFlag(car_code, 1);
+            self.has_premium = has_premium;
+            self.short_name = short_name;
+            self.tuner_label = tuner_label;
+            self.drive_train = drive_train;
+            self.paint_color = -1;
+            self.pp = pp;
+            self.invalid = false;
+        }
+
+        method getCP()
+        {
+            var cp = gtengine::MCarParameter(self.car_code);
+            cp.color = self.color;
+            return cp;
+        }
+
+        method getCT()
+        {
+            var cp = gtengine::MCarThin(self.car_code);
+            cp.color = self.color;
+            return cp;
+        }
+
+        method getYearString()
+        {
+            return self.year == 0 ? "---" : self.year.toString();
+        }
+
+        method getMassString()
+        {
+            var unit_mass = pdiext::MUnit::GetUnitOfMass();
+            return self.mass == 0 ? "---" : "%{self.mass} %{unit_mass}";
+        }
+
+        method getPowerString()
+        {
+            var unit_power = pdiext::MUnit::GetUnitOfPower();
+            if (self.power == 0)
+                return "---";
+            else 
+                return "%s %{unit_power}".format(pdiext::MUnit::GetPowerForDisplay(self.power));
+        }
+
+        method getPsRpmString()
+        {
+            if (self.power == 0 || self.power_rpm == "---")
+                return "---";
+            
+            var unit_power = pdiext::MUnit::GetUnitOfPower();
+            var power_str = "%s %{unit_power}".format(pdiext::MUnit::GetPowerForDisplay(self.power));
+
+            var unit_rpm = pdiext::MUnit::GetUnitOfRpm();
+            var power_rpm_str = "%{self.power_rpm}%{unit_rpm}";
+            return "%{power_str}/%{power_rpm_str}";
+        }
+    }
+
+    function getCarDataById(id)
+    {
+        return getCarDataImpl(" WHERE id=%{id}");
+    }
+
+    function createOrderBy(order, by, order_karts_last)
+    {
+        if (order == nil)
+            order = "name_EN";
+
+        if (by == nil)
+            by = "ASC";
+
+        if (order == "name_EN")
+        {
+            if (main::pdiext::MProductInformation::GetGameRegionCode() == "jp" && main::pdistd::MLocale::getLanguage() == "JP")
+                order = "name_JP";
+        }
+
+        var by2 = by;
+        if (order == "power" || order == "mass" || order == "year" || order == "pp" || order == "riding_order")
+        {
+            if (by == "ASC")
+                by2 = "DESC";
+            else if (by == "DESC")
+                by2 = "ASC";
+        }
+
+        var order_by_kart = "";
+        if(order_karts_last)
+            order_by_kart = "kart ASC,";
+
+        order_by_kart = "ORDER BY";
+
+        return "ORDER BY %{order_by_kart} %{order} %{by2}, year ASC, id %{by_id}";
+    }
+
+    function createWhere(is_standard, country, tuner_label, drive_train, additional_conditions)
+    {
+        var conditions = [];
+        var params = [];
+
+        if (is_standard != nil)
+        {
+            conditions.push("is_standard = ?");
+            params.push(is_standard);
+        }
+
+        if (country != nil)
+        {
+            conditions.push("country = ?");
+            params.push(country);
+        }
+
+        if (tuner_label != nil)
+        {
+            conditions.push("tuner_label = ?");
+            params.push(tuner_label);
+        }
+
+        if (drive_train != nil)
+        {
+            conditions.push("drive_train = ?");
+            params.push(drive_train);
+        }
+
+        var where = "";
+
+        if (conditions.size > 0)
+            query += "WHERE %s".format(conditions.join(" AND "));
+
+        return [where, params];
+    }
+
+    function getCarCodeListImpl(is_standard, country, tuner_label, drive_train, order, by, additional_conditions, cpp_only)
+    {
+        var [where, params] = createWhere(is_standard, country, tuner_label, drive_train, additional_conditions);
+        var order_by = createOrderBy(order, by);
+        var sql = "SELECT car_code FROM %s %s %s".format(CAR_TABLE_NAME, where, order_by);
+        var res = SQLITE.executeQuery(sql, params);
+        var cp_list = [];
+
+        foreach (var row in res)
+        {
+            var [car_code] = row;
+            cp_list.push(car_code);
+        }
+
+        return cp_list;
+    }
+
+    function getCPPListImpl(is_standard, country, tuner_label, drive_train, order, by, additional_conditions, order_karts_last)
+    {
+        var [where, params] = createWhere(is_standard, country, tuner_label, drive_train, additional_conditions);
+        var order_by = createOrderBy(order, by, order_karts_last);
+        var name = (main::pdiext::MProductInformation::GetGameRegionCode() == "jp" && main::pdistd::MLocale::getLanguage() == "JP") ? "name_jp" : "name_en";
+        var sql = "SELECT id, car_code, country, year, power, power_rpm, mass, is_standard, tuner_label, drive_train, %{name}, pp FROM %s %s %s %s"
+                  .format(CAR_TABLE_NAME, where, order_by);
+
+        var res = SQLITE.execute(sql, params);
+        var cp_list = [];
+
+        foreach (var row in res)
+        {
+            var [id, car_code, country, year, power, power_rpm, mass, is_standard, tuner_label, drive_train, short_name, pp] = row;
+            var has_premium = is_standard == 0;
+            cp_list.push(CarParameterProxy(car_code, country, year, power, power_rpm, mass, has_premium, short_name, tuner_label, drive_train, pp));
+        }
+
+        return cp_list;
+    }
+
+    function getCarListImpl(is_standard, country, tuner_label, drive_train, order, by, additional_conditions)
+    {
+        var [where, params] = createWhere(is_standard, country, tuner_label, drive_train, additional_conditions);
+        var order_by = createOrderBy(order, by, order_karts_last);
+        var name = (main::pdiext::MProductInformation::GetGameRegionCode() == "jp" && main::pdistd::MLocale::getLanguage() == "JP") ? "name_jp" : "name_en";
+        var sql = "SELECT id, car_code, country, year, power, power_rpm, mass, is_standard, tuner_label, drive_train, %{name}, pp FROM %s %s %s %s"
+                  .format(CAR_TABLE_NAME, where, order_by);
+
+        var res = SQLITE.execute(sql, params);
+        var cp_list = [];
+
+        foreach (var row in res)
+        {
+            var [id, car_code, country, year, power, power_rpm, mass, is_standard, tuner_label, drive_train, short_name, pp] = row;
+            var has_premium = is_standard == 0;
+            cp_list.push(CarParameterProxy(car_code, country, year, power, power_rpm, mass, has_premium, short_name, tuner_label, drive_train, pp));
+        }
+
+        return cp_list;
+    }
+
+    function getCountryListImpl(is_standard, additional_conditions)
+    {
+        var conditions = [];
+        var params = [];
+
+        if (is_standard != nil)
+        {
+            conditions.push("is_standard = ?");
+            params.push(is_standard);
+        }
+        var where = "";
+        if (conditions.size > 0)
+            query += "WHERE %s".format(conditions.join(" AND "));
+
+        var where = "SELECT DISTINCT country FROM %s %s".format(CAR_TABLE_NAME, where);
+        sql += " ORDER BY country";
+
+        var res = SQLITE.execute(sql, [is_standard]);
+        var list = [];
+
+        foreach (var row in res)
+            list.push(row[0]);
+
+        return list;
+    }
+
+    function getTunerListImpl(is_standard, country, additional_conditions)
+    {
+        var conditions = [];
+        var params = [];
+
+        if (is_standard != nil)
+        {
+            conditions.push("is_standard = ?");
+            params.push(is_standard);
+        }
+
+        if (country != nil)
+        {
+            conditions.push("country = ?");
+            params.push(country);
+        }
+
+        if (additional_conditions != nil)
+            conditions.push(additional_conditions.join(" AND "));
+
+        var where = "";
+        if (conditions.size > 0)
+            query += "WHERE %s".format(conditions.join(" AND "));
+
+
+        var sql = "SELECT DISTINCT tuner_label FROM %s %s".format(CAR_TABLE_NAME, where);
+        sql += " ORDER BY tuner_label";
+        var res = SQLITE.executeQuery(sql, params);
+        var list = [];
+
+        foreach (var row in res)
+            list.push(row[0]);
+
+        return list;
+    }
+
+    function getDriveTrainListImpl(is_standard, country, tuner_label, additional_conditions)
+    {
+        var conditions = [];
+        var params = [];
+
+        if (is_standard != nil)
+        {
+            conditions.push("is_standard = ?");
+            params.push(is_standard);
+        }
+
+        if (country != nil)
+        {
+            conditions.push("country = ?");
+            params.push(country);
+        }
+
+        if (tuner_label != nil)
+        {
+            conditions.push("tuner_label = ?");
+            params.push(tuner_label);
+        }
+        
+        if (additional_conditions != nil)
+            conditions.push(additional_conditions.join(" AND "));
+
+        var where = "";
+        if (conditions.size > 0)
+            query += "WHERE %s".format(conditions.join(" AND "));
+
+
+        var sql = "SELECT DISTINCT drive_train FROM %s %s".format(CAR_TABLE_NAME, where);
+        sql += " ORDER BY tuner_label";
+        var res = SQLITE.executeQuery(sql, params);
+        var list = [];
+
+        foreach (var row in res)
+            list.push(row[0]);
+
+        return list;
+    }
+
+    module Premium
+    {
+        function getCarList(country, tuner_label, drive_train, order, by, additional_conditions)
+        {
+            return getCarListImpl(0, country, tuner_label, drive_train, order, by, additional_conditions);
+        }
+
+        function getCountryList(additional_conditions)
+        {
+            return getCountryListImpl(0, additional_conditions);
+        }
+
+        function getTunerList(country, additional_conditions)
+        {
+            return getTunerLabelList(0, country, additional_conditions);
+        }
+
+        function getDriveTrainList(country, tuner_label, additional_conditions)
+        {
+            return getDriveTrainListImpl(0, country, additional_conditions);
+        }
+    }
+
+    module Standard
+    {
+        function getCarList(country, tuner_label, drive_train, order, by, additional_conditions)
+        {
+            return getCarListImpl(1, country, tuner_label, drive_train, order, by, additional_conditions);
+        }
+    
+        function getCountryList(additional_conditions)
+        {
+            return getCountryListImpl(1, additional_conditions);
+        }
+    
+        function getTunerList(country, additional_conditions)
+        {
+            return getTunerLabelList(1, country, additional_conditions);
+        }
+    
+        function getDriveTrainList(country, tuner_label, additional_conditions)
+        {
+            return getDriveTrainListImpl(1, country, additional_conditions);
+        }
+    }
+
+    module Online
+    {
+        function getCarList(country, tuner_label, drive_train, order, by, additional_conditions)
+        {
+            if (additional_conditions == nil)
+                additional_conditions = [];
+
+            additional_conditions += ["arcade = 1"];
+            return getCarListImpl(0, country, tuner_label, drive_train, order, by, additional_conditions);
+        }
+
+        function getCountryList(additional_conditions)
+        {
+            if (additional_conditions == nil)
+                additional_conditions = [];
+
+            additional_conditions += ["arcade = 1"];
+            return getCountryListImpl(0, additional_conditions);
+        }
+
+        function getTunerList(country, additional_conditions)
+        {
+            if (additional_conditions == nil)
+                additional_conditions = [];
+
+            additional_conditions += ["arcade = 1"];
+            return getCountryListImpl(0, country, additional_conditions);
+        }
+
+        function getDriveTrainList(country, tuner_label, additional_conditions)
+        {
+            if (additional_conditions == nil)
+                additional_conditions = [];
+
+            additional_conditions += ["arcade = 1"];
+            return getDriveTrainListImpl(0, country, tuner_label, additional_conditions);
+        }
+    }
+
+    module ArcadeModeGT5
+    {
+        function getCarList(additional_conditions)
+        {
+            if (additional_conditions == nil)
+                additional_conditions = [];
+
+            additional_conditions += ["arcade = 1"];
+            return getCPPListImpl(nil, nil, nil, nil, "pp", "ASC", additional_conditions, true);
+        }
+    }
+
+    module CarDealerGT5
+    {
+        function getTunerList(additional_conditions)
+        {
+            if (additional_conditions == nil)
+                additional_conditions = [];
+
+            additional_conditions += ["car_dealer = 1"];
+            return getCarListImpl(nil, nil, additional_conditions);
+        }
+
+        function getCarList(tuner_label, additional_conditions)
+        {
+            if (additional_conditions == nil)
+                additional_conditions = [];
+
+            additional_conditions += ["car_dealer = 1"];
+            return getCPPListImpl(nil, nil, tuner_label, nil, "purchase_level", "ASC", additional_conditions);
+        }
+
+        function getCarCount(tuner_label, purchase_level, ignore_list)
+        {
+            var conditions = ["car_dealer = 1"];
+            var params = [];
+
+            if (tuner_label != nil)
+            {
+                conditions.push("tuner_label = ?");
+                params.push(tuner_label);
+            }
+
+            if (purchase_level != nil)
+            {
+                conditions.push("purchase_level <= ?>");
+                params.push(purchase_level);
+            }
+
+            foreach (var car_code in ignore_list)
+            {
+                conditions.push("car_code <> ?");
+                params.push(car_code);
+            }
+
+            var where = "";
+            if (conditions.size > 0)
+                where = "WHERE %s".format(conditions.join(" AND "));
+
+            var sqlite = GlobalStatus::getSqlite();
+            var sql = "SELECT COUNT (*) FROM %s %s".format(CAR_TABLE_NAME, where);
+            var res = SQLITE.executeQuery(sql, params);
+            if (res.size == 0)
+                return 0;
+
+            var row = res[0];
+            if (row.size == 0)
+                return 0;
+
+            return res[0][0];
+        }
+    }
+
+    module KioskGT5
+    {
+        method getPlayerCarList(is_standard, tuner_label, order, by, additional_conditions)
+        {
+            return getCarCodeListImpl(is_standard, nil, tuner_label, order, by, additional_conditions);
+        }
+
+        method getEnemyCarList(is_standard, tuner_label, order, by, additional_conditions)
+        {
+            if (additional_conditions == nil)
+                additional_conditions = [];
+
+            var exclude_cars = ["f10_10", "f2007_07", "f2007_07_std"];
+            foreach (var car_label in exclude_cars)
+            {
+                var car_code = gtengine::MSpecDB::getCarCode(car_label);
+                additional_conditions += ["car_code <> %{car_code}"];
+            }
+
+            return getCarCodeListImpl(is_standard, nil, tuner_label, nil, order, by, additional_conditions);
+        }
+
+        method getDemoCarList(is_standard, tuner_label, order, by, additional_conditions)
+        {
+            return getCarCodeListImpl(is_standard, nil, tuner_label, order, by, additional_conditions);
+        }
+    }
+}
