@@ -1,0 +1,830 @@
+
+
+//---------------------------------------------------------------------------------------
+// RankingUtil.ad
+//
+// Utility module for 
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module RankingUtil
+{
+    class RankingBoardCache
+    {
+        attribute page_array;
+        attribute page_map;
+        attribute page_size;
+        attribute page_capacity;
+        attribute expire_sec;
+        attribute entry_count;
+        attribute entry_count_time;
+
+        method __init__()
+        {
+            self.page_array = [];
+            self.page_map = [:];
+            self.page_size = 100;
+            self.page_capacity = 10;
+            self.expire_sec = 60;
+            self.entry_count = nil;
+            self.entry_count_time = nil;
+        }
+
+        method clear()
+        {
+            self.page_array = [];
+            self.page_map = [:];
+            self.entry_count = nil;
+            self.entry_count_time = nil;
+        }
+
+        method getPageSize()
+        {
+            return self.page_size;
+        }
+
+        method getPageEntryRange(page_index)
+        {
+            var begin = page_index * self.page_size;
+            return [begin, (begin + self.page_size) - 1];
+        }
+
+        method get_page_list(begin, end)
+        {
+            var begin_page = begin / self.page_size;
+            var end_page = end / self.page_size;
+            var list = [];
+
+            for (var i = begin_page; i <= end_page; i++)
+                list.push(i);
+
+            return list;
+        }
+
+        method get_cached_page_list(begin, end)
+        {
+            checkExpire();
+
+            var page_list = get_page_list(begin, end);
+            var result = [];
+
+            foreach (var i in page_list)
+            {
+                if (self.page_map[i] != nil)
+                    result.push(i);
+            }
+            
+            return result;
+        }
+
+        method getCachedEntry(target_array, target_write_index, begin, end)
+        {
+            var missed_page_list = [];
+            var page_list = get_page_list(begin, end);
+
+            foreach (var page_index in page_list)
+            {
+                if (self.page_map[page_index] == nil)
+                {
+                    missed_page_list.push(page_index);
+                    continue;
+                }
+                
+                var a = page_index * self.page_size;
+                var b = (a + self.page_size) - 1;
+
+                var entry_index_begin = a < begin ? begin : a;
+                var entry_index_end = b > end ? end : b;
+
+                var src_index_begin = entry_index_begin - a;
+                var src_index_end = (src_index_begin + entry_index_end) - entry_index_begin;
+
+                var page_entry = self.page_map[page_index];
+                var page_data = page_entry[2];
+
+                if (src_index_end >= page_data.size)
+                    src_index_end = page_data.size - 1;
+
+                var target_index_begin = (entry_index_begin - begin) + target_write_index;
+                var target_index_end = (entry_index_end - begin) + target_write_index;
+
+                var n = (src_index_end - src_index_begin) + 1;
+                for (var i = 0; i < n; i++)
+                {
+                    var t = page_data[src_index_begin + i];
+                    target_array[target_index_begin + i] = t;
+                }
+            }
+
+            return missed_page_list;
+        }
+
+        method checkExpire()
+        {
+            var t = pdistd::MTime::getCurrentTime().getBySecond() - self.expire_sec;
+            foreach (var page_entry in self.page_array)
+            {
+                if (page_entry[1] < t)
+                {
+                    var page_index = page_entry[0];
+                    self.erasePage(page_index);
+                }
+            }
+        }
+
+        method erasePage(page_index)
+        {
+            var page_entry = self.page_map[page_index];
+            if (page_entry != nil)
+            {
+                self.page_map.erase(page_index);
+                self.page_array.erase(self.page_array.indexOf(page_entry));
+            }
+        }
+
+        method findPage(page_index)
+        {
+            checkExpire();
+            return self.page_map[page_index];
+        }
+
+        method allocatePage(page_index)
+        {
+            checkExpire();
+
+            var page_entry = self.page_map[page_index];
+            if (page_entry != nil)
+                return page_entry[2];
+
+            while (self.page_array.size >= self.page_capacity)
+            {
+                var old_page_entry = self.page_array[0];
+                var old_page_index = old_page_entry[0];
+                erasePage(old_page_index);
+            }
+
+            var time = pdistd::MTime::getCurrentTime().getBySecond();
+
+            var page_entry = Array(3);
+            page_entry[0] = page_index;
+            page_entry[1] = time;
+            page_entry[2] = Array(self.page_size);
+
+            self.page_array.push(page_entry);
+            self.page_map[page_index] = page_entry;
+            return page_entry[2];
+        }
+
+        method getEntryCount()
+        {
+            var t = pdistd::MTime::getCurrentTime().getBySecond() - self.expire_sec;
+
+            if (self.entry_count_time == nil || self.entry_count_time < t)
+                self.entry_count = nil;
+            return self.entry_count;
+        }
+
+        method setEntryCount(count)
+        {
+            self.entry_count = count;
+            self.entry_count_time = pdistd::MTime::getCurrentTime().getBySecond();
+        }
+    }
+
+    static gBoardCacheExpireSec = 300;
+    static gBoardCacheCountLimit = 2;
+    static gRankingCache = Map();
+
+    function get_ranking_cache()
+    {
+        return gRankingCache;
+    }
+
+    function get_cache_key(board_id, is_friend)
+    {
+        return (board_id.toLong() << 1) | (is_friend ? 1L : 0L);
+    }
+
+    function decode_cache_key(key)
+    {
+        return [key >> 1, key & 1]; // ID, Friend
+    }
+
+    function update_cache(board_id, is_friend)
+    {
+        check_cache_expire(board_id, is_friend);
+        check_cache_capacity(gBoardCacheCountLimit);
+    }
+
+    function check_cache_capacity(max_boards)
+    {
+        var cache = get_ranking_cache();
+        if (cache.size <= max_boards)
+            return;
+
+        var all_board = [];
+        foreach (var pair in cache)
+            all_board.push(pair);
+
+        all_board.sort( (a, b) => a[1]['time'] < b[1]['time'] );
+
+        var n = cache.size - max_boards;
+        if (n > all_board.size)
+            n = all_board.size;
+
+        for (var i = 0; i < n; i++)
+        {
+            var key = all_board[i][0];
+            cache.erase(key);
+        }
+    }
+
+    function check_cache_expire(board_id, is_friend)
+    {
+        var cache = get_ranking_cache();
+        var key = get_cache_key(board_id, is_friend);
+
+        var expire_sec = gBoardCacheExpireSec;
+        var time = pdistd::MTime::getCurrentTime().getBySecond() - expire_sec;
+
+        var board = cache[key];
+        if (board != nil && board['time'] < time)
+            cache.erase(key);
+    }
+
+    function allocate_board_cache(board_id, is_friend)
+    {
+        var cache = get_ranking_cache();
+        var key = get_cache_key(board_id, is_friend);
+        var board_cache = cache[key];
+
+        if (board_cache == nil)
+        {
+            board_cache = [
+                'time' : pdistd::MTime::getCurrentTime().getBySecond(),
+                'board' : RankingBoardCache(),
+            ];
+
+            cache[key] = board_cache;
+        }
+
+        return board_cache;
+    }
+
+    function get_ranking_entry_map(e, rank)
+    {
+        var map = [:];
+        map['board_id'] = e["board_id"];
+        map['user_id'] = e["user_id"];
+        map['score'] = e["score"];
+        map['stats'] = e["stats"];
+        map['create_time'] = e["create_time"];
+        map['replay_id'] = e["replay_id"];
+        map['replay_mark_id'] = e["replay_mark_id"];
+        map['comment'] = e["comment"];
+        map['rank'] = rank;
+        map['nickname'] = e["nickname"];
+
+        return map;
+    }
+
+    function get_ranking_list_from_grim2_ranking(request)
+    {
+        var ranking_list = Ranking2.decodeRankingList(request);
+        if (ranking_list == nil)
+            return nil;
+
+        var list = [];
+        var rank = 1;
+
+        foreach (var e in ranking_list)
+        {
+            list.push(get_ranking_entry_map(e, rank));
+            rank++;
+        }
+
+        return list;
+    }
+
+    function getArcadeRankingBoardID(course, car, drift, sim, area)
+    {
+        return main::OnlineRanking::getArcadeRankingBoardID(course, car, drift, sim, area);
+    }
+
+    function clearCallback()
+    {
+        Ranking2.clearCallback();
+    }
+
+    function clearRankingCache()
+    {
+        clearFriendListCache();
+        gRankingCache = Map();
+    }
+
+    function clearRankingCacheOnCondition(condition_func)
+    {
+        clearFriendListCache();
+        var cache = get_ranking_cache();
+        if (cache == nil)
+            return;
+
+        foreach (var pair in cache)
+        {
+            var key = pair[0];
+            var [board_id, is_friend] = decode_cache_key(key);
+            var do_erase = condition_func(board_id, is_friend);
+            if (do_erase)
+                cache.erase(key);
+        }
+    }
+
+    function invalidateRankingCache(board_id)
+    {
+        var cache = get_ranking_cache();
+        if (cache == nil)
+            return;
+
+        cache.erase(get_cache_key(board_id, false));
+        cache.erase(get_cache_key(board_id, true));
+    }
+
+    function getUserRankingUncached(context, board_id, user_id)
+    {
+        var board_id = board_id.toLong();
+        var request = Ranking2.requestCalc2Ranking(board_id, user_id, (args) => {});
+
+        var e;
+        if (Grim2Util::join(context, request))
+        {
+            e = Ranking2.decodeRanking(request);
+        }
+
+        if (e == nil)
+        {
+            var emptydat = [:];
+            return emptydat;
+        }
+
+        var rank = e["rank"];
+        return get_ranking_entry_map(e, rank);
+    }
+
+    function getMyRankingUncached(context, board_id)
+    {
+        var user_id = main::PDINetwork.getClientName();
+        return getUserRankingUncached(context, board_id, user_id);
+    }
+
+    function getMyRanking(context, board_id, only_use_cache)
+    {
+        var emptydat = [:];
+        var cache = get_ranking_cache();
+        if (cache == nil)
+        {
+            if (only_use_cache != nil)
+                return emptydat;
+            else
+                return getMyRankingUncached(context, board_id);
+        }
+
+        update_cache(board_id, false);
+        var board_cache = allocate_board_cache(board_id, false);
+
+        if (board_cache['myrank'] == nil)
+        {
+            if (only_use_cache != nil)
+                return emptydat;
+            
+            var myrank = getMyRankingUncached(context, board_id);
+            board_cache['myrank'] = myrank;
+        }
+
+        return board_cache['myrank'];
+    }
+
+    function getRankingCount(context, board_id)
+    {
+        var board_id = board_id.toLong();
+        var cache = get_ranking_cache();
+
+        if (cache == nil)
+        {
+            var count = 0;
+            var request = Ranking2.requestRankingCount(board_id, (args) => {});
+
+            if (Grim2Util::__deprecated__join__(context, request)) // was "reqeust"
+                count = Ranking2.decodeResult(request);
+            return count;
+        }
+
+        update_cache(board_id, false);
+        var board_cache = allocate_board_cache(board_id, false);
+        var board = board_cache['board'];
+
+        var count = board.getEntryCount();
+        if (count != nil)
+            return count;
+
+        var request = Ranking2.requestRankingCount(board_id, (args) => {});
+        if (Grim2Util::__deprecated__join__(context, request))
+            count = Ranking2.decodeResult(request);
+
+        if (count != nil)
+        {
+            board.setEntryCount(count);
+            return count;
+        }
+        else
+            return 0;
+    }
+
+    function getRankingListByRangeUncached(context, board_id, begin, end)
+    {
+        var board_id = board_id.toLong();
+        var request = Ranking2.requestRankingList(board_id, begin, end, args => {});
+
+        var list;
+        if (Grim2Util::__deprecated__join__(context, request))
+            list = Ranking2.decodeRankingList(request);
+
+        if (list == nil)
+            return nil;
+
+        var result = [];
+        var rank = begin;
+        foreach (var e in list)
+        {
+            result.push(get_ranking_entry_map(e, rank));
+            rank++;
+        }
+
+        return result;
+    }
+    
+    function getRankingListByRange(context, board_id, begin, end, only_use_cache)
+    {
+        var cache = get_ranking_cache();
+        if (cache == nil)
+        {
+            if (only_use_cache != nil)
+                return [];
+            
+            return getRankingListByRangeUncached(context, board_id, begin, end);
+        }
+
+        update_cache(board_id, false);
+        var board_cache = allocate_board_cache(board_id, false);
+        var board = board_cache['board'];
+
+        var board_entry_count = getRankingCount(context, board_id);
+        if (board_entry_count <= 0)
+            return [];
+
+        if (end >= board_entry_count)
+            end = board_entry_count;
+
+        var result = Array((end - begin) + 1);
+        var missed_page_list = board.getCachedEntry(result, 0, begin - 1, end - 1);
+        foreach (var page_index in missed_page_list)
+        {
+            var page_entry = board.allocatePage(page_index);
+            if (page_entry != nil)
+            {
+                var [index_begin, index_end] = board.getPageEntryRange(page_index);
+                var list = getRankingListByRangeUncached(context, board_id, index_begin + 1, index_end + 1);
+
+                if (list != nil)
+                {
+                    for (var i = 0; i < list.size; i++)
+                    {
+                        var entry = list[i];
+                        page_entry[i] = entry;
+                        
+                        var j = (index_begin + i) + 1;
+                        if (j >= begin && j <= end)
+                            result[j - begin] = entry;
+                    }
+                }
+                else
+                    ;
+            }
+        }
+        
+        return result;
+    }
+
+    ////////////////////////////////
+    // Friend related functions
+    ////////////////////////////////
+    static gFriendListCache = nil;
+    static gFriendListCacheExpireTime = 0L;
+
+    function get_friend_list_cache()
+    {
+        if (pdistd::MTime::getCurrentTime().getBySecond() < gFriendListCacheExpireTime)
+            return gFriendListCache.split(",");
+        return nil;
+    }
+
+    function register_friend_list_cache(list)
+    {
+        gFriendListCacheExpireTime = pdistd::MTime::getCurrentTime().getBySecond() + 300; // 5 minutes
+        gFriendListCache = list.join(",");
+    }
+
+    function clearFriendListCache()
+    {
+        gFriendListCacheExpireTime = 0L;
+        gFriendListCache = nil;
+    }
+
+    class Future
+    {
+        attribute is_done;
+        attribute result;
+
+        method __init__()
+        {
+            self.is_done = false;
+        }
+
+        method isDone()
+        {
+            return is_done;
+        }
+
+        method wait(context, timeout_msec)
+        {
+            if (timeout_msec == nil)
+                timeout_msec = 300 * 1000; // 5 minutes
+
+            var usec1 = pdistd::GetSystemTimeMicroSecond() + (timeout_msec * 1000);
+            while (!self.is_done)
+            {
+                if (pdistd::GetSystemTimeMicroSecond() >= usec1)
+                    break;
+                Thread::Sleep(0.1f);
+            }
+
+            return self.is_done;
+        }
+
+        method done()
+        {
+            self.is_done = true;
+        }
+    }
+
+    function getFriendList(context, include_me)
+    {
+        var future_result = getFriendListAsync(context, include_me, nil);
+        if (future_result != nil)
+        {
+            future_result.wait(context, 10 * 1000);
+            if (future_result.isDone())
+                return future_result.result;
+
+            return nil;
+        }
+        return nil;
+    }
+
+    function getFriendListAsync(context, include_me, callback)
+    {
+        var extract_friend_list = (friend_list, include_me) => 
+        {
+            if (include_me)
+                return friend_list;
+
+            var list = [];
+            var me = Grim2.getLoginUserId();
+
+            foreach (var u in friend_list)
+            {
+                if (u != me)
+                    list.push(u);
+            }
+
+            return list;
+        };
+
+        var result_common = function(context, future_result, all_friend_list, include_me, callback)
+        {
+            var friend_list = extract_friend_list(all_friend_list, include_me);
+            future_result.result = friend_list;
+
+            if (callback != nil)
+                callback(context, future_result, friend_list);
+            future_result.done();
+        };
+
+        var future_result = Future();
+        var cached_friend_list = get_friend_list_cache();
+        if (cached_friend_list != nil)
+        {
+            result_common(context, future_result, cached_friend_list, include_me, callback);
+            return future_result;
+        }
+
+        var order = "A";
+        UserProfile2.requestSimpleFriendList(order, (args) => 
+        {
+            var [context, request] = args;
+            if (request.isError())
+            {
+                future_result.result = nil;
+                if (callback != nil)
+                    callback(context, future_result, nil);
+                future_result.done();
+                return;
+            }
+
+            if (!request.isDone())
+                return;
+
+            var user_profile_list = UserProfile2.decodeUserProfileSimpleList(request);
+            var all_friend_list = [];
+            foreach (var u in user_profile_list)
+                all_friend_list.push(u["user_id"]);
+
+            register_friend_list_cache(all_friend_list);
+            result_common(context, future_result, all_friend_list, include_me, callback);
+        });
+
+        return future_result;
+    }
+
+    function getFriendRankingListUncached(context, board_id)
+    {
+        var future_result = getFriendRankingListUncachedAsync(context, board_id, nil);
+        if (future_result != nil)
+        {
+            future_result.wait(context, 10 * 1000);
+            if (future_result.isDone())
+                return future_result.result;
+            return nil;
+        }
+
+        return nil;
+    }
+
+    function getFriendRankingListUncachedAsync(context, board_id, callback)
+    {
+        var future_result = Future();
+        var on_friend_ranking_list_got = (args) => 
+        {
+            var [context, request] = args;
+            if (request.isError())
+            {
+                future_result.result = nil;
+                future_result.done();
+                return;
+            }
+
+            if (!request.isDone())
+                return;
+
+            var list = get_ranking_list_from_grim2_ranking(request);
+            future_result.result = list;
+
+            if (callback != nil)
+                callback(context, future_result, list);
+            future_result.done();
+        };
+
+        Ranking2.requestFriendRankingList2(board_id, on_friend_ranking_list_got);
+        return future_result;
+    }
+
+    function cache_friend_ranking_list_async(context, board_id, callback)
+    {
+        var cache = get_ranking_cache();
+        if (cache == nil)
+            return nil;
+
+        update_cache(board_id, true);
+        var board_cache = allocate_board_cache(board_id, true);
+        var board = board_cache['board'];
+        var count = board.getEntryCount();
+
+        if (count == nil)
+        {
+            var on_friend_ranking_list_got = (args) => 
+            {
+                var [context, request] = args;
+                if (request.isError())
+                    return;
+
+                if (!request.isDone())
+                    return;
+
+                var list = get_ranking_list_from_grim2_ranking(request);
+                if (list == nil)
+                    return;
+
+                board.setEntryCount(list.size);
+                if (list.size > 0)
+                {
+                    var page_list = board.get_page_list(0, list.size - 1);
+                    foreach (var page_index in page_list)
+                    {
+                        var page_entry = board.allocatePage(page_index);
+                        if (page_entry != nil)
+                        {
+                            var [index_begin, index_end] = board.getPageEntryRange(page_index);
+                            var end = index_end + 1;
+                            if (end > list.size)
+                                end = list.size;
+
+                            var n = end - index_begin;
+                            for (var i = 0; i < n; i++)
+                                page_entry[i] = list[index_begin + i];
+                        }
+                    }                
+                }
+
+                if (callback != nil)
+                    callback(context, board);
+            };
+
+            Ranking2.requestFriendRankingList2(board_id, on_friend_ranking_list_got);
+        }
+        else
+        {
+            if (callback != nil)
+                callback(context, board);
+        }
+    }
+
+    function getFriendRankingCount(context, board_id)
+    {
+        var future_result = getFriendRankingListAsync(context, board_id, nil);
+        if (future_result != nil)
+        {
+            future_result.wait(context, 10 * 1000);
+            if (future_result.isDone())
+                return future_result.result.count;
+
+            return nil;
+        }
+
+        return nil;
+    }
+
+    function getFriendRankingList(context, board_id)
+    {
+        var future_result = getFriendRankingListAsync(context, board_id, nil);
+        if (future_result != nil)
+        {
+            future_result.wait(context, 10 * 1000);
+            if (future_result.isDone())
+                return future_result.result;
+
+            return nil;
+        }
+
+        return nil;
+    }
+
+    function getFriendRankingListAsync(context, board_id, callback)
+    {
+        var future_result = Future()
+        var cache = get_ranking_cache();
+
+        if (cache == nil)
+        {
+            getFriendRankingListUncachedAsync(context, board_id, (context, _future_result, list) => 
+            {
+                future_result.result = list;
+                if (callback != nil)
+                    callback(context, future_result, list);
+                future_result.done();
+            });
+        }
+        else
+        {
+            cache_friend_ranking_list_async(context, board_id, (context, board) => 
+            {
+                var count = board.getEntryCount();
+                if (count == nil)
+                    count = 0;
+
+                var list = Array(count);
+                if (count > 0)
+                    board.getCachedEntry(list, 0, 0, count - 1);
+
+                future_result.result = list;
+                if (callback != nil)
+                    callback(context, future_result, list);
+                future_result.done();
+            });
+        }
+
+        return future_result;
+    }
+}

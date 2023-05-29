@@ -1,0 +1,452 @@
+
+
+//---------------------------------------------------------------------------------------
+// LoginUtil.ad
+//
+// Utility module for basic and critical login operations.
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+
+module LoginUtil
+{
+    import main::NPUtil;
+    import main::Grim2Util;
+
+    function isOnline()
+    {
+        return NP.isOnline() && main::Grim2.isInitialize() != 0;
+    }
+
+    function isPatchExist()
+    {
+        var grim_patch_version = Grim2Util::getPatchVersion();
+        var fps_version = main::pdistd::GetFileSystemVersion();
+        return fps_version > 0 && grim_patch_version > fps_version;
+    }
+
+    function initializeGrim(context)
+    {
+        var request1 = main::Grim2.requestRegionList((args) => {});
+        var result = Grim2Util::__deprecated__join__(context, request1);
+
+        if (!result)
+            return request1.getLastError();
+            
+        var region_list = main::Grim2.decodeRegionList(request1);
+        if (region_list.size == 0)
+            return -1;
+
+        var skip_server_select = false;
+        if (GetVersionBranch() == "sls")
+            skip_server_select = true;
+
+        if (region_list.size > 1 && !skip_server_select)
+        {
+            if (main::AppOpt.defined("grim_index"))
+            {
+                var index = main::AppOpt["grim_index"].toInt();
+                var region = region_list[index]["region"];
+                result = Grim2Util::initialize(context, region);
+                if (result < 0)
+                    return result;
+
+                AppOpt.removeStatic("grim_index");
+            }
+            else
+                DialogUtil::openServerSelectDialog(context, region_list);
+        }
+        else
+        {
+            var region = region_list[0]["region"];
+            result = Grim2Util::initialize(context, region);
+            if (result < 0)
+                return result;
+        }
+
+        var country = NP.getRegionName();
+        Grim2.setCountry(country);
+        return main::Grim2.isInitialize() ? 0 : -1;
+    }
+
+    function ticketLogin(context)
+    {
+        var result = -1;
+        var ticket = NP.requestTicket();
+
+        if (ticket != nil)
+        {
+            var request2 = main::Grim2.requestTicket(ticket, (args) => {});
+            if (Grim2Util::__deprecated__join__(context, request2))
+            {
+                result = 0;
+                PDINetwork.setPdiServerUserId(Grim2.getLoginUserId(), Grim2.getLoginUserNumber());
+            }
+            else
+            {
+                result = request2.getLastError();
+            }
+        }
+        else
+            ;
+
+        return result;
+    }
+
+    function loginNP(context, begin_osd_function, end_osd_function, try_login = false)
+    {
+        var result = true;
+
+        if (!NP.isOnline())
+        {
+            var hasAgreedWithEula = false;
+            if (begin_osd_function != nil)
+                begin_osd_function(context);
+
+            if (NPUtil::signIn(context, true, !try_login))
+                ;
+            else
+            {
+                result = false;
+                Grim2.setInitialize(false);
+            }
+
+            if (end_osd_function != nil)
+                end_osd_function(context);
+        }
+
+        return result;
+    }
+
+    function checkOutOfService()
+    {
+        if (main::AppOpt.defined("oos"))
+            return true;
+
+        var res = NP.initializeLookup();
+        if (res == 0)
+            return false;
+
+        var result = false;
+        var value = NP.lookupTitleSmallStorage();
+        if (value != nil)
+        {
+            var value_int = value.toString();
+            var region = pdiext::MProductInformation::GetGameRegionCode();
+            var v = 0;
+            if (region == "jp")
+                v = value_int / 1000;
+            else if (region == "us")
+                v = (value_int % 1000) / 100;
+            else if (region == "uk")
+                v = (value_int % 100) / 10;
+            else if (region == "tw")
+                v = value_int % 10;
+        }
+
+        result = v == 1;
+
+        NP.finalizeLookup();
+
+        return result;
+    }
+
+    function loginGrim(context)
+    {
+        var result = true;
+        var ignore_error = false;
+
+        if (!main::Grim2.isInitialize())
+        {
+            var cursor_project = context.getCursorProject();
+            var grim_result = initializeGrim(context);
+
+            if (grim_result < 0)
+            {
+                if (grim_result != 0x80006218)
+                {
+                    if (checkOutOfService())
+                        Grim2.setOutOfService(true);
+                }
+
+                if (main::Grim2.isMaintenance())
+                {
+                    var maintenanceMessage = main::Grim2.getMaintenanceMessage();
+                    if (maintenanceMessage == nil || maintenanceMessage == "")
+                        maintenanceMessage = context.translate(cursor_project, "Network", "MAINTENANCE_SERVER");
+
+                    DialogUtil::openConfirmDialog(context, DialogUtil::OK, maintenanceMessage);
+                }
+                else if (Grim2.isOutOfService())
+                {
+                    DialogUtil::openConfirmDialog(context, DialogUtil::OK, context.translate(cursor_project, "Network", "GT5_OUT_OF_SERVICE"));
+                }
+                else
+                {
+                    grim_result = Grim2Util::openHttpErrorDialog(context, cursor_project, "1", grim_result);
+                }
+
+                result = false;
+            }
+            else
+            {
+                var ticket_result = ticketLogin(context);
+                result = ticket_result == 0;
+
+                if (ticket_result < 0)
+                {
+                    Grim2Util::openHttpErrorDialog(context, cursor_project, "2", ticket_result);
+                    main::Grim2.setInitialize(false);
+                }
+                else
+                {
+                    ignore_error = true;
+
+                    if (Grim2Util::isWrongClientTime())
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::OK, context.translate(cursor_project, "Network", "WRONG_CLIENT_TIME"));
+                    }
+                }
+            }
+        }
+
+        return [result, ignore_error];
+    }
+
+    static hasAgreedWithEula = false;
+
+    function checkNpEula()
+    {
+        if (hasAgreedWithEula)
+            return true;
+
+        var status = 0;
+        var result = main::NpEula.check(main::GAME_STATUS.user_profile.context.eula_currver, status);
+        if (status == 1 || status == 2)
+            hasAgreedWithEula = true;
+
+        if (status == 2)
+        {
+            main::GAME_STATUS.user_profile.context.need_save = SaveDataUtilGT5::STATUSCODE::NEED_SAVE;
+            return true;
+        }
+
+        return result;
+    }
+
+    function resetCheckNpEula()
+    {
+        hasAgreedWithEula = false;
+    }
+
+    function isParentalLock(context)
+    {
+        var region = main::pdiext::MProductInformation::GetGameRegionCode();
+        var parental_level = main::pdiext::MProductInformation::GetParentalLevel();
+        var st_map = NP.getContentsrestriction();
+
+        if (st_map == nil && region == "us")
+            return true;
+
+        if (st_map != nil && 
+            region == "us" && 
+            parental_level == 3 && 
+            st_map["isRestricted"] && 
+            st_map["age" < main::GAME_STATUS.config.parental_control_age_us])
+        {
+            var cursor_project = DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(cursor_project, "Network", "PARENTAL_CONTROL_LOCK"));
+            return true;
+        }
+
+        return false;
+    }
+
+    function deleteCacheIfNecessary()
+    {
+        var cache_version_hdd = 0;
+        var st = pdistd::ReadFile("/APP_CACHE/version.txt");
+        if (st["buffer"] != nil)
+            cache_version_hdd = st["buffer"].toString().toInt();
+
+        var cache_version_grim = Grim1.getServerOptionToInt("gt5", "cache.version", 0);
+        if (cache_version_hdd < cache_version_grim)
+        {
+            var stime = pdistd::GetSystemTimeMicroSecond();
+            Grim2.clearCacheAll();
+            pdistd::WriteFile("/APP_CACHE/version.txt", "%{cache_version_grim}".getByteData());
+            var etime = pdistd::GetSystemTimeMicroSecond();
+        }
+    }
+
+    function processAfterLogin(context)
+    {
+        updateHttpServerParams();
+        PaceUtil::activate();
+
+        var dp = GAME_STATUS.user_profile.residence.referPlayer();
+        dp.region = PDINetwork.getRegionName().upcase();
+        var friend_list = NP.getFriendList();
+        if (friend_list.size > 0)
+        {
+            var friend_list_csv = friend_list.join(",");
+            main::UserProfile2.requestUpdateFriendList(friend_list_csv, (args) => 
+            {
+                var [context1, request] = args;
+                if (request.isDone() && main::UserProfile2.decodeResult(request))
+                    ;
+            });
+        }
+
+        var category_id1 = 1;
+        var request1 = main::UserProfile2.requestMuseumIdList(category_id1, (args) => 
+        {
+            var [context, request] = args;
+            if (request.isDone())
+            {
+                var museum_id_list = main::Museum2.decodeMuseumIdList(request);
+                if (request.isUpdated() || museum_id_list.size != MuseumFileUtil::getMuseumIdListCount())
+                {
+                    if (MuseumFileUtil::canUpdate())
+                        MuseumFileUtil::updateMuseumIdList(museum_id_list);
+                }
+            }
+        });
+
+        updateNews(context);
+        deleteCacheIfNecessary();
+        
+    }
+
+    function updateNews(context)
+    {
+        var request1 = News2.requestCategoryList(args => {});
+        if (Grim2Util::__deprecated__join__(context, request1))
+        {
+            var category_list = News2.decodeCategoryList(request1);
+            if (request1.isUpdated() || category_list.size != NewsFileUtil::getCategoryCount())
+                NewsFileUtil::updateCategoryList(category_list);
+        }
+
+        var request2 = News2.requestCategoryRoot(args => {});
+        if (Grim2Util::__deprecated__join__(context, request2))
+        {
+            var category_root_list = News2.decodeCategoryRoot(request2);
+            foreach (var category_root in category_root_list)
+            {
+                var category_id2 = category_root["category_id2"];
+                if (category_id2 != 0)
+                    continue;
+
+                var category_id1 = category_root["category_id1"];
+                News2.requestNewsIdList(category_id1, category_id2);
+            }
+        }
+    }
+
+    function updateHttpServerParams()
+    {
+        var params = Grim2.getServer("grim2_http");
+        if (params == nil)
+            return;
+
+        Grim2.setHttpServerParams(params);
+    }
+
+    function make_sure_login(context, begin_osd_function, end_osd_function, check_session, try_login)
+    {
+        if (Grim2.isOutOfService())
+            return [false, false];
+
+        var was_online = isOnline();
+        var result = true;
+        var ignore_error = true;
+
+        result = loginNP(context, begin_osd_function, end_osd_function, try_login);
+
+        if (result)
+        {
+            if (GetVersionBranch() == "gt5" && PDINetwork.isChatRestricted())
+            {
+                if (!GAME_STATUS.user_profile.context.chat_restricted_eula)
+                {
+                    GAME_STATUS.user_profile.context.chat_restricted_eula = true;
+                    main::GAME_STATUS.user_profile.context.need_save = SaveDataUtilGT5::STATUSCODE::NEED_SAVE;
+                    var text = main::manager.translateAtCursorProject("MyHome", "ERROR_CHAT_RESTRICTED");
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+                }
+
+                return [false, false];
+            }
+        }
+
+        if (result)
+        {
+            if (main::PDINetwork.isOnline())
+            {
+                if (Grim2.isInitialize())
+                {
+                    var request = main::Grim2.requestExtendSession((args) => {});
+                    var res = Grim2Util::__deprecated__join__(context, request);
+                    if (!res || !main.Grim2.decodeResult(request))
+                        main::Grim2.setInitialize(false);
+
+                    if (!res && check_session)
+                        result = false;
+
+                    if (!res && !check_session)
+                    {
+                        var error = request.getLastError();
+                        if (error == 0x80006218)
+                        {
+                            Grim2Util::openHttpErrorDialog(context, context.getCursorProject(), "3", error);
+                            result = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (result)
+            result = isParentalLock(context);
+        
+        if (result)
+            [result, ignore_error] = loginGrim(context);
+
+        if (result && (GetVersionBranch() == "gt5" || GetVersionBranch() == "academy") && Grim2Util::EULA::isEnable() && 
+            !AppOpt.defined("bot") && !GAME_STATUS.user_profile.option.bot_on)
+        {
+            result = checkNpEula();
+            if (!result)
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::OK, context.translate(cursor_project, "Network", "CANNOT_CONNECT_SERVER"));
+                main::Grim2.setInitialize(false);
+            }
+        }
+
+        if (result && !was_online)
+            processAfterLogin(context);
+
+        GAME_STATUS.user_profile.residence.refreshPlayerName();
+        return [result, ignore_error];
+    }
+
+    function makeSureLoginWithExtendSessionError(context, begin_osd_function, end_osd_function)
+    {
+        return make_sure_login(context, begin_osd_function, end_osd_function, true, false);
+    }
+
+    function makeSureLogin(context, begin_osd_function, end_osd_function, try_login)
+    {
+        return make_sure_login(context, begin_osd_function, end_osd_function, false, try_login); 
+    }
+
+    function tryLogin(context)
+    {
+        var [result, ignore_error] = makeSureLogin(context, nil, nil, true);
+        return result;
+    }
+}

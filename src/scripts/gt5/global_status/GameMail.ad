@@ -1,0 +1,208 @@
+
+
+//---------------------------------------------------------------------------------------
+// GameMail.ad
+//
+// Creates the save profile entity
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module GameMail
+{
+    function clearInitializer()
+    {
+        undef CreateStructure;
+        undef Initialize;
+        undef clearInitializer;
+    }
+
+    function CreateStructure()
+    {
+        var st = STStructure("Impl");
+        GameMail.defineModule(st);
+        st.define("max_mail_id", STULong());
+
+        DefineMethod();
+
+        return st;
+    }
+
+    function Initialize(instance)
+    {
+        instance.max_mail_id = 0;
+    }
+
+    function InitializeDB()
+    {
+        var sqlite = GlobalStatus::getSqlite();
+        DBUtil::initializeTable(sqlite, "t_mail", 5);
+    
+        var sql_list = [
+            "CREATE TABLE IF NOT EXISTS t_mail (mail_id INTEGER NOT NULL PRIMARY KEY, "
+            "user_id TEXT NOT NULL, sender TEXT NOT NULL, subject TEXT NOT NULL,"
+            "body TEXT NOT NULL, date INTEGER NOT NULL, new_flag INTEGER NOT NULL)"
+        ];
+
+        foreach (var sql in sql_list)
+        {
+            var res = sqlite.execute0(sql);
+            if (!(res == 0)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+        }
+    }
+
+    function DefineMethod()
+    {
+        module Impl
+        {
+            method add(mail_list)
+            {
+                if (mail_list.size == 0)
+                    return true;
+
+                var max_mail_id = self.max_mail_id;
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "INSERT INTO t_mail (mail_id, user_id, sender, subject, body, date, new_flag) VALUES (?, ?, ?, ?, ?, ?, 1)";
+                var sql_list = [];
+                var my_user_id = Grim2.getLoginUserId();
+
+                foreach (var mail in mail_list)
+                {
+                    var user_id = my_user_id == mail["from"] ? mail["to"] : mail["from"];
+                    var params = [
+                        mail["mail_id"],
+                        user_id,
+                        mail["from"],
+                        mail["subject"],
+                        mail["body"],
+                        mail["create_time"].getBySecond()
+                    ];
+
+                    sql_list.push([sql, params]);
+
+                    if (max_mail_id < mail["mail_id"])
+                        max_mail_id = mail["mail_id"];
+                }
+
+                var res = sqlite.executeTransaction(sql_list);
+                if (isFailed(res))
+                    return false;
+
+                self.max_mail_id = max_mail_id;
+                return true;
+            }
+
+            method read(mail_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "UPDATE t_mail SET new_flag = 0 WHERE mail_id = ?";
+                var params = [mail_id];
+                var res = sqlite.execute(sql, params);
+
+                if (isFailed(res))
+                    return false;
+
+                return true;
+            }
+
+            method remove(mail_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "DELETE FROM t_mail WHERE mail_id = ?";
+                var params = [mail_id];
+                var res = sqlite.execute(sql, params);
+
+                if (isFailed(res))
+                    return false;
+
+                return true;
+            }
+
+            method removeByUser(user_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "DELETE FROM t_mail WHERE user_id = ?";
+                var params = [user_id];
+                var res = sqlite.execute(sql, params);
+
+                if (isFailed(res))
+                    return false;
+
+                return true;
+            }
+
+            method getMessageList(user_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT * FROM t_mail WHERE user_id = ? ORDER BY date DESC LIMIT 50";
+                var res = sqlite.executeQuery(sql, [user_id]);
+                return res;
+            }
+
+            method getMessageList1(user_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT * FROM t_mail WHERE user_id = ? ORDER BY date DESC LIMIT 1";
+                return sqlite.executeQuery(sql, [user_id]);
+            }
+
+            method hasNewMessage(user_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT COUNT (*) FROM (SELECT user_id, sender, new_flag FROM t_mail WHERE user_id = ? ORDER BY date DESC LIMIT 50) WHERE user_id = sender AND new_flag = 1";
+                var res = sqlite.executeQuery1R1C(sql, [user_id]);
+                return res > 0;
+            }
+
+            method getUserList()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT user_id, MAX (date) AS D FROM t_mail GROUP BY user_id ORDER BY D DESC";
+                var res = sqlite.executeQuery1C(sql);
+                return res;
+            }
+
+            method getMessageTopList()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT DISTINCT user_id, MAX (date) AS date FROM t_mail GROUP BY user_id ORDER BY date DESC";
+                return sqlite.executeQuery(sql);
+            }
+
+            method getNewCount()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT COUNT (*) FROM (SELECT DISTINCT user_id FROM "
+                          "(SELECT user_id, sender, new_flag FROM  t_mail  T1 WHERE  (SELECT COUNT (*) FROM t_mail T2 WHERE T1.user_id = T2.user_id AND T1.date <= T2.date) <= 50 ORDER BY date DESC) "
+                          "WHERE user_id = sender AND new_flag = 1)";
+                var res = sqlite.executeQuery1R1C(sql);
+                return res;
+            }
+
+            method getMaxMailId()
+            {
+                return self.max_mail_id;
+            }
+
+            method isFailed(res)
+            {
+                return res != 101;
+            }
+
+            method getResult1(res)
+            {
+                if (res.size == 0)
+                    return nil;
+
+                var row = res[0];
+                if (row.size == 0)
+                    return nil;
+
+                return res[0][0];
+            }
+        }
+    }
+}

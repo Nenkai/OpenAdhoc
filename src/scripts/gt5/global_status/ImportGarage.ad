@@ -1,0 +1,647 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#define TABLE_NAME "t_import_garage"
+#define TABLE_VERSION 4
+
+#define MAX_IMPORT_FAVORITE 50
+
+module ImportGarage
+{
+    class CarParameterProxy
+    {
+        attribute car_code;
+        attribute country;
+        attribute year;
+        attribute power;
+        attribute power_rpm;
+        attribute mass;
+        attribute color;
+        attribute has_premium;
+        attribute short_name;
+        attribute tuner_label;
+        attribute drive_train;
+        attribute favorite;
+        attribute paint_color;
+        
+        method __init__(car_code, country, year, power, power_rpm, mass, color, short_name, tuner_label, drive_train, favorite)
+        {
+            self.car_code = car_code;
+            self.country = country;
+            self.year = year;
+            self.power = power;
+            self.power_rpm = power_rpm;
+            self.mass = mass;
+            self.color = color;
+            self.has_premium = false;
+            self.short_name = short_name;
+            self.tuner_label = tuner_label;
+            self.drive_train = drive_train;
+            self.favorite = favorite;
+            self.paint_color = -1;
+        }
+
+        method getCP()
+        {
+            var cp = gtengine::MCarParameter(self.car_code);
+            cp.color = self.color;
+            return cp;
+        }
+
+        method getCT()
+        {
+            var cp = gtengine::MCarThin(self.car_code);
+            cp.color = self.color;
+            return cp;
+        }
+
+        method getYearString()
+        {
+            return self.year == 0 ? "---" : self.year.toString();
+        }
+
+        method getMassString()
+        {
+            var unit_mass = pdiext::MUnit::GetUnitOfMass();
+            return self.mass == 0 ? "---" : "%{self.mass} %{unit_mass}";
+        }
+
+        method getPowerString()
+        {
+            var unit_power = pdiext::MUnit::GetUnitOfPower();
+            if (self.power == 0)
+                return "---";
+            else 
+                return "%s %{unit_power}".format(pdiext::MUnit::GetPowerForDisplay(self.power));
+        }
+
+        method getPsRpmString()
+        {
+            if (self.power == 0 || self.power_rpm == "---")
+                return "---";
+            
+            var unit_power = pdiext::MUnit::GetUnitOfPower();
+            var power_str = "%s %{unit_power}".format(pdiext::MUnit::GetPowerForDisplay(self.power));
+
+            var unit_rpm = pdiext::MUnit::GetUnitOfRpm();
+            var power_rpm_str = "%{self.power_rpm}%{unit_rpm}";
+            return "%{power_str}/%{power_rpm_str}";
+        }
+    }
+
+    function clearInitializer()
+    {
+        undef CreateStructure;
+        undef Initialize;
+        undef clearInitializer;
+    }
+
+    function CreateStructure()
+    {
+        var st = STStructure("Impl");
+        ImportGarage.defineModule(st);
+
+        DefineMethod();
+        return st;
+    }
+
+    function Initialize(instance, for_importcar)
+    {
+        var sqlite = GlobalStatus::getSqlite();
+        DBUtil::initializeTableCommon(sqlite, TABLE_NAME, TABLE_VERSION);
+
+        var sql_list = [
+            "CREATE TABLE IF NOT EXISTS t_import_garage (garage_id INTEGER PRIMARY KEY, " +
+            "car_code INTEGER, color INTEGER, country TEXTL, tuner_label TEXT, drive_train TEXT, " +
+            "favorite INTEGER, year INTEGER, power INTEGER, power_rpm INTEGER, mass INTEGER, " +
+            "name_JP TEXT, name_EN TEXT" +
+            ")",
+
+            "DROP INDEX IF EXISTS t_import_garage_idx1",
+            "DROP INDEX IF EXISTS t_import_garage_idx2",
+            "DROP INDEX IF EXISTS t_import_garage_idx3",
+            "DROP INDEX IF EXISTS t_import_garage_idx4",
+            "DROP INDEX IF EXISTS t_import_garage_idx5",
+            "DROP INDEX IF EXISTS t_import_garage_idx6",
+            "DROP INDEX IF EXISTS t_import_garage_idx7",
+            "DROP INDEX IF EXISTS t_import_garage_idx8",
+            "DROP INDEX IF EXISTS t_import_garage_idx9",
+            "DROP INDEX IF EXISTS t_import_garage_idx10",
+
+            "CREATE INDEX t_import_garage_idx1 ON t_import_garage (car_code)",
+            "CREATE INDEX t_import_garage_idx2 ON t_import_garage (color)",
+            "CREATE INDEX t_import_garage_idx3 ON t_import_garage (country)",
+            "CREATE INDEX t_import_garage_idx4 ON t_import_garage (tuner_label)",
+            "CREATE INDEX t_import_garage_idx5 ON t_import_garage (drive_train)",
+            "CREATE INDEX t_import_garage_idx6 ON t_import_garage (favorite)",
+            "CREATE INDEX t_import_garage_idx7 ON t_import_garage (year)",
+            "CREATE INDEX t_import_garage_idx8 ON t_import_garage (power)",
+            "CREATE INDEX t_import_garage_idx9 ON t_import_garage (power_rpm)",
+            "CREATE INDEX t_import_garage_idx10 ON t_import_garage (mass)",
+        ];
+
+        foreach (var sql in sql_list)
+        {
+            var res = sqlite.execute0(sql);
+            DB_ASSERT(res == SQLITE_OK, res);
+        }
+    }
+
+    function DefineMethod()
+    {
+        module Impl
+        {
+            method getInsertQuery()
+            {
+                var query = "t_import_garage (car_code, color, country, tuner_label, drive_train, favorite, year, power, power_rpm, mass, name_JP, name_EN) " +
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+                return query;
+            }
+
+            method getCarDataForImportGarage(car_code)
+            {
+                var data = gtengine::MSpecDB::getCarDataForGarage(car_code);
+                if (data == nil)
+                    return nil;
+
+                var [has_premium, country, tuner_label, drive_train, year, power, name_jp, name_en, power_rpm, mass] = data;
+                var favorite = 0;
+                
+                var cp = main::gtengine::MCarParameter(car_code);
+                cp.beginInfo();
+                var [cp_power, cp_power_rpm] = cp.getPower();
+                var cp_weight = cp.getWeight();
+                cp.endInfo();
+
+                mass = mas.toInt();
+                return [country, tuner_label, drive_train, favorite, year, cp_power.toInt(), cp_power_rpm, cp_weight, name_jp, name_en];
+            }
+
+            method syncCarCollection(car_collection, progress, cannot_import_cars_ref)
+            {
+                var convert_newcode_cars_map = [
+                    "_300sl_coupe_54"           : "_300sl_coupe_54_std",
+                    "_787b_91"                  : "_787b_91_std",
+                    "acura_nsx_91"              : "acura_nsx_91_std",
+                    "az1_92"                    : "az1_92_std",
+                    "camaro_z28_302_69"         : "camaro_z28_302_69_std",
+                    "cappuccino_95"             : "cappuccino_95_std",
+                    "celica_wrc_95"             : "celica_wrc_95_std",
+                    "civic_r_97"                : "civic_r_97_std",
+                    "clio_sport_v6_00"          : "clio_sport_v6_00_std",
+                    "cobra_67"                  : "cobra_67_std",
+                    "copen_activetop_02"        : "copen_activetop_02_std",
+                    "corvette_zr1_09"           : "corvette_zr1_09_std",
+                    "delta_hf_integrale_evo_91" : "delta_hf_integrale_evo_91_std",
+                    "elise_111r_04"             : "elise_111r_04_std",
+                    "esprit_v8_02"              : "esprit_v8_02_std",
+                    "f2007_07"                  : "f2007_07_std",
+                    "golf_gti_05"               : "golf_gti_05_std",
+                    "gtr_specv_09"              : "gtr_specv_09_std",
+                    "lancer_evo4_96"            : "lancer_evo4_96_std",
+                    "nsx_r_02"                  : "nsx_r_02_std",
+                    "r32_gtr_v2_94"             : "r32_gtr_v2_94_std",
+                    "r33_gtr_v_97"              : "r33_gtr_v_97_std",
+                    "r34_gtr_v2_nur_02"         : "r34_gtr_v2_nur_02_std",
+                    "roadster_89"               : "roadster_89_std",
+                    "rx7_gtx_90"                : "rx7_gtx_90_std",
+                    "rx7_spiritr_a_02"          : "rx7_spiritr_a_02_std",
+                    "sl55_amg_02"               : "sl55_amg_02_std",
+                    "supra_30gt_turbo_a_88"     : "supra_30gt_turbo_a_88_std",
+                    "tt_coupe_32_03"            : "tt_coupe_32_03_std",
+                    "z32_300zx_2seat_tt_89"     : "z32_300zx_2seat_tt_89_std",
+                    "z4_30i_03"                 : "z4_30i_03_std",
+                    "rx7_r_91"                  : "rx7_r_91_std",
+                    "roadster_j_lim_91"         : "roadster_j_lim_91_std",
+                    "cappuccino_91"             : "cappuccino_91_std",
+                ];
+
+                var convert_no_such_cars_map = [
+                    "golf_gti_5dr_01_std" : 53,
+                    "exp_speed8_03_std" : 944,
+                    "r92cp_92_std" : 954,
+                    "xjr9_race_88_std" : 1067,
+                    "enzo_ferrari_02_std" : 1491,
+                    "gt_by_citroen_08_std" : 1499,
+                    "tamora_02_std" : 1479,
+                    "veyron_16_4_09" : 1492,
+                ];
+                
+                var convert_voucher_cars_map = [
+                    "corvette_zr1_09_std" : 1488,
+                    "countach_lp400_74" : 1487,
+                    "enzo_ferrari_02_std" : 1486,
+                    "gt_by_citroen_08_std" : 1494,
+                    "gtr_specv_09_std" : 1489,
+                    "slr_mclaren_03" : 1505,
+                    "veyron_16_4_09" : 1490,
+                ];
+
+                var not_included_in_GT5_cars = [
+                    249,
+                    945,
+                    946
+                ];
+
+                var s0 = main::pdistd::GetSystemTimeMicroSecond();
+                if (getCount() > 0)
+                    clear();
+
+                var list = car_collection.listup();
+
+                var cmp_by_code = function(a, b)
+                {
+                    if (a.getCarCode() < b.getCarCode())
+                        return true;
+                    else if (a.getCarCode() == b.getCarCode())
+                        return a.color < b.color;
+                    else
+                        return false;
+                };
+
+                list.sort(cmp_by_code);
+
+                var sqlite = GlobalStatus::getSqlite();
+                var query = getInsertQuery();
+                var prev_code = gtengine::MSpecDB::NO_CODE64;
+                var cannot_import_prev_code = gtengine::MSpecDB::NO_CODE64;
+
+                sqlite.begin();
+                if (progress != nil)
+                    progress.value = 0.0;
+
+                for (var i = 0; i < list.size; i++)
+                {
+                    var car_thin = list[i];
+                    var car_code = car_thin.getCarCode();
+                    var car_color = car_thin.color;
+
+                    if (not_included_in_GT5_cars.indexOf(car_code) > -1)
+                    {
+                        if (cannot_import_prev_code != car_code)
+                        {
+                            *cannot_import_cars_ref.push(car_code);
+                            cannot_import_prev_code = car_code;
+                        }
+
+                        continue;
+                    }
+                    
+                    var new_label = convert_no_such_cars_map[car_code];
+                    if (new_label != nil)
+                    {
+                        car_code = gtengine::MSpecDB::getCarCode(new_label);
+                        var variation_count = main::gtengine::MSpecDB::getCarVariation(car_code);
+                        car_color = variation_count - 1;
+                    }
+
+                    var car_label = gtengine::MSpecDB::getCarLabel(car_code);
+                    new_label = convert_newcode_cars_map[car_label];
+                    if (new_label != nil)
+                    {
+                        car_code = gtengine::MSpecDB::getCarCode(new_label);
+                        if (car_code == gtengine::MSpecDB::NO_CODE64)
+                            continue;
+                    }
+
+                    var country, tuner_label, drive_train, favorite, year, power, power_rpm, mass, name_jp, name_en;
+                    if (prev_code != car_code)
+                    {
+                        var data = getCarDataForImportGarage(car_code);
+                        if (data == nil)
+                            continue;
+
+                        [country, tuner_label, drive_train, favorite, year, power, power_rpm, mass, name_jp, name_en] = data;
+                        prev_code = car_code;
+                    }
+
+                    var params = [car_code, car_color, country, tuner_label, drive_train, favorite, year, power, power_rpm, mass, name_jp, name_en];
+                    var res = sqlite.executeQuery(query, params);
+                    
+                    if (progress != nil)
+                        progress.value = i.toFloat() / list.size;
+                }
+
+                sqlite.commit();
+                if (progress != nil)
+                    progress.value = 1.0;
+
+                var s1 = main::pdistd::GetSystemTimeMicroSecond();
+                return [true, [1, 2, 3]];
+            }
+
+            method clear()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "DELETE FROM t_import_garage";
+                var res = sqlite.execute(sql);
+                if (isFailed(res))
+                    ;
+            }
+
+            
+            method createOrderBy(order, by)
+            {
+                if (order == nil)
+                    order = "name_EN";
+
+                if (by == nil)
+                    by = "ASC";
+
+                if (order == "name_EN")
+                {
+                    if (main::pdiext::MProductInformation::GetGameRegionCode() == "jp" && main::pdistd::MLocale::getLanguage() == "JP")
+                        order = "name_JP";
+                }
+
+                var by2 = by;
+                if (order == "power" || order == "mass" || order == "year" || order == "pp" || order == "riding_order")
+                {
+                    if (by == "ASC")
+                        by2 = "DESC";
+                    else if (by == "DESC")
+                        by2 = "ASC";
+                }
+
+                return "ORDER BY %{order} %{by2}, garage_id %{by}";
+            }
+
+            method createWhereAndParams(country, tuner_label, drive_train, with_favorite)
+            {
+                var params = [];
+                var where = "";
+
+                if (country != nil)
+                {
+                    where += "country = ?";
+                    params.push(country);
+                }
+
+                if (tuner_label != nil)
+                {
+                    where += params.size > 0 ? "AND" : "";
+                    params.push(tuner_label);
+                }
+
+                if (drive_train != nil)
+                {
+                    where += params.size > 0 ? "AND" : "";
+                    params.push(drive_train);
+                }
+
+                if (with_favorite != nil)
+                {
+                    where += params.size > 0 ? "AND" : "";
+                    where += "favorite = 1";
+                }
+
+                if (where != nil)
+                    where = "WHERE %s".format(where);
+
+                return [where, params];
+            }
+
+            method getCarList(country, tuner_label, drive_train, order, by)
+            {
+                var [where, params] = createWhereAndParams(country, tuner_label, drive_train);
+                var order_by = createOrderBy(order, by);
+                return getCarList2(where, params, order_by, false);
+            }
+
+            method getCTList(country, tuner_label, drive_train, order, by)
+            {
+                var [where, params] = createWhereAndParams(country, tuner_label, drive_train);
+                var order_by = createOrderBy(order, by);
+                return getCarList2(where, params, order_by, true);
+            }
+
+            method getCarList2(where, params, order_by, return_car_thin_list = true)
+            {
+                var name = (main::pdiext::MProductInformation::GetGameRegionCode() == "jp" && main::pdistd::MLocale::getLanguage()) == "JP" ? "name_jp" : "name_en";
+
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT car_code, country, year, power, power_rpm, mass, color, "
+                          "tuner_label, drive_train, favorite, %{name} FROM t_import_garage ";
+
+                if (where != "")
+                    sql += "%s".format(where);
+
+                sql += order_by;
+                sqlite.executeQueryBegin(sql, params);
+
+                var res = sqlite.executeQuery(sql, params);
+                var list = Array(res.size);
+                for (var i = 0; i < res.size; i++)
+                {
+                    var [car_code, country, year, power, power_rpm, mass, color, tuner_label, drive_train, favorite, short_name] = res[i];
+                    if (return_car_thin_list)
+                    {
+                        var ct = main::gtengine::MCarThin(car_code);
+                        ct.color = color;
+                        list[i] = ct;
+                    }
+                    else
+                    {
+                        list[i] = CarParameterProxy(car_code, country, year, power, power_rpm, mass, color, short_name, tuner_label, drive_train, favorite);
+                    }
+                }
+
+                return list;
+            }
+
+            method hasCar(car_code, color)
+            {
+                if (car_code.isInstanceOf(String))
+                    car_code = gtengine::MSpecDB::getCarCode(car_code);
+
+                var res = nil;
+                var sqlite = GlobalStatus::getSqlite();
+                if (color != nil)
+                {
+                    var sql = "SELECT COUNT (*) FROM t_import_garage WHERE car_code = ? AND color = ?";
+                    res = sqlite.executeQuery(sql, [car_code, color]);
+                }
+                else
+                {
+                    var sql = "SELECT COUNT (*) FROM t_import_garage WHERE car_code = ?";
+                    res = sqlite.executeQuery(sql, [car_code, color]);
+                }
+
+                var count = getResult1(res);
+                return count != nil && count > 0;
+            }
+
+            method getCount(where)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT COUNT (*) FROM t_import_garage ";
+                if (where != nil)
+                    sql += where;
+
+                var res = sqlite.executeQuery(sql);
+                var count = getResult1(res);
+                return count == nil ? 0 : count;
+            }
+
+            method getCountryList(type, additional_conditions)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT DISTINCT country FROM t_import_garage ORDER BY country";
+                var res = sqlite.executeQuery(sql);
+                var list = [];
+                foreach (var row in res)
+                    list.push(row[0]);
+
+                return list;
+            }
+
+            method getTunerList(type, country, additional_conditions)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT DISTINCT tuner_label FROM t_import_garage ";
+
+                var params = [];
+                if (country != nil)
+                {
+                    sql += "WHERE country = ?";
+                    params.push(country);
+                }
+
+                sql += "ORDER BY tuner_label";
+
+                var res = sqlite.executeQuery(sql, [type]);
+                var list = [];
+                foreach (var row in res)
+                    list.push(row[0]);
+
+                return list;
+            }
+
+            method getDriveTrainList(type, country, tuner_label, additional_conditions)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT DISTINCT drive_train FROM t_import_garage ";
+
+                var params = [];
+                if (country != nil)
+                {
+                    var where = "country = ? ";
+                    params.push(country);
+                }
+
+                if (tuner_label != nil)
+                {
+                    if (where != "")
+                        where += " AND ";
+                    
+
+                    where += "tuner_label = ? ";
+                    params.push(tuner_label);
+                }
+
+                if (where != "")
+                    sql += "WHERE %s".format(where);
+
+                sql += "ORDER BY drive_train";
+
+                var res = sqlite.executeQuery(sql, params);
+                var list = [];
+                foreach (var row in res)
+                    list.push(row[0]);
+
+                return list;
+            }
+
+            method getFavoriteCarList(country, tuner_label, drive_train, order, by)
+            {
+                var [where, params] = createWhereAndParams(country, tuner_label, drive_train, true);
+                var order_by = createOrderBy(order, by);
+                return getCarList2(where, params, order_by, false);
+            }
+
+            method getFavoriteCPPList(country, tuner_label, drive_train, order, by)
+            {
+                var [where, params] = createWhereAndParams(country, tuner_label, drive_train, true);
+                var order_by = createOrderBy(order, by);
+                var list = getCarList2(where, params, order_by, false);
+                return convertRowList2CppList(list);
+            }
+
+            method getFavoriteCTList(country, tuner_label, drive_train, order, by)
+            {
+                var [where, params] = createWhereAndParams(country, tuner_label, drive_train, true);
+                var order_by = createOrderBy(order, by);
+                var list = getCarList2(where, params, order_by, true);
+                return convertRowList2CppList(list);
+            }
+
+            method getFavoriteCount(country, tuner_label, drive_train)
+            {
+                var [where, params] = createWhereAndParams(country, tuner_label, drive_train);
+                return getCount(where);
+            }
+
+            method getFavoriteMax()
+            {
+                return MAX_IMPORT_FAVORITE;
+            }
+
+            method isFavorite(garage_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT COUNT (*) FROM t_import_garage WHERE car_code = ? AND color = ? AND favorite = 1";
+                var res = sqlite.executeQuery(sql, [garage_id]);
+                var count = getResult1(res);
+                return count != nil && count > 0;
+            }
+
+            method setFavorite(car_code, car_color, v)
+            {
+                if (v.isInstanceOf(Bool))
+                    v = v.toInt();
+
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "UPDATE t_import_garage SET favorite = ? WHERE car_code = ? AND color = ?";
+                sqlite.execute(sql, [v, car_code, car_color]);
+            }
+
+            method getResult1(res)
+            {
+                if (res.size == 0)
+                    return nil;
+
+                var row = res[0];
+                if (row.size == 0)
+                    return nil;
+
+                return res[0][0];
+            }
+
+            method getNextGarageId()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT MAX (garage_id) FROM t_import_garage";
+                var res = sqlite.executeQuery(sql);
+                var max = getResult1(res);
+                return max == nil ? 1 : max + 1;
+            }
+
+            method isFailed(res)
+            {
+                return res != SQLITE_DONE;
+            }
+        }
+    }
+}

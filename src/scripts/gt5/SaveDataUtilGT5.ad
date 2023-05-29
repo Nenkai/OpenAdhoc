@@ -1,0 +1,800 @@
+
+
+//---------------------------------------------------------------------------------------
+// SaveDataUtilGT5.ad
+//
+// Utility module for saving (GT5 specifics)
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module SaveDataUtilGT5
+{
+    static sSaveBGIssued = false;
+
+    module STATUSCODE
+    {
+        static NO_NEED = 0;
+        static NEED_SAVE = 1;
+        static CHECK_SAVE = 2;
+        static FAILED = 3;
+    }
+
+    function initialize()
+    {
+        if (pdistd::Exist("/APP_CACHE/tmp_save_work.dat"))
+            pdistd::RemoveFile("/APP_CACHE/tmp_save_work.dat");
+    }
+
+    function get_text(context, key)
+    {
+        return context.translate(context.getCursorProject(), "SaveData", key);
+    }
+
+    function get_textGT5(context, key)
+    {
+        return context.translate(context.getCursorProject(), "SaveDataGT6", key);
+    }
+
+    function getLocalizedCourseName(context, course_code, scenery_code)
+    {
+        var course_info = CourseData::getCourseInfo(course_code);
+
+        if (course_info.is_reverse)
+        {
+            return "%s / %s".format(
+                context.translate(context.getCursorProject(), "CourseName", course_info.name)
+                context.translate(context.getCursorProject(), "CourseData", "direction_reverse")
+            );
+        }
+        else
+        {
+            return context.translate(context.getCursorProject(), "CourseName", course_info.name);
+        }
+    }
+
+    function getDateTime(context, d)
+    {
+        var time = main::pdistd::MTime();
+        time.setBySecond(d);
+
+        var local_time = time.toLocal();
+
+        return context.translate(context.getCursorProject(), "DateTime", "FORMAT_DATE_TIME").build(
+            local_time.year,
+            "%02d".format(local_time.month),
+            "%02d".format(local_time.day),
+            "%02d".format(local_time.hour),
+            "%02d".format(local_time.minute)
+        );
+    }
+
+    function getDriverInfo(context, replay)
+    {
+        var header = ORG.getReplayHeaderFromPath(replay.filename);
+        var info = gtengine::MReplayInfo();
+        info.initialize(header);
+
+        var dp = info.getDriverParameter();
+        if (replay.title == "EVENT_RACE")
+        {
+            var spec = replay.bspec_type == gtengine::BSpecType::ONLY_B ? "B-spec" : "A-spec";
+            var format = context.translate(context.getCursorProject(), "SaveData", "FORMAT_NAME");
+            var format_value = context.translate(context.getCursorProject(), "SaveData", "FORMAT_VALUE");
+            var text = format_value.build(format_name.build(context.translate(context.getCursorProject(), "Driver", "DRIVER"), 
+                spec),
+                dp.display_name);
+            return text;
+        }
+        else
+        {
+            var format = context.translate(context.getCursorProject(), "MyHome", "FORMAT_VALUE");
+            return format.build(context.translate(context.getCursorProject(), "Driver", "DRIVER"));
+        }
+    }
+
+    function getReplayInfo(context, replay)
+    {
+        var description = context.translate(context.getCursorProject(), "GameModeName", replay.title);
+        if (replay.onelap > 0)
+            description += " %s".format(context.translate(context.getCursorProject(), "SaveData", "BEST_LAP_REPLAY"));
+
+        if (replay.game_id > 0)
+        {
+            if (replay.title == "EVENT_RACE")
+            {
+                if (replay.bspec_type == gtengine::BSpecType::ONLY_B)
+                {
+                    var file_id = ABspecUtil::getFileId(replay.game_id, true);
+                    if (file_id < 0)
+                        description += ": %s".format(context.translate(context.getCursorProject(), "MyHome", "SEASONALEVENTS"));
+                    else
+                        description += ": %s".format(context.translate(context.getCursorProject(), "BspecEventInfoGT5", "r%{file_id}t"));
+                }
+                else
+                {
+                    var file_id = ABspecUtil::getFileId(replay.game_id, false);
+                    if (file_id < 0)
+                        description += ": %s".format(context.translate(context.getCursorProject(), "MyHome", "SEASONALEVENTS"));
+                    else
+                        description += ": %s".format(context.translate(context.getCursorProject(), "AspecEventInfoGT5", "r%{file_id}t"));
+                }
+            }
+            else if (replay.title == "LICENSE")
+            {
+                var [category_id, category_index] = LicenseUtil::GetCategoryIdAndCategoryIndex(replay.game_id);
+                var category_str = LicenseUtil::GetCategoryString(category_id);
+                var number = "%{category_str}-%{category_index}";
+                var title = context.translate(context.getCursorProject(), "LicenseGT5", "%03dt".format(replay.game_id));
+                description += ": %{number} %{title}";
+            }
+            else if (replay.title == "EVENT_RALLY")
+            {
+                description += ": %s".format(context.getCursorProject(), "SpecialEventInfoGT5", "rally%{replay.game_id}t");
+            }
+            else if (replay.title == "TOUR")
+            {
+                var title = context.translate(context.getCursorProject(), "SpecialEventInfoGT5", "tour%03dt".format(replay.game_id));
+                description += ": %{title}";
+            }
+            else if (replay.title == "SCHOOL")
+            {
+                var name_tbl = ["kart", "tour", "amg", "stig_C", "gordon", "loeb", "rally", "vettel"];
+                var event_type = replay.game_id / 1000 - 1;
+                if (event_type < name_tbl.size)
+                {
+                    var name = name_tbl[event_type];
+                    var title = context.translate(context.getCursorProject(), "SpecialEventInfoGT5", "%{name}%03dt".format(replay.game_id % 1000));
+                    description += ": %{title}";
+                }
+            }
+        }
+        else
+            ;
+
+        description += "\n";
+        
+        if (GetVersionBranch() == "academy")
+            description += getLocalizedCourseName(context, replay.course_code);
+        else if (replay.course_name == "")
+            description += getLocalizedCourseName(context, replay.course_code);
+        else
+        {
+            var format = context.translate(context.getCursorProject(), "MyHome", "FORMAT_VALUE");
+            description += format.build(getLocalizedCourseName(context, replay.course_code), replay.course_name);
+        }
+
+
+        description += gtengine::MSpecDB::getCarName(replay.target_car_code);
+        description += "\n";
+
+        description += getDriverInfo(context, replay);
+        description += "\n";
+
+        description += getDateTime(context, replay.datetime);
+        description += "\n";
+
+        return description;
+    }
+
+    function game_first_cb(context, data, use_tsm)
+    {
+        var buf = GlobalStatus::beginSave(&data.size, main::GAME_STATUS);
+        if (buf == nil)
+            return false;
+
+        var res = pdistd::WriteFile("/APP_CACHE/tmp_save_work.dat", buf, size);
+        var result = res == pdistd::FileError::OK;
+        if (!result)
+        {
+            var need_space = 0;
+            pdistd::MSystemDialog::open("NN", get_text(context, "EROR_SAVE_NO_SPACE").build(need_space));
+        }
+
+        return result;
+    }
+
+    function getDistanceText(context, km)
+    {
+        var km_mile;
+        var unit_keyword;
+        if (GAME_STATUS.user_profile.option.unit_velocity)
+        {
+            km_mile = km / 1.6;
+            unit_keyword = "LENGTH_MILE";
+        }
+        else
+        {
+            km_mile = km;
+            unit_keyword = "LENGTH_KILOMETER";
+        }
+
+        var km_mile_text = pdiext::GetNumberString(10 * km_mile, 1);
+        var unit_text = context.translate(context.getCursorProject(), "Unit", unit_keyword);
+        return "%{km_mile_text}%{unit_text}";
+    }
+    
+    function getSaveDataDescription(context, is_backup, cp)
+    {
+        var description = "";
+        var keyword = "";
+
+        if (keyword = GetVersionBranch() == "academy")
+        {
+            is_backup ? "ACADEMY_BACKUP_GAME_DESCRIPTION_WITHIN_1024BYTES" : "ACADEMY_GAME_DESCRIPTION_WITHIN_1024BYTES";
+
+            var [start_num, disqualify] = GAME_STATUS.user_profile.record.academy_playlog.getPlayLogAll();
+            var description = get_textGT5(context, keyword).build(
+                GAME_STATUS.user_profile.record.academy_event.getGoldCount(),
+                getDistanceText(context, GAME_STATUS.user_profile.total_aspec_running_km),
+                start_num);
+        }
+        else 
+        {
+            is_backup ? "BACKUP_GAME_DESCRIPTION_WITHIN_1024BYTES" : "GAME_DESCRIPTION_WITHIN_1024BYTES";
+
+            var [start_num, disqualify] = GAME_STATUS.user_profile.record.academy_playlog.getPlayLogAll();
+            var description = get_textGT5(context, keyword).build(
+                pdiext::GetMoneyString(GAME_STATUS.user_profile.cash),
+                cp == nil ? "--" : gtengine::MSpecDB::getCarName(cp.getCarCode()));
+        }
+    }
+
+    function getGT5GameForSave(context)
+    {
+        var is_academy = GetVersionBranch();
+        var user_profile = GAME_STATUS.user_profile;
+        var data = SaveDataUtil::DataForSave();
+        data.firstCB = game_first_cb;
+        data.mode = SaveDataUtil::MODE::COPYBG;
+        data.buf = "/APP_CACHE/tmp_save_work.dat";
+        data.dirName = pdiext::MProductInformation::GetGameProductNumberShort() + "-GAME";
+        data.fileName = "GT5.DAT";
+        data.listParam = "GAMEDAT";
+        data.iconTitle = get_text(context, "GAME_ICONTITLE_WITHIN_128BYTES");
+        data.title = getSaveDataTitle(context, false);
+        data.subtitle = get_textGT5(context, "GAME_SUBTITLE_WITHIN_128BYTES");
+
+        var cp = user_profile.garage.getRidingCar();
+        data.description = getSaveDataDescription(context, false, cp);
+        data.iconPngName = "icon/gt5/game_icon.png";
+        data.bgPngName = "icon/gt5/game_bg.png";
+        data.secure = true;
+        data.canCopy = true;
+        data.bindCheck = main::GetVersionBranch() != "demo";
+        data.compress = false;
+        data.encrypt = false;
+        data.indicatorMessage = get_text(context, "INDICATOR_SAVING");
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+        return data;
+    }
+
+    function getGT5BackupGameForSave(context)
+    {
+        var is_academy = GetVersionBranch();
+        var user_profile = GAME_STATUS.user_profile;
+        var data = SaveDataUtil::DataForSave();
+        data.firstCB = game_first_cb;
+        data.mode = SaveDataUtil::MODE::COPYBG;
+        data.buf = "/APP_CACHE/tmp_save_work.dat";
+        data.dirName = pdiext::MProductInformation::GetGameProductNumberShort() + "-BKUP";
+        data.fileName = "GT5.DAT";
+        data.listParam = "GAMEDAT";
+        data.iconTitle = get_text(context, "BACKUP_GAME_ICONTITLE_WITHIN_128BYTES");
+        data.title = getSaveDataTitle(context, false);
+        data.subtitle = get_textGT5(context, "BACKUP_GAME_SUBTITLE_WITHIN_128BYTES");
+
+        var cp = user_profile.garage.getRidingCar();
+        data.description = getSaveDataDescription(context, true, cp);
+        data.iconPngName = "icon/gt5/game_icon.png";
+        data.bgPngName = "icon/gt5/game_bg.png";
+        data.secure = true;
+        data.canCopy = true;
+        data.bindCheck = main::GetVersionBranch() != "demo";
+        data.compress = false;
+        data.encrypt = false;
+        data.indicatorMessage = get_text(context, "INDICATOR_SAVING");
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+        return data;
+    }
+
+    function get_gt5_game_for_load()
+    {
+        var context = manager.getUpdateContext().getRenderContext();
+        var project = context.getCursorProject();
+        var data = SaveDataUtil::DataForLoad();
+        data.mode = SaveDataUtil::MODE::COPYBG;
+        data.buf = "/APP_CACHE/tmp_save_work.dat";
+        data.secure = true;
+        data.bindCheck = main::GetVersionBranch() != "demo" && !AppOpt.defined("nobind");
+        data.compress = false;
+        data.encrypt = false;
+        data.dirName = pdiext::MProductInformation::GetGameProductNumberShort() + "-GAME";
+        data.indicatorMessage = get_text(context, "INDICATOR_LOADING");
+        data.indicatorPosition = SaveDataUtil::INDICATOR_DISP_POS::INDICATORPOS_LOWER_RIGHT;
+        data.indicatorAlign = SaveDataUtil::INDICATOR_DISP_MSG_ALIGN::INDICATORPOS_MSGALIGN_CENTER;
+        data.indicatorMode = SaveDataUtil::INDICATOR_DISP_MODE::INDICATORMODE_BLINK_FAST;
+        data.indicatorPngName = "";
+        return data;
+    }
+
+    function get_gt5_backup_game_for_load()
+    {
+        var context = manager.getUpdateContext().getRenderContext();
+        var project = context.getCursorProject();
+        var data = SaveDataUtil::DataForLoad();
+        data.mode = SaveDataUtil::MODE::COPYBG;
+        data.buf = "/APP_CACHE/tmp_save_work.dat";
+        data.secure = true;
+        data.bindCheck = main::GetVersionBranch() != "demo" && !AppOpt.defined("nobind");
+        data.compress = false;
+        data.encrypt = false;
+        data.dirName = pdiext::MProductInformation::GetGameProductNumberShort() + "-BKUP";
+        data.indicatorMessage = get_text(context, "INDICATOR_LOADING");
+        data.indicatorPosition = SaveDataUtil::INDICATOR_DISP_POS::INDICATORPOS_LOWER_RIGHT;
+        data.indicatorAlign = SaveDataUtil::INDICATOR_DISP_MSG_ALIGN::INDICATORPOS_MSGALIGN_CENTER;
+        data.indicatorMode = SaveDataUtil::INDICATOR_DISP_MODE::INDICATORMODE_BLINK_FAST;
+        data.indicatorPngName = "";
+        return data;
+    }
+
+    function getGT5GameForLoad()
+    {
+        var data = get_gt5_game_for_load();
+        data.fileName = "GT5.DAT";
+
+        if (data.mode == SaveDataUtil::MODE::COPYFIXED ||
+            data.mode == SaveDataUtil::MODE::COPYAUTO ||
+            data.mode == SaveDataUtil::MODE::COPYBG ||
+            data.mode == SaveDataUtil::MODE::COPYLIST)
+            pdistd::RemoveFile(data.buf);
+
+        return data;
+    }
+
+    function getGT5GameForLoad()
+    {
+        var data = get_gt5_backup_game_for_load();
+        data.fileName = "GT5.DAT";
+
+        if (data.mode == SaveDataUtil::MODE::COPYFIXED ||
+            data.mode == SaveDataUtil::MODE::COPYAUTO ||
+            data.mode == SaveDataUtil::MODE::COPYBG ||
+            data.mode == SaveDataUtil::MODE::COPYLIST)
+            pdistd::RemoveFile(data.buf);
+
+        return data;
+    }
+
+    function getGT5GameForExportImport()
+    {
+        var data = SaveDataUtil::DataForImportExport();
+        data.mode = SaveDataUtil::MODE::FIXED;
+        data.dirName = pdiext::MProductInformation::GetGameProductNumberShort() + "-GAME";
+        data.fileName = "GT5.DAT";
+        return data;
+    }
+
+    function getGT5ReplayForSave(context, replay)
+    {
+        var is_academy = GetVersionBranch() == "academy";
+
+        var header = ORG.getReplayHeaderFromPath(replay.filename);
+        var info = gtengine::MReplayInfo();
+        info.initialize(header);
+
+        var course_name = CourseData::getCourseName(context, info.getRaceParameter());
+
+        var data = SaveDataUtil::DataForSave();
+        data.firstCB = nil;
+        data.lastCB = nil;
+        
+        data.mode = SaveDataUtil::MODE::COPYLIST;
+        data.dirName = pdiext::MProductInformation::GetSaveDataDirectory() + "-RPL";
+        data.fileName = "REPLAY.DAT";
+        data.listParam = "REPLAY";
+
+        var project = context.getCursorProject();
+        data.iconTitle = get_text(context, "REPLAY_ICONTITLE_WITHIN_128BYTES");
+
+        if (is_academy)
+        {
+            data.title = get_textGT5(context, "ACADEMY_REPLAY_TITLE_WITHIN_128BYTES");
+            data.subtitle = get_textGT5(context, "ACADEMY_REPLAY_SUBTITLE_WITHIN_128BYTES");
+        }
+        else
+        {
+            data.title = get_textGT5(context, "REPLAY_TITLE_WITHIN_128BYTES");
+            data.subtitle = get_textGT5(context, "REPLAY_SUBTITLE_WITHIN_128BYTES");
+        }
+
+        data.description = getReplayInfo(context, replay);
+
+        
+        data.bgPngName = "icon/gt5/replay_sr_bg.png";
+        data.iconPngName = "icon/gt5/replay_sr_icon.png";
+        data.secure = true;
+        data.canCopy = true;
+        data.bindCheck = false;
+        data.compress = false;
+        data.encrypt = false;
+        data.indicatorMessage = "";
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+
+        var st = pdistd::GetFileStatus(replay.filename);
+        if (st["size"] > 209715200)
+            data = nil;
+        return data;
+    }
+
+    function getGT5ReplayForLoad(context, path, dir)
+    {
+        if (dir == nil)
+            dir = pdiext::MProductInformation::GetSaveDataDirectory() + "-RPL";
+
+        var data = SaveDataUtil::DataForLoad();
+        data.mode = SaveDataUtil::MODE::COPYLIST;
+        data.secure = true;
+        data.bindCheck = false;
+        data.compress = false;
+        data.encrypt = false;
+        data.dirName = dir;
+        data.fileName = "REPLAY.DAT";
+        data.buf = path;
+        data.indicatorMessage = "";
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+
+        for (var i = 0; i < data.outputFileName.size; i++)
+            pdistd::RemoveFile(data.outputFileName[i]);
+        return data;
+    }
+
+    function getGT5ReplayForExportImport()
+    {
+        var data = SaveDataUtil::DataForImportExport();
+        data.mode = SaveDataUtil::MODE::LIST;
+        data.dirName = pdiext::MProductInformation::GetGameProductNumberShort() + "-RPLY2";
+        data.fileName = "REPLAY.DAT";
+    }
+
+    function getBackgroundLoadResultFromFile(context)
+    {
+        if (AppOpt["savedata"] != nil)
+        {
+            var st = pdistd::ReadFile("/app_home" + AppOpt["savedata"]);
+            if (st["result"] == pdistd::FileError::OK)
+                return [SaveDataUtil::RETCODE::SUCCESS, st["buffer"]];
+            else
+                ;
+        }
+
+        var [result, buf] = SaveDataUtil::getBackgroundLoadResult(context);
+        if (pdistd::Exist("/APP_CACHE/tmp_save_work.dat") && 
+            (result == SaveDataUtil::RETCODE::SUCCESS || result == SaveDataUtil::RETCODE::BIND_NEED_RECREATE))
+        {
+            var st = pdistd::ReadFile("/APP_CACHE/tmp_save_work.dat", true);
+            buf = st["buffer"];
+        }
+        else
+        {
+            buf = nil;
+        }
+
+        return [result, buf];
+    }
+
+    function getLocalizePage()
+    {
+        return sLocalizePage;
+    }
+
+    function getBackgroundLoadResultFromAllFile(context)
+    {
+        var buf = nil;
+        var [result] = SaveDataUtil::getBackgroundLoadResult(context);
+        buf = snapGameStatusFile(context, result);
+        if (!snapStockyardFile(context, result))
+            buf = nil;
+
+        return [result, buf];
+    }
+
+    function getBackgroundLoadResultFromFileForStockyard(context)
+    {
+        var [result] = SaveDataUtil::getBackgroundLoadResult(context, false);
+        var success = snapStockyardFile(context, result);
+        return [success, result];
+    }
+
+    function saveEveryWhere(context, recreate)
+    {
+        if (sSaveBGIssued)
+        {
+            var res = SaveDataUtil::RETCODE::BUSY;
+            while (res == SaveDataUtil::RETCODE::BUSY)
+                res = checkSaveEveryWhereNoErrorRecovery();
+        }
+
+        var data = SaveDataUtilGT5::getGT5GameForSave(context);
+
+        if (recreate == true)
+            data.bindCheck = false;
+
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        SaveDataUtil::save(context, data, use_tsm);
+
+        sSaveBGIssued = true;
+        return true;
+    }
+
+    function saveBackupEveryWhere(context, recreate = false)
+    {
+        if (sSaveBGIssued)
+        {
+            var res = SaveDataUtil::RETCODE::BUSY;
+            while (res == SaveDataUtil::RETCODE::BUSY)
+                res = checkSaveEveryWhereNoErrorRecovery();
+        }
+
+        var data = SaveDataUtilGT5::getGT5BackupGameForSave(context);
+
+        if (recreate == true)
+            data.bindCheck = false;
+
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        SaveDataUtil::save(context, data, use_tsm);
+
+        sSaveBGIssued = true;
+        return true;
+    }
+
+    function saveRecreateEveryWhere(context)
+    {
+        var data = SaveDataUtilGT5::getGT5GameForSave(context);
+        data.mode = SaveDataUtil::MODE::RECREATE;
+        SaveDataUtil::save(context, data);
+    }
+
+    function checkSaveEveryWhere(context)
+    {
+        return SaveDataUtil::RETCODE::SUCCESS;
+    }
+
+    function checkSaveEveryWhereNoErrorRecovery(context, backup)
+    {
+        if (backup == nil)
+            backup = false;
+
+        var data = SaveDataUtilGT5::getGT5GameForSave(context);
+        if (backup == true)
+            data = SaveDataUtilGT5::getGT5BackupGameForSave(context);
+
+        var res = SaveDataUtil::getBackgroundSaveResult(context, data);
+        if (res == SaveDataUtil::RETCODE::SUCCESS)
+            sSaveBGIssued = false;
+
+        return res;
+    }
+
+    function saveAutoForGame(context)
+    {
+        if (sSaveBGIssued)
+        {
+            var res = SaveDataUtil::RETCODE::BUSY;
+            while (res == SaveDataUtil::RETCODE::BUSY)
+                res = checkSaveEveryWhereNoErrorRecovery();
+        }
+
+        var data = SaveDataUtilGT5::getGT5BackupGameForSave(context);
+        data.mode = SaveDataUtil::MODE::COPYAUTO;
+
+        var use_tsm = pdistd::GetHeapAllocateMax().toInt() < 32 * 1024 * 1024;
+        SaveDataUtil::save(context, data, use_tsm);
+
+        sSaveBGIssued = true;
+        return true;
+    }
+
+    function deleteSaveDataForGame(context)
+    {
+        SaveDataUtilGT5::getGT5GameForSave(context);
+        var res = SaveDataUtil::fixedDelete(context, data);
+        return res;
+    }
+
+    function getGParamForSave(context, buf, dir)
+    {
+        if (dir == nil)
+            dir = pdiext::MProductInformation::GetGameProductNumberShort();
+
+        var data = SaveDataUtil::DataForSave();
+        data.firstCB = nil;
+        data.mode = SaveDataUtil::MODE::AUTO;
+        data.buf = buf;
+        data.dirName = dir + "-GPRM";
+        data.fileName = "GPARAM.DAT";
+        data.listParam = "GPARAM";
+        data.iconTitle = get_textGT5(context, "GPARAM_ICONTITLE_WITHIN_128BYTES");
+        data.title = get_textGT5(context, "GPARAM_TITLE_WITHIN_128BYTES");
+        data.subtitle = "";
+        data.description = "";
+        data.bgPngName = "icon/gt5/gparam_bg.png";
+        data.iconPngName = "icon/gt5/gparam_icon.png";
+        data.secure = true;
+        data.canCopy = true;
+        data.bindCheck = true;
+        data.compress = true;
+        data.encryption = true;
+        data.indicatorMessage = "";
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+        return data;
+    }
+
+    function serializeGPList(gp_list)
+    {
+        var num = gp_list.size;
+        var st = STStructure();
+        st.define("num", STInt());
+        st.define("buf", STObject(ByteData));
+
+        var obj = st();
+        obj.num = gp_list.size;
+        obj.buf = gp_list.serialize();
+        var buf = obj.serialize();
+        return buf;
+    }
+
+    function getGParamForLoad(context, dir)
+    {
+        if (dir == nil)
+            dir = pdiext::MProductInformation::GetGameProductNumberShort();
+
+        var data = SaveDataUtil::DataForLoad();
+        data.mode = SaveDataUtil::MODE::AUTO;
+        data.secure = true;
+        data.bindCheck = true;
+        data.compress = true;
+        data.encrypt = true;
+        data.dirName = "dir" + "-GPRM";
+        data.fileName = "GPARAM.DAT";
+        data.indicatorMessage = "";
+        data.indicatorPosition = 0;
+        data.indicatorMode = 0;
+        data.indicatorPngName = "";
+        return data;
+    }
+
+    function deserializeGPList(buf)
+    {
+        var st = STStructure();
+        st.define("num", STInt());
+        st.define("buf", STObject(ByteData));
+
+        var obj = st();
+        obj.deserialize(buf);
+
+        var gp_list = Array(obj.num);
+        for (var i = 0; i < gp_list.size; i++)
+            gp_list[i] = gtengine::MGameParameter();
+
+        gp_list.deserialize(obj.buf);
+        return gp_list;
+
+    }
+
+    function snapGameStatusFile(context, result)
+    {
+        var buf = nil;
+
+        if (result == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS ||
+            result == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BIND_NEED_RECREATE)
+        {
+            if (pdistd::Exist("/APP_CACHE/tmp_save_work.dat"))
+            {
+                var st = pdistd::ReadFile("/APP_CACHE/tmp_save_work.dat", true);
+                if (st["result"] == pdistd::FileError::OK)
+                    buf = st["buffer"];
+                else
+                    buf = nil;
+            }
+            else
+            {
+                buf = nil;
+            }
+
+            if (pdistd::Exist("/APP_CACHE/tmp_db_work.dat"))
+            {
+                var st = pdistd::CopyFile("/APP_CACHE/tmp_db_work.dat", GlobalStatus::DB_PATH);
+                var success = st == pdistd::FileError::OK;
+                if (!success)
+                {
+                    var st_size = pdistd::GetFileStatus("/APP_CACHE/tmp_db_work.dat");
+                    var size = st_size["size"];
+                    check_file_access_result(context, st, size);
+                    buf = nil;
+                }
+            }
+            else
+                buf = nil;
+                
+            if (pdistd::Exist("/APP_CACHE/tmp_garage_work.dat"))
+            {
+                var st = pdistd::CopyFile("/APP_CACHE/tmp_garage_work.dat", UserProfile::GARAGE_PATH);
+                var success = st == pdistd::FileError::OK;
+                if (!success)
+                {
+                    var st_size = pdistd::GetFileStatus("/APP_CACHE/tmp_garage_work.dat");
+                    var size = st_size["size"];
+                    check_file_access_result(context, st, size);
+                    buf = nil;
+                }
+            }
+            else
+                buf = nil;
+        }
+        else
+            buf = nil;
+
+        return buf;
+    }
+
+    function snapStockyardFile(context, result)
+    {
+        var success = false;
+
+        if (result == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_SUCCESS ||
+            result == main::pdiext::SaveDataUtilError::SAVEDATAUTIL_BIND_NEED_RECREATE)
+        {
+            success = true;
+
+            if (pdistd::Exist("/APP_CACHE/tmp_garage_pad_stockyard.dat"))
+            {
+                var st = pdistd::CopyFile("/APP_CACHE/tmp_garage_pad_stockyard.dat", UserProfile::GARAGE_PAD_STOCKYARD_PATH);
+                if (st != pdistd::FileError::OK)
+                {
+                    var st_size = pdistd::GetFileStatus("/APP_CACHE/tmp_garage_pad_stockyard.dat");
+                    var size = st_size["size"];
+                    check_file_access_result(context, st, size);
+                    success = false;
+                }
+            }
+            else
+                success = false;
+                
+            if (pdistd::Exist("/APP_CACHE/tmp_garage_stockyard.dat"))
+            {
+                var st = pdistd::CopyFile("/APP_CACHE/tmp_garage_stockyard.dat", UserProfile::GARAGE_STOCKYARD_PATH);
+                if (st != pdistd::FileError::OK)
+                {
+                    var st_size = pdistd::GetFileStatus("/APP_CACHE/tmp_garage_stockyard.dat");
+                    var size = st_size["size"];
+                    check_file_access_result(context, st, size);
+                    success = false;
+                }
+            }
+            else
+                success = false;
+        }
+
+        return success;
+    }
+
+    // Do NOT call this
+    function getLocalizePage()
+    {
+        return sLocalizePage; // Doesn't even exist
+    }
+}

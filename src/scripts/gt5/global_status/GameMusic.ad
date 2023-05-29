@@ -1,0 +1,375 @@
+
+
+//---------------------------------------------------------------------------------------
+// GameMusic.ad
+//
+// Creates the save profile entity
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module GameMusic
+{
+    class Data
+    {
+        attribute id;
+        attribute code;
+        attribute title;
+        attribute artist;
+        attribute genre;
+        attribute race_bgm;
+        attribute menu_bgm;
+        attribute slideshow_bgm;
+        attribute d_race_bgm;
+        attribute d_menu_bgm;
+        attribute d_slideshow_bgm;
+        attribute hidden;
+        attribute unlock_type;
+    }
+
+    function clearInitializer()
+    {
+        undef CreateStructure;
+        undef DefineMethod;
+        undef Initialize;
+        undef getUnknownDataList;
+        undef clearInitializer;
+    }
+
+    function CreateStructure()
+    {
+        var st = STStructure("Impl");
+        GameMusic.defineModule(st);
+        
+        DefineMethod();
+
+        return st;
+    }
+
+    function Initialize(instance)
+    {
+        
+    }
+
+    function InitializeDB()
+    {
+        var sqlite = getSqlite();
+        var ver = DBUtil::getTableVersion(sqlite, "t_music_files");
+        if (ver == 19)
+            return;
+
+        var prev_setting_map = nil;
+        if (ver != nil)
+        {
+            prev_setting_map = Map();
+            var list = getUnknownDataList("");
+            foreach (var i in list)
+            {
+                var bits = (i.race_bgm ? 0x01 : 0) +
+                           (i.menu_bgm ? 0x02 : 0) +
+                           (i.slideshow_bgm ? 0x04 : 0) +
+                           (i.hidden != nil ? 0x08 : 0) +
+                           (i.hidden != nil && i.hidden ? 0x10 : 0);
+                prev_setting_map[i.code] = bits;
+            }
+        }
+
+        DBUtil::initializeTable(sqlite, "t_music_files", 19);
+        var sql_list = [
+            "CREATE TABLE IF NOT EXISTS %s (id INTEGER, code TEXT, title TEXT, artist TEXT, genre TEXT, race_bgm INTEGER, menu_bgm INTEGER, slideshow_bgm INTEGER, d_race_bgm INTEGER, d_menu_bgm INTEGER, d_slideshow_bgm INTEGER, hidden INTEGER, unlock_type INTEGER, PRIMARY KEY (id))".format("t_music_files"),
+            "DROP INDEX IF EXISTS %s_idx1".format("t_music_files"),
+            "CREATE INDEX %s_idx1 ON %s (genre)".format("t_music_files", "t_music_files")
+        ];
+
+        var sqlite = getSqlite();
+        foreach (var sql in sql_list)
+        {
+            var res = sqlite.execute0(sql);
+            if (!(res == 0)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+        }
+
+        var sql = "INSERT INTO %s (code, title, artist, genre, race_bgm, menu_bgm, slideshow_bgm, d_race_bgm, d_menu_bgm, d_slideshow_bgm, hidden, unlock_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)".format("t_music_files");
+        sql_list = [];
+
+        var playlist_source_groups = ["racing", "menu", "slideshow", "racing_bonus", "menu_extra", "bonus_tracks", "ed_bonus_tracks"];
+        
+        var insert_map = function(map, group, bits)
+        {
+            foreach (var music in main::sound.default.getMusics(group))
+            {
+                var code = music["code"];
+                var value = map[code];
+                if (value == nil)
+                    value = 0;
+
+                map[code] = value | bits;
+            }
+        };
+
+        var library_map = Map();
+        insert_map(library_map, "racing", 0x01);
+        insert_map(library_map, "menu", 0x02);
+        insert_map(library_map, "slideshow", 0x04);
+        insert_map(library_map, "racing_bonus", 0x08 | 0x01);
+        insert_map(library_map, "ed_bonus_tracks", 0x08);
+
+        var musics = [];
+        foreach (var group in playlist_source_groups)
+            musics.append(main::sound.default.getMusics(group));
+        
+        musics.sort((a, b) => a["code"] < b["code"]);
+
+        var region_jp = main::pdiext::MProductInformation::GetGameRegionCode() == "scej";
+        var last = "";
+        foreach (var music in musics)
+        {
+            var code = music["code"];
+            var same = code == last;
+            last = code;
+
+            if (same)
+                continue;
+
+            var artist = music["artist"];
+            if (region_jp)
+            {
+                if (artist.find("***") >= 0)
+                    artist = "";
+            }
+
+            var d_race_bgm = 0;
+            var d_menu_bgm = 0;
+            var d_slideshow_bgm = 0;
+            var hidden = 0;
+            var unlock_type = 0;
+            var bits = library_map[code];
+
+            if (bits != nil)
+            {
+                d_race_bgm = bits & 1;
+                d_menu_bgm = (bits >> 1) & 1;
+                d_slideshow_bgm = (bits >> 2) & 1;
+                hidden = (bits >> 3) & 1;
+                unlock_type = hidden;
+            }
+
+            var race_bgm = d_race_bgm;
+            var menu_bgm = d_menu_bgm;
+            var slideshow_bgm = d_slideshow_bgm;
+
+            if (prev_setting_map != nil && prev_setting_map[code] != nil)
+            {
+                var bits = prev_setting_map[code];
+                race_bgm = bits & 1;
+                menu_bgm = (bits >> 1) & 1;
+                slideshow_bgm = (bits >> 2) & 1;
+                if ((bits >> 3) & 1)
+                    hidden = (bits >> 4) & 1;
+            }
+
+            var params = [
+                music["code"],
+                music["title"],
+                artist,
+                music["genre"],
+                race_bgm,
+                menu_bgm,
+                slideshow_bgm,
+                d_race_bgm,
+                d_menu_bgm,
+                d_slideshow_bgm,
+                hidden,
+                unlock_type
+            ];
+
+            sql_list.push([sql, params]);
+        }
+
+        var res = sqlite.executeTransaction(sql_list);
+        if (res != 101)
+            ;
+    }
+
+    function ReinitializeDB(instance)
+    {
+        Initialize(instance);
+    }
+
+    function getSqlite()
+    {
+        return GlobalStatus::getSqlite();
+    }
+
+    function getUnknownDataList(condition)
+    {
+        var sqlite = getSqlite();
+        var sql = "SELECT * FROM %s %s".format("t_music_files", condition);
+        var res = sqlite.executeQuery(sql, [], true);
+        if (res == nil || res.size == 0)
+            return [];
+
+        var attr_list = Array();
+        var attr_map = Map();
+        foreach (var [symbol, modvar] in Data)
+        {
+            if (!modvar.is_attribute)
+                continue;
+            attr_map[symbol.toString()] = modvar;
+        }
+
+        var colindex = 0;
+        foreach (var colname in res[0])
+        {
+            var modvar = attr_map[colname];
+            if (modvar != nil)
+                attr_list.push([modvar, colindex]);
+            colindex++;
+        }
+
+        res.shift();
+        var list = Array();
+        foreach (var row in res)
+        {
+            var data = Data();
+            foreach (var attr in attr_list)
+            {
+                data.*attr[0] = row[attr[1]];
+            }
+
+            list.push(data);
+        }
+
+        return list;
+    }
+
+    function DefineMethod()
+    {
+        module Impl
+        {
+            method getArtistList(params)
+            {
+                var sqlite = getSqlite();
+                var condition = getFilterCondition(params);
+                var sql = "SELECT DISTINCT artist FROM %s %s ORDER BY artist COLLATE NOCASE".format("t_music_files", condition);
+                var rows = sqlite.executeQuery(sql);
+                var result = Array(rows.size);
+
+                for (var i = 0; i < rows.size; i++)
+                    result[i] = rows[i][0];
+                
+                return result;
+            }
+
+            method getGenreList(artist, params)
+            {
+                var sqlite = getSqlite();
+                var condition = getFilterCondition(params);
+                if (artist != nil)
+                    condition += " AND artist = '%s'".format(pdistd::MSqlite::EscapeString(artist));
+
+                var sql = "SELECT DISTINCT genre FROM %s %s ORDER BY genre".format("t_music_files", condition);
+                var rows = sqlite.executeQuery(sql);
+                var result = Array(rows.size);
+
+                for (var i = 0; i < rows.size; i++)
+                    result[i] = rows[i][0];
+                
+                return result;
+            }
+
+            method getList(condition, order, by)
+            {
+                var sqlite = getSqlite();
+                var sql = "%s %s %s".format(DBUtil::getSelectQuery("t_music_files", Data), condition, createOrderBy(order, by));
+
+                var res = sqlite.executeQuery(sql);
+                return DBUtil::getDataList(Data, res);
+            }
+
+            method update(id, column, value)
+            {
+                var sqlite = getSqlite();
+                var sql = "UPDATE %s SET %s = %d WHERE id = %d".format("t_music_files", column, value, id);
+                var res = sqlite.execute(sql);
+                if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+            }
+
+            method updateByList(id_list, column, value)
+            {
+                var sqlite = getSqlite();
+                var sql = "UPDATE %s SET %{column} = %{value} WHERE id = ?".format("t_music_files");
+                var sql_list = Array();
+                foreach (var id in id_list)
+                {
+                    var params = [id];
+                    sql_list.push([sql, params]);
+                }
+
+                var res = sqlite.executeTransaction(sql_list);
+                if (!(res == 101)) { ErrorUtil::abortDiskFull(res, "32MB", __FILE__, __LINE__); return false; }
+
+                if (isFailed(res))
+                    ;
+            }
+
+            method getFilterCondition(params)
+            {
+                var conditions = "WHERE hidden=0";
+                var race = params["race"];
+                var menu = params["menu"];
+                var slideshow = params["slideshow"];
+
+                if (race != nil)
+                    conditions += " AND race_bgm = 1";
+                else
+                {
+                    if (menu != nil)
+                        conditions += " AND menu_bgm = 1";
+                    else
+                    {
+                        if (slideshow != nil)
+                            conditions += " AND slideshow_bgm = 1";
+                    }
+                }
+
+                return conditions;
+            }
+
+            method createOrderBy(order, by)
+            {
+                if (order == nil)
+                    return "";
+
+                if (by == nil)
+                    by = "ASC";
+
+                if (order == "genre")
+                    return "ORDER BY genre %{by}, artist COLLATE NOCASE, title COLLATE NOCASE";
+                else if (order == "artist")
+                    return "ORDER BY artist COLLATE NOCASE %{by}, title COLLATE NOCASE";
+                else
+                    return "ORDER BY %{order} COLLATE NOCASE %{by}";
+            }
+
+            method getResult1(res)
+            {
+                if (res.size == 0)
+                    return nil;
+
+                var row = res[0];
+                if (row.size == 0)
+                    return nil;
+
+                return res[0][0];
+            }
+
+            method isFailed(res)
+            {
+                return res != 101;
+            }
+        }
+    }
+}
