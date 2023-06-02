@@ -1,0 +1,894 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module main::GameItemBox
+{
+    module ItemStatus
+    {
+        static ITEMBOX_VISIBLE = 1;
+        static ITEMBOX_DISABLE = 2;
+        static PRESENTBOX_CACHE = 5;
+    }
+
+    function clearInitializer()
+    {
+        undef CreateStructure;
+        undef Initialize;
+        undef clearInitializer;
+    }
+
+    function CreateStructure()
+    {
+        var st = STStructure("Impl");
+        GameItemBox.defineModule(st);
+        st.define("max_itembox", STInt());
+        st.define("presentbox_itembox_id", STInt());
+        st.define("table_suffix", STString(32));
+
+        var sqlite = GlobalStatus::getSqlite();
+
+        var sql_list = [
+            ("CREATE TABLE IF NOT EXISTS t_item_type "
+            "(type_id INTEGER NOT NULL,type_name_id INTEGER , "
+            "type_name_JP TEXT ,type_name_US TEXT ,type_name_GB TEXT ,"
+            "type_name_RU TEXT ,type_name_TW TEXT ,type_name_KR TEXT ,"
+            "type_name_FR TEXT ,type_name_NL TEXT ,type_name_IT TEXT ,"
+            "type_name_ES TEXT ,type_name_DE TEXT ,type_name_PT TEXT ,"
+            "type_name_PL TEXT ,type_name_TR TEXT ,type_name_EL TEXT , "
+            "PRIMARY KEY (type_id))"),
+
+            ("CREATE TABLE IF NOT EXISTS t_item_category "
+            "(category_id INTEGER NOT NULL, type_id INTEGER NOT NULL,sub_category_id INTEGER,  "
+            "category_name_id INTEGER, "
+            "category_name_JP TEXT ,category_name_US TEXT ,category_name_GB TEXT ,"
+            "category_name_RU TEXT ,category_name_TW TEXT ,category_name_KR TEXT ,"
+            "category_name_FR TEXT ,category_name_NL TEXT ,category_name_IT TEXT ,"
+            "category_name_ES TEXT ,category_name_DE TEXT ,category_name_PT TEXT ,"
+            "category_name_PL TEXT ,category_name_TR TEXT ,category_name_EL TEXT , "
+            "PRIMARY KEY (category_id), FOREIGN KEY(type_id) REFERENCES t_item_type(type_id))")
+        ];
+
+        foreach (var sql in sql_list)
+        {
+            var res = sqlite.execute0(sql);
+            DB_ASSERT(res == SQLITE_OK, res);
+        }
+
+        var init_insert_list = Array();
+        var type_list = GameItemData::getInitTypeData();
+
+        foreach (var type_data in type_list)
+        {
+            var sql =  ("INSERT INTO t_item_type(type_id,type_name_id, "
+            "type_name_JP ,type_name_US ,type_name_GB ,type_name_RU ,"
+            "type_name_TW ,type_name_KR ,type_name_FR ,type_name_NL ,"
+            "type_name_IT ,type_name_ES ,type_name_DE ,type_name_PT ,"
+            "type_name_PL ,type_name_TR ,type_name_EL"
+            ")"
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+
+            init_insert_list.push([sql, [type_data[0], type_data[1], type_data[2], type_data[3], type_data[4], type_data[5], 
+                                        type_data[6], type_data[7], type_data[8], type_data[9], type_data[10], 
+                                        type_data[11], type_data[12], type_data[13], type_data[14], type_data[15]]]);
+        }
+
+        var category_list = GameItemData::getInitCategoryData();
+        foreach (var category_data in category_list)
+        {
+            var sql =  ("INSERT INTO t_item_category(category_id, type_id, sub_category_id, category_name_id, "
+            "category_name_JP ,category_name_US ,category_name_GB ,category_name_RU ,"
+            "category_name_TW ,category_name_KR ,category_name_FR ,category_name_NL ,"
+            "category_name_IT ,category_name_ES ,category_name_DE ,category_name_PT ,"
+            "category_name_PL ,category_name_TR ,category_name_EL-"
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+
+            init_insert_list.push([sql, [category_data[0], category_data[1], category_data[2], category_data[3], category_data[4], category_data[5], 
+                                        category_data[6], category_data[7], category_data[8], category_data[9], category_data[10], 
+                                        category_data[11], category_data[12], category_data[13], category_data[14], category_data[15],
+                                        category_data[16], category_data[17], category_data[18]]]);
+        }
+
+        var res = sqlite.executeTransaction(init_insert_list);
+        DB_ASSERT(res == SQLITE_DONE, res);
+
+        DefineMethod();
+        return st;
+    }
+
+    function Initialize(instance, table_suffix)
+    {
+        instance.max_itembox = 7000;
+        instance.presentbox_itembox_id = 0;
+        instance.table_suffix = table_suffix;
+
+        var sqlite = GlobalStatus::getSqlite();
+
+        var sql_list = [
+            "CREATE TABLE IF NOT EXISTS t_itembox" + table_suffix + 
+            ("(itembox_id INTEGER NOT NULL,"
+            " create_date INTEGER NOT NULL ,"
+            " gameday INTEGER NOT NULL,"
+            " status INTEGER NOT NULL,"
+            " type_id INTEGER NOT NULL,"
+            " category_id INTEGER NOT NULL,"
+            " gameitem_id INTEGER,"
+            " exp_threshold INTEGER,"
+            " item_name TEXT,"
+            " presentbox_itembox_id INTEGER UNIQUE,"
+            " sender TEXT,"
+            " comment TEXT,"
+            " gameday_start INTEGER,"
+            " gameday_end INTEGER,"
+            " argument1 INTEGER,"
+            " argument2 INTEGER,"
+            " argument3 INTEGER,"
+            " argument4 INTEGER,"
+            " code TEXT,"
+            " blob BLOB,"
+            " present_flag INTEGER,"
+            "PRIMARY KEY (itembox_id), FOREIGN KEY(type_id) REFERENCES t_item_type(type_id))"),
+
+            "DROP INDEX IF EXISTS t_itembox_idx1",
+            "CREATE INDEX t_itembox_idx1 ON t_itembox" + table_suffix + " (gameitem_id)",
+
+            "DROP INDEX IF EXISTS t_itembox_idx2",
+            "CREATE INDEX t_itembox_idx2 ON t_itembox" + table_suffix + " (type_id)",
+
+            "DROP INDEX IF EXISTS t_itembox_idx3",
+            "CREATE INDEX t_itembox_idx3 ON t_itembox" + table_suffix + " (category_id)",
+
+            "DROP INDEX IF EXISTS t_itembox_idx4",
+            "CREATE INDEX t_itembox_idx4 ON t_itembox" + table_suffix + " (status)",
+
+            "DROP INDEX IF EXISTS t_itembox_idx5",
+            "CREATE INDEX t_itembox_idx5 ON t_itembox" + table_suffix + " (argument1)",
+
+            "DROP INDEX IF EXISTS t_itembox_idx6",
+            "CREATE INDEX t_itembox_idx6 ON t_itembox" + table_suffix + " (code)",
+        ];
+
+        foreach (var sql in sql_list)
+        {
+            var res = sqlite.execute0(sql);
+            res != SQLITE_OK;
+
+            DB_ASSERT(res != SQLITE_OK, res);
+        }
+    }
+
+    function Finalize(instance)
+    {
+
+    }
+
+    function DefineMethod()
+    {
+        module Impl
+        {
+            method apply()
+            {
+
+            }
+
+            method setGameItemRecord(res)
+            {
+                var listitem = Array();
+                foreach (var item in listitem)
+                {
+                    var gameitem = GameItemUtil::GameItemRecord();
+                    gameitem.itembox_id = item[0] != nil ? item[0] : gameitem.itembox_id;
+                    gameitem.create_date = item[1] != nil ? item[1] : gameitem.create_date;
+                    gameitem.gameday = item[2] != nil ? item[2] : gameitem.gameday;
+                    gameitem.status = item[3] != nil ? item[3] : gameitem.status;
+                    gameitem.type_id = item[4] != nil ? item[4] : gameitem.type_id;
+                    gameitem.category_id = item[5] != nil ? item[5] : gameitem.category_id;
+                    gameitem.gameitem_id = item[6] != nil ? item[6] : gameitem.gameitem_id;
+                    gameitem.exp_threshold = item[7] != nil ? item[7] : gameitem.exp_threshold;
+                    gameitem.item_name = item[8] != nil ? item[8] : gameitem.item_name;
+                    gameitem.presentbox_itembox_id = item[9] != nil ? item[9] : gameitem.presentbox_itembox_id;
+                    gameitem.sender = item[10] != nil ? item[10] : gameitem.sender;
+                    gameitem.comment = item[11] != nil ? item[11] : gameitem.comment;
+                    gameitem.argument1 = item[14] != nil ? item[14] : gameitem.argument1;
+                    gameitem.argument2 = item[15] != nil ? item[15] : gameitem.argument2;
+                    gameitem.argument3 = item[16] != nil ? item[16] : gameitem.argument3;
+                    gameitem.argument4 = item[17] != nil ? item[17] : gameitem.argument4;
+                    gameitem.code = item[18] != nil ? item[18] : gameitem.code;
+                    gameitem.item_name_id = 0;
+                    gameitem.price = 0;
+                    gameitem.present_flag = item[20] != nil ? item[20] : gameitem.present_flag;
+
+                    listitem.push(gameitem);
+                }
+
+                return listitem;
+            }
+
+            method get(itembox_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeQuery("SELECT * FROM t_itembox" + self.table_suffix + " WHERE itembox_id=?" + itembox_id);
+                return res;
+            }
+
+            method getNum(status = ITEMSTATUS::ITEMBOX_VISIBLE)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var where = "";
+
+                if (status != nil)
+                    where = " where status = %{status}";
+
+                var res = sqlite.executeQuery("SELECT count(*) FROM t_itembox" + self.table_suffix + where);
+                if (res.size > 0 && res[0].size > 0)
+                    return res[0][0];
+
+                return 0;
+            }
+
+            method getNumByCategory(category_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+
+                var res = sqlite.executeQuery("SELECT count(*) FROM t_itembox" + self.table_suffix + "where category_id = %{category_id} AND status=" + ITEMSTATUS::ITEMBOX_VISIBLE);
+                if (res.size > 0 && res[0].size > 0)
+                    return res[0][0];
+
+                return 0;
+            }
+
+            method getDistinctCategoryNum(category_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+
+                var res = sqlite.executeQuery("SELECT count(DISTINCT(argument1)) FROM t_itembox" + self.table_suffix + "where category_id = %{category_id}");
+                if (res.size > 0 && res[0].size > 0)
+                    return res[0][0];
+
+                return 0;
+            }
+
+            method getNumByID(gameitem_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+
+                var res = sqlite.executeQuery("SELECT count(*) FROM t_itembox" + self.table_suffix + "where gameitem_id=" + gameitem_id + "AND status=" + ITEMSTATUS::ITEMBOX_VISIBLE);
+                if (res.size > 0 && res[0].size > 0)
+                    return res[0][0];
+
+                return 0;
+            }
+
+            method getColorTunerList()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+
+                var res = sqlite.executeQuery("SELECT DISTINCT(code) FROM t_itembox" + self.table_suffix + "where category_id=" + gtengine::GameItemCategory::PAINT_ITEM + "AND status=" + ITEMSTATUS::ITEMBOX_VISIBLE);
+                if (res.size > 0 && res[0].size > 0)
+                {
+                    var list = Array();
+                    foreach (var item in res)
+                    {
+                        if (item[0] != "")
+                            list.push(item[0]);
+                    }
+
+                    return list;
+                }
+
+                return Array();
+            }
+
+            method getItemIDList(category_id, sort_key = "TI.category_id")
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res;
+                if (category_id == 0)
+                    res = sqlite.executeQuery("SELECT gameitem_id FROM t_itembox" + self.table_suffix + "WHERE status=" + ITEMSTATUS::ITEMBOX_VISIBLE + " ORDER BY " + sort_key);
+                else
+                    res = sqlite.executeQuery("SELECT TI.gameitem_id FROM t_itembox" + self.table_suffix + (" TI," 
+                                                                                                            " t_item_category TIC "
+                                                                                                            "WHERE TI.status=") + ITEMSTATUS::ITEMBOX_VISIBLE + 
+                                                                                                            (" AND TI.category_id=TIC.category_id " 
+                                                                                                            " AND TIC.sub_category_id=") + category_id + " ORDER BY " + sort_key);
+                var id_list = Array();
+                foreach (var id in res)
+                    id_list.push(id[0]);
+
+                return id_list;
+            }
+
+            method getItemIDListFromCategorys(category_list, sort_key = "TI.category_id")
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res;
+
+                if (category_list.size == 0)
+                {
+                    res = sqlite.executeQuery("SELECT gameitem_id FROM t_itembox" + self.table_suffix + "WHERE status=" + ITEMSTATUS::ITEMBOX_VISIBLE + " ORDER BY " + sort_key);
+                }
+                else
+                {
+                    res = sqlite.executeQuery("SELECT TI.gameitem_id FROM t_itembox" + self.table_suffix + (" TI," 
+                                                                                                            " t_item_category TIC "
+                                                                                                            "WHERE TI.status=") + ITEMSTATUS::ITEMBOX_VISIBLE + 
+                                                                                                            (" AND TI.category_id=TIC.category_id " 
+                                                                                                            " AND TIC.category_id in (") + category_list.join(",") + ") ORDER BY " + sort_key);
+
+                }
+                var id_list = Array();
+                foreach (var id in res)
+                    id_list.push(id[0]);
+
+                return id_list;
+            }
+
+            method getItemBoxList3(type, category, order, by, groupby_flag, status_flag, where, random, random_limit)
+            {
+                if (groupby_flag == nil)
+                    groupby_flag = true;   
+
+                var sqlite = GlobalStatus::getSqlite();
+                var query = "SELECT  type_id, category_id, gameitem_id, code, argument1, argument2";
+
+                if (groupby_flag)
+                    query += ", count(*) as count, present_flag";
+                else
+                    query += " FROM t_itembox" + self.table_suffix;
+
+                query += " WHERE ";
+
+                if (status_flag == nil || !status_flag)
+                    query += " status=" + ITEMSTATUS::ITEMBOX_VISIBLE;
+                else
+                    query += " status in (" + ITEMSTATUS::ITEMBOX_VISIBLE + "," + ITEMSTATUS::ITEMBOX_DISABLE + ") ";
+
+                if (type != nil)
+                    query += " AND type_id=" + type;
+
+                if (category != nil)
+                    query += " AND category_id=" + category;
+
+                if (where != nil)
+                    query += " AND " + where;
+
+                if (groupby_flag)
+                    query += " GROUP BY type_id, category_id, gameitem_id, code, argument1, argument2, argument3, present_flag";
+
+                if (random != nil && random)
+                {
+                    query += " ORDER BY RANDOM()";
+
+                    if (random_limit != nil)
+                        query += " LIMIT " + random_limit;
+                }
+                else if (order != nil)
+                {
+                    query += " ORDER BY " + order;
+                }
+                else
+                {
+                    query += " ORDER BY gameitem_id";
+                }
+
+                if (order != nil && by != nil)
+                    query += " " + by;
+
+                var res = sqlite.executeQuery(query);
+                var itemlist = Array();
+                foreach (var item in res)
+                {
+                    var gameitem = GameItemUtil::GameItemRecord();
+                    gameitem.type_id = item[0] != nil ? item[0] : gameitem.type_id;
+                    gameitem.category_id = item[1] != nil ? item[1] : gameitem.category_id;
+                    gameitem.gameitem_id = item[2] != nil ? item[2] : gameitem.gameitem_id;
+                    gameitem.code = item[3] != nil ? item[3] : gameitem.code;
+                    gameitem.argument1 = item[4] != nil ? item[4] : gameitem.argument1;
+                    gameitem.argument2 = item[5] != nil ? item[5] : gameitem.argument2;
+
+                    if (groupby_flag)
+                    {
+                        gameitem.count = item[6] != nil ? item[6] : gameitem.count;
+                        gameitem.present_flag = item[7] != nil ? item[7] : gameitem.present_flag;
+                    }
+                    else
+                    {
+                        gameitem.itembox_id = item[6] != nil ? item[6] : gameitem.itembox_id;
+                        gameitem.count = 1;
+                        gameitem.sender = item[7] != nil ? item[7] : gameitem.sender;    
+                        gameitem.present_flag = item[8] != nil ? item[8] : gameitem.present_flag;
+                    }
+                    
+                    itemlist.push(gameitem);
+                }
+
+                return itemlist;
+            }
+
+            method getItemEntity(itembox_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeQuery("SELECT blob FROM t_itembox" + self.table_suffix + " WHERE itembox_id=" + itembox_id);
+                var ret = "";
+
+                if (res.size != 0)
+                    ret = res[0][0];
+
+                return ret;
+            }
+
+            method getTypeList(type_id_list, sort_key = "TIT.type_id")
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var lang = main::pdistd::MLocale::getLanguage();
+                var res = sqlite.executeQuery("SELECT DISTINCT(TIT.type_id), TIT.type_name_" + lang + (" FROM t_item_type TIT, t_itembox_user TIU "
+                                              "WHERE TIU.type_id in(") + type_id_list.join(",") +  ") AND TIU.type_id=TIT.type_id AND TIU.status=" + ITEMSTATUS::ITEMBOX_VISIBLE + " ORDER BY " + sort_key);
+                return res;            
+            }
+            
+            method getCategoryList(type_id_list, sort_key = "TIC.category_id")
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var lang = main::pdistd::MLocale::getLanguage();
+                var res = sqlite.executeQuery("SELECT DISTINCT(TIC.category_id), TIC.category_name_" + lang + (" FROM t_item_category TIC, t_itembox_user TIU "
+                                              "WHERE TIU.type_id in(") + type_id_list.join(",") +  ") AND TIU.category_id=TIC.category_id AND TIU.status=" + ITEMSTATUS::ITEMBOX_VISIBLE + " ORDER BY " + sort_key);
+
+                foreach (var item in res)
+                    item[1] = GameItemData::getCategoryName(item[0]);
+                
+                return res;            
+            }
+
+            method getItemCount(gameitem_map)
+            {
+                var id_list = Array();
+                foreach (var [k, v] in gameitem_map)
+                    id_list.push(v["gameitem_id"]);
+                
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeQuery("SELECT gameitem_id, count(*) FROM t_itembox" + self.table_suffix + " WHERE status=" + ITEMSTATUS::ITEMBOX_VISIBLE +
+                                              " AND gameitem_id in (" + id_list.join(",") +  ") GROUP BY type_id, category_id, gameitem_id, code ORDER BY gameitem_id");
+
+                foreach (var item in res)
+                {
+                    var map = gameitem_map.find(item[0]);
+                    var gameitem = map[1];
+                    gameitem["count"] = item[1];
+                    gameitem_map.insert([map[0], gameitem]);
+                }
+
+                var itemlist = Array();
+                foreach (var [key, value] in gameitem_map)
+                    itemlist.push(value);
+
+                return itemlist;
+            }
+
+            method insertItemList(gameitem_list)
+            {
+                var item_box_count = getNum(ITEMSTATUS::ITEMBOX_VISIBLE);
+                if (item_box_count + gameitem_list.size >= self.max_itembox)
+                    return false;
+                
+                var current_time = main::pdistd::MTime::getCurrentTime().getBySecond();
+                var sqlite = GlobalStatus::getSqlite();
+                var sql_list = Array();
+
+                foreach (var gameitem in gameitem_list)
+                {
+                    var status = ITEMSTATUS::ITEMBOX_VISIBLE;
+                    sql_list.push(["INSERT INTO t_itembox" + self.table_suffix + "(create_date, gameday, status, type_id, category_id, gameitem_id, exp_threshold, code, blob, item_name, argument1, argument2, argument3, argument4, present_flag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   [current_time, main::GAME_STATUS.user_profile.gameday, status, gameitem.type_id, gameitem.category_id, gameitem.gameitem_id,
+                                   gameitem["exp_threshold"], gameitem.code, gameitem.blob, gameitem.item_name, gameitem.argument1,  gameitem.argument2, gameitem.argument3, gameitem.argument4,
+                                   gameitem["present_flag"]]]);
+                }
+
+                var res = sqlite.executeTransaction(sql_list);
+                if (res != SQLITE_DONE)
+                    return false;
+
+                return true;
+            }
+
+            method createDeleteSql(type_id, gameitem_id, argument1, code)
+            {
+                var sql_list = nil;
+
+                if (code != nil)
+                {
+                    sql_list = [
+                        ["DELETE FROM t_itembox" + self.table_suffix + (" WHERE itembox_id="
+                                                                       "(SELECT  itembox_id FROM t_itembox]") + self.table_suffix + " WHERE gameitem_id = ? and code = ? ORDER BY itembox_id limit 1) "],
+                        [gameitem_id, code],
+                    ];
+                }
+                else if (argument1 != nil)
+                {
+                    sql_list = [
+                        ["DELETE FROM t_itembox" + self.table_suffix + (" WHERE itembox_id="
+                                                                       "(SELECT  itembox_id FROM t_itembox]") + self.table_suffix + " WHERE gameitem_id = ? and code = ? ORDER BY itembox_id limit 1) "],
+                        [gameitem_id, argument1],
+                    ];
+                }
+                else
+                {
+                    sql_list = [
+                        ["DELETE FROM t_itembox" + self.table_suffix + (" WHERE itembox_id="
+                                                                       "(SELECT  itembox_id FROM t_itembox]") + self.table_suffix + " WHERE gameitem_id = ? ORDER BY itembox_id limit 1) "],
+                        [gameitem_id],
+                    ];
+                }
+
+                return sql_list;
+            }
+
+            method delete(type_id, gameitem_id, argument1, code)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql_list = Array();
+                sql_list = createDeleteSql(type_id, gameitem_id, argument1, code);
+                sqlite.executeTransaction(sql_list);
+
+                if (res != SQLITE_DONE)
+                    return false;
+
+                return true;
+            }
+
+            method delete2(gameitem)
+            {
+                if (gameitem.itembox_id != nil && gameitem.itembox_id != 0)
+                    return deleteByItemboxId(gameitem.itembox_id);
+                else if (GameItemUtil::isPaintItem(gameitem) || GameItemUtil::isHornItem(gameitem) || GameItemUtil::isAvatorItem(gameitem))
+                    return delete(gameitem.type_id, gameitem.gameitem_id, gameitem.argument1, nil);
+                else if (GameItemUtil::isCarTicket(gameitem))
+                    return delete(gameitem.type_id, gameitem.gameitem_id, gameitem.argument1, gameitem.code);
+                else
+                    return delete(gameitem.type_id, gameitem.gameitem_id, nil, nil);
+            }
+
+            method createDeleteByItemboxIdSql(itembox_id)
+            {
+                return [
+                    ["DELETE FROM t_itembox" + self.table_suffix + " WHERE itembox_id=?"],
+                    [itembox_id]
+                ];
+            }
+
+            method deleteByItemboxId(itembox_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql_list = Array();
+                var sql_list = createDeleteByItemboxIdSql(itembox_id);
+                sqlite.executeTransaction(itembox_id);
+                
+                var res = sqlite.executeTransaction(sql_list);
+                if (res != SQLITE_DONE)
+                    return false;
+
+                return true;
+            }
+        }
+
+        method deleteByList(gameitem_list)
+        {
+            var sql_list = Array();
+
+            foreach (var gameitem in gameitem_list)
+            {
+                var sql_list0 = nil;
+                if (gameitem.itembox_id != nil && gameitem.itembox_id != 0)
+                    sql_list0 = createDeleteByItemboxIdSql(gameitem.itembox_id);
+                else if (GameItemUtil::isPaintItem(gameitem) || GameItemUtil::isHornItem(gameitem) || GameItemUtil::isAvatorItem(gameitem))
+                    sql_list0 = createDeleteSql(gameitem.type_id, gameitem.gameitem_id, gameitem.argument1, nil);
+                else if (GameItemUtil::isCarTicket(gameitem))
+                    sql_list0 = createDeleteSql(gameitem.type_id, gameitem.gameitem_id, gameitem.argument1, gameitem.code);
+                else
+                    sql_list0 = createDeleteSql(gameitem.type_id, gameitem.gameitem_id, nil, nil);
+
+                sql_list += sql_list0;
+            }
+
+            if (sql_list.size > 0)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var res = sqlite.executeTransaction(sql_list);
+                if (res != SQLITE_DONE)
+                    return false;
+            }
+
+            return true;
+        }
+
+        method deleteAll()
+        {
+            var sqlite = GlobalStatus::getSqlite();
+            var sql_list = Array();
+            sql_list = ["DELETE FROM t_itembox" + self.table_suffix + " WHERE status=" + ITEMSTATUS::ITEMBOX_VISIBLE];
+            
+            var res = sqlite.executeTransaction(sql_list);
+            if (res != SQLITE_DONE)
+                return false;
+
+            return true;
+        }
+
+        method takeOnAvatorItem(category, gameitem_id, color)
+        {
+            var sqlite = GlobalStatus::getSqlite();
+            var sql_list = [
+                ["UPDATE t_itembox" + self.table_suffix + " SET status=? WHERE itembox_id=" + 
+                                                          "  ( SELECT itembox_id FROM t_itembox" + self.table_suffix + " WHERE category_id=? AND gameitem_id=? AND argument1=? AND status=? ORDER BY itembox_id LIMIT 1) ",
+                [ITEMSTATUS::ITEMBOX_DISABLE, category, gameitem_id, color, ITEMSTATUS::ITEMBOX_VISIBLE]]
+            ];
+
+            var res = sqlite.executeTransaction(sql_list);
+            if (res == SQLITE_DONE && sqlite.changes() == 0)
+            {
+                var temp = GameItemData::getGameItemListFromIdList(gameitem_id);
+                var item = GameItemData::getGameItemListFromItemBox(temp);
+
+                if (GameItemUtil::isHaveColorVariation(item[0].value))
+                    item[0].argument1 = color;
+                else
+                    item[0].argument1 = 0;
+
+                item[0].argument2 = 0;
+
+                var res2 = insertItemList(item);
+                if (!res2)
+                    return false;
+            }
+            else if (res != SQLITE_DONE)
+                return false;
+
+            return true;
+        }
+
+        method isExist2(gameitem)
+        {
+            if (gameitem.itembox_id != nil && gameitem.itembox_id != 0)
+                return isExistByItemBoxId(gameitem.itembox_id);
+            else if (GameItemUtil::isPaintItem(gameitem) || GameItemUtil::isPaintItem(gameitem) || GameItemUtil::isPaintItem(gameitem))
+                return isExist(gameitem.gameitem_id, gameitem.argument1);
+            else if (GameItemUtil::isCarTicket(gameitem))
+                return isExist(gameitem.gameitem_id, gameitem.argument1, gameitem.code);
+            else
+                isExist(gameitem.gameitem_id, nil, nil);
+        }
+
+        method isExist(gameitem_id, argument1, code)
+        {
+            var sqlite = GlobalStatus::getSqlite();
+
+            var res;
+            var base_sql = "SELECT itembox_id FROM t_itembox" + self.table_suffix + " WHERE gameitem_id=?";
+            if (code != nil)
+                res = sqlite.executeQuery(base_sql + " and code=?", [gameitem_id, code]);
+            else if (argument1 != nil)
+                res = sqlite.executeQuery(base_sql + " and argument1=?", [gameitem_id, argument1]);
+            else
+                res = sqlite.executeQuery(base_sql, [gameitem_id]);
+
+            return res.size > 0;
+        }
+
+        method isExistByItemBoxId(itembox_id)
+        {
+            var sqlite = GlobalStatus::getSqlite();
+            var res = sqlite.executeQuery("SELECT itembox_id FROM t_itembox" + self.table_suffix + " WHERE itembox_id=?", [itembox_id]);
+            return res.size > 0;
+        }
+
+        method initialize108(category_list)
+        {
+            var sqlite = GlobalStatus::getSqlite();
+            var init_insert_list = Array();
+
+            foreach (var category_data in category_list)
+            {
+                var sql =  ("INSERT INTO t_item_category(category_id, type_id, sub_category_id, category_name_id, "
+                            "category_name_JP ,category_name_US ,category_name_GB ,category_name_RU ,"
+                            "category_name_TW ,category_name_KR ,category_name_FR ,category_name_NL ,"
+                            "category_name_IT ,category_name_ES ,category_name_DE ,category_name_PT ,"
+                            "category_name_PL ,category_name_TR ,category_name_EL-"
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    
+                init_insert_list.push([
+                    sql,
+                    [category_data[1], category_data[0], category_data[2], category_data[3], category_data[4], category_data[5], 
+                     category_data[6], category_data[7], category_data[8], category_data[9], category_data[10], category_data[11],
+                     category_data[12], category_data[13], category_data[14], category_data[15], category_data[16], category_data[17],
+                     category_data[18]]
+                ]);        
+            }
+
+            var res = sqlite.executeTransaction(init_insert_list);
+            if (res != SQLITE_DONE)
+                ;
+
+            return res;
+        }
+
+        method initialize200()
+        {
+            var sqlite = GlobalStatus::getSqlite();
+            var sql = "ALTER TABLE t_itembox_user ADD COLUMN present_flag INTEGER";
+            var res = sqlite.execute0(sql);
+
+            if (res == SQLITE_OK || res == SQLITE_ERROR)
+                ;
+            else
+            {
+                DB_ASSERT(res == SQLITE_OK || res == SQLITE_ERROR, res)
+            }
+        }
+
+        method getPresentBoxList(sort_key)
+        {
+            var sqlite = GlobalStatus::getSqlite();
+            var res = sqlite.executeQuery("SELECT * FROM t_itembox" + self.table_suffix + " WHERE status=" + ITEMSTATUS::PRESENTBOX_CACHE + " ORDER BY " + sort_key);
+            var itemlist = Array();
+
+            foreach (var item in res)
+            {
+                var gameitem = GameItemUtil::GameItemRecord();
+                gameitem.itembox_id = item[0] != nil ? item[0] : gameitem.itembox_id;
+                gameitem.create_date = item[1] != nil ? item[1] : gameitem.create_date;
+                gameitem.type_id = item[4] != nil ? item[4] : gameitem.type_id;
+                gameitem.category_id = item[5] != nil ? item[5] : gameitem.category_id;
+                gameitem.item_name = item[8] != nil ? item[8] : gameitem.item_name;
+                gameitem.presentbox_itembox_id = item[9] != nil ? item[9] : gameitem.presentbox_itembox_id;
+                gameitem.sender = item[10] != nil ? item[10] : gameitem.sender;
+                gameitem.comment = item[11] != nil ? item[11] : gameitem.comment;
+                gameitem.argument1 = item[14] != nil ? item[14] : gameitem.argument1;
+                gameitem.argument2 = item[15] != nil ? item[15] : gameitem.argument2;
+                gameitem.argument3 = item[16] != nil ? item[16] : gameitem.argument3;
+                gameitem.argument4 = item[17] != nil ? item[17] : gameitem.argument4;
+                gameitem.code = item[18] != nil ? item[18] : gameitem.code;
+                gameitem.blob = item[19] != nil ? item[19] : gameitem.blob;
+
+                itemlist.push(gameitem);
+            }
+
+            return itemlist;
+        }
+
+        method insertPresentBoxList(item_list)
+        {
+            if (item_list == nil || item_list.size == 01)
+                return false;
+
+            var max_itembox_id = 0;
+            var sql_list = Array();
+
+            foreach (var item in item_list)
+            {
+                if (max_itembox_id < item["itembox_id"])
+                    max_itembox_id = item["itembox_id"];
+
+                var gameitem = main::gtengine::MGameItem();
+                var buf = pdistd::Inflate(item["stats"]);
+                gameitem.deserialize(buf);
+
+                var present_flag = 1;
+                var gameitem_id = gameitem.argument4;
+
+                if (gameitem_id < 0)
+                {
+                    present_flag = 0;
+                    gameitem_id = Math::abs(gameitem_id);
+                }
+
+                if (gameitem.blob == nil || gameitem.blob == "")
+                {
+                    sql_list.push(["INSERT INTO t_itembox" + self.table_suffix + "(create_date, gameday, status, type_id, category_id, item_name, gameitem_id, presentbox_itembox_id, sender, comment, code, blob, item_name, argument1, argument2, argument3, argument4, present_flag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   [item["create_time"].getBySecond(), main::GAME_STATUS.user_profile.gameday, ITEMSTATUS::PRESENTBOX_CACHE, item["type"], gameitem.category_id, "",
+                                   gameitem_id, item["itembox_id"], item["sender"], item["comment"], gameitem.f_name, gameitem.argument1,  gameitem.argument2, gameitem.argument3, gameitem_id, present_flag]]);
+                }
+                else
+                {
+                    var blob = main::pdistd::MBlob(gameitem.blob);
+                    sql_list.push(["INSERT INTO t_itembox" + self.table_suffix + "(create_date, gameday, status, type_id, category_id, item_name, gameitem_id, presentbox_itembox_id, sender, comment, code, blob, argument1, argument2, argument3, argument4, present_flag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [item["create_time"].getBySecond(), main::GAME_STATUS.user_profile.gameday, ITEMSTATUS::PRESENTBOX_CACHE, item["type"], gameitem.category_id, "",
+                        gameitem_id, item["itembox_id"], item["sender"], item["comment"], gameitem.f_name, blob, gameitem.argument1,  gameitem.argument2, gameitem.argument3, gameitem_id, present_flag]]);
+                }
+            }
+
+            var sqlite = GlobalStatus::getSqlite();
+            var res = sqlite.executeTransaction(sql_list);
+
+            if (res != SQLITE_DONE)
+                return false;
+
+            self.presentbox_itembox_id = max_itembox_id;
+            return true;
+        }
+
+        method getPresent(presentbox_itembox_id)
+        {
+            var sqlite = GlobalStatus::getSqlite();
+            sqlite.execute("UPDATE t_itembox" + self.table_suffix + " set status=? WHERE presentbox_itembox_id=? AND status=?",
+                [ITEMSTATUS::ITEMBOX_VISIBLE, presentbox_itembox_id, ITEMSTATUS::PRESENTBOX_CACHE]);
+
+            if (res != SQLITE_DONE)
+                return false;
+
+            return true;
+        }
+
+        method getItemFromPresentboxItemboxId(presentbox_itembox_id)
+        {
+            var sqlite = GlobalStatus::getSqlite();
+            var res = sqlite.executeQuery("SELECT * FROM t_itembox" + self.table_suffix + " WHERE presentbox_itembox_id=" + presentbox_itembox_id);
+            var retlist = setGameItemRecord(res);
+            return retlist.size != 0 ? retlist[0] : nil;
+        }
+
+        method putGoods(init_file_path)
+        {
+            var item_list = Array();
+            var res = main::pdistd::ReadFile("textdata/gt5/" + init_file_path);
+            if (res["result"] != main::pdistd::FileError::OK)
+                return;
+            else
+            {
+                var buf = res["buffer"];
+                var xml = main::pdistd::MXml();
+                xml.parse(buf);
+                var dom = xml.result;
+                var nodelist = dom["ShopItem"];
+
+                if (nodelist == nil)
+                    return;
+
+                var node = nodelist[0];
+                nodelist = node["item"];
+
+                if (nodelist == nil)
+                    return;
+
+                for (var i = 0; i < nodelist.size; i++)
+                {
+                    node = nodelist[i];
+
+                    var _item = [];
+                    var attr_map = node.getAttributeMap();
+                    
+                    _item = [attr_map["shop_id"], attr_map["type_id"], attr_map["category_id"], attr_map["gameitem_id"], attr_map["status"], attr_map["gameday_start"], attr_map["gameday_end"], attr_map["value"]];
+                    item_list.push(_item);
+                }
+
+                SQLITE.commit();
+            }
+
+            var sqlite = GlobalStatus::getSqlite();
+            var init_insert_list = Array();
+            var current_time = main::pdistd::MTime::getCurrentTime().getBySecond();
+    
+            foreach (var type_data in type_list)
+            {
+                var sql =  "INSERT INTO t_itembox" + self.table_suffix + "(gameitem_id, create_date, gameday ,status ,type_id , category_id, item_name ,gameday_start ,gameday_end, argument1) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    
+                init_insert_list.push([
+                    sql, 
+                    [item_data[3], current_time, 0, item_data[4], item_data[1], item_data[2], "", item_data[5], item_data[6], item_data[7] == "" ? 0 : item_data[7]]
+                ]);
+            }
+
+            var res = sqlite.executeTransaction(init_insert_list);
+            if (res != SQLITE_DONE)
+                ;
+        }
+    }
+}
