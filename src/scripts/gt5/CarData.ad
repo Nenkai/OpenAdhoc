@@ -36,7 +36,7 @@ module CarData
         attribute arcade;
         attribute car_dealer;
         attribute voucher;
-        attribute purchase_levle;
+        attribute purchase_level;
         attribute kart;
         attribute dlc;
 
@@ -83,7 +83,7 @@ module CarData
 
     function insertCarDataFromXML(xml_file_path)
     {
-        var result = main::pdiapp::XmlUtil::loadCarMap("xml_file_path", "CarData", "car", "code");
+        var result = main::pdiapp::XmlUtil::loadCarMap(xml_file_path, "CarData", "car", "code");
         var array = result.array;
 
         SQLITE.begin();
@@ -94,7 +94,7 @@ module CarData
             var arcade = map[car_code]["arcade"] != nil ? map[car_code]["arcade"].toBool() : false;
             var car_dealer = map[car_code]["car_dealer"] != nil ? map[car_code]["car_dealer"].toBool() : false;
             var dlc = map[car_code]["dlc"] != nil ? map[car_code]["dlc"].toBool() : false;
-            if (data.create(car_code, arcade, car_dealer))
+            if (data.create(car_code, arcade, car_dealer, dlc))
                 DBUtil::insert("t_car_data", data);
         }
 
@@ -109,7 +109,7 @@ module CarData
             var sql = "CREATE TABLE IF NOT EXISTS "
                       CAR_TABLE_NAME
                       " ("
-                      "id INTEGER NOT NULL PRIMARY KEY,"
+                      "id INTEGER NOT NULL PRIMARY KEY, "
                       "car_code INTEGER NOT NULL, "
                       "is_standard INTEGER NOT NULL, "
                       "tuner_label TEXT NOT NULL, "
@@ -133,7 +133,7 @@ module CarData
                       ")";
 
             var res = SQLITE.execute0(sql);
-            DB_ASSERT(res == SQLITE_DONE, res);
+            DB_ASSERT(res == SQLITE_OK, res);
             insertCarDataFromXML("textdata/gt5/carlist.xml");
         }
 
@@ -188,7 +188,7 @@ module CarData
         if (orderby != "")
             query += " " + orderby;
 
-        return SQLITE.executeQuety(query);
+        return SQLITE.executeQuery(query);
     }
 
     function RandomPickup(limit, where = "")
@@ -199,7 +199,7 @@ module CarData
         var order_by = "ORDER BY RANDOM() LIMIT %{limit}";
         var rows = getCarList2("SELECT car_code", where, order_by);
         var result = Array(rows.size);
-        for (var i = 0; i < rows.Size; i++)
+        for (var i = 0; i < rows.size; i++)
             result[i] = rows[i][0];
 
         return result;
@@ -237,7 +237,7 @@ module CarData
         query += where;
 
         var res = SQLITE.executeQuery(query);
-        var data_list = DBUtil::getDataList(Data, res);
+        var data_list = DBUtil::getDataList(Data(), res);
         if (data_list.size > 0)
             return data_list[0];
         else
@@ -315,22 +315,16 @@ module CarData
         method getPowerString()
         {
             var unit_power = pdiext::MUnit::GetUnitOfPower();
-            if (self.power == 0)
-                return "---";
-            else 
-                return "%s %{unit_power}".format(pdiext::MUnit::GetPowerForDisplay(self.power));
+            return self.power == 0 ? "---" : "%d %{unit_power}".format(pdiext::MUnit::GetPowerForDisplay(self.power));
         }
 
         method getPsRpmString()
         {
-            if (self.power == 0 || self.power_rpm == "---")
-                return "---";
-            
             var unit_power = pdiext::MUnit::GetUnitOfPower();
-            var power_str = "%s %{unit_power}".format(pdiext::MUnit::GetPowerForDisplay(self.power));
+            var power_str = self.power == 0 ? "---" : "%s %{unit_power}".format(pdiext::MUnit::GetPowerForDisplay(self.power));
 
             var unit_rpm = pdiext::MUnit::GetUnitOfRpm();
-            var power_rpm_str = "%{self.power_rpm}%{unit_rpm}";
+            var power_rpm_str = self.power_rpm == 0 ? "---" : "%{self.power_rpm}%{unit_rpm}";
             return "%{power_str}/%{power_rpm_str}";
         }
     }
@@ -342,34 +336,28 @@ module CarData
 
     function createOrderBy(order, by, order_karts_last)
     {
-        if (order == nil)
-            order = "name_EN";
-
-        if (by == nil)
-            by = "ASC";
-
         if (order == "name_EN")
         {
             if (main::pdiext::MProductInformation::GetGameRegionCode() == "jp" && main::pdistd::MLocale::getLanguage() == "JP")
                 order = "name_JP";
         }
+        else if (order == "garage_id")
+            order = "id";
 
-        var by2 = by;
-        if (order == "power" || order == "mass" || order == "year" || order == "pp" || order == "riding_order")
+        var by_id = by;
+        if (order == "power" || order == "mass" || order == "year" || order == "pp")
         {
             if (by == "ASC")
-                by2 = "DESC";
+                by = "DESC";
             else if (by == "DESC")
-                by2 = "ASC";
+                by = "ASC";
         }
 
         var order_by_kart = "";
-        if(order_karts_last)
+        if (order_karts_last == true)
             order_by_kart = "kart ASC,";
 
-        order_by_kart = "ORDER BY";
-
-        return "ORDER BY %{order_by_kart} %{order} %{by2}, year ASC, id %{by_id}";
+        return "ORDER BY %{order_by_kart} %{order} %{by}, year ASC, id %{by_id}";
     }
 
     function createWhere(is_standard, country, tuner_label, drive_train, additional_conditions)
@@ -401,10 +389,13 @@ module CarData
             params.push(drive_train);
         }
 
+        if (additional_conditions != nil)
+            conditions.push(additional_conditions.join(" AND "));
+
         var where = "";
 
         if (conditions.size > 0)
-            query += "WHERE %s".format(conditions.join(" AND "));
+            where = "WHERE %s".format(conditions.join(" AND "));
 
         return [where, params];
     }
@@ -434,7 +425,7 @@ module CarData
         var sql = "SELECT id, car_code, country, year, power, power_rpm, mass, is_standard, tuner_label, drive_train, %{name}, pp FROM %s %s %s %s"
                   .format(CAR_TABLE_NAME, where, order_by);
 
-        var res = SQLITE.execute(sql, params);
+        var res = SQLITE.executeQuery(sql, params);
         var cp_list = [];
 
         foreach (var row in res)
@@ -450,19 +441,19 @@ module CarData
     function getCarListImpl(is_standard, country, tuner_label, drive_train, order, by, additional_conditions)
     {
         var [where, params] = createWhere(is_standard, country, tuner_label, drive_train, additional_conditions);
-        var order_by = createOrderBy(order, by, order_karts_last);
+        var order_by = createOrderBy(order, by);
         var name = (main::pdiext::MProductInformation::GetGameRegionCode() == "jp" && main::pdistd::MLocale::getLanguage() == "JP") ? "name_jp" : "name_en";
-        var sql = "SELECT id, car_code, country, year, power, power_rpm, mass, is_standard, tuner_label, drive_train, %{name}, pp FROM %s %s %s %s"
+        var sql = "SELECT id, car_code, country, year, power, power_rpm, mass, is_standard, tuner_label, drive_train, %{name}, pp FROM %s %s %s"
                   .format(CAR_TABLE_NAME, where, order_by);
 
-        var res = SQLITE.execute(sql, params);
+        var res = SQLITE.executeQuery(sql, params);
         var cp_list = [];
 
         foreach (var row in res)
         {
             var [id, car_code, country, year, power, power_rpm, mass, is_standard, tuner_label, drive_train, short_name, pp] = row;
             var has_premium = is_standard == 0;
-            cp_list.push(CarParameterProxy(car_code, country, year, power, power_rpm, mass, has_premium, short_name, tuner_label, drive_train, pp));
+            cp_list.push([id, CarParameterProxy(car_code, country, year, power, power_rpm, mass, has_premium, short_name, tuner_label, drive_train, pp), false]);
         }
 
         return cp_list;
@@ -478,11 +469,15 @@ module CarData
             conditions.push("is_standard = ?");
             params.push(is_standard);
         }
+
+        if (additional_conditions != nil)
+            conditions.push(additional_conditions.join(" AND "));
+
         var where = "";
         if (conditions.size > 0)
-            query += "WHERE %s".format(conditions.join(" AND "));
+            where = "WHERE %s".format(conditions.join(" AND "));
 
-        var where = "SELECT DISTINCT country FROM %s %s".format(CAR_TABLE_NAME, where);
+        var sql = "SELECT DISTINCT country FROM %s %s".format(CAR_TABLE_NAME, where);
         sql += " ORDER BY country";
 
         var res = SQLITE.execute(sql, [is_standard]);
@@ -558,7 +553,7 @@ module CarData
 
         var where = "";
         if (conditions.size > 0)
-            query += "WHERE %s".format(conditions.join(" AND "));
+            where = "WHERE %s".format(conditions.join(" AND "));
 
 
         var sql = "SELECT DISTINCT drive_train FROM %s %s".format(CAR_TABLE_NAME, where);
@@ -586,12 +581,12 @@ module CarData
 
         function getTunerList(country, additional_conditions)
         {
-            return getTunerLabelList(0, country, additional_conditions);
+            return getTunerListImpl(0, country, additional_conditions);
         }
 
         function getDriveTrainList(country, tuner_label, additional_conditions)
         {
-            return getDriveTrainListImpl(0, country, additional_conditions);
+            return getDriveTrainListImpl(0, country, tuner_label, additional_conditions);
         }
     }
 
@@ -609,12 +604,12 @@ module CarData
     
         function getTunerList(country, additional_conditions)
         {
-            return getTunerLabelList(1, country, additional_conditions);
+            return getTunerListImpl(1, country, additional_conditions);
         }
     
         function getDriveTrainList(country, tuner_label, additional_conditions)
         {
-            return getDriveTrainListImpl(1, country, additional_conditions);
+            return getDriveTrainListImpl(1, country, tuner_label, additional_conditions);
         }
     }
 
@@ -644,7 +639,7 @@ module CarData
                 additional_conditions = [];
 
             additional_conditions += ["arcade = 1"];
-            return getCountryListImpl(0, country, additional_conditions);
+            return getTunerListImpl(0, country, additional_conditions);
         }
 
         function getDriveTrainList(country, tuner_label, additional_conditions)
@@ -677,7 +672,7 @@ module CarData
                 additional_conditions = [];
 
             additional_conditions += ["car_dealer = 1"];
-            return getCarListImpl(nil, nil, additional_conditions);
+            return getTunerListImpl(nil, nil, additional_conditions);
         }
 
         function getCarList(tuner_label, additional_conditions)
@@ -702,7 +697,7 @@ module CarData
 
             if (purchase_level != nil)
             {
-                conditions.push("purchase_level <= ?>");
+                conditions.push("purchase_level <= ?");
                 params.push(purchase_level);
             }
 
@@ -734,7 +729,7 @@ module CarData
     {
         method getPlayerCarList(is_standard, tuner_label, order, by, additional_conditions)
         {
-            return getCarCodeListImpl(is_standard, nil, tuner_label, order, by, additional_conditions);
+            return getCarCodeListImpl(is_standard, nil, tuner_label, nil, order, by, additional_conditions);
         }
 
         method getEnemyCarList(is_standard, tuner_label, order, by, additional_conditions)
@@ -754,7 +749,7 @@ module CarData
 
         method getDemoCarList(is_standard, tuner_label, order, by, additional_conditions)
         {
-            return getCarCodeListImpl(is_standard, nil, tuner_label, order, by, additional_conditions);
+            return getCarCodeListImpl(is_standard, nil, tuner_label, nil, order, by, additional_conditions);
         }
     }
 }
