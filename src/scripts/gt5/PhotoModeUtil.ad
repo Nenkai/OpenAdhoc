@@ -14,6 +14,7 @@
 
 module PhotoFileUtil
 {
+
     module GENRE
     {
         static PHOTO_RACE = 1;
@@ -21,6 +22,7 @@ module PhotoFileUtil
         static PHOTO_PROFILE = 3;
     }
 
+    #define PHOTO_TABLE_NAME "t_photo_files"
     static TABLE_VERSION = 110; // 1.10
 
     class Data
@@ -52,7 +54,7 @@ module PhotoFileUtil
         attribute grim_photo_id;
         attribute local_userid;
 
-        method setup(data)
+        method setup(context, data)
         {
             datetime = pdiext::getBetterTime().getBySecond();
             filesize = data.filesize;
@@ -83,10 +85,9 @@ module PhotoFileUtil
 
     function initialize()
     {
-        if (!DBUtil::initializeTable(USERDB, "t_photo_files", TABLE_VERSION))   
-            return true; // Already exists
+        DBUtil::initializeTable(PHOTO_TABLE_NAME, TABLE_VERSION);   
 
-        var sql = "CREATE TABLE IF NOT EXISTS " "t_photo_files" " ("
+        var sql = "CREATE TABLE IF NOT EXISTS " PHOTO_TABLE_NAME " ("
                     "id INTEGER, "
                     "genre INTEGER, "
                     "filename TEXT, "
@@ -106,35 +107,29 @@ module PhotoFileUtil
                     "online INTEGER, "
                     "vertical INTEGER, "
                     "is_3d INTEGER, "
-                    "car_position_left REAL, "
-                    "car_position_top REAL, "
-                    "car_position_right REAL, "
-                    "car_position_bottom REAL, "
+                    "car_position_left INTEGER, "
+                    "car_position_top INTEGER, "
+                    "car_position_right INTEGER, "
+                    "car_position_bottom INTEGER, "
                     "online_id TEXT, "
                     // There was something here
                     "grim_photo_id TEXT, "
                     "local_userid INTEGER, "
                     "PRIMARY KEY (id))";
 
-        var res = USERDB.execute0(sql);
+        var res = SQLITE.execute0(sql);
         DB_ASSERT(res == SQLITE_OK, res);
 
-        return true;
+        return;
     }
 
-    function getTitleList(favorite)
+    function getTitleList(genre)
     {
-        var where = "WHERE local_userid = ?";
+        var where = genre == nil ? "" : "WHERE genre = %{genre}";
+
         var params = [getUserId()];
-
-        if (favorite)
-        {
-            where += " AND favorite = ?";
-            params.push(1);
-        }
-
-        var sql = "SELECT DISTINCT genre, title FROM %s %s ORDER BY title".format("t_photo_files", where);
-        var rows = USERDB.executeQuery(sql, params);
+        var sql = "SELECT DISTINCT genre, title FROM %s %s ORDER BY title".format(PHOTO_TABLE_NAME, where);
+        var rows = SQLITE.executeQuery(sql);
 
         var result = Array(rows.size);
         for (var i = 0; i < rows.size; i++)
@@ -165,16 +160,17 @@ module PhotoFileUtil
         return getListImpl(where, order, by);
     }
 
-    function getFavoriteList(title, format, order, by)
+    function getFavoriteList(order, by)
     {
         return getListImpl("WHERE favorite = 1", order, by);
     }
 
     function setFavorite(id, favorite)
     {
-        var sql = "UPDATE %s SET favorite = %d WHERE id = %d".format("t_photo_files", favorite ? 1 : 0, id);
-        var res = USERDB.execute(sql);
+        var sql = "UPDATE %s SET favorite = %d WHERE id = %d".format(PHOTO_TABLE_NAME, favorite ? 1 : 0, id);
+        var res = SQLITE.execute(sql);
         DB_ASSERT(res == SQLITE_DONE, res);
+        return;
     }
 
     function getFavoriteCount()
@@ -194,16 +190,18 @@ module PhotoFileUtil
 
     function setOnline(id, online)
     {
-        var sql = "UPDATE %s SET online = %d WHERE id = %d".format("t_photo_files", online ? 1 : 0, id);
-        var res = USERDB.execute(sql);
+        var sql = "UPDATE %s SET online = %d WHERE id = %d".format(PHOTO_TABLE_NAME, online ? 1 : 0, id);
+        var res = SQLITE.execute(sql);
         DB_ASSERT(res == SQLITE_DONE, res);
+        return;
     }
 
     function setForceOffline()
     {
-        var sql = "UPDATE %s SET online = 0".format("t_photo_files");
+        var sql = "UPDATE %s SET online = 0".format(PHOTO_TABLE_NAME);
         var res = SQLITE.execute(sql);
         DB_ASSERT(res == SQLITE_DONE, res);
+        return;
     }
 
     function getOnlineCount()
@@ -223,48 +221,33 @@ module PhotoFileUtil
 
     function updateComment(id, comment)
     {
-        var sql = "UPDATE %s SET description = ? WHERE id = %d".format("t_photo_files", id);
-        var res = USERDB.execute(sql, [comment]);
+        var sql = "UPDATE %s SET description = ? WHERE id = %d".format(PHOTO_TABLE_NAME, id);
+        var res = SQLITE.execute(sql, [comment]);
         DB_ASSERT(res == SQLITE_DONE, res);
+        return;
     }
 
     function updateGrimPhotoId(id, grim_photo_id)
     {
-        var sql = "UPDATE %s SET grim_photo_id = ? WHERE id = %d".format("t_photo_files", id);
-        var res = USERDB.execute(sql, [grim_photo_id]);
+        var sql = "UPDATE %s SET grim_photo_id = ? WHERE id = %d".format(PHOTO_TABLE_NAME, id);
+        var res = SQLITE.execute(sql, [grim_photo_id]);
         DB_ASSERT(res == SQLITE_DONE, res);
-    }
-
-    function _save(work_path, thumb_path, data, play_id)
-    {
-        var path_base = IO::Path::GetDirName(ORG.photo_org_path) + "/" + "pht#%s#%016lx#".format(data.online_id, play_id);
-        if (data.is_3d)
-            data.filename = DBUtil::getUniqFileName(USERDB, "t_photo_files", path_base, "mpo");
-        else
-            data.filename = DBUtil::getUniqFileName(USERDB, "t_photo_files", path_base, "jpg");
-
-        data.filename_t = IO::Path::StripExtension(data.filename) + "_t.jpg";
-        data.local_userid = play_id;
-        DBUtil::insert(USERDB, "t_photo_files", data);
-        _removeFiles(data);
-
-        pdistd::RenameFile(work_path, data.filename);
-        pdistd::RenameFile(thumb_path, data.filename_t);
+        return;
     }
 
     function save(context, work_path, thumb_path, photo_data)
     {
         var data = Data();
-        data.setup(photo_data);
+        data.setup(context, photo_data);
 
         var path_base = IO::Path::GetDirName(ORG.photo_org_path) + "/photo";
         if (data.is_3d)
-            data.filename = DBUtil::getUniqFileName(USERDB, "t_photo_files", path_base, "mpo");
+            data.filename = DBUtil::getUniqFileName(PHOTO_TABLE_NAME, path_base, "mpo");
         else
-            data.filename = DBUtil::getUniqFileName(USERDB, "t_photo_files", path_base, "jpg");
+            data.filename = DBUtil::getUniqFileName(PHOTO_TABLE_NAME, path_base, "jpg");
 
         data.filename_t = data.filename.removeLastOf(".jpg") + "_t.jpg";
-        DBUtil::insert(USERDB, "t_photo_files", data);
+        DBUtil::insert(PHOTO_TABLE_NAME, data);
         _removeFiles(data);
 
         pdistd::RenameFile(work_path, data.filename);
@@ -283,7 +266,7 @@ module PhotoFileUtil
     function remove(data)
     {
         _removeFiles(data);
-        DBUtil::deleteRow(USERDB, "t_photo_files", data);
+        DBUtil::deleteRow(PHOTO_TABLE_NAME, data);
 
         if (GLOBAL_STATUS.user_profile.context.avatar_photo_id == data.id)
             GLOBAL_STATUS.user_profile.context.avatar_photo_id = 0;
@@ -303,37 +286,28 @@ module PhotoFileUtil
         foreach (var data in list)
             _removeFiles(data);
 
-        DBUtil::deleteAll(USERDB, "t_photo_files");
+        DBUtil::deleteAll(PHOTO_TABLE_NAME);
+        GLOBAL_STATUS.user_profile.context.avatar_photo_id = 0;
     }
 
     function isExist(id)
     {
-        var sql = "SELECT id FROM %s WHERE id = ?".format("t_photo_files");
-        var rows = USERDB.executeQuery(sql, [id]);
+        var sql = "SELECT id FROM %s WHERE id = ?".format(PHOTO_TABLE_NAME);
+        var rows = SQLITE.executeQuery(sql, [id]);
         return rows.size > 0;
     }
 
     function getLastProfilePhotoId()
     {
-        var sql = "SELECT id FROM %s WHERE genre = ? ORDER BY id DESC LIMIT 1".format("t_photo_files");
-        var rows = USERDB.executeQuery(sql, [GENRE::PHOTO_PROFILE]);
+        var sql = "SELECT id FROM %s WHERE genre = ? ORDER BY id DESC LIMIT 1".format(PHOTO_TABLE_NAME);
+        var rows = SQLITE.executeQuery(sql, [GENRE::PHOTO_PROFILE]);
         var result = getResult1(rows);
         return result != nil ? result : -1;
     }
 
-    function getTitleText(context, genre, title)
-    {
-        if (genre == GENRE::PHOTO_RACE)
-            return manager.translate("CourseName", title);
-        else if (genre == GENRE::PHOTO_TRAVEL)
-            return manager.translate("PhotoMode", title);
-        else
-            return manager.translate("PhotoMode", "PROFILE_PHOTO_TITLE");
-    }
-
     function getUserId()
     {
-        return pdiapp::play_id;
+        return main::pdiext::MSystemConfiguration::GetOSDUserId();
     }
 
     function getListImpl(condition, order, by)
@@ -343,18 +317,18 @@ module PhotoFileUtil
         else
             condition = "WHERE local_userid = ?";
 
-        var sql = "%s %s %s".format(DBUtil::getSelectQuery("t_photo_files", Data),
+        var sql = "%s %s %s".format(DBUtil::getSelectQuery(PHOTO_TABLE_NAME, Data),
                                     condition,
                                     createOrderBy(order, by));
 
-        var res = USERDB.executeQuery(sql, [getUserId()]);
+        var res = SQLITE.executeQuery(sql, [getUserId()]);
         return DBUtil::getDataList(Data, res);
     }
 
     function getCount(where)
     {
-        var sql = "SELECT COUNT (*) FROM %s %s AND local_userid = ?".format("t_photo_files", where);
-        var res = USERDB.executeQuery(sql, [getUserId()]);
+        var sql = "SELECT COUNT (*) FROM %s %s AND local_userid = ?".format(PHOTO_TABLE_NAME, where);
+        var res = SQLITE.executeQuery(sql, [getUserId()]);
         var count = getResult1(res);
         return count == nil ? 0 : count;
     }
