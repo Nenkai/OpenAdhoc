@@ -14,7 +14,7 @@
 
 module SequenceUtil
 {
-    static sTransitionFinder;
+    static sTransitionFinder = nil;
 
     function setTransitionFinder(func)
     {
@@ -42,7 +42,7 @@ module SequenceUtil
     function findProjectTransition(key)
     {
         import __projects__::CursorProject;
-        var sProjectTransition = ["*,*" : CursorProject::GTLogoTransition];
+        var sProjectTransition = ["*,race" : CursorProject::LoadingRoot, "*,*" : CursorProject::GTLogoTransition];
 
         var it = nil;
         if (sTransitionFinder != nil)
@@ -131,6 +131,8 @@ module SequenceUtil
         var renewed = false;
 
         context.syncInRootTransition();
+
+        var active_root_transition = context.active_root_transition;
         if (context.active_root_transition == nil || 
             active_root_transition.root_window.name != root_widget.name)
         {
@@ -140,10 +142,10 @@ module SequenceUtil
             renewed = true;
         }
 
-        root_transition.on_page_out_start = on_page_out_start_;
-        root_transition.on_page_out_end = on_page_out_end_;
-        root_transition.on_page_in_start = on_page_in_start_;
-        root_transition.on_page_in_end = on_page_in_end_;
+        context.root_transition.on_page_out_start = on_page_out_start_;
+        context.root_transition.on_page_out_end = on_page_out_end_;
+        context.root_transition.on_page_in_start = on_page_in_start_;
+        context.root_transition.on_page_in_end = on_page_in_end_;
 
         return renewed;
     }
@@ -201,12 +203,9 @@ module SequenceUtil
                 pages.push(extra_page);
         }
 
-        context.syncOutRootTransition();
         OSKUtil::closeChatDialog(context);
-        setupCursorProjectRoot(context, pages);
         context.startPage(pages);
         context.filterKeyEvent();
-        context.pageInRootTransition();
     }
 
     function startProjectTransition(context, current_project, next_project, root_transition)
@@ -270,9 +269,9 @@ module SequenceUtil
     function _push_page(context, popup_page)
     {
         OSKUtil::closeChatDialog(context);
-        popup_page.defineStatic('__enter_event_loop__', true);
+        popup_page.defineStatic('__EventLoopLevel__', -1);
         context.pushPage(popup_page);
-        context.enterEventLoop(popup_page.__EventLoopLevel__);
+        context.enterEventLoop(&popup_page.__EventLoopLevel__);
     }
 
     function pushPage(context, popup_page)
@@ -288,16 +287,17 @@ module SequenceUtil
 
     function popPage(context, popup_page, delay_time)
     {
-        if (popup_page.defined('__enter_event_loop__'))
+        if (popup_page.defined('__EventLoopLevel__'))
         {
-            if (popup_page['__enter_event_loop__'])
-            {
-                popup_page['__enter_event_loop__'] = false;
-                if (delay_time != nil)
-                    context.closePage(popup_page, delay_time);
-                else
-                    context.closePage(popup_page);
-            }
+            var level = popup_page.__EventLoopLevel__;
+            popup_page.removeStatic('__EventLoopLevel__');
+
+            if (delay_time != nil)
+                context.closePage(popup_page, delay_time);
+            else
+                context.closePage(popup_page);
+    
+            context.leaveEventLoop(level);
         }
     }
 
@@ -312,21 +312,21 @@ module SequenceUtil
                 pages.push(extra_page);
         }
 
-        OSKUtil::closeChatDialog(context);
         context.clearPage();
+        OSKUtil::closeChatDialog(context);
         context.pushPage(pages);
         context.filterKeyEvent();
     }
 
     function enterEventLoop(context, widget)
     {
-        widget.defineStatic('__enter_event_loop__', true);
-        context.enterEventLoop(widget.__EventLoopLevel__);
+        widget.defineStatic('__EventLoopLevel__', -1);
+        context.enterEventLoop(&widget.__EventLoopLevel__);
     }
 
     function leaveEventLoop(context, widget)
     {
-        if (widget.defined('__enter_event_loop__'))
+        if (widget.defined('__EventLoopLevel__'))
         {
             var level = widget.__EventLoopLevel__;
             widget.removeStatic('__EventLoopLevel__');
@@ -338,7 +338,7 @@ module SequenceUtil
     {
         attribute context;
         attribute popup_page;
-        attribute entered = true;
+        attribute level = -1;
 
         method __init__(context, popup_page)
         {
@@ -350,14 +350,15 @@ module SequenceUtil
         {
             OSKUtil::closeChatDialog(context);
             context.pushPage(self.popup_page);
-            context.enterEventLoop(self.level);
+            context.enterEventLoop(&self.level);
         }
 
         method close(delay_time)
         {
+            var lv;
             if (self.level >= 0)
             {
-                var lv = self.level;
+                lv = self.level;
                 self.level = -1;
 
                 if (delay_time != nil)
@@ -407,7 +408,6 @@ module SequenceUtil
             next_project = "race";
 
         main::GameSequence::setNextSequence(next_sequence);
-        startProjectTransition(context, current_project, next_project, root_transition);
         context.pushEvent(main::menu::MFunctionEvent(_end_project, context, current_project, next_project, root_transition));
     }
 

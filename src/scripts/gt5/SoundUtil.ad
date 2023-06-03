@@ -121,7 +121,7 @@ module main::SoundUtil
             return nil;
 
         var group_info = pair[1];
-        var list = group_info[2];
+        var list = group_info[1];
 
         if (list.size == 0)
             return nil;
@@ -209,13 +209,10 @@ module main::SoundUtil
         context.paused = false;
     }
 
-    function BGMPlayGroup(scene, code, repeat, fadein_time, crossfade_time, force_change)
+    function BGMPlayGroup(scene, code, repeat, fadein_time, crossfade_time)
     {
         var playing = BGMIsPlaying();
-        
-        var same_music = context.playing_sysbgm != -1 ? context.playing_sysbgm == SystemBGMGroupToIndex(code) : context.playing_code == code;
-        var sysbgm_change = CheckSystemBGMPlay(code) != (context.playing_sysbgm != -1);
-        if (playing && same_music && !sysbgm_change && force_change != true)
+        if (playing && context.playing_code == code)
             return;
 
         if (repeat == nil || repeat == true)
@@ -227,10 +224,10 @@ module main::SoundUtil
         if (crossfade_time == nil)
             crossfade_time = 0.0;
 
-        BGMFadeout(crossfade_time);
-
         if (playing)
             fadein_time = crossfade_time;
+
+        BGMFadeout(crossfade_time);
 
         context.playing_scene = -1;
         if (__TrySystemBGMPlay(scene, code, crossfade_time))
@@ -289,9 +286,9 @@ module main::SoundUtil
         return false;
     }
 
-    function MenuBGMCrossfadeGroup(group, fadein_time, crossfade_time, repeat, force_change)
+    function MenuBGMCrossfadeGroup(group, fadein_time, crossfade_time, repeat)
     {
-        BGMPlayGroup(SCENE_MENU, group, repeat, fadein_time, crossfade_time, force_change);
+        BGMPlayGroup(SCENE_MENU, group, repeat, fadein_time, crossfade_time);
     }
 
     function MenuBGMPlayGroupCue(group, crossfade_time, policy)
@@ -338,7 +335,7 @@ module main::SoundUtil
 
         if (change)
         {
-            MenuBGMCrossfadeGroup(group, 0f, crossfade_time, REPEAT_GROUP, true);
+            MenuBGMCrossfadeGroup(group, 0f, crossfade_time, REPEAT_GROUP);
             context.bgm_last_play_time = time;
         }
     }
@@ -348,7 +345,6 @@ module main::SoundUtil
         var player = stream_player;
         player.load("sgx");
         player.delay = delay != nil ? delay : 0.0;
-        player.bus = 3;
         player.start(path + ".sgd", 0.0, volume);
     }
 
@@ -357,7 +353,6 @@ module main::SoundUtil
         var player = stream_player;
         player.load("sgx");
         player.delay = 0.0;
-        player.bus = 3;
         player.start(path, 0.0, volume);
         
     }
@@ -384,7 +379,7 @@ module main::SoundUtil
 
     function PlayStreamWithDelay(context, path, volume, delay)
     {
-        context.addTimeOut("PlayStreamWithDelay", PlaySGXStreamDirect, context, path, volume);
+        context.addTimeOut("PlayStreamWithDelay", PlaySGXStreamDirect, path, false, volume);
         context.setTimeOut("PlayStreamWithDelay", delay);
     }
 
@@ -496,8 +491,6 @@ module main::SoundUtil
         if (context.paused)
         {
             pdiext::MSystemBGM::stop();
-            context.playing_code = "";
-            context.paused = false;
         }
         else if (context.playing_sysbgm == sysbgm_index)
             return true;
@@ -609,6 +602,7 @@ module main::SoundUtil
     {
         var param = main::sound_runtime_parameter;
 
+        var v;
         switch (scene)
         {
             case SCENE_MENU:
@@ -632,30 +626,26 @@ module main::SoundUtil
         switch (scene)
         {
             case SCENE_MENU:
-                v = param.menu_bgm_gain;
-                break;
+                return param.menu_bgm_gain;
 
             case SCENE_RACE:
-                v = param.race_bgm_gain;
-                break;
+                return param.race_bgm_gain;
 
             case SCENE_REPLAY:
             case SCENE_REPLAY_WITH_NA:
-                v = param.replay_bgm_gain;
-                break;
+                return param.replay_bgm_gain * 0.34;
 
             case SCENE_MUSIC_PLAYER:
-                v = param.music_player_gain;
-                break;
+                return param.movie_gain;
         }
 
-        return v;
+        return 0.0;
     }
 
     function UpdateBGMVolume()
     {
         var scene = context.playing_scene;
-        if (scene == -1)
+        if (scene == nil)
             return;
 
         var v = GetSceneBGMVolume(scene);
@@ -729,6 +719,12 @@ module main::SoundUtil
                 dist_enable = true;
                 break;
 
+            case SCENE_REPLAY_WITH_NA:
+                v = opt.replay_se ? opt.replay_se_gain * 0.31 : 0;
+                sound_user = "race";
+                dist_enable = true;
+                break;
+
             case SCENE_QUICK:
                 v = opt.replay_se ? opt.replay_se_gain * 0.71 : 0.0;
                 sound_user = "race";
@@ -762,29 +758,33 @@ module main::SoundUtil
                 ctx.setWorldEQ(i + 13, eq[i]);
         }
 
+        var deq = [
+            "eq_enable" : eq_enable,
+            "comp_gain_max" : drcpreset['world_se_deq_comp_gain_max'],
+            "loudness_det_lowcut_fc" : drcpreset['world_se_deq_loudness_det_lowcut_fc'],
+        ];
+
         var deq;
-        switch (scene)
+        if (scene == SCENE_PHOTO)
         {
-            case SCENE_MENU:
-            case SCENE_QUICK:
-                deq = drcpreset['deq_replay'];
-                break;
-
-            case SCENE_RACE:
-                deq = drcpreset['deq_race'];
-                break;
-
-            case SCENE_REPLAY:
-                deq = drcpreset['deq_replay'];
-                break;
-
-            case SCENE_PHOTO:
-                deq = drcpreset['deq_photo'];
-                break;
+            deq["output_gain"] = drcpreset['photo_world_se_deq_gain'];
+            deq["comp_ratio"] = drcpreset['photo_world_se_deq_comp_ratio'];
+            deq["playback_spl_gain"] = drcpreset['photo_world_se_deq_playback_spl_gain'];
+            deq["agc_target_level"] = drcpreset['photo_world_se_deq_agc_target_level'];
+        }
+        else
+        {
+            deq["output_gain"] = drcpreset['world_se_deq_gain'];
+            deq["comp_ratio"] = drcpreset['world_se_deq_comp_ratio'];
+            deq["playback_spl_gain"] = drcpreset['world_se_deq_playback_spl_gain'];
+            deq["agc_target_level"] = drcpreset['world_se_deq_agc_target_level'];
         }
 
-        applyDEQParameter(deq);
-        ctx.setEffectorParameter("world_dist", ["dist_enable" : dist_enable]);
+        if (main::CheckVersion::Test(49868, nil))
+        {
+            ctx.setEffectorParameter("world_deq", deq);
+            ctx.setEffectorParameter("world_dist", ["dist_enable" : dist_enable]);
+        }
     }
 
     function SetSoundEnableOption(menu_bgm, menu_se, race_bgm, race_se, replay_bgm, replay_se)
@@ -802,13 +802,6 @@ module main::SoundUtil
     {
         var p = main::sound_runtime_parameter;
         p.sound_dynamic_range = drc;
-    }
-
-    function SetRaceSoundPosition(innerlv)
-    {
-        var rs = main["race_sound"];
-        if (rs != nil)
-            rs.force_innerlv = innerlv;
     }
 
     function SetBGMUpmixOption(upmix)
@@ -835,13 +828,6 @@ module main::SoundUtil
         p.race_se_volume = race_se;
     }
 
-    function SetReplaySoundVolumeOption(bgm_vol, se_vol)
-    {
-        var p = main::sound_runtime_parameter;
-        p.replay_bgm_volume = bgm_vol;
-        p.replay_se_volume = se_vol;
-    }
-
     function ApplySoundVolumeOption()
     {
         var p = main::sound_runtime_parameter;
@@ -857,81 +843,64 @@ module main::SoundUtil
         p.menu_se_gain = LoudnessPercentToAmplitude(p.menu_se_volume);
         p.race_se_gain = LoudnessPercentToAmplitude(p.race_se_volume);
         p.replay_se_gain = LoudnessPercentToAmplitude(p.replay_se_volume);
-        p.music_player_gain = preset['music_player_master_volume'];
         p.movie_gain = preset['movie_master_volume'];
         p.na_gain = preset['na_master_volume'];
 
-        p.menu_se_gain *= preset['menu_se_master_volume'];
         p.race_bgm_gain *= preset['race_bgm_gain'];
         p.race_se_gain *= preset['race_se_gain'];
         p.replay_bgm_gain *= preset['replay_bgm_gain'];
         p.replay_se_gain *= preset['replay_se_gain'];
 
-        SoundUtil::SetMenuSEVolume(p.menu_se ? p.menu_se_gain : 0f);
+        SoundUtil::SetMenuSEVolume(p.menu_se ? p.menu_se_gain * preset['menu_se_master_volume'] : 0f);
 
         var x = ((preset['menu_se_master_volume'] * 0.84139514) * 100.0).toInt();
         PDINetwork.setTrophySoundLevel(x < 20 ? 20 : x);
     }
 
-    function SuspendMenuSEVolume()
-    {
-        SoundUtil::SetMenuSEVolume(0f);
-    }
-
-    function ResumeMenuSEVolume()
-    {
-        var p = main::sound_runtime_parameter;
-        SoundUtil::SetMenuSEVolume(p.menu_se ? p.menu_se_gain : 0f);
-    }
 
     function ApplySpeakerLayoutOption(speaker_bits)
     {
-        var max_ch = pdiext::MSystemConfiguration::GetSystemAudioAvailableOutputChannels();
-        var audioout_ch = 2;
-        var mode = pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO;
-
-        switch (max_ch)
+        var states = pdiext::MSystemConfiguration::GetSystemAudioOutputState();
+        if (states.size > 0)
         {
-            case 2:
-                audioout_ch = 2;
-                mode = pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO;
-                break;
+            var mode = pdiext::OUTPUTSURROUNDMODE::SURROUND_NORMAL;
+            var audioout_ch = states[0]["channel"];
 
-            case 6:
-                var layout_map = [
-                    SpeakerBits::L_R : [2, pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO],
-                    SpeakerBits::L_R | SpeakerBits::LS_RS : [6, pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R_NC],
-                    SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS : [6, pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R],
-                ];
+            switch (audioout_ch)
+            {
+                case 2:
+                    mode = pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO;
+                    break;
 
-                var pair = layout_map.find(speaker_bits & (SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS));
-                if (pair != nil)
-                {
-                    audioout_ch = pair[1][0];
-                    mode = pair[1][1];
-                }
-                break;
+                case 6:
+                    var layout_map = [
+                        0 : pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R,
+                        SpeakerBits::L_R : pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO,
+                        SpeakerBits::L_R | SpeakerBits::LS_RS : pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R_NC,
+                        SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS : pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R,
+                    ];
 
-            case 8:
-                var layout_map = [
-                    SpeakerBits::L_R : [2, pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO],
-                    SpeakerBits::L_R | SpeakerBits::LS_RS : [6, pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R_NC],
-                    SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS : [6, pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R],
-                    SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::CB : [8, pdiext::OUTPUTSURROUNDMODE::SURROUND_DOLBY_PL2X],
-                    SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::LB_RB: [8, pdiext::OUTPUTSURROUNDMODE::SURROUND_DOLBY_DIGITAL_EX],
-                ];
+                    var pair = layout_map.find(speaker_bits & (SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS));
+                    mode = pair != nil ? pair[1] : pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R;
+                    break;
 
-                var pair = layout_map.find(speaker_bits & (SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::CB | SpeakerBits::LB_RB));
-                if (pair != nil)
-                {
-                    audioout_ch = pair[1][0];
-                    mode = pair[1][1];
-                }
-                break;
+                case 8:
+                    var layout_map = [
+                        0 : pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R,
+                        SpeakerBits::L_R : pdiext::OUTPUTSURROUNDMODE::SURROUND_STEREO,
+                        SpeakerBits::L_R | SpeakerBits::LS_RS : pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R_NC,
+                        SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS : pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R,
+                        SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::CB : pdiext::OUTPUTSURROUNDMODE::SURROUND_DOLBY_PL2X,
+                        SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::LB_RB: pdiext::OUTPUTSURROUNDMODE::SURROUND_DOLBY_DIGITAL_EX,
+                    ];
+
+                    var pair = layout_map.find(speaker_bits & (SpeakerBits::L_R | SpeakerBits::C | SpeakerBits::LS_RS | SpeakerBits::CB | SpeakerBits::LB_RB));
+                    mode = pair != nil ? pair[1] : pdiext::OUTPUTSURROUNDMODE::SURROUND_ITU_R;
+                    break;
+            }
+
+            pdiext::MSystemConfiguration::SetSystemAudioOutputMode(6, mode);
         }
-
-        pdiext::MSystemConfiguration::SetSystemAudioOutputFormat(audioout_ch);
-        pdiext::MSystemConfiguration::SetSystemAudioOutputMode(6, mode);
     }
 
     function BootInitialize()
@@ -945,25 +914,24 @@ module main::SoundUtil
         st.define("playing_sysbgm", STByte());
         st.define("bgm_last_play_time", STLong());
         st.define("bgm_cue_counter", STInt());
-        SoundUtil::context = st();
-        SoundUtil::context.playing_code = "";
-        SoundUtil::context.next_play_code = "";
-        SoundUtil::context.repeat = REPEAT_OFF;
-        SoundUtil::context.paused = false;
-        SoundUtil::context.playing_scene = -1;
-        SoundUtil::context.sysbgm_enable = false;
-        SoundUtil::context.playing_sysbgm = -1;
-        SoundUtil::context.bgm_last_play_time = 0L;
-        SoundUtil::context.bgm_cue_counter = 0;
+        context = st();
+        context.playing_code = "";
+        context.repeat = REPEAT_OFF;
+        context.paused = false;
+        context.playing_scene = -1;
+        context.sysbgm_enable = false;
+        context.playing_sysbgm = -1;
+        context.bgm_last_play_time = 0L;
+        context.bgm_cue_counter = 0;
 
-        SoundUtil::bgm_group_info = Map();
-        SoundUtil::mmusic = nil;
-        SoundUtil::stream_mmusic = main::sound.stream;
-        SoundUtil::sysbgm_mmusic = pdistd::MMusic();
-        SoundUtil::sysbgm_mmusic.load("system");
-        SoundUtil::stream_player = pdiext::MStreamPlayer();
-        SoundUtil::bgm_callback = Array();
-        var music = SoundUtil::stream_mmusic;
+        bgm_group_info = Map();
+        mmusic = nil;
+        stream_mmusic = main::sound.stream;
+        sysbgm_mmusic = pdistd::MMusic();
+        sysbgm_mmusic.load("system");
+        stream_player = pdiext::MStreamPlayer();
+        bgm_callback = Array();
+        var music = stream_mmusic;
         music.load("pcm");
         music.volume = 1.0;
         music.number = -1;
@@ -977,7 +945,7 @@ module main::SoundUtil
 
     function InitializePlaylist()
     {
-        var music = SoundUtil::stream_mmusic;
+        var music = stream_mmusic;
         var groups = music.getGroups();
 
         var list_group_function = [
@@ -986,7 +954,7 @@ module main::SoundUtil
             "slideshow" : MusicFileUtil::getSlideShowBgmList,
         ];
 
-        if (main::StaticConfig["use_bgm_playlist"])
+        if (main::StaticConfig["use_bgm_playlist"] == false)
             list_group_function = Map();
 
         foreach (var group in groups)
@@ -1010,7 +978,7 @@ module main::SoundUtil
             }
 
             list.randomShuffle(pdistd::MRandom::GetValue());
-            SoundUtil::bgm_group_info[hash] = [0, 0, list];
+            SoundUtil::bgm_group_info[hash] = [0, list];
         }
     }
 }
