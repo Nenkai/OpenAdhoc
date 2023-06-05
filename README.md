@@ -13,7 +13,7 @@ This repository contains compilable game scripts re-created from originally comp
 **Most of the main projects are completed (`gtmode`, `race`, `main`, etc) and most of the game logic can already be altered.**
 
 <details>
-  <summary>Table (26 of 49 projects are completed and can be compiled)</summary>
+  <summary>Table (26 of 49 projects are completed and can be compiled. Version 1.22)</summary>
   
   
 |          Name          | Completed |                                     Purpose                                      | 
@@ -68,7 +68,47 @@ This repository contains compilable game scripts re-created from originally comp
 </details>
 
 ### GT5 Completion Progress
-Only `arcade` is currently available.
+<details>
+  <summary>Table (Version 2.11)</summary>
+  
+  
+|          Name          | Completed |                                     Purpose                                      | 
+|------------------------|-----------|----------------------------------------------------------------------------------|
+| main                   |    ✔️    | Initial Bootstrap & Utils before `boot`                                          |
+| arcade                 |    ✔️    | Arcade Mode                                                                      |
+| academy                |    ❌    | N/A                                                                              |
+| boot                   |    ❌    | N/A                                                                              |
+| concept                |    ❌    | N/A                                                                              |
+| config                 |    ❌    | N/A                                                                              |
+| cursor                 |    ❌    | N/A                                                                              |
+| demo_movie             |    ❌    | N/A                                                                              |
+| dialog                 |    ❌    | N/A                                                                              |
+| gps_replay             |    ❌    | N/A                                                                              |
+| gtauto                 |    ❌    | N/A                                                                              |
+| gtmode                 |    ❌    | N/A                                                                              |
+| gttop                  |    ❌    | N/A                                                                              |
+| gttv                   |    ❌    | N/A                                                                              |
+| gttv2                  |    ❌    | N/A                                                                              |
+| leavedemo              |    ❌    | N/A                                                                              |
+| manual                 |    ❌    | N/A                                                                              |
+| multimonitor           |    ❌    | N/A                                                                              |
+| museum                 |    ❌    | N/A                                                                              |
+| news                   |    ❌    | N/A                                                                              |
+| online                 |    ❌    | N/A                                                                              |
+| online_bspec           |    ❌    | N/A                                                                              |
+| option                 |    ❌    | N/A                                                                              |
+| photo                  |    ❌    | N/A                                                                              |
+| play_movie             |    ❌    | N/A                                                                              |
+| race                   |    ❌    | N/A                                                                              |
+| race_*                 |    ❌    | N/A                                                                              |
+| ranking                |    ❌    | N/A                                                                              |
+| rcvtst                 |    ❌    | N/A                                                                              |
+| setting                |    ❌    | N/A                                                                              |
+| ui_kit                 |    ❌    | N/A                                                                              |
+| user_profile           |    ❌    | N/A                                                                              |
+| user_profile_driver    |    ❌    | N/A                                                                              |
+
+</details>
 
 ### GT4(O) Completion Progress
 <details>
