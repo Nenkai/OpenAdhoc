@@ -1,0 +1,683 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module GTTopRoot
+{
+    //#include "TopNews.ad"
+
+    hidden.visible = false;
+
+    static suspender;
+    static suspend_lock = false;
+    static wait_autodemo_thread;
+    static leave_detect_time = 10.0; // 10 Seconds
+
+    method open(context)
+    {
+        SequenceUtil::startPage(context, self);
+    }
+
+    method onLoad(context)
+    {
+        main::ORG.applyGameResolution();
+        Upper::WED.visible = false;
+    }
+
+    method onInitialize(context)
+    {
+        context.cursor_visible = false;
+        
+        ROOT::ButtonHelpGT5.set(context, [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")],
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")],
+        ]);
+
+        setupSceneFace(context);
+
+        ActorUtil::ResetInterpolators(Upper, false, true);
+        ActorUtil::ResetInterpolators(Lower, false, true);
+
+        Menus::MainMenu.createMainMenu(context);
+        Menus::MainMenu::ListBox.focus_index = PROJECT.history['GTTopRoot::FocusIndex'];
+        PROJECT.history['GTTopRoot::FocusIndex'] = 0;
+
+        welcome_message::FadeActor.reset();
+        welcome_message.visible = false;
+
+        News.initialize();
+        News.off(context);
+
+        if (!EventPresentUtil::getWelcomeMessageFlag() || GAME_STATUS.user_profile.option.kiosk_mode)
+            LeaveDetectUtil::begin(context, ROOT.leave_detect_time, self, onLeaveDetect, onActivateDetect);
+
+        LeaveDetectUtil::suspend(context);
+        Grim2Util::startUpdater();
+
+        SoundUtil::SetupSound(SoundUtil::SCENE_MENU);
+        SoundUtil::SetSystemBGMEnable(context, true);
+        SceneFace.setSoundFader(false);
+
+        var time = main::pdistd::MTime::getCurrentTime();
+        var code = (time.month == 12 && time.day >= 23 && time.day <= 25) ? "christmas" : "menu";
+        SoundUtil::MenuBGMCrossfadeGroup(code, 0.0, 3.0);
+        setFrameInterval(context, 2);
+
+        context.pushEvent(menu::MFunctionEvent(postInitialize, context));
+        BalloonTip.visible = false;
+        
+        var news_enable = LoginUtil::isOnline() && Grim2Util::News::isEnable();
+        PopupNews.visible = news_enable;
+        PopupNews::ParallelActor.out = !news_enable;
+        PopupNews.initialize(context);
+    }
+
+    method postInitialize(context)
+    {
+        LeaveDetectUtil::suspend(context);
+
+        if (pdistd::MNetworkInterface::isUp() && !GAME_STATUS.config.no_request_NP_sign_in)
+            LoginUtil::tryLogin(context);
+
+        if (EventPresentUtil::getWelcomeMessageFlag() && !GAME_STATUS.user_profile.option.kiosk_mode)
+        {
+            welcome_message.visible = true;
+            welcome_message::FadeActor.start();
+
+            EventPresentUtil::setWelcomeMessageFlag();
+            SaveDataUtilGT5::STATUSCODE::NEED_SAVE(GAME_STATUS.user_profile.context.need_save);
+        }
+
+        var res = SaveDataUtilGT5::checkSaveEveryWhere(context);
+        if (!res)
+            GAME_STATUS.user_profile.context.need_save == SaveDataUtilGT5::STATUSCODE::CHECK_SAVE; // BUG?
+        else
+            GAME_STATUS.user_profile.context.need_save == SaveDataUtilGT5::STATUSCODE::NO_NEED;
+
+        context.cursor_visible = true;
+        ROOT.setFocus(Menus::MainMenu::ListBox);
+        
+        LeaveDetectUtil::resume(context);
+    }
+
+    method onPageInEnd(context)
+    {
+        BalloonTip.visible = true;
+        
+        var focus_w = ROOT.getFocusWidget();
+        context.pushEvent(menu::MFocusEnterEvent(context, focus_w));
+
+        LeaveDetectUtil::resume(context);
+    }
+
+    method onFinalize(context)
+    {
+        News2.clearCallback();
+        LeaveDetectUtil::end(context);
+
+        end_wait_autodemo();
+        Menus::MainMenu::ListBox.setItemCount(0);
+        SceneFaceUtil::SetWaitSceneFace(context, nil);
+        Grim2Util::stopUpdater();
+        setFrameInterval(context, 1);
+    }
+
+    method onCancel(context)
+    {
+        LeaveDetectUtil::suspend(context);
+        main::sound.play("cancel");
+
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, context.translate(ROOT, "DO_YOU_START_DEMO"));
+        if (res)
+            goAutoDemo(context);
+
+        LeaveDetectUtil::resume(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function setFrameInterval(context, val)
+    {
+        menu::FrameInterval = val;
+        context.getUpdateContext().cursor_speed_ratio = val;
+    }
+
+    method wait_autodemo(context)
+    {
+        while (true)
+        {
+            var autodemo_sec = main::GAME_STATUS.user_profile.option.autodemo_start_interval;
+            var last_input = context.time_after_last_input - ROOT.leave_detect_time;
+
+            if (autodemo_sec > 0 && last_input > autodemo_sec)
+            {
+                if (LoginUtil::isOnline())
+                {
+                    if (News::sNewsObserver == News::OBS_Enum::NEWS_OBS_SLEEP)
+                        News::sNewsObserver = News::OBS_Enum::NEWS_OBS_WAIT_NEWS;
+                }
+                else
+                    News::sNewsObserver = News::OBS_Enum::NEWS_OBS_END_NEWS;
+
+                if (News::OBS_Enum::NEWS_OBS_END_NEWS)
+                    goAutoDemo(context);
+            }
+
+            Thread::Sleep(0.1);
+        }
+    }
+
+    method start_wait_autodemo(context)
+    {
+        self.wait_autodemo_thread = Thread(wait_autodemo, context);
+        self.wait_autodemo_thread.start();
+
+        return self.wait_autodemo_thread;
+    }
+
+    method end_wait_autodemo(context)
+    {
+        if (self.wait_autodemo_thread != nil)
+        {
+            self.wait_autodemo_thread.terminate();
+            self.wait_autodemo_thread = nil;
+        }
+    }
+
+    attribute prev_focus_;
+
+    method onLeaveDetect(context)
+    {
+        PopupNews::ParallelActor.out = true;
+        Menus::MainMenu::ParallelActor.out = true;
+        Menus::SideMenu::ParallelActor.out = true;
+        ButtonHelpGT5.hide();
+
+        context.cursor_visible = false;
+        News.on(context);
+
+        start_wait_autodemo(context);
+
+        ROOT.prev_focus_ = ROOT.getFocusWidget();
+        ROOT.can_focus = true;
+        ROOT.setFocus(ROOT);
+    }
+
+    method onActivateDetect(context)
+    {
+        if (LoginUtil::isOnline() && Grim2Util::News::isEnable())
+        {
+            PopupNews.visible = true;
+            PopupNews::ParallelActor.out = false;
+        }
+        else
+        {
+            PopupNews.visible = false;
+        }
+
+        Menus::MainMenu::ParallelActor.out = false;
+        Menus::SideMenu::ParallelActor.out = false;
+        ButtonHelpGT5.appear();
+
+        context.cursor_visible = true;
+        News.off(context);
+
+        end_wait_autodemo(context);
+
+        ROOT.can_focus = false;
+        ROOT.setFocus(ROOT.prev_focus_);
+        ROOT.prev_focus_ = nil;
+    }
+
+    method goAutoDemo(context)
+    {
+        SequenceUtil::startProject(context, "leavedemo");
+    }
+
+    method setupSceneFace(context)
+    {
+        var cp = GAME_STATUS.user_profile.garage.getRidingCar();
+        var garage_empty = !GAME_STATUS.user_profile.game_flags.getFlag("USER_STATUS", "GET_FIRST_CAR") ||
+                            GAME_STATUS.user_profile.garage.riding_id < 0;
+
+        var use_favorite_car = main::GAME_STATUS.user_profile.option.limit_favorite_car_only && 
+                               main::GAME_STATUS.option.hasFavoriteCar();
+
+        if (!GAME_STATUS.user_profile.option.kiosk_mode)
+        {
+            if (garage_empty)
+                scene_alias = "grandtop_intro";
+            else
+            {
+                if (!GAME_STATUS.user_profile.game_flags.getFlag("TOP_SCENES", "allavt_topdemo"))
+                {
+                    scene_alias = "allavt_topdemo";
+                    GAME_STATUS.user_profile.game_flags.setFlag("TOP_SCENES", "allavt_topdemo", true);
+                }
+            }
+        }
+
+        if (GetVersionBranch() == "demo")
+        {
+            var scene_alias = nil;
+            if (GAME_STATUS.user_profile.option.demo_version_code == "wed")
+                scene_alias = "top_wed_sangimi";
+
+            if (GAME_STATUS.user_profile.option.demo_version_code == "gps")
+                scene_alias = "top_garage";
+
+            if (GAME_STATUS.user_profile.option.demo_version_code == "tms" ||
+                GAME_STATUS.user_profile.option.demo_version_code == "scion" ||
+                GAME_STATUS.user_profile.option.demo_version_code == "86gp_final")
+            {
+                var scene_list = [
+                    "top_garage",
+                    "top_bern",
+                    "top_campo",
+                    "top_galgano",
+                    "top_luzern",
+                    "top_sangimi",
+                    "top_shirakawa",
+                ];
+
+                var ref_scene_index = &PROJECT.history['GTTopRoot::SceneIndex'];
+                if (scene_list.size <= *ref_scene_index)
+                    *ref_scene_index = 0;
+
+                var scene_alias = scene_list[*ref_scene_index];
+                *ref_scene_index++;
+            }
+        }
+        else if (GetVersionBranch() == "gps")
+        {
+            scene_alias = "top_garage";
+        }
+
+        if (scene_alias == nil)
+        {
+            var scene_list = [];
+            if (!use_favorite_car)
+            {
+                var top_scenes_all = [
+                    "top_redbullhangar7",
+                    "top_shirakawa",
+                    "top_GTR_engine",
+                    "photo_galgano",
+                    "top_ahrweiler01",
+                    "top_DarkHangar01",
+                    "top_new_nur",
+                    "top_DarkSmoke_01",
+                    "top_new_bonn",
+                    "top_kiritooshi_new",
+                    "top_whiteTown",
+                    "top_ahrweiler02",
+                    "top_ahrweiler03",
+                    "top_shorenin",
+                    "top_bern",
+                    "photo_luzern",
+                    "top_campo",
+                    "top_sangimi",
+                    "tourDeItalia_bern",
+                    "tourDeItalia_Luzern",
+                    "tourDeItalia_Siena",
+                    "tourDeItalia_Sangimi",
+                    "tourDeItalia_galgano",
+                    "X-1challenge_intro",
+                    "NASCAR_school_intro",
+                    "loeb_Rally_Challenge",
+                    "Topgear_intro",
+                    "X1_delivery",
+                    "allavt_topdemo",
+                ];
+
+                if (Garage2Util::Premium::getCount() > 0)
+                    top_scenes_all += ["top_garage", "top_garage", "top_garage"];
+
+                foreach (var scene in top_scenes_all)
+                {
+                    if (GAME_STATUS.user_profile.game_flags.getFlag("TOP_SCENES", scene))   
+                        scene_list.push(scene);
+                }
+            }
+            else
+            {
+                scene_list = [
+                    "top_redbullhangar7",
+                    "top_shirakawa",
+                    "photo_galgano",
+                    "top_ahrweiler01",
+                    "top_new_nur",
+                    "top_new_bonn",
+                    "top_kiritooshi_new",
+                    "top_ahrweiler02",
+                    "top_ahrweiler03",
+                    "top_shorenin",
+                    "top_bern",
+                    "photo_luzern",
+                    "top_campo",
+                    "top_sangimi",
+                    "top_garage",
+                ];
+            }
+
+            if (scene_list.size > 0)
+            {
+                var n = scene_list.size;
+                var sequence = Array(n);
+
+                for (var i = 0; i < n; i++)
+                    sequence[i] = i;
+
+                var time = pdistd::MTime::getCurrentTime();
+                var sec = time.getBySecond();
+                sec -= 60 * 60 * 5;
+                time.setBySecond(sec);
+
+                var seed = time.day;
+                sequence.randomShuffle(seed);
+
+                var index = GAME_STATUS.user_profile.context.top_scene_index;
+                index = (index + 1) % n;
+                GAME_STATUS.user_profile.context.top_scene_index = index;
+                scene_alias = scene_list[sequence[index]];
+            }
+            else
+            {
+                scene_alias = "grandtop_intro";
+            }
+        }
+
+        if (use_favorite_car)
+        {
+            var favorite_cars = main::GAME_STATUS.user_profile.option.favorite_cars;
+            var cars = [];
+
+            for (var i = 0; i < favorite_cars.size; i++)
+            {
+                var car_code = favorite_cars[i];
+                if (car_code == main::gtengine::MSpecDB::NO_CODE64)
+                    ;
+                else
+                    cars.push(car_code);
+            }
+
+            var i = pdistd::MRandom::GetValue(0, cars.Size);
+            var car_code = cars[i];
+            var col_num = gtengine::MSpecDB::getCarVariation(car_code);
+            var cp = gtengine::MCarParameter(car_code);
+            cp.color = pdistd::MRandom::GetValue(0, col_num);
+        }
+        else
+        {
+            if (scene_alias == "top_garage")
+            {
+                var cars = Garage2Util::Premium::RandomPickup(1);
+                var cpp = cars[0];
+                var cp = cpp.getCP();
+                var car_label = cp.getCarLabel();
+
+                if (car_label.beginWith("nascar_"))
+                    scene_alias = "top_garage_NASCAR";
+            }
+        }
+
+        var dp = GAME_STATUS.user_profile.residence.getPlayer(0);
+        SceneFaceUtil::loadScene(SceneFace, scene_alias, cp, dp, false);
+
+        if (scene_alias == "color_select")
+        {
+            var xes_scenes = [
+                "color_select_white",
+                "color_select_day",
+                "color_select_morning",
+                "color_select_night",
+            ];
+
+            var i = pdistd::MRandom::GetValue(0, xes_scenes.size);
+            SceneFaceUtil::loadScene(SceneFace, xes_scenes[i]);
+        }
+
+        SceneFace.execCommand("setsounddirectparam 0");
+    }
+
+    function unloadSceneFace(context)
+    {
+        ROOT.SceneFace.execCommand("clearAllModel");
+        context.wait(5.0);
+    }
+
+    function inquiryOnlineRaceEnable(context)
+    {
+        LeaveDetectUtil::suspend(context);
+
+        if (!Grim2Util::OnlineRace::isEnable())
+        {
+            sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(PROJECT, "OnlineMessage", "THIS_CANNOT_BE_SELECTED"));
+            LeaveDetectUtil::resume(context);
+            return false;
+        }
+
+        LeaveDetectUtil::resume(context);
+        return true;
+    }
+
+    function begin_osd(context)
+    {
+
+    }
+
+    function end_osd(context)
+    {
+
+    }
+
+    function callMakeSureLogin(context)
+    {
+        LeaveDetectUtil::suspend(context);
+
+        var [result, ignore_error] = LoginUtil::makeSureLogin(context, begin_osd, end_osd);
+        if (!result)
+        {
+            LeaveDetectUtil::resume(context);
+            return false;
+        }
+
+        if (!PROJECT::ConfirmPatch(context, ROOT))
+        {
+            LeaveDetectUtil::resume(context);
+            return false;
+        }
+
+        LeaveDetectUtil::resume(context);
+        return true;
+    }
+
+    function executeGameParameter(context, gp)
+    {
+        var cp = GAME_STATUS.user_profile.garage.getRidingCar();
+        var dp = GAME_STATUS.user_profile.residence.getPlayer(0);
+        
+        GameParameterUtil::begin();
+        GameParameterUtil::execute(context, gp, [cp], [dp]);
+        GameParameterUtil::end();
+    }
+
+    // Mode Selection
+    function onArcade(context)
+    {
+        sound.play("ok");
+
+        Menus::MainMenu.saveFocusPosition();
+        PROJECT.history['LastPageName'] = ROOT.name;
+        SequenceUtil::startProject(context, "arcade", "gttop");
+        return EVENTRESULT_FILTER;
+    }
+
+    function onGTMode(context)
+    {
+        if (!GAME_STATUS.user_profile.option.visible_icon_gtmode)
+        {
+            sound.play("disable");
+            var msg = context.translate(ROOT, "Arcade", "cannot_select_in_this_version");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+            return EVENTRESULT_FILTER;
+        }
+
+        sound.play("ok");
+
+        if (pdistd::MNetworkInterface::isUp())
+            LoginUtil::tryLogin(context);
+
+        Menus::MainMenu.saveFocusPosition();
+        PROJECT.history['LastPageName'] = ROOT.name;
+        SequenceUtil::startProject(context, "gtmode", "gttop");
+    }
+
+    // No login check
+    function onGTMode2(context)
+    {
+        if (!GAME_STATUS.user_profile.option.visible_icon_gtmode)
+        {
+            sound.play("disable");
+            var msg = context.translate(ROOT, "Arcade", "cannot_select_in_this_version");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+            return EVENTRESULT_FILTER;
+        }
+
+        sound.play("ok");
+
+        Menus::MainMenu.saveFocusPosition();
+        PROJECT.history['LastPageName'] = ROOT.name;
+        SequenceUtil::startProject(context, "gtmode", "gttop");
+    }
+
+    function onRanking(context)
+    {
+        sound.play("ok");
+    }
+
+    function onTheater(context)
+    {
+        sound.play("ok");
+        Menus::MainMenu.saveFocusPosition();
+    }
+
+    function onGTTV(context)
+    {
+        if (!GAME_STATUS.user_profile.option.visible_icon_gttv)
+        {
+            sound.play("disable");
+            var msg = context.translate(ROOT, "Arcade", "cannot_select_in_this_version");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+            return EVENTRESULT_FILTER;
+        }
+
+        sound.play("ok");
+
+        var ignore_error = true;
+        var network_is_up = pdistd::MNetworkInterface::isUp();
+
+        if (network_is_up)
+        {
+            var [result, ignore_error] = LoginUtil::makeSureLogin(context, begin_osd, end_osd);
+            if (result)
+            {
+                if (!ConfirmPatch(context, ROOT, nil))
+                    return;
+
+                if (ignore_error)
+                {
+                    if (Grim2Util::TV::isEnable())
+                        ;
+                }
+            }
+        }
+
+        CursorProject::GTLogoTransition.sMessage = context.translate(ROOT, "GTTV", "WAIT_FOR_UPDATE");
+        Menus::MainMenu.saveFocusPosition();
+        PROJECT.history['LastPageName'] = ROOT.name;
+        SequenceUtil::startProject(context, "gttv", "gttop");
+    }
+
+    // gttv2 (offline version)
+    function onGTTV2(context)
+    {
+        if (!GAME_STATUS.user_profile.option.visible_icon_gttv)
+        {
+            sound.play("disable");
+            var msg = context.translate(ROOT, "Arcade", "cannot_select_in_this_version");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+            return EVENTRESULT_FILTER;
+        }
+
+        sound.play("ok");
+
+        if (pdistd::MNetworkInterface::isUp())
+            LoginUtil::tryLogin(context);
+
+        CursorProject::GTLogoTransition.sMessage = context.translate(ROOT, "GTTV", "WAIT_FOR_UPDATE");
+        Menus::MainMenu.saveFocusPosition();
+        PROJECT.history['LastPageName'] = ROOT.name;
+        SequenceUtil::startProject(context, "gttv2", "gttop");
+    }
+
+    function onCrsEdit(context)
+    {
+        if (!GAME_STATUS.user_profile.option.visible_icon_coursemaker)
+        {
+            sound.play("disable");
+            var msg = context.translate(ROOT, "Arcade", "cannot_select_in_this_version");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, msg);
+            return EVENTRESULT_FILTER;
+        }
+
+        sound.play("ok");
+        Menus::MainMenu.saveFocusPosition();
+
+        var course_code = gtengine::MSpecDB::getCourseCode("template01");
+        var cp = gtengine::MCarParameter("impreza_wrc_08");
+        GAME_STATUS.user_profile.context.setArcadeCar(cp);
+
+        GameParameterUtil::begin();
+        var gp = GameParameterUtil::createSingleRace(course_code, 1, 1);
+        gp.event.game_mode = gtengine::GameMode::COURSE_EDIT;
+        gp.event.race_parameter.start_type = gtengine::StartType::GRID;
+        GameParameterUtil::executeArcade(context, gp, GAME_STATUS);
+        GameParameterUtil::end();
+    }
+
+    function onPhotoTravel(context)
+    {
+        if (GetVersionBranch() == "demo" && GAME_STATUS.user_profile.option.demo_version_code == "wed")
+        {
+            sound.play("ok");
+            main::GameSequence::setArgumentObject("wed_sangimi");
+            Menus::MainMenu.saveFocusPosition();
+            PROJECT.history['LastPageName'] = ROOT.name;
+            SequenceUtil::startProject(context, "photo", "gttop");
+        }
+        else
+        {
+            sound.play("disable");
+        }
+    }
+
+    function onGpsReplay(context)
+    {
+        sound.play("ok");
+        Menus::MainMenu.saveFocusPosition();
+        PROJECT.history['LastPageName'] = ROOT.name;
+        SequenceUtil::startProject(context, "gps_replay", "gttop");
+        return EVENTRESULT_FILTER;
+    }
+}
