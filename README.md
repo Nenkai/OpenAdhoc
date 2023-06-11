@@ -86,7 +86,7 @@ This repository contains compilable game scripts re-created from originally comp
 | gps_replay             |    ❌    | N/A                                                                              |
 | gtauto                 |    ❌    | N/A                                                                              |
 | gtmode                 |    ❌    | N/A                                                                              |
-| gttop                  |    ❌    | N/A                                                                              |
+| gttop                  |    ✔️    | Main Menu                                                                        |
 | gttv                   |    ❌    | N/A                                                                              |
 | gttv2                  |    ❌    | N/A                                                                              |
 | leavedemo              |    ❌    | N/A                                                                              |
