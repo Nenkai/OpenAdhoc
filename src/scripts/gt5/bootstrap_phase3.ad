@@ -1,0 +1,529 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static sFirstBoot = true;
+static sDBOpened = false;
+
+function initSaveData(context)
+{
+    {
+        main::GlobalStatus::initialize();
+        main::GLOBAL_STATUS = main::GlobalStatus::create();
+        main::GAME_STATUS = main::GLOBAL_STATUS;
+    }
+
+    var load_succeeded = false;
+    var [result, buf] = SaveDataUtilGT5::getBackgroundLoadResultFromFile(context);
+    while (result == SaveDataUtil::RETCODE::NEED_RETRY_LOAD)
+    {
+        var data = SaveDataUtilGT5::getGT5GameForLoad();
+        SaveDataUtil::load(nil, data);
+
+        [result, buf] = SaveDataUtilGT5::getBackgroundLoadResultFromFile(context);
+    }
+
+    if (buf != nil)
+    {
+        load_succeeded = main::GlobalStatus::setLoadedData(&main::GAME_STATUS, buf);
+        if (!load_succeeded)
+            ;
+        
+        if (result == SaveDataUtil::RETCODE::BIND_NEED_RECREATE)
+        {
+            GAME_STATUS.user_profile.context.special_save = true;
+            SaveDataUtilGT5::saveRecreateEveryWhere(context);
+        }
+    }
+
+    if (!load_succeeded)
+    {
+        var result2;
+        do
+        {
+            var data = SaveDataUtilGT5::getGT5BackupGameForLoad();
+            SaveDataUtil::load(nil, data);
+            [result2, buf] = SaveDataUtilGT5::getBackgroundLoadResultFromFile(context);
+        }
+        while (result2 == SaveDataUtil::RETCODE::NEED_RETRY_LOAD)
+
+        if (buf != nil)
+        {
+            var res = pdistd::MSystemDialog::open("YY", context.translate(context.getCursorProject(), "SaveDataGT5", "RECOVER_FROM_BACKUP"));
+            if (res == "YES")
+            {
+                load_succeeded = main::GlobalStatus::setLoadedData(&main::GAME_STATUS, buf);
+            }
+            else
+                ;
+
+            if (!load_succeeded)
+                ;
+            else
+            {
+                SaveDataUtilGT5::saveEveryWhere(context, true);
+                SaveDataUtilGT5::checkSaveEveryWhereNoErrorRecovery(context);
+            }
+        }
+    }
+
+    if (!load_succeeded)
+    {
+        main::GlobalStatus::Initialize(GAME_STATUS);
+        main::GlobalStatus::addInitializer(GAME_STATUS);
+
+        if (result == SaveDataUtil::RETCODE::BIND_ERROR || result == SaveDataUtil::RETCODE::CORRUPT_DATA || result == SaveDataUtil::RETCODE::FATAL_ERROR)
+        {
+            SaveDataUtilGT5::saveEveryWhere(context, true);
+            SaveDataUtilGT5::checkSaveEveryWhereNoErrorRecovery(context);
+            SaveDataUtilGT5::saveBackupEveryWhere(context, true);
+            SaveDataUtilGT5::checkSaveEveryWhereNoErrorRecovery(context, true);
+        }
+
+        GarageUtil::removeThumbnailAll();
+        GAME_STATUS.user_profile.context.need_save = SaveDataUtilGT5::STATUSCODE::NEED_SAVE;
+    }
+    else
+    {
+        SaveDataUtilGT5::saveBackupEveryWhere(context);
+        SaveDataUtilGT5::checkSaveEveryWhereNoErrorRecovery(context, true);
+        main::GlobalStatus::addInitializer(GAME_STATUS);
+    }
+
+    GAME_STATUS.user_profile.residence.refreshPlayerName();
+    GAME_STATUS.user_profile.option.edit_course_data_id = -1;
+
+    for (var controller_port = 0; controller_port < 2; controller_port++)
+    {
+        var config = GAME_STATUS.user_profile.option.key_config.getConfig(controller_port);
+        var config_trs = config[gtengine::InputMode::PLAY_NORMAL]["TRS"];
+        var button_up = config_trs["button"][pdistd::SuperPortButtonBit::UP];
+        var button_down = config_trs["button"][pdistd::SuperPortButtonBit::DOWN];
+
+        if (button_up == gtengine::ButtonCode::HEAD_FRONT)
+            config[gtengine::InputMode::PLAY_NORMAL]["TRS"]["button"][pdistd::SuperPortButtonBit::UP] = gtengine::ButtonCode::GHOST;
+
+        if (button_down == gtengine::ButtonCode::HEAD_REAR)
+            config[gtengine::InputMode::PLAY_NORMAL]["TRS"]["button"][pdistd::SuperPortButtonBit::DOWN] = gtengine::ButtonCode::BACKVIEW;
+
+        GAME_STATUS.user_profile.option.key_config.setConfig(config, controller_port);
+    }
+    
+    GAME_STATUS.user_profile.context.academy_round_id = 0;
+    GAME_STATUS.user_profile.context.academy_event_id = 0;
+
+    GAME_STATUS.apply();
+    main::GlobalStatus::clearInitializer();
+
+    if (GAME_STATUS.user_profile.option.extra_language != pdistd::Language::SYSTEM)
+        LangUtil::apply(context);
+
+    return load_succeeded;
+}
+
+module voucher_module 
+{
+
+}
+
+function loadVoucherData(context)
+{
+    voucher_module.load("/scripts/gt5/util/VoucherUtil");
+    voucher_module::VoucherUtil::loadVouchers(context, main::GAME_STATUS, DLCUtil::isAvailableAnyTime());
+    voucher_module.clearStatic();
+}
+
+function open_db()
+{
+    var res = SQLITE.open("/APP_DATA/db/system.db", 8 * 1024 * 1024);
+    if (res != SQLITE_OK)
+        DBUtil::fatalErrorOnBoot(res);
+}
+
+function initDBs(progress)
+{
+    if (!sDBOpened)
+    {
+        open_db();
+        sDBOpened = true;
+    }
+
+    if (!sFirstBoot && DBUtil::getTableVersion("t_db_master") == nil)
+    {
+        SQLITE.close();
+        pdistd::RemoveFile("/APP_DATA/db/system.db");
+        open_db();
+    }
+
+    if (progress == nil)
+        progress = pdistd::MProgress();
+
+    progress.value = 0.0;
+
+    main::pdiext::MSystemConfiguration::GetOSDUserId();
+    
+    ReplayFileUtil::initialize();
+    DriverNameUtil::initialize();
+    PhotoFileUtil::initialize();
+    CourseFileUtil::initialize();
+    TvFileUtil::initialize();
+
+    if (main::GAME_STATUS != nil)
+    {
+        MuseumFileUtil::initialize();
+        NewsFileUtil::initialize();
+        KeyValueUtil::initialize();
+        deleteBotTweet();
+    }
+
+    progress.value = 0.4;
+
+    CarData::initialize();
+    progress.value = 0.6;
+
+    CourseData::initialize();
+    progress.value = 0.7;
+
+    GPSData::initialize();
+    progress.value = 0.8;
+
+    GameItemData::initialize();
+    progress.value = 0.9;
+
+    UsedCarUtil::initialize();
+    BSpecDriverData::initialize();
+    DBUtil::updateTableVersion("t_db_master", 100);
+    progress.value = 1.0;
+}
+
+function createPace()
+{
+    var res = main::Pace.create();
+}
+
+function initGrim()
+{
+    var grim_url = main::pdiext::MProductInformation::GetGrimURL();
+    if (main::AppOpt["grim"] != nil && main::AppOpt["grim"] == "dev")
+    {
+        var cols = grim_url.split('.') // Symbol const?
+        cols[0] = 'https://gt5pdev01'; // Also a symbol const
+        grim_url = cols.join('.');
+    }
+
+    var use_db = true;
+
+    if (main::Grim2 != nil)
+    {
+        var language = main::pdistd::MLocale::getLanguage().downcase();
+        var fingerprint = main::pdistd::MDynRes::importBlob("GT5_FINGERPRINT", "GT5_FINGERPRINT_SIZE");
+        var cert_name = "GT5_CLIENT_CERTIFICATE";
+        var privkey_name = "GT5_CLIENT_PRIVATEKEY";
+        main::Grim2.initialize(grim_url, language, use_db, fingerprint, cert_name, privkey_name);
+        main::Grim2.initialize2();
+        main::Grim2.setSpecialRequestHeader("X-gt-special", GAME_STATUS.user_profile.option.server_special_value);
+    }
+
+    if (main::News2 != nil)
+    {
+        main::News2.initialize();
+        main::News2.initialize2();
+    }
+    
+    if (main::Museum2 != nil)
+    {
+        main::Museum2.initialize();
+        main::Museum2.initialize2();
+    }
+
+    if (main::Tv2 != nil)
+    {
+        main::Tv2.initialize();
+        main::Tv2.initialize2();
+    }
+
+    if (main::Bbs2 != nil)
+        main::Bbs2.initialize();
+
+    if (main::EventRace2 != nil)
+    {
+        main::EventRace2.initialize();
+        main::EventRace2.initialize2();
+    }
+
+    if (main::Ranking2 != nil)
+    {
+        main::Ranking2.initialize2();
+    }
+
+    if (main::Replay2 != nil)
+    {
+        main::Replay2.initialize2();
+    }
+
+    if (main::UserProfile2 != nil)
+    {
+        main::UserProfile2.initialize2();
+    }
+
+    if (main::PrivateRoom2 != nil)
+    {
+        main::PrivateRoom2.initialize2();
+    }
+
+    if (main::RaceUmpire2 != nil)
+    {
+        main::RaceUmpire2.initialize2();
+    }
+
+    if (main::ActionLog != nil)
+    {
+        main::ActionLog.initialize2();
+    }
+
+    if (main::ItemBox != nil)
+    {
+        main::ItemBox.initialize2();
+    }
+
+    if (main::GTMail != nil)
+    {
+        main::GTMail.initialize2();
+    }
+
+    if (main::Photo != nil)
+    {
+        main::Photo.initialize2();
+    }
+    
+    if (main::Course != nil)
+    {
+        main::Course.initialize2();
+    }
+
+    if (main::Race != nil)
+    {
+        main::Race.initialize2();
+    }
+
+    if (main::OnlineBSpec != nil)
+    {
+        main::OnlineBSpec.initialize2();
+    }
+
+    if (main::Matching2 != nil)
+    {
+        main::Matching2.initialize2();
+    }
+}
+
+function login(context)
+{
+    if (AppOpt.defined("lanmode"))
+    {
+        OnlineUtility.setIsLanMode(true);
+        return;
+    }
+
+    if (!pdistd::MNetworkInterface::isUp())
+        return;
+
+    if (!GAME_STATUS.user_profile.option.boot_signin)
+        return;
+
+    if (AppOpt["server_special_value"] != nil)
+    {
+        var value = main::AppOpt["server_special_value"];
+        GAME_STATUS.user_profile.option.server_special_value = value;
+        Grim2.setSpecialRequestHeader("X-gt-special", value);
+    }
+
+    var res = LoginUtil::tryLogin(context);
+    !res;
+}
+
+function initTrophy()
+{
+    if (StaticConfig.defined("use_trophy_system") && StaticConfig::use_trophy_system && pdiext::MProductInformation::GetUseNPTrophyFlag())
+    {
+        PDINetwork.initializeTrophy(true, GetVersionBranch() != "gt5", true);
+    }
+}
+
+function syncInitTrophy(context)
+{
+    if (pdiext::MProductInformation::GetUseNPTrophyFlag())
+    {
+        checkTrophyDiskSpace();
+
+        var res = PDINetwork.waitUntilTrophyInitialized();
+        if (!res)
+        {
+            if (GetVersionBranch() == "gt5")
+            {
+                var space = PDINetwork.getTrophyRequiredDiskSpace(true);
+                if (space != nil && !space[0])
+                    pdistd::MSystemDialog::abortDiskFull(space[1] / 1024);
+                else
+                    PDINetwork.initializeTrophy(false, false, false);
+            }
+            else
+                ;
+        }
+    }
+}
+
+function checkTrophyDiskSpace()
+{
+    if (pdiext::MProductInformation::GetUseNPTrophyFlag())
+    {
+        if (GetVersionBranch() == "gt5")
+            PDINetwork.checkTrophyRequiredDiskSpace();
+    }
+}
+
+function setTrophyConfig()
+{
+    if (!PDINetwork.isDummy() && GAME_STATUS.user_profile.context.special_save)
+        PDINetwork.setTrophyUnlockRestriction(true);
+}
+
+function openDB()
+{
+    var take_time = false;
+
+    if (!pdistd::Exist("/APP_DATA/db/system.db"))
+    {
+        sFirstBoot = true;
+        take_time = true;
+    }
+    else
+    {
+        sFirstBoot = false;
+    }
+
+    open_db();
+    sDBOpened = true;
+
+    if (!sFirstBoot && DBUtil::getTableVersion("t_db_master") == nil)
+        take_time = true;
+
+    return take_time;
+}
+
+function vacuumIf(context)
+{
+    var page_count_list = GlobalStatus::Pragma("page_count");
+    if (page_count_list == nil || page_count_list.size == 0 || page_count_list[0].size == 0)
+        return;
+
+    var freelist_count_list = GlobalStatus::Pragma("freelist_count");
+    if (freelist_count_list == nil || freelist_count_list.size == 0 || freelist_count_list[0].size == 0)
+        return;
+
+    var page_count = page_count_list[0][0];
+    var freelist_count = freelist_count_list[0][0];
+    if (page_count == 0 || freelist_count == 0)
+        return;
+
+    var fragment_ratio = freelist_count.toFloat() / page_count;
+    if (fragment_ratio >= 0.2)
+        GlobalStatus::Vacuum();
+}
+
+function deleteBotTweet()
+{
+    if (GAME_STATUS.user_profile.bot_tweet_deleted)
+        return;
+
+    var sql = "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 't_bot_data_%'";
+    var res = SQLITE.executeQuery(sql);
+    if (res.size > 0)
+    {
+        foreach (var tableName in res)
+            DBUtil::dropTable(tableName[0]);
+    }
+
+    GAME_STATUS.user_profile.bot_tweet_deleted = true;
+}
+
+function checkDiskSpaceOnBoot(context)
+{
+    var space = pdistd::GetDiskFreeSize("/APP_DATA");
+    if (space < 34 * 1024 * 1024) // Macro
+    {
+        ErrorUtil::abortDiskFull(space, "34MB", __FILE__, __LINE__);
+        return false;
+    }
+}
+
+function execBootPhase3_step1(context)
+{
+    initTrophy();
+    initSaveData(context);
+    setTrophyConfig();
+    if (GetVersionBranch() != "gps")
+        initGrim();
+
+    if (!GAME_STATUS.user_profile.option.visible_icon_gtmode)
+        PDINetwork.startWebServer();
+
+    GAME_STATUS.user_profile.context.chat_restricted_eula = false;
+}
+
+function execBootPhase3_step2(context)
+{
+    createPace();
+    login(context);
+}
+
+function execBootPhase3_step3(context)
+{
+    syncInitTrophy(context);
+    SoundUtil::InitializePlaylist()
+    BotUtil::setup();
+
+    if (AppOpt.defined("demo_version_code"))
+    {
+        GAME_STATUS.user_profile.option.demo_version_code = AppOpt["demo_version_code"];
+        AppOpt.removeStatic("demo_version_code");
+    }
+}
+
+function execBootPhase3_step4(context, progress)
+{
+    initDBs(progress);
+    vacuumIf(context);
+    loadVoucherData(context);
+
+    if (GetVersionBranch() != "runviewer")
+        DLCUtil::checkOnBoot(context);
+
+    var space = pdistd::GetDiskFreeSize("/APP_DATA");
+    var MB32 = 32 * 1024 * 1024;
+    if (space < MB32)
+    {
+        var size = 32 - (space / 1024 / 1024),;
+        ErrorUtil::abortDiskFull(space, "%{size}MB", __FILE__, __LINE__);
+    }
+}
+
+function execBootPhase3(context)
+{
+    execBootPhase3_step1(context);
+    execBootPhase3_step2(context);
+    execBootPhase3_step3(context);
+    execBootPhase3_step4(context);
+}
