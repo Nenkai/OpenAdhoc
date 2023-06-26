@@ -1,0 +1,583 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module BootProjectUtil
+{
+    static sPhase = 0;
+    static sNeedToCreate = false;
+    static sSceneFace;
+
+    function putLogOnBoot()
+    {
+        var resolution = "%dx%d%s %.2t".format(pdiext::MSystemConfiguration::GetDisplayResolution()[0],
+                              pdiext::MSystemConfiguration::GetDisplayResolution()[1],
+                              pdiext::MSystemConfiguration::GetDisplayResolution()[2],
+                              (pdiext
+                                ::MSystemConfiguration::GetDisplayResolution()[3] * 100.0).toInt(),
+        );
+
+        var macaddr = pdistd::MNetworkInterface::getMacAddress();
+        macaddr = macaddr.split(":").join("");
+
+        var wireless = pdistd::MNetworkInterface::isDeviceWireless();
+        var proxy = pdistd::MNetworkInterface::getProxy()[0] ? 
+                    "%s %d".format(pdistd::MNetworkInterface::getProxy()[1], pdistd::MNetworkInterface::getProxy()[2]) :
+                    "false";
+
+        var freespace = pdistd::GetDiskFreeSize("/APP_DATA");
+        var account = PDINetwork.getClientName();
+        var region = PDINetwork.getRegionName();
+
+        var nat = 0;
+        var nat_info = pdistd::MNetworkInterface::getNatInfo();
+        if (nat_info != nil)
+            nat = nat_info["nat"];
+
+        var lang = pdistd::MLocale::getLanguage();
+        var is3DTV = pdiext::MSystemConfiguration::is3DTVAvailable();
+        var isInstalled = DataInstallUtil::isInstalled();
+
+        var option = GAME_STATUS.user_profile.option;
+        var audioout_encoder = "-";
+        var audioout_ch = "-";
+
+        var audioout_state = main::pdiext::MSystemConfiguration::GetSystemAudioOutputState();
+        if (audioout_state.size > 0)
+        {
+            audioout_encoder = audioout_state[0]["encoder"];
+            audioout_ch = audioout_state[0]["channel"];
+        }
+
+        var strlog = "QA=%{resolution}:QM=%{macaddr}:QW=%{wireless}:QP=%{proxy}:QF=%{freespace}:QU=%{account}:QN=%{nat}:QR=%{region}:QL=%{lang}:Q3=%{is3DTV}:QI=%{isInstalled}";
+        strlog += ":QC=%{option.display_margin_sd},%{option.display_margin_hd}";
+        strlog += ":QS=%{audioout_encoder},%{audioout_ch},%{option.speaker_layout}";
+        strlog += ":QB=%{option.menu_bgm_volume},%{option.race_bgm_volume},%{option.replay_bgm_volume},%{option.sysbgm_use[0]},%{option.sysbgm_use[1]}";
+        strlog += ":QD=%{option.sound_dynamic_range}";
+
+        var is_signature_version = false;
+        var elist = GAME_STATUS.entitlement.getList();
+        foreach (var e in elist)
+        {
+            if (e[0] == gtengine::EntitlementType::EVENT && e[1] == "signature")
+            {
+                is_signature_version = true;
+                break;
+            }
+        }
+
+        strlog += ":QG=%{is_signature_version ? 1 : 0}";
+
+        var garage_num = GAME_STATUS.user_profile.garage.getCount();
+        var psp_garage_num = GAME_STATUS.user_profile.import_garage.getCount();
+        strlog += ":QH=%{garage_num}:QE=%{psp_garage_num}";
+
+        var accel_names = [];
+        var brake_names = [];
+        var config = GAME_STATUS.user_profile.option.key_config.getConfig(0);
+        var play_config = config[gtengine::InputMode::PLAY_NORMAL];
+        var sixaxis = play_config["SIXAXIS"];
+        var analog = sixaxis["analog"];
+
+        foreach (var pair in analog)
+        {
+            if (pair[1] == gtengine::AnalogCode::ACCEL)
+            {
+                var res = pdistd::SuperPortAnalogChannel.find_static((p) => p[1] == pair[0]);
+                var r = res[0][0].toString().split("_");
+                accel_names.push(r[r.size - 1]);
+            }
+            else if (pair[1] == gtengine::AnalogCode::BRAKE)
+            {
+                var res = pdistd::SuperPortAnalogChannel.find_static((p) => p[1] == pair[0]);
+                var r = res[0][0].toString().split("_");
+                brake_names.push(r[r.size - 1]);
+            }
+        }
+
+        {
+            var keystr = accel_names.join(",");
+            strlog += ":QJ=%{keystr}";
+
+            keystr = brake_names.join(",");
+            strlog += ":QK=%{keystr}";
+        }
+
+        if (GAME_STATUS.user_profile.victim_of_savedata_corruption)
+            strlog += ":QO=1";
+
+        main::Grim2.requestPutLog(strlog);
+    }
+
+    function setScenefaceForCapture(sceneface)
+    {
+        sSceneFace = sceneface;
+    }
+
+    function parseXML(xml_data)
+    {
+        var premium_cars = [];
+        var xml = pdistd::MXml();
+        xml.parse(xml_data);
+        var dom = xml.result;
+        var xml_nodes = dom["CarData"];
+        if (xml_nodes.size <= 0)
+            return premium_cars;
+
+        var xml_node = xml_nodes[0];
+        var premium_car_nodes = xml_node["premium_car"];
+        if (premium_car_nodes != nil)
+        {
+            premium_cars = Array(premium_car_nodes.size);
+            for (var i = 0; i < premium_car_nodes.size; i++)
+            {
+                var car_node = premium_car_nodes[i];
+                var car_label = car_node.getAttribute("code");
+                var car_color = car_node.getAttribute("color");
+                premium_cars[i] = [gtengine::MSpecDB::getCarCode(car_label), car_color];
+            }
+        }
+
+        return premium_cars;
+    }
+
+    function loadArcadeCars(context)
+    {
+        var carlist_file = "/textdata/gt5/arcade_carlist_e3.xml";
+        var premium_cars = [];
+
+        var fst = pdistd::ReadFile(carlist_file);
+        var buf = fst["buffer"];
+        if (buf != nil)
+            premium_cars = parseXML(buf);
+        
+        var cp_list = Array();
+        for (var i = 0; i < premium_cars.size; i++)
+        {
+            var [car_code, car_color] = premium_cars[i];
+            if (car_code == gtengine::MSpecDB::NO_CODE64)
+                continue;
+
+            var cp = gtengine::MCarParameter(car_code);
+            cp.color = car_color == nil ? 0 : car_color;
+            cp_list.push(cp);
+        }
+
+        return cp_list;
+    }
+
+    function captureIcon(context)
+    {
+        sSceneFace.visible = true;
+
+        var cp_list = loadArcadeCars(context);
+        foreach (var cp in cp_list)
+            ThumbnailUtil::captureIconForArcadeIf(context, sSceneFace, cp);
+        
+        sSceneFace.visible = false;
+    }
+
+    function loadInvitation(context)
+    {
+        var res = OnlineUtility.loadInvitation();
+        if (res == nil)
+            return;
+
+        var type = res.shift();
+        switch (type)
+        {
+            case gtengine::InvitationType::OpenLounge:
+            case gtengine::InvitationType::PrivateLounge:
+                PROJECT.load("/scripts/gt5/util/OnlineUtil");
+                var [serverId, worldId, roomId, password] = res;
+                var loungeOwnerId = nil;
+
+                if (OnlineUtil::enterRoomWithProgressDialog(context, [roomId, nil, loungeOwnerId]))
+                {
+                    GameSequence::setNextProject(StaticConfig::after_boot_project);
+                    SequenceUtil::startSequence(context, GameSequence::RACE);
+                    return true;
+                }
+                else
+                {
+                    OnlineUtility.finalizeLobby();
+                }
+                break;
+
+            default:
+                break;
+        }
+
+        return false;
+    }
+
+    function resume_wait_func(context)
+    {
+        for (var i = 0; i < 300; ++i)
+        {
+            context.wait();
+            var state = context.getUpdateContext().getPadButtonState(0);
+            if (state & 0x20000)
+                return false;
+        }
+
+        return true;
+    }
+
+    function DispatchNextSequence(context)
+    {
+        context.pushEvent(main::menu::MFunctionEvent(GoNextSequence, context));
+    }
+
+#define BOOT_PHASE_START 0
+#define BOOT_PHASE_LANGUAGE 1
+#define BOOT_PHASE_ADJUST_SCREEN 2
+#define BOOT_PHASE_STEP4 3
+#define BOOT_PHASE_CLEAR_BBS 4
+#define BOOT_PHASE_CHECK_GRIM 5
+#define BOOT_PHASE_CHECK_INVITATION 6
+#define BOOT_PHASE_CHECK_STEP8 7
+#define BOOT_PHASE_CHECK_SUSPENDER 8
+#define BOOT_PHASE_MONITOR_CLIENT 9
+#define BOOT_PHASE_OPENING 10
+#define BOOT_PHASE_SAVE 11
+#define BOOT_PHASE_NEXT 12
+
+    function GoNextSequence(context)
+    {
+        switch (sPhase)
+        {
+            case BOOT_PHASE_START:
+                ++sPhase;
+                DispatchNextSequence(context);
+                break;
+
+            case BOOT_PHASE_LANGUAGE:
+                ++sPhase;
+
+                var option = GAME_STATUS.user_profile.option;
+                var done = option.extra_language_done;
+                if (done)
+                    DispatchNextSequence(context);
+                else
+                {
+                    var extra_lang = false;
+                    foreach (var lang in pdiext::MProductInformation::GetAvailableLanguages())
+                    {
+                        if (lang == pdistd::Language::TR || lang == pdistd::Language::EL)
+                        {
+                            extra_lang = true;
+                            break;
+                        }
+                    }
+
+                    if (extra_lang)
+                    {
+                        LangRoot.open(context);
+                        GAME_STATUS.user_profile.context.need_save = SaveDataUtilGT5::STATUSCODE::NEED_SAVE;
+                    }
+                    else
+                    {
+                        DispatchNextSequence(context);
+                    }
+                }
+                break;
+
+            case BOOT_PHASE_ADJUST_SCREEN:
+                if (GAME_STATUS.user_profile.option.bot_on)
+                {
+                    ++sPhase;
+                    DispatchNextSequence(context);
+                    break;
+                }
+
+                ++sPhase;
+                var option = GAME_STATUS.user_profile.option;
+                var isSD = pdiext::MSystemConfiguration::isSDTV();
+                var adjusted = isSD ? option.display_margin_sd_adjust_done : option.display_margin_hd_adjust_done;
+                if (adjusted)
+                    DispatchNextSequence(context);
+                else
+                    AdjustScreenRoot.open(context);
+
+                if (isSD)
+                    option.display_margin_sd_adjust_done = true;
+                else
+                    option.display_margin_hd_adjust_done = true;
+
+                GAME_STATUS.user_profile.context.need_save = SaveDataUtilGT5::STATUSCODE::NEED_SAVE;
+                break;
+
+            case BOOT_PHASE_STEP4:
+                ++sPhase;
+
+                var option = GAME_STATUS.user_profile.option;
+                if (GetVersionBranch() == "demo" && !option.bot_on)
+                {
+                    if (option.demo_version_code != "presentation")
+                    {
+                        var dp = GAME_STATUS.user_profile.residence.referPlayer(0);
+                        dp.display_name = "PLAYER 1";
+                        GAME_STATUS.user_profile.context.need_save = SaveDataUtilGT5::STATUSCODE::NEED_SAVE;
+                    }
+                }
+
+                if (bootstrap_module::openDB())
+                {
+                    WelcomeRoot.open(context, bootstrap_module::execBootPhase3_step4);
+                }
+                else
+                {
+                    bootstrap_module::execBootPhase3_step4(context);
+                    BootProjectUtil::DispatchNextSequence(context);
+                }
+
+                if (Grim2.isInitialize())
+                    putLogOnBoot();
+                break;
+
+            case BOOT_PHASE_CLEAR_BBS:
+                GAME_STATUS.user_profile.bbs.removeAll();
+                ++sPhase;
+                DispatchNextSequence(context);
+                break;
+
+            case BOOT_PHASE_CHECK_GRIM:
+                ++sPhase;
+
+                var option = GAME_STATUS.user_profile.option;
+                if (option.demo_version_code == "lemans")
+                    pdiext::MUnit::SetUnitSystemByLanguage("FR");
+
+                if (!option.bot_on && Grim2.isInitialize() && Grim2Util::isWrongClientTime())
+                    DispatchNextSequence(context);
+                else
+                    DispatchNextSequence(context);
+                break;
+
+            case BOOT_PHASE_CHECK_INVITATION:
+                ++sPhase;
+
+                if (pdistd::GetGameBootAttribute() & pdistd::GameBootAttribute::InviteMessage)
+                {
+                    if (!loadInvitation(context))
+                        DispatchNextSequence(context);
+                    else
+                        DispatchNextSequence(context);
+                }
+                break;
+
+            case BOOT_PHASE_CHECK_STEP8:
+                ++sPhase;
+                DispatchNextSequence(context);
+                break;
+
+            case BOOT_PHASE_CHECK_SUSPENDER:
+                var resume = false;
+                if (GAME_STATUS.user_profile.suspender.gp != nil)
+                {
+                    var valid = true;
+                    var garage = GAME_STATUS.user_profile.garage;
+                    var entry_set = GAME_STATUS.user_profile.suspender.gp.event.entry_set;
+                    for (var i = 0; i < entry_set.entries.size; ++i)
+                    {
+                        var entry = entry_set.entries[i];
+                        var cp = entry.car_parameter;
+                        var is_voucher_car = gtengine::MSpecDB::checkGenericFlag("is_voucher_car", cp.getCarCode());
+                        if (is_voucher_car)
+                        {
+                            if (!garage.hasCar(cp.getCarCode()))
+                            {
+                                valid = false;
+                                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(BootRoot, "RESUME_ERROR"));
+                                break;
+                            }
+                        }
+                    }
+
+                    if (valid)
+                    {
+                        while (1)
+                        {
+                            var res = DialogUtil::openConfirmExecDialog(context, nil, context.translate(BootRoot, "RESUME_PREPARATION"),
+                                                                        nil, nil, resume_wait_func, nil, nil);
+
+                            if (!res)
+                            {
+                                res = DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, context.translate(BootRoot, "RESUME_ABORT"));
+                                if (res)
+                                {
+                                    resume = false;
+                                    break;
+                                }
+                            }
+                            else
+                            {
+                                resume = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (resume && GAME_STATUS.user_profile.suspender.race_snap_available)
+                    {
+                        if (ORG.checkResumeBuffer(GAME_STATUS.user_profile.suspender.race_snap) == false)
+                        {
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(BootRoot, "RESUME_ERROR"));
+                            resume = false;
+                        }
+                    }
+
+                    if (resume)
+                    {
+                        GameSequence::setNextProject("gtmode", nil);
+                        var gp = GAME_STATUS.user_profile.suspender.gp;
+                        var history = GAME_STATUS.user_profile.suspender.history;
+                        
+                        main::manager.setHistory("GTModeProject", history);
+                        GameParameterUtil::executeEvent(context, gp, GAME_STATUS);
+                        SoundUtil::SetSystemBGMEnable(context, true);
+                    }
+                    else
+                    {
+                        GAME_STATUS.user_profile.suspender.race_snap_available = false;
+                        GAME_STATUS.user_profile.suspender.race_snap = nil;
+                    }
+
+                    GAME_STATUS.user_profile.suspender.gp = nil;
+                    GAME_STATUS.user_profile.suspender.history = nil;
+
+                    if (resume)
+                        return EVENTRESULT_FILTER;
+                }
+
+                if (!resume)
+                {
+                    GAME_STATUS.user_profile.suspender.race_snap = nil;
+                    ++sPhase;
+                    DispatchNextSequence(context);
+                }
+                break;
+
+            case BOOT_PHASE_MONITOR_CLIENT:
+                ++sPhase;
+
+                var option = main::GAME_STATUS.user_profile.option;
+                if (option.monitor_client)
+                    MonitorClientRoot.open(context);
+                else
+                    DispatchNextSequence(context);
+
+                break;
+
+            case BOOT_PHASE_OPENING:
+                ++sPhase;
+
+                if (GAME_STATUS.user_profile.option.bot_on)
+                {
+                    ++sPhase;
+                    DispatchNextSequence(context);
+                    break;
+                }
+                
+                var play_opening = false;
+                var opening_id = "";
+                if (GetVersionBranch() == "academy")
+                {
+                    var opening_index = GAME_STATUS.user_profile.context.academy_opening_id;
+                    var make_believe = Grim2.getServerOptionToInt("gtacademy", "make.believe", 0);
+                    if (make_believe == 0)
+                        opening_index = 0;
+
+                    opening_id = "academy%{opening_index}";
+                    if (main::GAME_STATUS.user_profile.option.opening_after_autoload)
+                    {
+                        var tvid = GTTVOffline::getTvId(opening_id);
+                        var tv = tvid["tv"];
+                        var movie_path = tv["movie_path"];
+                        play_opening = pdistd::Exist(movie_path);
+
+                        if (play_opening && make_believe != 0)
+                        {
+                            GAME_STATUS.user_profile.context.academy_opening_id = (opening_index + 1) % 2;
+                            GAME_STATUS.user_profile.context.need_save = SaveDataUtilGT5::STATUSCODE::NEED_SAVE;
+                        }
+                    }
+                }
+                else
+                {
+                    opening_id = "opening2";
+                    if (main::GAME_STATUS.user_profile.option.opening_after_autoload)
+                    {
+                        var tvid = GTTVOffline::getTvId(opening_id);
+                        var tv = tvid["tv"];
+                        play_opening = pdistd::Exist(tv["movie_path"]);
+
+                        if (!play_opening)
+                        {
+                            var game_data_path = Tv2.getMoviePath(tv["file_id"], false);
+                            play_opening = pdistd::Exist(game_data_path);
+                            if (!play_opening)
+                            {
+                                opening_id = "opening";
+                                var opening_tvid = GTTVOffline::getTvId(opening_id);
+                                play_opening = pdistd::Exist(opening_tvid["tv"]["movie_path"]);
+                            }
+           
+                        }
+                    }
+                }
+
+                if (play_opening)
+                {
+                    SequenceUtil::startProject(context, "play_movie", opening_id);
+                    main::PLAY_STAGE_at_top = false;
+                }
+                else
+                {
+                    DispatchNextSequence(context);
+                }
+
+                break;
+                
+            case BOOT_PHASE_SAVE:
+                ++sPhase;
+
+                if (GAME_STATUS.user_profile.context.need_save == SaveDataUtilGT5::STATUSCODE::NEED_SAVE)
+                {
+                    GAME_STATUS.user_profile.context.need_save = SaveDataUtilGT5::STATUSCODE::CHECK_SAVE;
+                    SaveDataUtilGT5::saveEveryWhere(context);
+                }
+
+                DispatchNextSequence(context);
+                break;
+
+                
+            case BOOT_PHASE_NEXT:
+            default:
+                context.cursor_visible = false;
+                var after_boot_sequence = main::StaticConfig["after_boot_sequence"];
+                if (after_boot_sequence != nil)
+                    SequenceUtil::startSequence(context, after_boot_sequence);
+                else
+                {
+                    var boot_project = GAME_STATUS.user_profile.context.last_saved_project;
+                    if (boot_project == "")
+                        boot_project = main::StaticConfig::after_boot_project;
+
+                    SequenceUtil::startProject(context, boot_project);
+                }
+                break;
+        }
+    }
+}
