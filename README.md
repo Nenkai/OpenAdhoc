@@ -77,7 +77,7 @@ This repository contains compilable game scripts re-created from originally comp
 | main                   |    ✔️    | Initial Bootstrap & Utils before `boot`                                          |
 | arcade                 |    ✔️    | Arcade Mode                                                                      |
 | academy                |    ❌    | N/A                                                                              |
-| boot                   |    ❌    | N/A                                                                              |
+| boot                   |    ✔️    | Boot Project (logic is in bootstrap scripts)                                     |
 | concept                |    ❌    | N/A                                                                              |
 | config                 |    ❌    | N/A                                                                              |
 | cursor                 |    ❌    | N/A                                                                              |
