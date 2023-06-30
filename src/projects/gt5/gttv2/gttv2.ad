@@ -1,0 +1,370 @@
+module GTTV2Project
+{
+    import main::ActorUtil;
+    import main::CaptionUtil;
+    import main::DialogUtil;
+    import main::PaceUtil;
+    import main::NPCommerceUtil;
+    import main::Grim2Util;
+    import main::LoginUtil;
+
+    #include "projects/gt5/gttv2/GTTV2ProjectUtil.ad";
+
+    GTTV2Project.load("/scripts/gt5/util/NPCommerceUtil");
+
+    static additional_projects;
+    static additional_sounds;
+    static sPSNData = nil;
+    static sNeedRequestTicket;
+    static sSelectedCategory;
+    static sSelectedChannel;
+    static sModeOnline;
+    static is_online_on_load;
+
+    function onLoad(update_context)
+    {
+        GTTV2Project.load("/scripts/gt5/util/HttpUtil");
+        HttpUtil::begin(HttpUtil::sInitParamsNpCommerce2);
+        is_online_on_load = LoginUtil::isOnline();
+        PaceUtil::loadTvUtil();
+        PaceUtil::activate();
+        sNeedRequestTicket = false;
+
+        var render_context = update_context.getRenderContext(0);
+        loadProjects();
+
+        additional_sounds = [
+            main::pdiext::MSoundEffect("sound_gt/se/gt5menu.sgd")
+        ];
+        
+        SequenceUtil::setPageTransition([
+            "*,GTTV2Project::MoviePlayerRoot": MoviePlayerTransition,
+            "*,*": CursorProject::GTLogoTransition
+        ]);
+
+        sModeOnline = LoginUtil::isOnline() && Grim2Util::TV::isEnable();
+
+        if (sModeOnline && -1 != GAME_STATUS.user_profile.context.gttv_id)
+        {
+            GTTVDetailPopup.open2(render_context);
+        }
+        else
+        {
+            var user_id = Grim2.getLoginUserId();
+            GTTVRoot.open(render_context);
+        }
+    }
+
+    function onUnload(update_context)
+    {
+        Tv2.clearCallback();
+        Pace.removeEventHandler();
+
+        var render_context = update_context.getRenderContext();
+        if (render_context != nil)
+        {
+            var context = render_context;
+            context.flushEvent(() => true);
+        }
+
+        is_online_on_load = nil;
+        sModeOnline = nil;
+        sSelectedCategory = nil;
+        sSelectedChannel = nil;
+        sPSNData = nil;
+        unloadProjects();
+
+        PaceUtil::unloadTvUtil();
+        HttpUtil::end();
+    }
+
+    function loadProjects()
+    {
+        additional_projects = Array();
+        foreach (var project_name in ["manual"])
+        {
+            var project = main::manager.loadProject("%{main::PROJECT_ROOT_DIR}/%{project_name}/%{project_name}");
+            additional_projects.push(project);
+        }
+    }
+
+    function unloadProjects()
+    {
+        foreach (var project in additional_projects)
+        {
+            main::manager.unloadProject(project);
+        }
+        additional_projects = nil;
+    }
+
+    function checkAgreement(context, eulas, mode_ok)
+    {
+        var text = "";
+        foreach (var eula in eulas)
+        {
+            if ("" != eula)
+            {
+                text += "%s\n".format(eula);
+            }
+        }
+
+        if ("" == text)
+        {
+            return true;
+        }
+
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, text);
+        return res != 0;
+    }
+
+    function buy(context, root, cart_list)
+    {
+        var eulas = Grim2Util::EULA::onCheckOut();
+        if (!checkAgreement(context, eulas, false))
+        {
+            return false;
+        }
+
+        var bag_list = [];
+        var sku_id_list = [];
+        foreach (var bag in cart_list)
+        {
+            if (nil != bag["sku"])
+            {
+                sku_id_list.push(bag["sku"]);
+                bag_list.push(bag);
+            }
+        }
+
+        if (!NP.isOnline())
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, context.translate(root, "GTTV", "NEED_SIGNIN_FOR_CHECKOUT"));
+            return false;
+        }
+
+        CursorUtil::setCursor(ContextMain, "wait");
+
+        Grim2Util::PUTLOG::TV::access2(Grim2Util::PUTLOG::TV::CHECKOUT, bag_list);
+        var res0 = NPCommerceUtil::begin(context);
+        var result = NPCommerceUtil::checkout(context, sku_id_list);
+        NPCommerceUtil::end(context);
+        
+        CursorUtil::setCursor(ContextMain, "cursor_chrome");
+        if (result)
+        {
+            Grim2Util::PUTLOG::TV::buy(bag_list);
+            main::GAME_STATUS.user_profile.shopping_cart.clear();
+        }
+        updateTicketForce(context);
+
+        return result;
+    }
+
+    function updateTicketForce(context)
+    {
+        if (!NP.isOnline())
+        {
+            return;
+        }
+        NP.requestTicketRequest();
+
+        var limit = 60*5;
+        while (limit > 0 && NP.getTicketStatus() > 0)
+        {
+            context.sync(1.0f / 60);
+            --limit;
+        }
+
+        if (0 == limit)
+        {
+            // empty
+        }
+    }
+
+    function onCart(context, root)
+    {
+        main::sound.play("ok");
+        var before_size = main::GAME_STATUS.user_profile.shopping_cart.getCount();
+        if (before_size > 0)
+        {
+            updateTicketForce(context);
+        }
+        if (0 == before_size)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, context.translate(root, "GTTV", "CART_IS_EMPTY"));
+            return [false, false];
+        }
+
+        CursorUtil::setCursor(ContextMain, "wait");
+        var result = CartPopup.open(context);
+
+        var after_size = main::GAME_STATUS.user_profile.shopping_cart.getCount();
+        var is_delete = before_size > after_size;
+        var is_buy = false;
+
+        if (result)
+        {
+            is_buy = buy(context, root, CartPopup.cart_list);
+            is_buy = true;
+        }
+
+        return [is_buy, is_delete];
+    }
+
+    method checkOpenPaceDebugPopup(context, fileinfo_hash)
+    {
+        
+        var button_state = context.getUpdateContext().getPadButtonState(0);
+        var pace_debug = main::GAME_STATUS.user_profile.option.pace_debug;
+
+        if (button_state & 0x100 && button_state & 0x800 && pace_debug)
+        {
+            context.cursor_visible = false;
+            PaceDebugPopup.open(context, fileinfo_hash);
+            context.cursor_visible = true;
+        }
+    }
+
+    function startActors(widget, reverse)
+    {
+        var current_widget = widget.first_actor;
+        while (current_widget != nil)
+        {
+            if (current_widget.isInstanceOf(main::menu::MActor))
+            {
+                current_widget.stop();
+                current_widget.reverse = reverse;
+                current_widget.start();
+            }
+
+            current_widget = current_widget.next_actor;
+        }
+    }
+
+    function warpActors(widget, reverse)
+    {
+        var current_widget = widget.first_actor;
+        while (current_widget != nil)
+        {
+            if (current_widget.isInstanceOf(main::menu::MActor))
+            {
+                current_widget.reverse = reverse;
+                current_widget.rewind();
+                current_widget.reverse = !reverse;
+            }
+
+            current_widget = current_widget.next_actor;
+        }
+    }
+
+    function getDateTime(context, root, d)
+    {
+        var time = main::pdistd::MTime();
+        time.setBySecond(d);
+        var local_time = time.toLocal();
+
+        return context.translate(root, "DateTime", "FORMAT_DATE_TIME").build(
+            local_time.year,
+            "%02d".format(local_time.month),
+            "%02d".format(local_time.day),
+            "%02d".format(local_time.hour),
+            "%02d".format(local_time.minute)
+        );
+    }
+
+    function ignorePadEvent(bool)
+    {
+        if (bool)
+        {
+            CursorUtil::setCursor(ContextMain, "wait");
+            ContextMain.event_mask &= ~5;
+            ContextMain.filterKeyEvent();
+        }
+        else
+        {
+            CursorUtil::setCursor(ContextMain, "cursor_chrome");
+            ContextMain.event_mask |= 5;
+        }
+    }
+
+    function isMyCallback(context, finder, fileinfo_hash)
+    {
+        var result = false;
+        var index = -1;
+        var count = finder.getItemCount(context);
+
+        for (index = 0; index < count && !result; ++index)
+        {
+            var candidate_data = finder.getItemData(context, index);
+            if (nil == candidate_data)
+            {
+                // empty
+            }
+            else
+            {
+                var data = candidate_data.value_;
+                if ("movie" == data["type"] && nil != data["tv"])
+                {
+                    result = data["tv"]["fileinfo_hash"] == fileinfo_hash;
+                }
+            }
+        }
+
+        return [result, index-1];
+    }
+
+    function onDownloadProgressCallback(context, finder, fileinfo_hash, value)
+    {
+        var [result, index] = isMyCallback(context, finder, fileinfo_hash);
+        if (!result)
+        {
+            return;
+        }
+
+        var progress = 0;
+        var size = value["size"];
+        if (size > 0)
+        {
+            progress = (100 * (value["size"] - value["sizeRemaining"])) / value["size"];
+        }
+
+        var item_w = finder.getItemWidget(index);
+        if (nil != item_w)
+        {
+            var tv = finder.getItemData(context, index).value_["tv"];
+            item_w.updateStatus(context, tv, progress);
+        }
+    }
+
+    function onDownloadCompleteCallback(context, finder, fileinfo_hash)
+    {
+        var [result, index] = isMyCallback(context, finder, fileinfo_hash);
+        if (!result)
+        {
+            return;
+        }
+
+        var item_w = finder.getItemWidget(index);
+        if (nil != item_w)
+        {
+            var tv = finder.getItemData(context, index).value_["tv"];
+            item_w.updateStatus(context, tv);
+        }
+    }
+
+    method onErrorCallback(context, finder, fileinfo_hash, error)
+    {
+        var [result, index] = isMyCallback(context, finder, fileinfo_hash);
+        if (!result)
+        {
+            return;
+        }
+
+        var item_w = finder.getItemWidget(index);
+        if (nil != item_w)
+        {
+            var tv = finder.getItemData(context, index).value_["tv"];
+            item_w.updateStatus(context, tv, nil, error);
+        }
+    }
+}
