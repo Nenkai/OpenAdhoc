@@ -1,0 +1,392 @@
+// TODO: remove temp compile fix on line 147 once compiler is updated
+
+
+
+
+
+
+
+
+
+
+
+
+
+import main::DialogUtil;
+
+module VoucherUtil {
+
+
+    module ResultCode {
+        static InvalidData = 0x80002000 + 0;
+    }
+
+
+
+    static VoucherCarMap = [
+        "enzo_ferrari_02_sp_color" : 0,
+        "countach_lp400_74_sp_color" : 0,
+        "corvette_zr1_09_sp_color" : 0,
+        "gtr_specv_09_sp_color" : 0,
+        "veyron_16_4_09_sp_color" : 0,
+        "gt_by_citroen_08_sp_color" : 0,
+        "slr_mclaren_03_sp_color" : 0
+    ];
+
+    class VoucherData {
+        attribute id;
+        attribute name;
+        attribute car_codes;
+        attribute car_data;
+
+        method __init__(id, name, codes, data)
+        {
+            self.id = id;
+            self.name = name;
+            self.car_codes = codes;
+            self.car_data = data;
+        }
+    }
+
+    class ResultData {
+        attribute code;
+        attribute data;
+
+        method __init__(code, data)
+        {
+            self.code = code;
+            self.data = data;
+        }
+    }
+
+    function carcode_keyconv_func(carlabel)
+    {
+        var carcode = main::gtengine::MSpecDB::getCarCode(carlabel);
+        if (carcode == main::gtengine::MSpecDB::NO_CODE64)
+        {
+        
+            return nil;
+        }
+        else
+        {
+            return carcode;
+        }
+    }
+
+    function parseDomObject(dom)
+    {
+        var vouchers = dom["voucher"];
+        if (vouchers == nil)
+        {
+            return nil;
+        }
+
+        var voucher = vouchers[0];
+        if (voucher == nil)
+        {
+            return nil;
+        }
+
+        var ids = voucher["id"];
+        var names = voucher["name"];
+        var cars = voucher["cars"];
+        if (ids == nil || ids[0] == nil ||
+            names == nil || names[0] == nil ||
+            cars == nil || cars[0] == nil)
+        {
+            return nil;
+        }
+
+        var car = cars[0]["car"];
+        if (car == nil)
+        {
+            return nil;
+        }
+
+        var codes = Array();
+        var data = Map();
+
+        for (var i = 0; i < car.size; i++)
+        {
+            var attr_map = car[i].getAttributeMap();
+            var keyattr = attr_map["code"];
+
+            if (keyattr != nil)
+            {
+                keyattr = carcode_keyconv_func(keyattr);
+            }
+
+            if (keyattr != nil)
+            {
+                codes.push(keyattr);
+                data[keyattr] = attr_map;
+            }
+        }
+
+
+
+
+        return VoucherData(ids[0].value, names[0].value, codes, data);
+    }
+
+    function loads(context)
+    {
+        var generic_rd = ResultData(0, Array());
+        var voucher = main::pdiext::MVoucher();
+
+        if ((generic_rd.code = voucher.loadDRMModule()) < 0)
+        {
+            return generic_rd;
+        }
+
+        if ((generic_rd.code = voucher.buildIndex()) < 0)
+        {
+            return generic_rd;
+        }
+
+        for (var discard = voucher.indexFirst(); voucher.indexIsDone() == 1; voucher.indexNext()) // TODO: temp fix, should be: for (voucher.indexFirst(); voucher.indexIsDone() == 1; voucher.indexNext())
+        {
+            var xml = main::pdistd::MXml();
+            var buf = ByteData(16, 2 * 1024);
+            var rd = ResultData(0, nil);
+            generic_rd.data.push(rd);
+            var dataSize;
+            [rd.code, dataSize] = voucher.indexLoadFile(buf);
+            if (rd.code < 0)
+            {
+            }
+            else
+            {
+
+                buf.size = dataSize;
+
+                buf = main::pdistd::Inflate(buf);
+                if (buf == nil)
+                {
+                    rd.code = ResultCode::InvalidData;
+                    break;
+                }
+
+                xml.parse(buf);
+                var dom = xml.result;
+                if (dom == nil)
+                {
+                    rd.code = ResultCode::InvalidData;
+                    break;
+                }
+
+                var data = parseDomObject(dom);
+                if (data == nil)
+                {
+                    rd.code = ResultCode::InvalidData;
+                    break;
+                }
+
+                rd.data = data;
+            }
+        }
+        generic_rd.code = voucher.unloadDRMModule();
+        return generic_rd;
+    }
+
+    function obtain(context, root, loaded_data, game_status)
+    {
+        var gs = game_status;
+
+        if (game_status == nil)
+        {
+
+            gs = main::GlobalStatus::checkout();
+        }
+
+
+        var garage = gs.user_profile.garage;
+
+        var voucher_car_map = Map();
+        var obtained_car_map = Map();
+        var have_car_map = Map();
+
+        var have_rights_car_map = Map();
+
+        var added_car_map = Map();
+        var deleted_car_map = Map();
+
+        foreach (var [car_label, color] in VoucherCarMap)
+        {
+            var car_code = carcode_keyconv_func(car_label);
+            if (car_code != nil)
+            {
+
+                voucher_car_map[car_code] = ["code" : car_label, "color" : color];
+                have_rights_car_map[car_code] = false;
+
+                if (garage.hasCar(car_code, color))
+                {
+
+                    have_car_map[car_code] = voucher_car_map[car_code];
+                }
+            }
+        }
+
+
+
+
+
+        var code = main::pdiext::VoucherResultCode::ResultCodeOK;
+
+
+
+
+
+
+        do
+        {
+            if (loaded_data.code < 0)
+            {
+                if (have_car_map.size == 0) {
+                    break;
+                }
+                else
+                {
+                    if (have_car_map.size > 0)
+                    {
+
+                        foreach (var [k, v] in have_car_map)
+                        {
+                            garage.removeCar(k, v["color"]);
+                            deleted_car_map[k] = true;
+                        }
+                    }
+                    break;
+                }
+            }
+
+
+
+
+
+
+            foreach (var result_data in loaded_data.data)
+            {
+                if (result_data.code < 0)
+                {
+                    if (result_data.code == main::pdiext::VoucherResultCode::ResultCodeDRMTimeLimit ||
+                        result_data.code == main::pdiext::VoucherResultCode::ResultCodeDRMServiceNotStarted) {
+                        break;
+                    }
+                    else
+                    {
+
+
+
+
+                        code = result_data.code;
+                        break;
+                    }
+                }
+
+                foreach (var car_code in result_data.data.car_codes)
+                {
+                    if (voucher_car_map[car_code] == nil)
+                    {
+                        code = ResultCode::InvalidData;
+                        break;
+                    }
+                    else
+                    {
+                        obtained_car_map[car_code] = voucher_car_map[car_code];
+                        have_rights_car_map[car_code] = true;
+                        var color = voucher_car_map[car_code]["color"];
+
+                        if (have_car_map[car_code] == nil)
+                        {
+
+                            garage.addCar(car_code, color);
+                            added_car_map[car_code] = true;
+                            have_car_map[car_code] = voucher_car_map[car_code];
+
+                            gs.user_profile.calendar.putGarageEvent("GET_PRESENT", car_code, color);
+                        }
+                    }
+                }
+            }
+
+
+
+
+
+
+            foreach (var [k, v] in have_rights_car_map)
+            {
+                if (have_car_map[k] != nil && v == false)
+                {
+                    garage.removeCar(k, voucher_car_map[k]["color"]);
+                    deleted_car_map[k] = true;
+                }
+            }
+        }
+        while(false);
+
+        if (game_status == nil)
+        {
+
+            main::GlobalStatus::checkin(gs);
+
+            gs = nil;
+        }
+
+        if (code < 0)
+        {
+            var text = getErrorMessage(context, root, code);
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+            return false;
+        }
+        else
+        {
+
+
+
+            if (added_car_map.size > 0)
+            {
+                var cars = "";
+                foreach (var [k, v] in added_car_map)
+                {
+                    cars += main::gtengine::MSpecDB::getCarShortName(k) + "\r\n";
+                }
+
+                var msg = context.translate(root, "Voucher", "YouObtainedVoucher");
+                msg = msg.build(cars);
+                DialogUtil::openConfirmDialog(context, DialogUtil::OK, msg);
+            }
+
+            if (added_car_map.size > 0 || deleted_car_map.size > 0)
+            {
+                main::GlobalStatus::game_context.need_save = true;
+            }
+
+            return true;
+        }
+    }
+
+    function getErrorMessage(context, root, result_code)
+    {
+        var code = result_code;
+
+        if (code == nil || code == 0)
+        {
+            code = main::pdiext::VoucherResultCode::ResultCodeUnknown;
+        }
+
+        var key = "ResultCode_0x%08x".format(code);
+        var msg = context.translate(root, "Voucher", key);
+
+        if (key == msg)
+        {
+            key = "GenericErrorOccurred";
+
+            msg = context.translate(root, "Voucher", key);
+        }
+
+        return msg.build("0x%08x".format(code));
+    }
+}
