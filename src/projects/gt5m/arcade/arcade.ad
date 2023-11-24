@@ -1,0 +1,862 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ArcadeProject
+{
+    import main::DialogUtil;
+    import main::SequenceUtil;
+    import main::SoundUtil;
+    import main::WatcherUtil;
+    import main::RandomUtil;
+    import main::ActorUtil;
+    import main::LeaveDetectUtil;
+    import main::TireUtil;
+
+    
+    ArcadeProject.load("/scripts/gt5m/util/EventFlagsUtil");
+    ArcadeProject.load("/scripts/gt5m/util/LicenseUtil");
+    ArcadeProject.load("/scripts/gt5m/util/MakerUtil");
+    ArcadeProject.load("/scripts/gt5m/util/OrdinalUtil");
+    ArcadeProject.load("/scripts/gt5m/util/RewardUtil");
+    ArcadeProject.load("/scripts/gt5m/util/SaveDataUtilPSP");
+    ArcadeProject.load("/scripts/gt5m/util/SpecDatabaseUtil");
+    #include "projects/gt5m/arcade/RaceConfigUtil.ad";
+
+
+
+
+
+
+
+    static gCarData;
+
+
+    static gCourseData;
+
+
+    static gGameStatus;
+
+
+    static gSequenceCondition;
+
+
+    static gStreamPlayer;
+
+
+    class SequenceCondition
+    {
+        attribute additional_projects = Array();
+
+        method loadProject(project_name)
+        {
+            var project = main::manager.loadProject("/%{main::PROJECT_ROOT_DIR}/%{project_name}/%{project_name}");
+            additional_projects.push(project);
+        }
+        method unloadAllProjects()
+        {
+            foreach (var project in additional_projects)
+            {
+                main::manager.unloadProject(project);
+            }
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    function onLoad(update_context)
+    {
+        SequenceUtil::setPageTransition(
+            [ "*,*" : CursorProject::XEffectTransition ]
+        );
+
+        gSequenceCondition = SequenceCondition();
+        gSequenceCondition.loadProject("detail");
+        DetailProject.load("/%{main::PROJECT_ROOT_DIR}/detail/CarDescriptionPopupImpl");
+        DetailProject.load("/%{main::PROJECT_ROOT_DIR}/detail/CarDetailPopupImpl");
+        DetailProject.load("/%{main::PROJECT_ROOT_DIR}/detail/CarSpecPopupImpl");
+        DetailProject.load("/%{main::PROJECT_ROOT_DIR}/detail/CourseDetailPopupImpl");
+        DetailProject.load("/%{main::PROJECT_ROOT_DIR}/detail/QuickTunePopupImpl");
+        DetailProject.load("/%{main::PROJECT_ROOT_DIR}/detail/RaceDetailPopupImpl");
+        DetailProject.load("/%{main::PROJECT_ROOT_DIR}/detail/RankingDetailPopupImpl");
+
+
+        update_context.createRenderContext(1);
+        
+        var render_context = update_context.getRenderContext(0);
+
+
+
+
+
+        gCourseData = main::pdiapp::XmlUtil::loadCourseMap("/textdata/gt5m/courselist.xml", "CourseData", "course", "code");
+
+
+        gGameStatus = main::GlobalStatus::checkout();
+
+
+
+
+
+
+
+
+
+        if (LicenseUtil::canEntry(LicenseUtil::CATEGORY::J, gGameStatus))
+        {
+
+            if (!gGameStatus.user_profile.have_seen_ed_movie)
+            {
+                main::pdiext::WaitAdvertiseEnd();
+
+                game_context().need_save = true;
+                gGameStatus.user_profile.have_seen_ed_movie = true;
+
+
+
+
+
+                EventFlagsUtil::setEventFlagON(gGameStatus, EventFlagsUtil::FLAGS::CAN_WATCH_THE_ED_MOVIE);
+                EventFlagsUtil::setEventFlagON(gGameStatus, EventFlagsUtil::FLAGS::CAN_CHALLENGE_SECOND_STAGE);
+
+                main::GameSequence::setPrevPage("", "license_clear");
+                SequenceUtil::startProject(render_context, "play_movie", getEndingMoviePath(render_context));
+                return;
+            }
+        }
+
+        var prev_project = main::GameSequence::getPrevProject();
+        var prev_page = main::GameSequence::getPrevPage();
+        var sq_arg = main::GameSequence::getPrevPageArgument();
+        main::GameSequence::setPrevPage("");
+
+        if (prev_project == "play_movie")
+        {
+            if (sq_arg == "license_clear" && -1 < game_context().license_id)
+                prev_project = "race";
+        }
+
+        if (game_context().battle_phase > 0)
+        {
+            if (main::PDINetwork.isAdHocMatchingRunning())
+            {
+
+
+
+                main::ORG.clearNetworkGameInformation();
+
+                OnlineRoot.sOpeningAnimation = true;
+
+                var game_mode = main::GlobalStatus::game_context.game_mode;
+                if (game_mode == main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE)
+                    main::GlobalStatus::game_context.setCar(main::gtengine::MCarParameter());
+                OnlineRoot.setJoinMode(main::GlobalStatus::game_context.battle_join_mode);
+
+                StartPageOut_XEffect(render_context, nil, OnlineRoot);
+            }
+            else
+            {
+
+
+
+
+                main::pdiext::MSystemUtility::disconnectAdHoc();
+
+                main::GlobalStatus::game_context.game_mode = -1;
+                main::GlobalStatus::game_context.setCar(main::gtengine::MCarParameter());
+                main::GlobalStatus::game_context.course = main::gtengine::MSpecDB::NO_CODE64;
+                main::GlobalStatus::game_context.battle_phase = 0;
+                main::GlobalStatus::game_context.battle_room_no = 0;
+                main::GlobalStatus::game_context.battle_join_mode = false;
+                main::GlobalStatus::game_context.battle_prev_order = -1;
+                main::GlobalStatus::game_context.battle_auto_drive = false;
+
+
+                main::pdistd::MSystemDialog::open("EN",
+                                                  render_context.translate(ArcadeProject, "OnlineMessageGT5M", "BATTLE_ABORTED"));
+
+
+                StartPageIn_XEffect(render_context, nil, GTTopRoot);
+            }
+        } else {
+            if (prev_project == "race")
+            {
+                if (game_context().is_theater)
+                {
+                    game_context().is_theater = false;
+                    TopRoot.sOpeningAnimation = false;
+                    main::GlobalStatus::game_context.license_id = -1;
+                    StartPageIn_XEffect(render_context, nil, GTTopRoot);
+                }
+                else
+                {
+                    var last_gp = main::GameSequence::getGamePlan();
+                    if (last_gp != nil && last_gp.events[0].game_mode == main::gtengine::GameMode::LICENSE)
+                    {
+                        incDate();
+
+                        if (-1 < game_context().license_id)
+                        {
+                            var index = LicenseUtil::GetIndexByLicenseId(main::GlobalStatus::game_context.license_id);
+                            var category = LicenseUtil::GetCategory(index);
+                            var category_index = LicenseUtil::GetCategoryIndex(index);
+                            var clear = false;
+
+
+                            if (!gGameStatus.user_profile.cleared_license_category[category] &&
+                                LicenseUtil::isAllClear(category, false, gGameStatus))
+                            {
+                                gGameStatus.user_profile.cleared_license_category[category] = true;
+                                clear = true;
+                            }
+
+                            if (clear)
+                            {
+                                game_context().need_save = true;
+
+
+                                EventFlagsUtil::setEventFlagON(gGameStatus,
+                                                               EventFlagsUtil::FLAGS::END_MISSION_CATEGORY);
+                                EventFlagsUtil::setMessageFlagOFF(gGameStatus,
+                                                                  EventFlagsUtil::FLAGS::END_MISSION_CATEGORY);
+
+
+                                if (LicenseUtil::canEntry(LicenseUtil::CATEGORY::D, gGameStatus) &&
+                                    !EventFlagsUtil::isEventFlagON(gGameStatus,
+                                                                   EventFlagsUtil::FLAGS::CAN_USE_USER_BGM))
+                                {
+                                    EventFlagsUtil::setEventFlagON(gGameStatus,
+                                                                   EventFlagsUtil::FLAGS::CAN_USE_USER_BGM);
+                                }
+                                LicenseRoot.open(render_context, category, true);
+                            } else {
+                                LicenseCategoryRoot.open(render_context, true, category, category_index);
+                            }
+
+                            game_context().license_id = -1;
+                            game_context().course = main::gtengine::MSpecDB::NO_CODE64;
+                        } else {
+                            LicenseCategoryRoot.open(render_context, true);
+                        }
+                    }
+                    else
+                    {
+                        incDate();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                        TopRoot.sOpeningAnimation = true;
+                        StartPageOut_XEffect(render_context, nil, TopRoot);
+                    }
+                }
+            } else {
+                if (main::pdiext::MProductInformation::GetVersionBranch() == "mviewer")
+                {
+                    switch(main::GameSequence::getArgument())
+                    {
+                        case "arcade":
+                            TopRoot.sOpeningAnimation = true;
+                            StartPageOut_XEffect(render_context, nil, TopRoot);
+                            break;
+                        case "battle":
+                            SelectRoomRoot.setMode(SelectRoomRoot::MODE_BATTLE);
+                            StartPageIn_XEffect(render_context, nil, SelectRoomRoot);
+                            break;
+
+                        case "trade":
+                            SelectRoomRoot.setMode(SelectRoomRoot::MODE_TRADE);
+                            StartPageIn_XEffect(render_context, nil, SelectRoomRoot);
+                            break;
+
+                        case "give":
+                            SelectRoomRoot.setMode(SelectRoomRoot::MODE_GIVE);
+                            StartPageIn_XEffect(render_context, nil, SelectRoomRoot);
+                            break;
+
+                        case "take":
+                            SelectRoomRoot.setMode(SelectRoomRoot::MODE_TAKE);
+                            StartPageIn_XEffect(render_context, nil, SelectRoomRoot);
+                            break;
+
+                        case "top":
+                            StartPageIn_XEffect(render_context, nil, GTTopRoot);
+                            break;
+
+                        default:
+                            StartPageIn_XEffect(render_context, nil, GTTopRoot);
+                            break;
+                    }
+                }
+                else
+                {
+                    switch (prev_page)
+                    {
+                        case "BranchRoot":
+                            if (sq_arg != nil && sq_arg != "")
+                            {
+                                var [open_mode, focus_item] = sq_arg.split(":");
+                                BranchRoot.setOpenMode(open_mode);
+                                BranchRoot.setFocusItem(focus_item);
+                            }
+                            StartPageIn_XEffect(render_context, nil, BranchRoot);
+                            break;
+
+                        default:
+                            TopRoot.sOpeningAnimation = false;
+                            StartPageIn_XEffect(render_context, nil, GTTopRoot);
+                            break;
+                    }
+                }
+            }
+        }
+        gStreamPlayer = main::pdiext::MStreamPlayer();
+        gStreamPlayer.load("ATRAC3PLUS");
+
+        main::pdiext::WaitAdvertiseEnd();
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+    function onUnload(update_context)
+    {
+        SoundUtil::BGMFadeout(1.0);
+
+        gSequenceCondition.unloadAllProjects();
+        gCarData = nil;
+        gCourseData = nil;
+
+        if (gGameStatus != nil)
+        {
+            main::GlobalStatus::checkin(gGameStatus);
+            gGameStatus = nil;
+        }
+    }
+
+
+
+
+    function game_option()
+    {
+        return gGameStatus.user_profile.option;
+    }
+
+    function game_context()
+    {
+        return main::GlobalStatus::game_context;
+    }
+
+    function game_record()
+    {
+        return gGameStatus.user_profile.record;
+    }
+
+    function game_garage()
+    {
+        return gGameStatus.user_profile.garage;
+    }
+
+    function AddAllCar(garage)
+    {}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    function GetTextDataCourseInfo(course_code, column, not_found_txt)
+    {
+        course_code = main::gtengine::MSpecDB::getCourseCode(course_code);
+        if (course_code == main::gtengine::MSpecDB::NO_CODE64)
+            return not_found_txt;
+
+        var carelem = gCourseData.map[course_code];
+        if (carelem == nil)
+            return not_found_txt;
+
+        var text = carelem[column];
+        if (text == nil)
+            return not_found_txt;
+
+        return text;
+    }
+
+
+
+
+
+    function GetTextDataCourseSpec(context, course_code, detail = false)
+    {
+        var course_label = main::gtengine::MSpecDB::getCourseLabel(course_code);
+
+        var length_str = "---";
+        var elevation_str = "---";
+        var straight_str = "---";
+        var corner_str = "---";
+
+
+        var length = GetTextDataCourseInfo(course_code, "length", "not found length");
+        if (length != nil)
+        {
+            length_str = main::pdiext::MUnit::GetCourseLengthString(length);
+            length_str += context.translate(ArcadeProject, "Unit",
+                                            main::pdiext::MUnit::GetUnitKeywordOfCourseLength());
+        }
+
+
+        var elevation = GetTextDataCourseInfo(course_code, "elevation", "not found elevation");
+        if (elevation != nil)
+        {
+            elevation_str = main::pdiext::MUnit::GetCourseHeightString(elevation);
+            elevation_str += context.translate(ArcadeProject, "Unit",
+                                               main::pdiext::MUnit::GetUnitKeywordOfCourseHeight());
+        }
+
+
+        // var straight = GetTextDataCourseInfo(course_code, "straight", "not found straight"); // Code commented out in original, but easy to guess based on the above and GT5's CourseData module
+        // if (straight != nil)
+        // {
+        //     straight_str = main::pdiext::MUnit::GetCourseLengthString(straight);
+        //     straight_str += context.translate(ArcadeProject, "Unit",
+        //                                       main::pdiext::MUnit::GetUnitKeywordOfCourseLength());
+        // }
+
+
+        // var corner = GetTextDataCourseInfo(course_code, "corner", "not found corner"); // Code commented out in original, but easy to guess based on the above and GT5's CourseData module
+        // if (corner != nil)
+        // {
+        //     corner_str = corner;
+        // }
+
+        var course_name = context.translate(ArcadeProject, "CourseName", course_label);
+
+        var format_txt = context.translate(ArcadeProject, "SpecFormat", "course_spec_gt5m")
+        var spec_txt = format_txt.build(course_name, length_str, elevation_str, straight_str, corner_str);
+        return spec_txt;
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    function StartPageIn_XEffect(context, current_root, next_root, effect_end_func)
+    {
+        CursorProject::XEffectTransition::Out = false;
+        if (effect_end_func != nil)
+            CursorProject::XEffectTransition::EffectEndFunc = effect_end_func;
+
+        if (next_root != nil)
+            SequenceUtil::startPage(context, next_root);
+        else
+            SequenceUtil::startPageTransition(context, current_root, next_root);
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    function StartPageOut_XEffect(context, current_root, next_root, effect_end_func)
+    {
+        CursorProject::XEffectTransition::Out = true;
+        if (effect_end_func != nil)
+            CursorProject::XEffectTransition::EffectEndFunc = effect_end_func;
+
+        if (next_root != nil)
+            SequenceUtil::startPage(context, next_root);
+        else
+            SequenceUtil::startPageTransition(context, current_root, next_root);
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    function isDriftDisable(context, mode, course_code)
+    {
+        if (course_code == main::gtengine::MSpecDB::NO_CODE64)
+            return false;
+
+        if (mode == main::gtengine::GameMode::DRIFT_ATTACK)
+        {
+            
+            
+            var disable_course = [ main::gtengine::MSpecDB::getCourseCode("testcourse_ps2"),
+                                   main::gtengine::MSpecDB::getCourseCode("oval_ps2") ];
+
+
+            foreach (var code in disable_course)
+            {
+                if (code == course_code)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+
+
+
+
+    function setCursor(context, state)
+    {
+        var page = context.getCommonPage("CursorRoot");
+        if (page != nil)
+        {
+            page["setCursor"](context, state);
+        }
+    }
+
+    function incDate()
+    {
+        gGameStatus.user_profile.calendar.incDate();
+
+
+
+        EventFlagsUtil::setMessageFlagON(gGameStatus, EventFlagsUtil::FLAGS::UPDATE_CAR_COLLECTION);
+        if (10 <= game_context().msg_count_lets_buy_car)
+            EventFlagsUtil::setMessageFlagON(gGameStatus, EventFlagsUtil::FLAGS::HAVE_NOT_GOT_CAR);
+        if (5 <= game_context().msg_count_lets_play_arcade)
+            EventFlagsUtil::setMessageFlagON(gGameStatus, EventFlagsUtil::FLAGS::GET_FIRST_CAR);
+        if (5 <= game_context().msg_count_enable_ending)
+            EventFlagsUtil::setMessageFlagON(gGameStatus, EventFlagsUtil::FLAGS::CAN_WATCH_THE_ED_MOVIE);
+    }
+
+
+    function PlayNarration(file, delay)
+    {
+        var lang = main::pdistd::MLocale::getLanguage();
+        PlayStream("sound_gt/na/%s/%s_%s".format(lang, lang, file), delay);
+    }
+
+
+    function PlayStream(path, delay, volume)
+    {
+        gStreamPlayer.delay = delay != nil ? delay : 0.0;
+        gStreamPlayer.start(path, 0.0, SoundUtil::GetNarrationVolume() * (volume != nil ? volume : 1.0));
+    }
+
+
+    function StopStream()
+    {
+        gStreamPlayer.stop(0.0);
+    }
+
+    function set_p2(context)
+    {
+        main::sound.play("start");
+        setCursor(context, "wait");
+        var cars = main::gtengine::MSpecDB::getCarLabelList();
+
+        foreach (var car in cars)
+        {
+            var code = main::gtengine::MSpecDB::getCarCode(car);
+
+            var copy_disable = main::gtengine::MSpecDB::checkGenericFlag("copy_disable", code);
+            var trade_disable = main::gtengine::MSpecDB::checkGenericFlag("trade_disable", code);
+
+            if (copy_disable && trade_disable)
+                ;
+            else
+                gGameStatus.user_profile.garage.addCar(code, 0);
+        }
+        setCursor(context, "default");
+        main::sound.play("start");
+    }
+
+
+    function set_p3(context)
+    {
+        main::sound.play("start");
+        gGameStatus.user_profile.cash = 99000000;
+    }
+
+    function getEndingMoviePath(context)
+    {
+        var region = main::pdiext::MProductInformation::GetGameRegionCode();
+
+        var path = "gt5m/ending";
+        switch (region)
+        {
+            case "jp":
+                path = "gt5m/ending";
+                break;
+            case "us":
+                path = "gt5m/ending_us";
+                break;
+            case "uk":
+                path = "gt5m/ending_uk";
+                break;
+            case "tw":
+                path = "gt5m/ending_tw";
+                break;
+        }
+        return path;
+    }
+}
