@@ -1,0 +1,435 @@
+
+
+
+
+module DrivingModeRoot
+{
+    hidden.visible = false;
+
+    static sOnlineMode = false;
+
+
+    static sOfflineModeList = [
+        [main::gtengine::GameMode::TIME_ATTACK, "freerun"],
+        [main::gtengine::GameMode::SINGLE_RACE, "singlerace"],
+        [main::gtengine::GameMode::DRIFT_ATTACK, "drift"]
+    ];
+
+    static sOnlineModeList = [
+        [main::gtengine::GameMode::ADHOC_BATTLE_PRO, "professional"],
+        [main::gtengine::GameMode::ADHOC_BATTLE_AMA, "amateur"],
+        [main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE, "shuffle"]
+    ];
+
+    static sOfflineModeDefault = main::gtengine::GameMode::SINGLE_RACE;
+    static sOnlineModeDefault = main::gtengine::GameMode::ADHOC_BATTLE_AMA;
+
+
+
+
+    method setOnlineMode(flg)
+    {
+        sOnlineMode = flg;
+    }
+
+    method get_mode(i)
+    {
+        var mode_list = sOnlineMode ? sOnlineModeList : sOfflineModeList;
+        if (i >= mode_list.size)
+            i %= mode_list.size;
+        return mode_list[i];
+    }
+    method get_mode_num()
+    {
+        var mode_list = sOnlineMode ? sOnlineModeList : sOfflineModeList;
+        return mode_list.size;
+    }
+    method get_default_mode()
+    {
+        var mode_default = sOnlineMode ? sOnlineModeDefault : sOfflineModeDefault;
+        return mode_default;
+    }
+
+
+
+
+    method onInitialize(context)
+    {
+        var item_count = get_mode_num();
+
+
+
+        ListBox.setItemTemplate(context, hidden::Item);
+        ListBox.setItemCount(item_count);
+
+        for (var i = 0; i < item_count; i++)
+        {
+            var mode_index = get_mode(i)[0];
+            var mode_label = get_mode(i)[1];
+            var w = ListBox.getItemWidget(i, context);
+            if (sOnlineMode)
+            {
+                w.ImageFace.image_path = "image/gt5m/flyer/adhoc_" + mode_label + ".png";
+            }
+            else
+            {
+                w.ImageFace.image_path = "image/gt5m/flyer/mode_" + mode_label + ".png";
+            }
+            w.game_mode = mode_index;
+            var is_select = false;
+            if (-1 < game_context().game_mode)
+            {
+                is_select = game_context().game_mode == mode_index;
+                w.Current.visible = is_select;
+            } else {
+                is_select = get_default_mode() == mode_index;
+            }
+            if (is_select && i < get_mode_num())
+            {
+                ListBox.focus_index = i;
+            }
+        }
+
+        HScrollbar.initialize(ListBox);
+
+        ToolTip::tip.action_type = 1;
+
+
+
+
+
+
+
+        ToolTip::tip.visible = false;
+
+        DrivingModeRoot.setFocus(ListBox);
+    }
+
+
+
+    method onPageInEnd(context)
+    {
+        BalloonTip.initialize(context);
+
+        ToolTip::tip.visible = true;
+        ToolTip::tip.value = "";
+
+        var focus_w = DrivingModeRoot.getFocusWidget();
+        context.pushEvent(main::menu::MFocusEnterEvent(context, focus_w));
+
+        HScrollbar.stop_update = false;
+        HScrollbar.update_arrow();
+    }
+
+    method onFinalize(context)
+    {
+        ListBox.setItemCount(0);
+    }
+
+    method onActivate(context)
+    {
+        var index = ListBox.focus_index;
+        var mode = ListBox.getItemWidget(index).game_mode;
+        var option = gGameStatus.user_profile.option;
+
+        if (isDriftDisable(context, mode, game_context().course))
+        {
+            main::sound.play("cancel");
+
+            var courselabel = main::gtengine::MSpecDB::getCourseLabel(game_context().course);
+            var coursename = context.translate(DrivingModeRoot, "CourseName", courselabel);
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                                          context.translate(DrivingModeRoot, "Arcade", "CAN_NOT_START_DRIFT_NOW_COURSE").build(coursename));
+            return EVENTRESULT_FILTER;
+        }
+
+        main::sound.play("ok");
+
+        if (sOnlineMode)
+        {
+            var rc = RaceConfigUtil::getRaceConfig();
+
+            var data = DetailProject::RaceDetailPopup::Data();
+            data.mode = mode;
+
+            switch (mode)
+            {
+                case main::gtengine::GameMode::ADHOC_BATTLE_PRO:
+                    data.arcade_laps = 2;
+                    data.arcade_laps_min = 2;
+                    data.arcade_laps_max = 99;
+                    break;
+                case main::gtengine::GameMode::ADHOC_BATTLE_AMA:
+                    data.arcade_laps = 2;
+                    data.arcade_laps_min = 2;
+                    data.arcade_laps_max = 30;
+                    break;
+                case main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE:
+                    data.arcade_laps = 2;
+                    data.arcade_laps_min = 2;
+                    data.arcade_laps_max = 30;
+                    break;
+            }
+
+            if (game_context().battle_laps >= data.arcade_laps_min &&
+                game_context().battle_laps <= data.arcade_laps_max)
+                data.arcade_laps = game_context().battle_laps;
+
+
+            data.shuffle_base = game_option().battle_shuffle_base;
+            data.disable_collision = game_context().battle_disable_collision;
+            data.boost_level = game_context().battle_boost;
+            data.with_ai = rc.with_ai;
+            data.physics_pro = rc.physics_pro;
+
+            var course_code = game_context().course;
+            var course_label = main::gtengine::MSpecDB::getCourseLabel(game_context().course);
+            if (course_label.beginWith("r_"))
+            {
+                course_code = main::gtengine::MSpecDB::getCourseCode(course_label.substr(2));
+            }
+
+            data.course_length = GetTextDataCourseInfo(course_code, "length", "0");
+
+
+
+
+            var result = DetailProject::RaceDetailPopup.open(context, data);
+
+
+            if (result["result"])
+            {
+                if (game_context().game_mode == main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE)
+                    game_context().setCar(main::gtengine::MCarParameter());
+
+                if (game_context().game_mode != mode)
+                {
+                    game_context().setCar(main::gtengine::MCarParameter());
+                    game_context().game_mode = mode;
+
+                    if (game_context().game_mode == main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE)
+                    {
+                        if (main::gtengine::MSpecDB::isDirt(game_context().course))
+                        {
+                            game_context().course = main::gtengine::MSpecDB::NO_CODE64;
+                        }
+                    }
+                }
+                game_context().battle_laps = result["arcade_laps"];
+                game_context().battle_boost = result["boost_level"];
+                game_context().battle_disable_collision = result["disable_collision"];
+                game_option().battle_shuffle_base = result["shuffle_base"];
+                rc.generation = rc.generation + 1;
+                rc.game_mode = mode;
+                rc.with_ai = result["with_ai"];
+                rc.physics_pro = result["physics_pro"];
+                rc.shuffle_base = game_option().battle_shuffle_base;
+
+
+
+                RaceConfigUtil::setRaceConfig(rc);
+                onExit(context);
+            }
+        }
+        else
+        {
+            if (main::gtengine::GameMode::SINGLE_RACE == mode)
+            {
+                var data = DetailProject::RaceDetailPopup::Data();
+                data.mode = mode;
+                data.arcade_laps = option.arcade_laps;
+                var course_code = game_context().course;
+                var course_label = main::gtengine::MSpecDB::getCourseLabel(game_context().course);
+                if (course_label.beginWith("r_"))
+                {
+                    course_code = main::gtengine::MSpecDB::getCourseCode(course_label.substr(2));
+                }
+                data.course_length = GetTextDataCourseInfo(course_code, "length", "0");
+                data.one_make = game_context().one_make;
+
+
+                var result = DetailProject::RaceDetailPopup.open(context, data);
+
+
+                if (result["result"])
+                {
+                    game_context().game_mode = mode;
+                    game_context().arcade_game_mode = mode;
+                    option.arcade_laps = result["arcade_laps"];
+                    game_context().one_make = result["one_make"];
+
+                    TopRoot.sLastFocused = nil;
+                    onExit(context);
+                }
+            }
+            else
+            {
+                var ranking_list;
+                if (main::gtengine::GameMode::TIME_ATTACK == mode)
+                {
+                    ranking_list = gGameStatus.user_profile.record.getBoardTA(game_context().course);
+                }
+                else
+                {
+                    ranking_list = gGameStatus.user_profile.record.getBoardDA(game_context().course);
+                }
+
+                var result = DetailProject::RankingDetailPopup.open(context, mode, ranking_list);
+                if (result["result"])
+                {
+                    game_context().game_mode = mode;
+                    game_context().arcade_game_mode = mode;
+                    TopRoot.sLastFocused = nil;
+                    onExit(context);
+                }
+            }
+        }
+        return EVENTRESULT_FILTER;
+    }
+
+    method onExit(context)
+    {
+        var root = sOnlineMode ? OnlineRoot : TopRoot;
+        StartPageOut_XEffect(context, DrivingModeRoot, root);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        onExit(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+
+module DrivingModeRoot::Exit
+{
+    method onActivate(context)
+    {
+        main::sound.play("ok");
+        DrivingModeRoot.onExit(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFocusEnter(context)
+    {
+        var balloon_text = context.translate(DrivingModeRoot, "Arcade", "close");
+        BalloonTip.set_value(context, self, balloon_text, 12);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFocusLeave(context)
+    {
+        BalloonTip.reset_value();
+        return EVENTRESULT_FILTER;
+    }
+}
+
+
+module DrivingModeRoot::ListBox
+{
+    method onFocusEnter(context)
+    {
+        var w = self.getItemWidget(self.focus_index, context);
+        DrivingModeRoot.setFocus(w);
+        return EVENTRESULT_FILTER;
+    }
+    method onFocusLeave(context)
+    {
+        BalloonTip.reset_value();
+
+        return EVENTRESULT_FILTER;
+    }
+    method onFocusNotify(context, new_index, old_index)
+    {
+        var new_w = self.getItemWidget(new_index, context);
+        if (new_w != nil)
+        DrivingModeRoot.setFocus(new_w);
+        
+        return EVENTRESULT_FILTER;
+    }
+}
+
+
+module DrivingModeRoot::hidden::Item
+{
+    Current.visible = false;
+
+    attribute game_mode = nil;
+
+    method onFocusEnter(context)
+    {
+        var index = ListBox.real_focus_index;
+        var mode_name = get_mode(index)[1];
+        BalloonTip.set_value(context, ListBox, context.translate(DrivingModeRoot, "Arcade", mode_name), 77);
+        ToolTip::tip.value = context.translate(DrivingModeRoot, "TOOLTIP|" + mode_name);
+
+        context.sync(0.3);
+        HScrollbar.update_arrow();
+
+        return EVENTRESULT_FILTER;
+    }
+}
+
+
+
+
+
+module DrivingModeRoot::HScrollbar
+{
+    attribute stop_update = nil;
+
+    method initialize(list_box)
+    {
+        self.stop_update = true;
+
+        list_box.h_adjustment = main::menu::MAdjustment();
+        HScrollbar.adjustment = list_box.h_adjustment;
+        inc_arrow_animation(true, true);
+        dec_arrow_animation(true, true);
+    }
+
+    method inc_arrow_animation(reverse, warp = false)
+    {
+        var effect = HScrollbar::inc_arrow::Pane::Effect;
+        if (!warp)
+        {
+            if (effect.reverse != reverse)
+            {
+                effect.reverse = reverse;
+                effect.restart();
+            }
+        } else {
+            effect.reverse = !reverse;
+            effect.reset();
+            effect.reverse = reverse;
+        }
+    }
+
+    method dec_arrow_animation(reverse, warp = false)
+    {
+        var effect = HScrollbar::dec_arrow::Pane::Effect;
+        if (!warp)
+        {
+            if (effect.reverse != reverse)
+            {
+                effect.reverse = reverse;
+                effect.restart();
+            }
+        } else {
+            effect.reverse = !reverse;
+            effect.reset();
+            effect.reverse = reverse;
+        }
+    }
+
+    method update_arrow()
+    {
+        if (self.stop_update)
+            return;
+
+        inc_arrow_animation(!HScrollbar::inc_arrow.active);
+        dec_arrow_animation(!HScrollbar::dec_arrow.active);
+    }
+}
