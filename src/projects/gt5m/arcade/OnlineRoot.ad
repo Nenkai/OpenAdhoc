@@ -1,0 +1,2299 @@
+#include "projects/gt5m/arcade/OnlineUtil.ad";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module OnlineRoot
+{
+    hidden.visible = false;
+    hidden.MemberItem.AutoDrive.visible = false;
+    WaitMessage.visible = false;
+
+    static sWithAI = true;
+    static sGoBackToSelectRoomPassed = false;
+    static sWatcher;
+    static sWatcherRunning = false;
+    static sLastFocused;
+    static sOpeningAnimation = false;
+    static sJoinMode = false;
+    static sRoomNo = 0;
+    static sConfigUpdateCounter = 0;
+    static sUpdateCounter = 0;
+    static sReady = false;
+    static sPointTables = [
+        [3, 1, -1, -3],
+        [2, 0, -2],
+        [1, -1],
+        [0],
+    ];
+    static sOnceAfterLoad = false;
+    static sPersonalID = 0;
+    static sReadyDispFlag = 0;
+    static sHostString;
+    static sGeneration = 0;
+
+
+
+
+    method setJoinMode(flg)
+    {
+        sJoinMode = flg;
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+    method onKeyPress(context, event)
+    {
+
+        if (sReady &&
+            (event.keysym == 0xFF52 || event.keysym == 0xFF54 ||
+             event.keysym == 0xFF51 || event.keysym == 0xFF53))
+            return EVENTRESULT_FILTER;
+
+
+        return EVENTRESULT_CONTINUE;
+    }
+
+
+
+
+    function updateMyMemberConfig(context)
+    {
+        if (sPersonalID == 0)
+        {
+            return;
+        }
+
+        var game_context = main::GlobalStatus::game_context;
+        var mc = RaceConfigUtil::getMyMemberConfig();
+
+        mc.id = sPersonalID;
+
+
+
+        var prev_order = game_context.battle_prev_order;
+        if (prev_order != -1)
+        {
+            var prev_number = game_context.battle_prev_number;
+            var table_idx = sPointTables.size - prev_number;
+
+
+            mc.point = mc.point + sPointTables[table_idx][prev_order];
+            game_context.battle_prev_order = -1;
+            game_context.battle_prev_number = -1;
+        }
+
+
+        mc.host = !sJoinMode;
+
+
+        mc.car = game_context.getCar().getCarCode();
+        if (mc.car != main::gtengine::MSpecDB::NO_CODE64) {
+            mc.color = game_context.getCar().color;
+            mc.manual = game_context.manual;
+            mc.assist_asm = game_context.assist_asm;
+            mc.assist_tcs = game_context.assist_tcs;
+            mc.active_steering = gGameStatus.user_profile.option.active_steering;
+            var physics_pro = game_context.physics_pro;
+            if (main::GlobalStatus::game_context.game_mode == main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE)
+            {
+
+                var rc = RaceConfigUtil::getRaceConfig();
+                physics_pro = rc.physics_pro;
+            }
+            mc.physics_pro = physics_pro;
+            
+            [mc.front_tire, mc.rear_tire] = game_context.getCar().getTireCategories();
+        }
+
+
+        mc.auto_drive = main::GlobalStatus::game_context.battle_auto_drive;
+
+
+        if (sReady == 0)
+            mc.ready = 0;
+        else if (mc.ready == 0)
+            mc.ready = 1;
+        
+
+
+        RaceConfigUtil::setMemberConfig(mc);
+    }
+
+
+
+
+
+    function hasDirtTire(car) {
+        if (car == nil)
+            return false;
+
+
+        var dirt = TireUtil::DirtTire;
+        var snow = TireUtil::SnowTire;
+
+
+
+        var [front, rear] = car.getTireCategories();
+        if (front == dirt || front == snow || rear == dirt || rear == snow)
+            return true;
+
+
+        return false;
+    }
+
+
+
+
+    function finalizeNetwork()
+    {
+        main::PDINetwork.stopAdHocMatching();
+        main::pdiext::MSystemUtility::disconnectAdHoc();
+    }
+
+
+
+
+    function goBackToSelectRoom(context, soundName)
+    {
+
+        if (sGoBackToSelectRoomPassed)
+            return;
+
+
+        if (soundName != nil)
+            main::sound.play(soundName);
+
+
+        sWatcherRunning = false;
+        finalizeNetwork(context);
+        main::GameSequence::setGamePlan(nil);
+        main::GlobalStatus::game_context.battle_phase = 1;
+        main::GlobalStatus::game_context.battle_room_no = 0;
+        main::GlobalStatus::game_context.battle_join_mode = false;
+        main::GlobalStatus::game_context.game_mode = -1;
+        main::GlobalStatus::game_context.setCar(main::gtengine::MCarParameter());
+        main::GlobalStatus::game_context.course = main::gtengine::MSpecDB::NO_CODE64;
+        main::GlobalStatus::game_context.battle_auto_drive = false;
+        gGameStatus.user_profile.garage.rideCar(main::gtengine::MSpecDB::NO_CODE64, 0);
+        StartPageOut_XEffect(context, OnlineRoot, SelectRoomRoot);
+
+        sGoBackToSelectRoomPassed = true;
+    }
+
+
+
+
+    method createFailedMessage(context, str)
+    {
+        var message;
+        if (!main::pdistd::MNetworkInterface::isWirelessSwitchOn())
+            message = context.translate(OnlineRoot, "OnlineMessageGT5M", "DISCONNECTED_WIRELESS_LAN_SWITCH_OFF");
+        else
+            message = context.translate(OnlineRoot, "OnlineMessageGT5M", "DISCONNECTED");
+        message += str;
+        return message;
+    }
+
+
+
+
+
+    function member_sort_func(a0, a1)
+    {
+        var ps0 = a0[3];
+        var ps1 = a1[3];
+
+        if (ps0 == nil || ps0.prev_rank < 0)
+        {
+            return false;
+        }
+        else
+        {
+            if (ps1 == nil || ps1.prev_rank < 0)
+                return true;
+            else
+                return ps0.prev_rank < ps1.prev_rank;
+        }
+    }
+
+
+
+
+    method onTick(context)
+    {
+        if (sWatcherRunning == false)
+            return;
+
+
+
+        if (!main::PDINetwork.isOnline()) {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, createFailedMessage(context, " [1]"))
+            goBackToSelectRoom(context, "cancel");
+            return;
+        }
+
+
+        if (!main::PDINetwork.isAdHocMatchingRunning()) {
+            sWatcherRunning = false;
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, createFailedMessage(context, " [2]"))
+            goBackToSelectRoom(context, "cancel");
+            return;
+        }
+
+
+        if (!sJoinMode)
+        {
+            sConfigUpdateCounter++;
+            if (sConfigUpdateCounter > 10)
+            {
+                var rc = RaceConfigUtil::getRaceConfig();
+                RaceConfigUtil::setRaceConfig(rc);
+                sConfigUpdateCounter = 0;
+            }
+        }
+
+        Start.set(context);
+
+        var all_members_are_ready = true;
+
+
+        var check_on_race = 1;
+        var members = main::PDINetwork.getAdHocMatchingMemberList();
+        if (members != nil)
+        {
+            var num = MemberPane::ListBox.getItemCount();
+
+
+            var sorted_list = Array(num);
+            for (var i = 0; i < num; i++)
+            {
+                if (i < members.size && members[i]["index"] >= 0)
+                {
+                    var member = members[i];
+                    var mc = RaceConfigUtil::getMemberConfig(member["index"]);
+                    var ps = main::ORG.getPersonalStatus(mc.id);
+                    sorted_list[i] = [i, member, mc, ps];
+                }
+                else
+                {
+                    sorted_list[i] = [-1, nil, nil, nil];
+                }
+            }
+            sorted_list.sort(member_sort_func);
+
+
+            var delay_table;
+            if (main::GlobalStatus::game_context.game_mode == main::gtengine::GameMode::ADHOC_BATTLE_AMA)
+                delay_table = OnlineRoot.getDelay(members);
+
+            var rc = RaceConfigUtil::getRaceConfig();
+
+
+            for (var i = 0; i < num; i++)
+            {
+                var w = MemberPane::ListBox.getItemWidget(i, context);
+
+                var handicap_visible = main::GlobalStatus::game_context.game_mode != main::gtengine::GameMode::ADHOC_BATTLE_PRO;
+                if (handicap_visible)
+                {
+                    w.bg0.visible = (i % 2) == 0;
+                    w.bg1.visible = (i % 2) != 0;
+                    w.bg2.visible = false;
+                    w.bg3.visible = false;
+                    w.Handicap.visible = true;
+                    w.Handicap.bg0.visible = (i % 2) == 0;
+                    w.Handicap.bg1.visible = (i % 2) != 0;
+                }
+                else
+                {
+                    w.bg0.visible = false;
+                    w.bg1.visible = false;
+                    w.bg2.visible = (i % 2) == 0;
+                    w.bg3.visible = (i % 2) != 0;
+                    w.Handicap.visible = false;
+                }
+
+
+                var [idx, member, mc, ps] = sorted_list[i];
+
+                if (member != nil && mc != nil && mc.ready != 2)
+                {
+                    w.mc = mc;
+                    var me = member["isMe"];
+                    w.me = me;
+
+                    w.PrevOrderBase0.visible = !me;
+                    w.PrevOrderBase1.visible = me;
+
+                    if (ps != nil && ps.prev_rank >= 0)
+                        w.PrevOrder.text = "%d".format(ps.prev_rank + 1);
+                    else
+                        w.PrevOrder.text = "-";
+                    { // Not entirely sure where this scope starts
+                        var name_text = "";
+                        if (mc.host)
+                            name_text = "#[Cff00c0ff][%{sHostString}]#[Cffcccccc] ";
+                        name_text += "%s".format(member["nickname"]);
+                        w.Nickname.text = name_text;
+                    }
+
+
+                    if (mc.car != main::gtengine::MSpecDB::NO_CODE64) {
+                        var car_label = main::gtengine::MSpecDB::getCarLabel(mc.car);
+                        var image_path = "/car/thumbnail/%s.%02d".format(car_label, mc.color);
+                        if (w.CarImage.image_path != image_path)
+                        {
+                            w.CarImage.image_path = image_path;
+                            w.CarImage.doInitialize(context);
+                            w.CarName.text = main::gtengine::MSpecDB::getCarShortName(mc.car);
+                        }
+                    } else {
+                        if (w.CarImage.image_path != "")
+                        {
+                            w.CarImage.image_path = "";
+                            w.CarImage.doInitialize(context);
+                        }
+                        w.CarName.text = context.translate(OnlineRoot, "CAR_IS_NOT_SELECTED");
+                    }
+
+
+                    w.AutoDrive.visible = mc.auto_drive;
+
+                    w.ready.visible = (mc.ready == 1 || mc.ready == 2) && sReadyDispFlag;
+                    w.notready.visible = !w.ready.visible;
+
+
+                    if (ps.prev_rank >= 0)
+                    {
+                        w.PrevOrder.text = "%d".format(ps.prev_rank + 1);
+                        w.PrevOrder.visible = true;
+                    } else {
+
+                        w.PrevOrder.visible = false;
+                    }
+
+                    w.Point.text = "%d".format(mc.point);
+                    w.Point.visible = true;
+
+
+
+                    switch (main::GlobalStatus::game_context.game_mode)
+                    {
+                        case main::gtengine::GameMode::ADHOC_BATTLE_PRO:
+                            w.Handicap.Label.text = "";
+                            w.Handicap.Value.text = "";
+                            break;
+                        case main::gtengine::GameMode::ADHOC_BATTLE_AMA:
+                            w.Handicap.Label.text = context.translate(OnlineRoot, "NEXT_DELAY");
+                            {
+                                var sec = delay_table[idx];
+                                var text;
+                                if (sec > 0)
+                                    text = "+ %2d'%02d".format(sec / 60, sec % 60);
+                                else
+                                    text = "-'--";
+                                w.Handicap.Value.text = text;
+                            }
+                            break;
+                        case main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE:
+                            w.Handicap.Label.text = context.translate(OnlineRoot, "NEXT_BASE");
+                            {
+                                var diff_pp = getShuffleDiff(rc, mc);
+                                var text;
+                                if (diff_pp == 0)
+                                    text = "-";
+                                else if (diff_pp > 0)
+                                    text = "%d".format(-diff_pp);
+                                else
+                                    text = "+%d".format(-diff_pp);
+                                w.Handicap.Value.text = text;
+                            }
+                            break;
+                    }
+
+
+
+                    if (mc.ready != 1)
+                        all_members_are_ready = false;
+                    if (mc.ready == 2)
+                        check_on_race = 0;
+                }
+                else
+                {
+                    w.AutoDrive.visible = false;
+                    w.Nickname.text = "-";
+                    w.CarName.text = "-";
+                    if (w.CarImage.image_path != "") {
+                        w.CarImage.image_path = "";
+                        w.CarImage.doInitialize(context);
+                    }
+                    w.notready.visible = false;
+                    w.ready.visible = false;
+                    w.PrevOrder.visible = false;
+                    w.Point.visible = false;
+                    w.Handicap.Label.text = "";
+                    w.Handicap.Value.text = "";
+
+
+                    if (mc != nil) {
+                        all_members_are_ready = false;
+                        check_on_race = 0;
+                    }
+                }
+            }
+
+
+            if (members.size == 1)
+                all_members_are_ready = false;
+        }
+
+
+        if (sReadyDispFlag == 0)
+            sReadyDispFlag = check_on_race;
+
+        if (sJoinMode)
+        {
+
+            if (main::ORG.hasValidNetworkGameInformation())
+            {
+                if (sReady) {
+                    Start.goRace(context);
+                }
+                else
+                {
+                    main::ORG.clearNetworkGameInformation();
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, createFailedMessage(context, " [6]"));
+                    goBackToSelectRoom(context, "cancel");
+                }
+                return;
+            }
+        }
+        else
+        {
+            if (all_members_are_ready)
+            {
+                Start.goRace(context);
+                return;
+            }
+        }
+
+
+        if (sUpdateCounter % 10 == 0)
+            updateMyMemberConfig(context);
+
+
+
+        sUpdateCounter++;
+    }
+
+
+
+
+
+
+
+    function getOffCurrentCar(context)
+    {
+        main::GlobalStatus::game_context.setCar(main::gtengine::MCarParameter());
+        gGameStatus.user_profile.garage.rideCar(main::gtengine::MSpecDB::NO_CODE64, 0);
+        CarSelect.set_icon(context);
+
+        OnlineRoot.unsetReady(context);
+        Start.set(context);
+    }
+
+
+
+
+
+
+
+
+    function onAdHocMatchingData(context, peer, data, type)
+    {
+        if (data != nil)
+        {
+            //var requireUpdate;
+            if (type == main::pdistd::AdHocMatchingMessageType::SharedObjectUpdate)
+            {
+                if (sJoinMode)
+                {
+                    var requireUpdate = false;
+
+
+                    var rc = RaceConfigUtil::getRaceConfig();
+
+
+                    var renewed = false;
+
+                    if (sGeneration != rc.generation)
+                    {
+                        if (sGeneration != 0)
+                            renewed = true;
+                        sGeneration = rc.generation;
+                    }
+
+
+                    if (renewed ||
+                        main::GlobalStatus::game_context.game_mode != rc.game_mode)
+                    {
+                        main::GlobalStatus::game_context.game_mode = rc.game_mode;
+                        DrivingModeSelect.set_icon(context);
+                        getOffCurrentCar(context);
+                        requireUpdate = true;
+                    }
+
+
+                    if (main::GlobalStatus::game_context.course != rc.course)
+                    {
+                        main::GlobalStatus::game_context.course = rc.course;
+                        CourseSelect.set_icon(context);
+
+                        var car = main::GlobalStatus::game_context.getCar();
+                        if (!car.isVacant()) {
+                            if (!main::gtengine::MSpecDB::canRun(car.getCarCode(), rc.course))
+                            {
+                                getOffCurrentCar(context);
+                                
+                                
+                                DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                                                              context.translate(OnlineRoot, "CAR_BECAME_INEFFECTIVE"));
+                                OnlineRoot.setFocus(CarSelect);
+                                requireUpdate = true;
+                            } else {
+
+                                var isDirt = main::gtengine::MSpecDB::isDirt(rc.course);
+                                var hasDirt = hasDirtTire(car);
+                                if (isDirt && !hasDirt || !isDirt && hasDirt) {
+                                    car.setSuitableTires(rc.course, TireUtil::DirtTire, TireUtil::SnowTire);
+                                    requireUpdate = true;
+                                }
+                            }
+                        }
+
+                        Start.set(context);
+                    }
+
+
+                    if (requireUpdate)
+                        updateMyMemberConfig(context);
+                }
+            }
+        }
+
+    }
+
+
+
+
+    function onAdHocMatchingEstablished(context, peer, data)
+    {
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+    function onAdHocMatchingReady(context)
+    {
+
+
+
+        updateMyMemberConfig(context);
+    }
+
+
+
+
+    function onAdHocMatchingTimeout(context)
+    {
+
+
+
+        finalizeNetwork();
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, OnlineRoot.createFailedMessage(context, " [5]"));
+
+
+        goBackToSelectRoom(context, "cancel");
+    }
+
+
+
+
+    function onAdHocMatchingDeny(context)
+    {
+
+
+
+        finalizeNetwork();
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                                      context.translate(OnlineRoot, "OnlineMessageGT5M", "HOST_DECLINED_PARTICIPATION"));
+
+
+        goBackToSelectRoom(context, "cancel");
+    }
+
+
+
+
+
+    function startAdHocMatching()
+    {
+        var res = false;
+        if (sJoinMode)
+        {
+            res = main::PDINetwork.startAdHocMatching(main::pdistd::AdHocMatchingMode::Client,
+                                                      nil,
+                                                      5);
+        }
+        else
+        {
+            res = main::PDINetwork.startAdHocMatching(main::pdistd::AdHocMatchingMode::Host,
+                                                      4,
+                                                      5);
+        }
+
+        if (!res)
+            finalizeNetwork();
+
+
+        return res;
+    }
+
+
+
+
+
+
+
+    method onInitialize(context)
+    {
+        sUpdateCounter = 0;
+        sConfigUpdateCounter = 0;
+        
+        sRoomNo = main::GlobalStatus::game_context.battle_room_no;
+
+
+        sGoBackToSelectRoomPassed = false;
+
+
+        main::gtengine::setEventCallback(context, OnlineRoot);
+
+
+
+
+
+
+        sReady = false;
+        sReadyDispFlag = 0;
+        sHostString = context.translate(OnlineRoot, "HOST");
+
+
+
+
+
+        {
+            var my_cash = gGameStatus.user_profile.cash;
+            Header::Cash::TextFace.text = main::pdiext::MMisc::GetMoneyString(my_cash);
+        }
+        {
+            var game_day = gGameStatus.user_profile.calendar.getGameDay();
+            Header::Date::TextFace.text = context.translate(OnlineRoot, "Arcade", "GAME_DAY").build(game_day + 1);
+        }
+
+        RoomNo.image_path = "image/gt5m/icon/room_n%02d.png".format(sRoomNo + 1);
+        RoomNo.doInitialize(context);
+        WaitMessage.visible = false;
+        Start.visible = true;
+        CarSelect.can_focus = true;
+        CourseSelect.can_focus = true;
+        DrivingModeSelect.can_focus = true;
+        MemberPane::ListBox.can_focus = true;
+
+        CarSelect.initialize(context);
+        CourseSelect.initialize(context);
+
+
+        MemberPane.initialize(context);
+
+        if (sOpeningAnimation)
+        {
+
+
+
+
+
+            sOpeningAnimation = false;
+        }
+
+
+        DrivingModeSelect.set_icon(context);
+        CarSelect.set_icon(context);
+        CourseSelect.set_icon(context);
+        Start.set(context);
+
+
+        sPersonalID = main::pdistd::MNetworkInterface::getMacAddress(true);
+
+
+        sWatcherRunning = false;
+        sWatcher = WatcherUtil::Create(context, onTick, 60);
+
+        context.pushEvent(main::menu::MFunctionEvent(on_initialize, context));
+    }
+
+    method on_initialize(context)
+    {
+        SoundUtil::BGMPlayGroup('menu', "online");
+
+        if (!main::PDINetwork.isAdHocMatchingRunning())
+        {
+            var res = startAdHocMatching();
+            if (!res)
+            {
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, createFailedMessage(context, " [3]"));
+                goBackToSelectRoom(context, "cancel");
+                return;
+            }
+        }
+        else
+        {
+
+
+            if (sJoinMode)
+            {
+            }
+            else
+            {
+
+
+
+
+
+                main::PDINetwork.openAdHocMatchingEntry();
+            }
+        }
+
+        sReady = false;
+
+
+        if (!isCarSelected())
+            OnlineRoot.setFocus(CarSelect);
+        else
+        {
+            if (main::PDINetwork.isAdHocMatchingHost())
+            {
+                if (!isCourseSelected()) {
+                    OnlineRoot.setFocus(CourseSelect);
+                } else {
+                    OnlineRoot.setFocus(Start);
+                }
+            } else {
+                OnlineRoot.setFocus(Start);
+            }
+        }
+        if (!sJoinMode)
+        {
+
+            var rc = RaceConfigUtil::getRaceConfig();
+
+            rc.course = main::GlobalStatus::game_context.course;
+
+            rc.laps = main::GlobalStatus::game_context.battle_laps;
+
+            rc.game_mode = main::GlobalStatus::game_context.game_mode;
+
+            rc.boost = main::GlobalStatus::game_context.battle_boost;
+
+            rc.driving_line = main::GlobalStatus::game_context.driving_line;
+
+            if (!sOnceAfterLoad)
+            {
+                rc.battles_num = rc.battles_num + 1;
+                sOnceAfterLoad = true;
+            }
+
+            rc.jackpot_renchan = main::GlobalStatus::game_context.battle_renchan_num;
+
+
+            RaceConfigUtil::setRaceConfig(rc);
+        }
+
+
+        updateMyMemberConfig(context);
+
+
+        sWatcherRunning = true;
+    }
+
+
+
+
+    method onPageInEnd(context)
+    {
+        BalloonTip.initialize(context);
+
+        var focus_w = OnlineRoot.getFocusWidget();
+        if (focus_w != nil && focus_w['onFocusEnter'] != nil)
+        {
+            focus_w.onFocusEnter(context);
+        }
+    }
+
+
+
+
+    method onFinalize(context)
+    {
+
+        if (sWatcher != nil)
+        {
+            WatcherUtil::Delete(sWatcher);
+            sWatcher = nil;
+        }
+
+
+        MemberPane.finalize(context);
+
+
+        CarSelect.finalize(context);
+        CourseSelect.finalize(context);
+
+
+        main::gtengine::clearEventCallback();
+    }
+
+
+
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        OnlineRoot.setFocus(Exit);
+        return EVENTRESULT_FILTER;
+    }
+
+
+    method isDrivingModeSelected()
+    {
+        var game_mode = game_context().game_mode;
+        return -1 < game_mode;
+    }
+    method isCarSelected()
+    {
+        var car = main::GlobalStatus::game_context.getCar();
+        return car != nil && !car.isVacant();
+    }
+    method isCourseSelected()
+    {
+        var course = main::GlobalStatus::game_context.course;
+        return course != nil && course != main::gtengine::MSpecDB::NO_CODE64;
+    }
+
+
+
+
+
+
+
+    method setReady(context)
+    {
+        if (!sReady)
+        {
+            sReady = true;
+            WaitMessage.visible = true;
+
+            OnlineRoot.setFocus(nil);
+            context.cursor_visible = false;
+            Start.visible = false;
+            CarSelect.can_focus = false;
+            CourseSelect.can_focus = false;
+            DrivingModeSelect.can_focus = false;
+            MemberPane::ListBox.can_focus = false;
+
+
+            updateMyMemberConfig(context);
+        }
+    }
+
+
+
+
+    method unsetReady(context)
+    {
+        if (sReady)
+        {
+            sReady = false;
+
+            updateMyMemberConfig(context);
+
+            WaitMessage.visible = false;
+
+            context.cursor_visible = true;
+            Start.visible = true;
+            CarSelect.can_focus = true;
+            CourseSelect.can_focus = true;
+            DrivingModeSelect.can_focus = true;
+            MemberPane::ListBox.can_focus = true;
+
+            OnlineRoot.setFocus(CarSelect);
+        }
+    }
+
+    method canStart()
+    {
+        if (!isDrivingModeSelected())
+            return false;
+        if (!isCarSelected())
+            return false;
+        if (!isCourseSelected())
+            return false;
+        var members = main::PDINetwork.getAdHocMatchingMemberList();
+        if (members == nil || members.size < 2)
+            return false;
+
+        return true;
+    }
+
+
+
+
+    method getDelay(members, id_table)
+    {
+        var num = members.size;
+        var point_table = Array(num);
+
+
+        for (var i = 0; i < num; i++)
+        {
+            var member_index = members[i]["index"];
+            if (member_index < 0)
+            {
+
+                point_table[i] = 0;
+                continue;
+            }
+            var mc = RaceConfigUtil::getMemberConfig(member_index);
+            point_table[i] = mc.point;
+
+            if (id_table != nil) {
+                id_table[i] = mc.id;
+            }
+        }
+
+        var min_value = 0x7FFFFFFF;
+        for (var i = 0; i < num; i++)
+        {
+            if (point_table[i] < min_value)
+                min_value = point_table[i];
+        }
+
+        var rc = RaceConfigUtil::getRaceConfig();
+        var delay_ratio = rc.delay_ratio;
+
+
+        for (var i = 0; i < num; i++)
+        {
+            point_table[i] -= min_value;
+            point_table[i] *= delay_ratio;
+            if (point_table[i] > 60)
+                point_table[i] = 60;
+        }
+
+        return point_table;
+    }
+
+
+
+
+    method setDelay(members)
+    {
+        var id_table = Array(members.size);
+        var delay_table = getDelay(members, id_table);
+
+
+        for (var i = 0; i < delay_table.size; i++)
+        {
+            var id = id_table[i];
+            if (id == 0) {
+            } else {
+                var delay_sec = delay_table[i];
+
+                var ps = main::ORG.getPersonalStatus(id);
+                ps.delay_second = delay_sec;
+                ps.weight_handi = 0;
+            }
+        }
+    }
+
+
+
+
+    method clearHandicap(members)
+    {
+
+        for (var i = 0; i < members.size; i++)
+        {
+            var member_index = members[i]["index"];
+            if (member_index < 0)
+                continue;
+            var mc = RaceConfigUtil::getMemberConfig(member_index);
+            var ps = main::ORG.getPersonalStatus(mc.id);
+            ps.delay_second = 0;
+            ps.weight_handi = 0;
+        }
+    }
+
+
+    method getShuffleDiff(rc, mc)
+    {
+        var diff_pp = mc.point * rc.shuffle_ratio;
+        return diff_pp;
+    }
+
+
+
+
+
+    module Start
+    {
+        method set(context)
+        {
+            self.active = canStart();
+        }
+
+
+
+
+        method goRaceFailed(context)
+        {
+
+            main::sound.play("cancel");
+
+            OnlineUtil::endInternetSession();
+
+
+            finalizeNetwork(context);
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, createFailedMessage(context, " [4]"));
+
+            goBackToSelectRoom(context);
+        }
+
+
+
+
+        method goRace(context)
+        {
+            if (!OnlineUtil::beginInternetSession())
+            {
+
+                OnlineUtil::endInternetSession();
+                return;
+            }
+
+            main::sound.play("start");
+
+
+            StartPageIn_XEffect(context, OnlineRoot, nil);
+
+
+            main::PDINetwork.closeAdHocMatchingEntry();
+
+
+            var members = main::PDINetwork.getAdHocMatchingMemberList();
+            if (members == nil || members.size < 1)
+            {
+
+                goRaceFailed(context);
+                return;
+            }
+
+
+            var rc = RaceConfigUtil::getRaceConfig();
+
+
+            var course_code = rc.course;
+            var game_mode = rc.game_mode;
+            var with_ai = rc.with_ai;
+            var entry_num = 0;
+            if (with_ai)
+                entry_num = 4;
+            else
+                entry_num = members.size;
+
+            var laps = rc.laps;
+            main::GlobalStatus::game_context.battle_laps = laps;
+
+
+
+
+            var course = course_code;
+            var course_label = main::gtengine::MSpecDB::getCourseLabel(course);
+            if (course_label.beginWith("r_"))
+            {
+                var course = main::gtengine::MSpecDB::getCourseCode(course_label.substr(2));
+            }
+            var course_length = GetTextDataCourseInfo(course, "length", "0");
+            var prize_table = RewardUtil::calculate(course_length, laps, 4, 0);
+            var gp = main::GamePlan::createAdhocBattle(game_mode, course_code, entry_num, laps, prize_table);
+
+
+            main::RaceOperator.clear();
+
+
+            main::GlobalStatus::game_context.battle_renchan_num = rc.jackpot_renchan;
+
+
+            {
+                var rbp = main::gtengine::MRaceBuildParameter();
+                rbp.setDefault();
+                rbp.vehiclePacketInterval = rc.packet_interval;
+                main::RaceOperator.race_build_parameter = rbp;
+            }
+
+            if (!sJoinMode)
+            {
+
+
+                var rp = main::gtengine::MRaceParameter();
+                rp.setDefault();
+                rp.online_on = true;
+                rp.is_lan = false;
+                rp.race_type = main::gtengine::RaceType::COMPETITION;
+                rp.auto_start_with_session = false;
+                rp.entry_max = entry_num;
+                rp.racers_max = entry_num;
+                rp.finish_type = main::gtengine::FinishType::TARGET;
+                rp.time_to_finish = 20 * 1000;
+                rp.auto_start_with_session = true;
+                rp.immediate_finish = false;
+                rp.start_type = main::gtengine::StartType::GRID;
+                rp.course_code = course_code;
+                rp.grid_sort_type = main::gtengine::GridSortType::POINT_UP;
+                rp.race_limit_laps = laps;
+                rp.penalty_level = main::GlobalStatus::game_context.penalty_level;
+                rp.disable_collision = main::GlobalStatus::game_context.battle_disable_collision;
+                rp.slow_car_boost_params = main::GlobalStatus::game_context.battle_boost == 0 ? [0, 0, 0, 0, 0, 0] : main::GlobalStatus::game_context.battle_boost == 1 ? [5, 20, 8, 6, 20, 8] : [8, 10, 5, 8, 10, 5];
+                rp.lucky_slot_id = -1;
+
+                var renchan = main::GlobalStatus::game_context.battle_renchan_num;
+                var probability = 0.3;
+                if (renchan >= 1)
+                    probability = 0.6;
+
+
+                if (probability > 0.0)
+                {
+                    if (probability > 1.0)
+                        probability = 1.0;
+                    var range = (entry_num.toFloat() / probability).toInt();
+                    var lucky_no = main::pdistd::MRandom::GetValue(0, range);
+                    if (lucky_no < entry_num)
+                    {
+
+                        rp.lucky_slot_id = lucky_no;
+                    }
+                }
+
+                {
+                    main::RaceOperator.race_parameter = rp;
+                }
+
+
+                if (!main::RaceOperator.buildRace())
+                {
+
+                    main::RaceOperator.destroyRace();
+                    goRaceFailed(context);
+                    return;
+                }
+
+
+                if (main::GlobalStatus::game_context.game_mode ==
+                    main::gtengine::GameMode::ADHOC_BATTLE_AMA)
+                {
+                    setDelay(members);
+                } else {
+
+                    clearHandicap(members);
+                }
+
+                
+                var blob = main::ORG.getCurrentGameWorld();
+                if (blob == nil)
+                {
+
+                    main::RaceOperator.destroyRace();
+                    goRaceFailed(context);
+                    return;
+                }
+
+
+                if (!main::PDINetwork.sendAdHocMatchingDataAll(blob, main::pdistd::AdHocMatchingMessageType::GameStats))
+                {
+
+                    main::RaceOperator.destroyRace();
+                    goRaceFailed(context);
+                    return;
+                }
+            }
+            else
+            {
+                if (!main::ORG.hasValidNetworkGameInformation())
+                {
+                    goRaceFailed(context);
+                    return;
+                }
+
+
+                var rp = main::ORG.extractRaceParameterFromGameWorld();
+
+
+                rp.slow_car_boost_params = rc.boost == 0 ? [0, 0, 0, 0, 0, 0] : rc.boost == 1 ? [5, 20, 8, 6, 20, 8] : [8, 10, 5, 8, 10, 5]; // Presumably a macro
+
+
+                main::RaceOperator.race_parameter = rp;
+
+
+                if (!main::RaceOperator.joinRace())
+                {
+
+                    main::RaceOperator.destroyRace();
+                    goRaceFailed(context);
+                    return;
+                }
+            }
+
+
+
+
+
+
+            var game_context = main::GlobalStatus::game_context;
+
+
+            main::ORG.setDrivingLineDispFlag(0, rc.driving_line);
+
+
+            var cp = game_context.getCar();
+            cp.target = true;
+
+
+            var dp = main::gtengine::MCarDriverParameter();
+            dp.setDefault();
+            dp.setPlayer(0);
+            dp.display_name = main::pdiext::MSystemUtility::getNickname();
+            dp.manual = game_context.manual;
+            dp.assist_asm = game_context.assist_asm;
+            dp.assist_tcs = game_context.assist_tcs;
+            var physics_pro = game_context.physics_pro;
+            if (main::GlobalStatus::game_context.game_mode ==
+                main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE)
+                physics_pro = rc.physics_pro;
+            dp.physics_pro = physics_pro;
+            dp.active_steering = gGameStatus.user_profile.option.active_steering;
+
+
+            var dpAI = main::gtengine::MCarDriverParameter(main::gtengine::DriverType::GROVE);
+            dpAI.display_name = dp.display_name;
+            dpAI.region = "PDI";
+            {
+                var sr_rank = gGameStatus.user_profile.record.getBoardSR(course_code);
+                var ai_skill1 = (sr_rank.point * 100) / sr_rank.MaxPoint;
+                var ai_skill2 = (sr_rank.experience_point / 20) * 100;
+                if (ai_skill2 > 100)
+                    ai_skill2 = 100;
+                dpAI.setGroveAIParameter("max_ai", ai_skill1, ai_skill2);
+            }
+
+
+            var player_name = main::pdiext::MSystemUtility::getNickname();
+            if (player_name == "")
+            {
+                player_name = "Player" + main::PDINetwork.getAdHocMatchingMyIndex();
+            }
+            var res = main::RaceOperator.makeReservation(player_name,
+                                                         main::pdistd::MLocale::getLanguage(),
+                                                         cp,
+                                                         true,
+                                                         dp,
+                                                         dpAI);
+            if (res < 0)
+            {
+
+                main::RaceOperator.destroyRace();
+                goRaceFailed(context);
+                return;
+            }
+
+            var mc = RaceConfigUtil::getMyMemberConfig();
+            main::RaceOperator.setAccountPersonalID(res, sPersonalID);
+            main::RaceOperator.setAccountPoint(res, mc.point);
+
+
+            var ai_car_num = 0;
+            if (with_ai)
+            {
+                switch (members.size)
+                {
+                    case 1:
+                        ai_car_num = 3;
+                        break;
+                    case 2:
+
+
+
+
+
+
+                        ai_car_num = 1;
+
+                        break;
+                    case 3:
+                        if (main::PDINetwork.isAdHocMatchingHost())
+                            ai_car_num = 1;
+                        else
+                            ai_car_num = 0;
+                        break;
+                    case 4:
+                        ai_car_num = 0;
+                        break;
+                }
+            }
+
+
+            var ai_cars = nil;
+            if (ai_car_num > 0)
+            {
+                var cp = main::GlobalStatus::game_context.getCar();
+
+
+                var is_dirt = 0;
+                var course_condition = main::gtengine::MSpecDB::getCourseCondition(course_code);
+                if (course_condition == main::gtengine::CourseCondition::DIRT ||
+                    course_condition == main::gtengine::CourseCondition::SNOW)
+                    is_dirt = 1;
+
+
+                main::gtengine::MSpecDB::loadMenuInfo();
+                finally { // TODO: Unclear what the right syntax is here
+                    main::gtengine::MSpecDB::unloadMenuInfo()
+                }
+                var race_code = main::gtengine::MSpecDB::getRaceCodeFromCar(cp.getCarCode(), is_dirt, 0);
+                if (race_code == nil)
+                {
+
+                    var ai_cars = Array(ai_car_num);
+                    var car_code = cp.getCarCode();
+                    var col_num = main::gtengine::MSpecDB::getCarVariation(car_code);
+
+                    for (var i = 0; i < ai_car_num; i++)
+                    {
+                        var color = main::pdistd::MRandom::GetValue(0, col_num);
+                        ai_cars[i] = main::gtengine::MCarThin(car_code, color);
+                    }
+                }
+                else
+                {
+                    ai_cars = main::gtengine::MSpecDB::getOpponentCars(race_code, ai_car_num);
+                }
+            }
+            if (ai_cars != nil)
+            {
+                for (var i = 0; i < ai_cars.size; i++)
+                {
+                    var cp = main::gtengine::MCarParameter(ai_cars[i]);
+
+
+                    var member_name = "%s".format(context.translate(OnlineRoot, "AI"));
+
+                    dpAI.display_name = member_name;
+                    var res = main::RaceOperator.makeReservation(member_name,
+                                                                 main::pdistd::MLocale::getLanguage(),
+                                                                 cp,
+                                                                 false,
+                                                                 dpAI);
+                    if (res < 0)
+                    {
+
+                        main::RaceOperator.destroyRace();
+                        goRaceFailed(context);
+                        return;
+                    }
+
+                    var pid = main::pdistd::MNetworkInterface::getMacAddress(true);
+                    pid = pid | ((res | 0x1000) << 0x30);
+                    main::RaceOperator.setAccountPersonalID(res, pid);
+                }
+            }
+
+            mc.ready = 2;
+            RaceConfigUtil::setMemberConfig(mc);
+            
+            
+            
+            
+            main::GameSequence::setGamePlan(gp);
+            
+            
+            sGoBackToSelectRoomPassed = true;
+            
+            
+            {
+                SequenceUtil::startSequence(context, main::GameSequence::RACE);
+            }
+        }
+
+        method onActivate(context)
+        {
+            if (sUpdateCounter == 0)
+                return EVENTRESULT_FILTER;
+
+            if (main::GlobalStatus::game_context.game_mode == -1)
+                return EVENTRESULT_FILTER;
+
+            if (!canStart())
+            {
+                main::sound.play("cancel");
+                return EVENTRESULT_FILTER;
+            }
+
+            main::sound.play("ok");
+
+
+            OnlineRoot.setReady(context);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusEnter(context)
+        {
+            var balloon_text = context.translate(OnlineRoot, "Arcade", "accept");
+            BalloonTip.set_value(context, self, balloon_text, self.h * 0.28);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+
+
+
+
+    module CarSelect
+    {
+
+
+        method initialize(context)
+        {
+            ListBox.setItemCount(10);
+            ListBox.setItemTemplate(context, hidden::RouletteItem);
+
+            var codes = main::gtengine::MSpecDB::getCarCodeList();
+
+            for (var i = 0; i < 10; i++)
+            {
+                var w = ListBox.getItemWidget(i, context);
+
+                var code = codes[main::pdistd::MRandom::GetValue(0, codes.size)];
+                var col_num = main::gtengine::MSpecDB::getCarVariation(code);
+                var label = main::gtengine::MSpecDB::getCarLabel(code);
+                w.bg.image_path = "image/gt5m/blackcar/%02d.png".format(i);
+                w.bg.doInitialize(context);
+            }
+
+            ListBox.visible = false;
+        }
+        method finalize(context)
+        {
+            ListBox.setItemCount(0);
+        }
+
+        method set_icon(context)
+        {
+            if (isCarSelected())
+            {
+                var car = main::GlobalStatus::game_context.getCar();
+
+                self.Selected.image_path = "car/thumbnail/%s.%02d".format(car.getCarLabel(), car.color);
+                self.Selected.doInitialize(context);
+                self.active = true;
+            } else {
+                self.active = false;
+            }
+
+
+            if (main::GlobalStatus::game_context.game_mode == main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE &&
+                !main::GlobalStatus::game_context.getCar().isVacant())
+            {
+                self.lock.visible = true;
+                self.no_lock.visible = false;
+            } else {
+                self.lock.visible = false;
+                self.no_lock.visible = true;
+            }
+
+            self.Selected::ScaleEffect.reverse = true;
+            self.Selected::ScaleEffect.reset();
+            self.No_select::ScaleEffect.reverse = true
+            self.No_select::ScaleEffect.reset();
+
+            Start.set(context);
+        }
+
+        method onFocusEnter(context)
+        {
+            var balloon_text = "";
+            if (isCarSelected())
+            {
+                var car = main::GlobalStatus::game_context.getCar();
+                balloon_text = main::gtengine::MSpecDB::getCarShortName(car.getCarCode());
+            } else {
+                balloon_text = context.translate(OnlineRoot, "TOOLTIP|" + self.tooltip_key);
+            }
+            BalloonTip.set_value(context, self, balloon_text, self.h * 0.18);
+            return EVENTRESULT_FILTER;
+        }
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+        method onActivate(context)
+        {
+            if (sUpdateCounter == 0)
+                return EVENTRESULT_FILTER;
+
+            if (main::GlobalStatus::game_context.game_mode == -1)
+                return EVENTRESULT_FILTER;
+
+            if (main::GlobalStatus::game_context.game_mode ==
+                main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE)
+            {
+                if (!main::GlobalStatus::game_context.getCar().isVacant())
+                {
+                    main::sound.play("ok");
+
+                    setCursor(context, "wait");
+
+                    var rc = RaceConfigUtil::getRaceConfig();
+
+                    var cp = main::gtengine::MCarParameter();
+                    cp.deepCopy(main::GlobalStatus::game_context.getCar());
+
+                    cp.quicktune_tcs = cp.quicktune_tcs;
+                    var dp = main::gtengine::MCarDriverParameter();
+                    dp.manual = main::GlobalStatus::game_context.manual;
+                    dp.assist_asm = main::GlobalStatus::game_context.assist_asm;
+                    dp.assist_tcs = main::GlobalStatus::game_context.assist_tcs;
+                    dp.physics_pro = rc.physics_pro;
+                    dp.active_steering = game_option().active_steering;
+
+                    var data = DetailProject::CarDetailPopup::Data();
+                    data.cp = cp;
+                    data.dp = dp;
+                    data.show_info = false;
+                    data.is_favorite = false;
+                    data.can_change_weight = false;
+                    data.can_change_power = false;
+                    data.can_change_tire = false;
+                    data.can_change_physics = false;
+                    data.can_change_asm = true;
+
+                    var result = DetailProject::CarDetailPopup.open(context, data);
+                    if (result)
+                    {
+                        if (!main::GlobalStatus::game_context.getCar().isVacant())
+                        {
+                            main::GlobalStatus::game_context.getCar().deepCopy(cp);
+                        }
+                        main::GlobalStatus::game_context.manual = dp.manual;
+                        main::GlobalStatus::game_context.assist_asm = dp.assist_asm;
+                        main::GlobalStatus::game_context.assist_tcs = dp.assist_tcs;
+
+                        game_option().active_steering = dp.active_steering;
+                    }
+                    return EVENTRESULT_FILTER;
+                }
+                main::sound.play("ok");
+
+                No_select.visible = false;
+                ListBox.visible = true;
+
+                for (var i = 0; i < 10; i++)
+                {
+                    ListBox.incIndex();
+                    main::sound.play("cursor");
+                    context.wait(0.1);
+                }
+
+                for (var i = 0; i < 10; i++)
+                {
+                    ListBox.incIndex();
+                    main::sound.play("cursor");
+                    context.wait(0.2);
+                }
+
+                for (var i = 0; i < 3; i++)
+                {
+                    ListBox.incIndex();
+                    main::sound.play("cursor");
+                    context.wait(0.4);
+                }
+
+                updateMyMemberConfig(context);
+
+
+
+
+                var chosen_car;
+
+                {
+                    main::gtengine::EnemySetUtil::beginWithXml("/textdata/gt5m/shufflelist.xml",
+                                                            "ShuffleData", "car", "code", "pp");
+                    
+
+                    var rc = RaceConfigUtil::getRaceConfig();
+                    var mc = RaceConfigUtil::getMyMemberConfig();
+                    
+                    var base_pp = rc.shuffle_base -
+                                (mc.point  * rc.shuffle_ratio);
+
+
+                    var range = 10;
+
+                    var car_list = main::gtengine::EnemySetUtil::getWithValueRange(base_pp - range,
+                                                                                   base_pp + range,
+                                                                                   1);
+                    chosen_car = car_list[0];
+
+                    main::gtengine::EnemySetUtil::end();
+                }
+                ListBox.visible = false;
+
+                main::GlobalStatus::game_context.setCar(main::gtengine::MCarParameter(chosen_car));
+                main::sound.play("ok");
+                set_icon(context);
+                No_select.visible = true;
+
+
+                onFocusEnter(context);
+
+
+                updateMyMemberConfig(context);
+            }
+            else
+            {
+                main::sound.play("ok");
+                OnlineRoot.sLastFocused = self;
+                CarRoot.setReturnPage(OnlineRoot);
+                CarRoot.setExtMode(nil, nil);
+                CarRoot.setOpenMode(CarRoot::OPEN_MODE_ENUM::ONLINE, true);
+                StartPageIn_XEffect(context, OnlineRoot, CarRoot);
+            }
+            return EVENTRESULT_FILTER;
+        }
+
+        method onKeyPress(context, event)
+        {
+
+            if (sJoinMode)
+                return EVENTRESULT_CONTINUE;
+
+
+            if (main::GlobalStatus::game_context.game_mode ==
+                main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE &&
+                event.keysym == 0xFFBE) // PSP_PAD_CTRL_TRIANGLE?
+            {
+                return onActivate(context);
+            }
+
+            return EVENTRESULT_CONTINUE;
+        }
+    }
+
+
+
+
+
+
+
+
+
+    function updateCourseForRaceConfig(context)
+    {
+
+        var rc = RaceConfigUtil::getRaceConfig();
+
+        rc.course = main::GlobalStatus::game_context.course;
+
+        RaceConfigUtil::setRaceConfig(rc);
+    }
+
+
+    module CourseSelect
+    {
+        attribute course_list = nil;
+
+        method initialize(context)
+        {
+            ListBox.setItemCount(10);
+            ListBox.setItemTemplate(context, hidden::RouletteItem);
+
+            for (var i = 0; i < 10; i++)
+            {
+                var w = ListBox.getItemWidget(i, context);
+                w.bg.visible = false;
+                w.bg.doInitialize(context);
+            }
+
+            ListBox.visible = false;
+
+            set_icon(context);
+
+            self.course_list = Array();
+            foreach (var code in gCourseData.array)
+            {
+
+                var is_dirt_course = main::gtengine::MSpecDB::isDirt(code);
+                if (!is_dirt_course)
+                    self.course_list.push(code);
+            }
+        }
+
+        method finalize(context)
+        {
+            ListBox.setItemCount(0);
+            self.course_list = nil;
+        }
+
+        method normalize(c)
+        {
+            if (c.beginWith("r_"))
+            {
+                return c.substr(2);
+            }
+            return c;
+        }
+
+        method set_icon(context)
+        {
+            if (isCourseSelected())
+            {
+
+                var course = main::GlobalStatus::game_context.course;
+                var courselabel = normalize(main::gtengine::MSpecDB::getCourseLabel(course));
+                var course_logo = GetTextDataCourseInfo(courselabel, "logo", "not found");
+                self.Selected.image_path = "piece_gt5m/course_logo_S/%s.img".format(course_logo);
+                self.Selected.doInitialize(context);
+                self.active = true;
+            } else {
+                self.active = false;
+            }
+
+            if (sJoinMode)
+            {
+                self.lock.visible = true;
+                self.no_lock.visible = false;
+            } else {
+                self.lock.visible = false;
+                self.no_lock.visible = true;
+            }
+
+            self.Selected::ScaleEffect.reverse = true;
+            self.Selected::ScaleEffect.reset();
+            self.No_select::ScaleEffect.reverse = true;
+            self.No_select::ScaleEffect.reset();
+
+            Start.set(context);
+        }
+
+        method onFocusEnter(context)
+        {
+
+            var balloon_text = "";
+            if (isCourseSelected())
+            {
+                var rc = RaceConfigUtil::getRaceConfig();
+                var course = rc.course;
+                var courselabel = main::gtengine::MSpecDB::getCourseLabel(course);
+
+                var format = context.translate(TopRoot, "BALLOON_TIP_FORMAT");
+
+                var direction;
+                if (courselabel.beginWith("r_"))
+                    direction = context.translate(OnlineRoot, "TrialSetting", "LAYOUT_REVERSE");
+                else
+                    direction = context.translate(OnlineRoot, "TrialSetting", "LAYOUT_NORMAL");
+
+                courselabel = normalize(courselabel);
+                var course_name = context.translate(OnlineRoot, "CourseName", courselabel);
+
+                balloon_text = format.build(course_name, direction);
+            } else {
+                balloon_text = context.translate(OnlineRoot, "TOOLTIP|" + self.tooltip_key);
+            }
+            BalloonTip.set_value(context, self, balloon_text, self.h * 0.18);
+            return EVENTRESULT_FILTER;
+        }
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+        method onActivate(context)
+        {
+            if (sUpdateCounter == 0)
+                return EVENTRESULT_FILTER;
+
+            if (sJoinMode)
+            {
+                main::sound.play("cancel");
+            }
+            else
+            {
+                main::sound.play("ok");
+                OnlineRoot.sLastFocused = self;
+                CourseRoot.setReturnPage(OnlineRoot);
+                CourseRoot.setOnlineMode(true);
+                StartPageIn_XEffect(context, OnlineRoot, CourseRoot);
+            }
+            return EVENTRESULT_FILTER;
+        }
+
+        method onKeyPress(context, event)
+        {
+
+            if (sJoinMode)
+                return EVENTRESULT_CONTINUE;
+
+
+            if (event.keysym == 0xFFBE) // PSP_PAD_CTRL_TRIANGLE?
+            {
+                main::sound.play("ok");
+
+                BalloonTip.reset_value();
+                No_select.visible = false;
+                ListBox.visible = true;
+
+                main::GlobalStatus::game_context.course = main::gtengine::MSpecDB::NO_CODE64;
+                CourseSelect.set_icon(context);
+
+
+                updateCourseForRaceConfig(context);
+
+
+                for (var i = 0; i < 10; i++)
+                {
+                    ListBox.incIndex()
+                    main::sound.play("cursor");
+                    context.wait(0.1);
+                }
+
+                for (var i = 0; i < 10; i++)
+                {
+                    ListBox.incIndex()
+                    main::sound.play("cursor");
+                    context.wait(0.2);
+                }
+
+                for (var i = 0; i < 3; i++)
+                {
+                    ListBox.incIndex()
+                    main::sound.play("cursor");
+                    context.wait(0.4);
+                }
+
+
+
+
+                var code = self.course_list[main::pdistd::MRandom::GetValue(0, self.course_list.size)];
+
+                var has_reverse = "false" != GetTextDataCourseInfo(code, "has_reverse", "false");
+
+
+                if (has_reverse && main::pdistd::MRandom::GetValue(0, 2))
+                {
+                    var courselabel = main::gtengine::MSpecDB::getCourseLabel(code);
+                    var r_courselabel = "r_" + courselabel;
+                    code = main::gtengine::MSpecDB::getCourseCode(r_courselabel);
+                }
+
+
+                var car = main::GlobalStatus::game_context.getCar();
+                var isDirt = main::gtengine::MSpecDB::isDirt(code);
+                var hasDirt = hasDirtTire(car);
+                if (isDirt && !hasDirt || !isDirt && hasDirt) {
+                    car.setSuitableTires(code, TireUtil::DirtTire, TireUtil::SnowTire);
+                    updateMyMemberConfig(context);
+                }
+
+                main::GlobalStatus::game_context.course = code;
+                self.set_icon(context);
+                ListBox.visible = false;
+                No_select.visible = true;
+
+
+                updateCourseForRaceConfig(context);
+
+
+                onFocusEnter(context)
+
+                return EVENTRESULT_FILTER;
+            }
+            return EVENTRESULT_CONTINUE;
+        }
+    }
+
+
+
+
+
+    module DrivingModeSelect
+    {
+
+        attribute mode_map = [
+            main::gtengine::GameMode::ADHOC_BATTLE_PRO : "professional",
+            main::gtengine::GameMode::ADHOC_BATTLE_AMA : "amateur",
+            main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE : "shuffle"
+        ];
+
+        method set_icon(context)
+        {
+            if (isDrivingModeSelected())
+            {
+                var game_mode = game_context().game_mode;
+                self.Selected.image_path = "image/gt5m/icon/mode_" + mode_map[game_mode] + ".png";
+                self.Selected.doInitialize(context);
+                self.active = true;
+            }
+            else
+            {
+                self.active = false;
+            }
+
+            if (sJoinMode)
+            {
+                self.lock.visible = true;
+                self.no_lock.visible = false;
+            } else {
+                self.lock.visible = false;
+                self.no_lock.visible = true;
+            }
+
+            self.Selected::ScaleEffect.reverse = true;
+            self.Selected::ScaleEffect.reset();
+            self.No_select::ScaleEffect.reverse = true;
+            self.No_select::ScaleEffect.reset();
+
+            Start.set(context);
+        }
+
+        method onFocusEnter(context)
+        {
+            var balloon_text = "";
+            var game_mode = game_context().game_mode;
+            if (game_mode == main::gtengine::GameMode::ADHOC_BATTLE_PRO ||
+                game_mode == main::gtengine::GameMode::ADHOC_BATTLE_AMA ||
+                game_mode == main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE)
+            {
+                var mode_name = context.translate(OnlineRoot, "Arcade", mode_map[game_mode]);
+
+                var rc = RaceConfigUtil::getRaceConfig();
+                var laps = rc.laps;
+                var unit = context.translate(OnlineRoot, "Unit", "LAPS");
+                if (game_mode == main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE)
+                {
+                    var format = context.translate(TopRoot, "BALLOON_SHUFFLE_TIP_FORMAT");
+                    var pp = context.translate(OnlineRoot, "Unit", "PTS");
+                    balloon_text = format.build(mode_name, laps + unit, rc.shuffle_base + pp);
+                }
+                else
+                {
+                    var format = context.translate(TopRoot, "BALLOON_TIP_FORMAT");
+                    balloon_text = format.build(mode_name, laps + unit);
+                }
+            }
+            BalloonTip.set_value(context, self, balloon_text, self.h * 0.18);
+            return EVENTRESULT_FILTER;
+        }
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+        method onActivate(context)
+        {
+            if (sUpdateCounter == 0)
+                return EVENTRESULT_FILTER;
+
+            if (sJoinMode)
+            {
+                main::sound.play("cancel");
+            }
+            else
+            {
+                main::sound.play("ok");
+                OnlineRoot.sLastFocused = self;
+                DrivingModeRoot.setOnlineMode(true);
+                StartPageIn_XEffect(context, OnlineRoot, DrivingModeRoot);
+            }
+            return EVENTRESULT_FILTER;
+        }
+
+        method onKeyPress(context, event)
+        {
+
+            if (sJoinMode)
+                return EVENTRESULT_CONTINUE;
+
+
+            if (event.keysym == 0xFFBE) // PSP_PAD_CTRL_TRIANGLE?
+            {
+                if (main::GlobalStatus::game_context.game_mode ==
+                    main::gtengine::GameMode::ADHOC_BATTLE_SHUFFLE)
+                {
+                    main::sound.play("ok");
+
+                    var rc = RaceConfigUtil::getRaceConfig();
+
+
+
+
+
+
+                    var old_base = game_option().battle_shuffle_base;
+                    var new_base;
+                    do
+                    {
+                        var base0 = main::pdistd::MRandom::GetValue(0, 150);
+                        var base1 = main::pdistd::MRandom::GetValue(0, 150);
+                        var base2;
+                        if (main::pdistd::MRandom::GetValue(0, 3) == 0)
+                        {
+                            if (main::pdistd::MRandom::GetValue(0, 3) == 0) {
+                                base2 = main::pdistd::MRandom::GetValue(0, 380);
+                            } else {
+                                base2 = main::pdistd::MRandom::GetValue(0, 200);
+                            }
+                        } else {
+                            base2 = 0;
+                        }
+                        new_base = 300 + base0 + base1 + base2;
+                    }
+                    while (Math::abs(new_base - old_base) < 80);
+
+                    game_option().battle_shuffle_base = new_base;
+                    rc.shuffle_base = game_option().battle_shuffle_base;
+                    rc.generation = rc.generation + 1;
+                    RaceConfigUtil::setRaceConfig(rc);
+
+
+                    getOffCurrentCar(context);
+                    updateMyMemberConfig(context);
+
+
+                    onFocusEnter(context);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+            return EVENTRESULT_CONTINUE;
+        }
+    }
+
+
+
+
+
+    module Exit
+    {
+        method onActivate(context)
+        {
+            if (sUpdateCounter == 0)
+                return EVENTRESULT_FILTER;
+
+            main::sound.play("ok");
+            goBackToSelectRoom(context);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusEnter(context)
+        {
+            context.cursor_visible = true;
+            var balloon_text = context.translate(OnlineRoot, "Arcade", "quit");
+            BalloonTip.set_value(context, self, balloon_text, 12);
+            return EVENTRESULT_FILTER;
+        }
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+
+
+
+    module MemberPane
+    {
+        method initialize(context)
+        {
+            ListBox.setItemCount(4);
+            ListBox.focus_index = 3;
+            ListBox.setItemTemplate(context, hidden::MemberItem);
+        }
+
+        method finalize(context)
+        {
+            ListBox.setItemCount(0);
+        }
+
+
+        module ListBox
+        {
+            method onFocusEnter(context, event) {
+                onFocusNotify(context, ListBox.focus_index);
+                return EVENTRESULT_FILTER;
+            }
+
+            method onFocusNotify(context, focus)
+            {
+                var set = false;
+
+                var w = ListBox.getItemWidget(focus, context);
+                if (w.mc != nil)
+                {
+                    var mc = w.mc;
+
+                    if (mc.car != main::gtengine::MSpecDB::NO_CODE64)
+                    {
+                        var tire_f = "";
+                        var tire_r = "";
+
+                        var course_condition = main::gtengine::MSpecDB::getCourseCondition(main::GlobalStatus::game_context.course);
+                        if (course_condition == main::gtengine::CourseCondition::DIRT) {
+                            tire_f = TireUtil::getNameShort(context, TireUtil::DirtTire);
+                            tire_r = tire_f;
+                        } else if (course_condition == main::gtengine::CourseCondition::SNOW) {
+                            tire_f = TireUtil::getNameShort(context, TireUtil::SnowTire);
+                            tire_r = tire_f;
+                        } else {
+                            tire_f = TireUtil::getNameShort(context, mc.front_tire);
+                            tire_r = TireUtil::getNameShort(context, mc.rear_tire);
+                        }
+
+                        var physics = context.translate(OnlineRoot, "TrialSetting", mc.physics_pro ? "PhysicsPro" : "PhysicsNormal");
+                        var transmission = context.translate(OnlineRoot, "TrialSetting", mc.manual ? "MANUAL" : "AUTOMATIC");
+
+                        var balloon_text = "■ %s/%s ■ %s ■ %s".format(tire_f, tire_r, physics, transmission);
+                        BalloonTip.set_value(context, w, balloon_text, 12);
+
+                        set = true;
+                    }
+                }
+                if (!set)
+                {
+                    BalloonTip.reset_value();
+                }
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onFocusLeave(context)
+            {
+                BalloonTip.reset_value();
+                return EVENTRESULT_FILTER;
+            }
+
+
+            method onActivate(context)
+            {
+                if (sUpdateCounter == 0)
+                    return EVENTRESULT_FILTER;
+
+                if (main::GlobalStatus::game_context.game_mode == -1)
+                    return EVENTRESULT_FILTER;
+
+                var w = self.getItemWidget(self.focus_index, context);
+                if (w != nil && w.me != nil && w.me)
+                {
+                    main::sound.play("ok");
+                    game_context().battle_auto_drive = !game_context().battle_auto_drive;
+                    updateMyMemberConfig(context);
+                }
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+
+
+    module hidden::MemberItem
+    {
+        attribute mc = nil;
+        attribute me = nil;
+    }
+}
