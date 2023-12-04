@@ -1,0 +1,901 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ShareRoot
+{
+
+
+
+
+
+
+
+
+    static sJoinMode = false;
+    static sRoomNo = 0;
+    static sGiveMode = false;
+    static sMyPhase = 0;
+    static sCopyStep = 0;
+    static sYouName = nil;
+    static sSendingBuffer = nil;
+    static sReceivedBuffer = nil;
+    static sReceivedCarCollection = nil;
+    static sOnExitPassed = false;
+    static sCount = 0;
+    static sOnlineErrorOccured = false;
+
+
+
+
+    method setGiveMode(flg)
+    {
+        sGiveMode = flg;
+    }
+
+
+
+
+    method setJoinMode(flg)
+    {
+        sJoinMode = flg;
+    }
+
+
+    method setRoomNo(no)
+    {
+        sRoomNo = no;
+    }
+
+
+
+
+    function initMyShareConfig(context)
+    {
+        var sc = RaceConfigUtil::getMyShareConfig();
+        sc.__init__();
+        sc.phase = sMyPhase;
+        sc.give_mode = sGiveMode;
+        RaceConfigUtil::setShareConfig(sc);
+    }
+
+
+
+
+    function updateMyShareConfigOnPhaseProgressed(context, transferring_done_flg)
+    {
+        var sc = RaceConfigUtil::getMyShareConfig();
+        sc.resetOnNewPhase(sMyPhase, sGiveMode, transferring_done_flg);
+        RaceConfigUtil::setShareConfig(sc);
+    }
+
+    function check_online(context)
+    {
+
+        if (!main::PDINetwork.isOnline()) {
+            sOnlineErrorOccured = true;
+            return false;
+        }
+
+
+        if (!main::PDINetwork.isAdHocMatchingRunning()) {
+            sOnlineErrorOccured = true;
+            return false;
+        }
+
+        return true;
+    }
+
+
+
+
+    function get_opponent_config()
+    {
+        var sc = nil;
+        
+        var members = main::PDINetwork.getAdHocMatchingMemberList();
+        if (members != nil && members.size >= 2)
+        {
+            var you;
+            if (members[0]["isMe"])
+            {
+                you = members[1];
+                if (sYouName == nil)
+                    sYouName = members[1]["nickname"];
+            }
+            else
+            {
+                you = members[0];
+                if (sYouName == nil)
+                    sYouName = members[0]["nickname"];
+            }
+
+
+            sc = RaceConfigUtil::getShareConfig(you["index"]);
+        }
+
+        return sc;
+    }
+
+
+
+
+
+
+    function search_opponent(context)
+    {
+        if (!check_online(context))
+            return false;
+
+        var you_sc = get_opponent_config();
+        if (you_sc != nil)
+        {
+            if (you_sc.phase == 1)
+            {
+                if (you_sc.give_mode == sGiveMode)
+                {
+
+                    return false;
+                }
+
+
+                {
+                    var buf = gGameStatus.user_profile.garage.serialize();
+                    buf = main::pdistd::Deflate(buf);
+                    sSendingBuffer = buf;
+                }
+
+                sReceivedBuffer = ByteData();
+                sReceivedCarCollection = main::gtengine::MCarCollection(main::gtengine::MSpecDB::getCarLabelCount());
+                return true;
+            }
+        }
+
+        return nil;
+    }
+
+
+
+
+
+
+
+
+    function sync_phase(context, sync_phase_target)
+    {
+        if (!check_online(context))
+            return false;
+
+        var you_sc = get_opponent_config();
+        if (you_sc == nil)
+            return false;
+
+
+        if (you_sc.phase < sync_phase_target)
+        {
+
+
+            var sc = RaceConfigUtil::getMyShareConfig();
+
+            RaceConfigUtil::setShareConfig(sc);
+            return nil;
+        } else {
+
+            return true;
+        }
+    }
+
+
+
+
+
+    function transfer_oneway(context, give_mode, sync_phase_target)
+    {
+        if (!check_online(context))
+            return false;
+
+        var you_sc = get_opponent_config();
+        if (you_sc == nil)
+            return false;
+
+
+        if (you_sc.phase < sync_phase_target)
+        {
+
+
+            var sc = RaceConfigUtil::getMyShareConfig();
+
+            RaceConfigUtil::setShareConfig(sc);
+            return nil;
+        }
+
+        var my_sc = RaceConfigUtil::getMyShareConfig();
+
+        if (give_mode)
+        {
+            if (!my_sc.transferring_done)
+            {
+                if (my_sc.transferring_idx == you_sc.transferring_idx)
+                {
+                    var idx = my_sc.transferring_idx;
+                    var org_buf = sSendingBuffer;
+                    var next_offset = 224 * idx;
+
+                    if (next_offset < org_buf.size)
+                    {
+                        var piece_buf = org_buf.getByteData(224 * idx);
+                        var bufsize = 224;
+                        if ((org_buf.size - next_offset) < bufsize)
+                            bufsize = org_buf.size - next_offset;
+                        piece_buf.resize(bufsize);
+                        var crc = main::pdistd::CRC32(piece_buf);
+
+                        my_sc.transferring_done = false;
+                        my_sc.transferring_idx = idx + 1;
+                        my_sc.transferring_crc = crc;
+                        my_sc.transferring_size = piece_buf.size;
+                        my_sc.transferring_buffer = piece_buf;
+                        RaceConfigUtil::setShareConfig(my_sc);
+                    }
+                    else
+                    {
+
+                        my_sc.transferring_done = true;
+                        my_sc.transferring_idx = idx + 1;
+                        my_sc.transferring_crc = 0;
+                        my_sc.transferring_size = 0;
+                        my_sc.transferring_buffer = nil;
+                        RaceConfigUtil::setShareConfig(my_sc);
+                    }
+                }
+                else
+                {
+                }
+            }
+        }
+        else
+        {
+
+            if (!my_sc.transferring_done)
+            {
+                if ((my_sc.transferring_idx + 1) == you_sc.transferring_idx)
+                {
+                    if (you_sc.transferring_done)
+                    {
+
+                        my_sc.transferring_done = true;
+                        my_sc.transferring_idx = 0;
+                        my_sc.transferring_crc = 0;
+                        my_sc.transferring_size = 0;
+                        my_sc.transferring_buffer = nil;
+                        RaceConfigUtil::setShareConfig(my_sc);
+                    }
+                    else
+                    {
+                        var crc = you_sc.transferring_crc;
+                        var idx = you_sc.transferring_idx;
+                        var buffer = you_sc.transferring_buffer;
+
+                        if (crc != main::pdistd::CRC32(buffer))
+                        {
+
+                            return false;
+                        }
+
+                        sReceivedBuffer = sReceivedBuffer + buffer;
+                        my_sc.transferring_done = false;
+                        my_sc.transferring_idx = you_sc.transferring_idx;
+                        RaceConfigUtil::setShareConfig(my_sc);
+                    }
+                }
+                else
+                {
+                }
+            }
+        }
+
+
+        if (my_sc.transferring_done && you_sc.transferring_done)
+        {
+            if (give_mode)
+            {
+            }
+            else
+            {
+
+
+                var buf = sReceivedBuffer;
+
+
+                buf = main::pdistd::Inflate(buf);
+                sReceivedCarCollection.deserialize(buf);
+            }
+
+
+
+            return true;
+        }
+
+
+
+        return nil;
+    }
+
+    function transfer(context)
+    {
+        if (sCount <= 5)
+        {
+            sCount++;
+            return nil;
+        } else {
+
+            sCount = 0;
+        }
+
+
+
+        switch (sCopyStep)
+        {
+            case 0:
+                sCopyStep++;
+                sMyPhase = 2;
+                ShareRoot.updateMyShareConfigOnPhaseProgressed(context);
+                break;
+
+            case 1:
+                var res = transfer_oneway(context, sGiveMode, sMyPhase);
+                if (res != nil)
+                {
+                    if (res)
+                    {
+                        sCopyStep++;
+                        sMyPhase = 3;
+                        ShareRoot.updateMyShareConfigOnPhaseProgressed(context);
+                    } else {
+
+                        return false;
+                    }
+                }
+                break;
+            case 2:
+                var res = sync_phase(context, sMyPhase);
+                if (res != nil)
+                {
+                    if (res)
+                    {
+                        sCopyStep++;
+                        sMyPhase = 4;
+
+                        ShareRoot.updateMyShareConfigOnPhaseProgressed(context, false);
+                    } else {
+
+                        return false;
+                    }
+                }
+                break;
+            case 3:
+                var res = transfer_oneway(context, !sGiveMode, sMyPhase);
+                if (res != nil)
+                {
+                    if (res)
+                    {
+                        sCopyStep = 0;
+                        return true;
+                    } else {
+
+                        return false;
+                    }
+                }
+                break;
+        }
+        return nil;
+    }
+
+
+
+
+
+    function copy_exec(context, args)
+    {
+        var [give_mode, diff_give, diff_take] = args;
+
+        if (!check_online(context))
+        {
+            return false;
+        }
+
+        var you_sc = get_opponent_config();
+        if (you_sc == nil)
+        {
+            sOnlineErrorOccured = true;
+            return false;
+        }
+
+        switch (sCopyStep)
+        {
+            case 0:
+                if (you_sc.phase >= 6)
+                    sCopyStep++;
+                break;
+
+            case 1:
+                context.wait(1.0);
+                PlayStream("sound_gt/se/trade1.at3", 0.0, main::sound.menu_se_volume);
+
+                DialogUtil::setConfirmExecDialogMessage(context.translate(ShareRoot, give_mode ? "COPY_CARS_TO" : "COPY_CARS_FROM").build(
+                                                            sYouName, give_mode ? diff_give : diff_take));
+                sCopyStep++;
+                break;
+
+            case 2:
+
+                if (!give_mode)
+                {
+
+                    var added_num = gGameStatus.user_profile.garage.addFrom(sReceivedCarCollection);
+
+
+                    gGameStatus.user_profile.calendar.putGarageEvent("NETWORK_TAKE", main::gtengine::MSpecDB::NO_CODE32, 0, diff_take, sYouName);
+
+                    EventFlagsUtil::setEventFlagON(gGameStatus, EventFlagsUtil::FLAGS::GET_FIRST_CAR);
+                    EventFlagsUtil::setEventFlagON(gGameStatus, EventFlagsUtil::FLAGS::UPDATE_CAR_COLLECTION);
+                    EventFlagsUtil::setMessageFlagOFF(gGameStatus, EventFlagsUtil::FLAGS::UPDATE_CAR_COLLECTION);
+
+                    game_context().need_save = true;
+                }
+
+                context.wait(3.0);
+                sCopyStep++;
+                break;
+
+            case 3:
+                if (give_mode)
+                {
+
+                    gGameStatus.user_profile.calendar.putGarageEvent("NETWORK_GIVE", main::gtengine::MSpecDB::NO_CODE32, 0, diff_give, sYouName)
+                }
+                return true;
+        }
+
+        return nil;
+    }
+
+
+
+
+    method createCopyFailedMessage(context)
+    {
+        var message;
+        if (!main::pdistd::MNetworkInterface::isWirelessSwitchOn())
+            message = context.translate(ShareRoot, "OnlineMessageGT5M", "DISCONNECTED_WIRELESS_LAN_SWITCH_OFF");
+        else
+            message = context.translate(ShareRoot, "OnlineMessageGT5M", "DISCONNECTED");
+        message += "\r\n" + context.translate(ShareRoot, "STOP_COPYING");
+        return message;
+    }
+
+
+
+
+
+
+
+    method onInitialize(context)
+    {
+        sCount = 0;
+        sOnExitPassed = false;
+        sOnlineErrorOccured = false;
+
+
+        main::gtengine::setEventCallback(context, ShareRoot);
+
+
+        main::ORG.clearNetworkGameInformation();
+
+
+        self.sMyPhase = 0;
+        self.sCopyStep = 0;
+        initMyShareConfig(context);
+
+
+        RoomNo.image_path = "image/gt5m/icon/room_n%02d.png".format(sRoomNo + 1);
+        RoomNo.doInitialize(context);
+
+        context.pushEvent(main::menu::MFunctionEvent(on_initialize, context));
+    }
+
+
+
+
+    method on_initialize(context)
+    {
+
+
+
+        var message;
+
+        self.sMyPhase = 1;
+        ShareRoot.initMyShareConfig(context);
+        var res = DialogUtil::openConfirmExecDialog(context, nil,
+                                                    context.translate(ShareRoot, "SEARCH_OPPONENT"),
+                                                    nil, nil, search_opponent,
+                                                    nil, nil,
+                                                    true);
+        if (!res)
+        {
+            if (!sOnExitPassed)
+            {
+                if (DialogUtil::wasConfirmExecDialogAborted())
+                    message = context.translate(ShareRoot, "STOP_COPYING");
+                else
+                    message = createCopyFailedMessage(context);
+
+
+                finalizeNetwork();
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, message);
+                onExit(context);
+            }
+            return;
+        }
+
+
+        var my_sc = RaceConfigUtil::getMyShareConfig();
+
+
+        self.sCopyStep = 0;
+        res = DialogUtil::openConfirmExecDialog(context, nil,
+                                                context.translate(ShareRoot, "EXCHANGING_INFORMATION"),
+                                                nil, nil, transfer,
+                                                nil, nil, true);
+        if (!res)
+        {
+            if (!sOnExitPassed)
+            {
+                if (DialogUtil::wasConfirmExecDialogAborted())
+                    message = context.translate(ShareRoot, "STOP_COPYING");
+                else
+                    message = createCopyFailedMessage(context);
+
+
+                finalizeNetwork();
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, message);
+                onExit(context);
+            }
+            return;
+        }
+
+
+        self.sMyPhase = 5;
+        ShareRoot.updateMyShareConfigOnPhaseProgressed(context);
+
+        var my_garage = gGameStatus.user_profile.garage;
+        var you_garage = sReceivedCarCollection;
+        var [diff_take, diff_give] = my_garage.getDiffInfo(you_garage);
+
+        if (sGiveMode)
+        {
+            if (diff_give == 0)
+            {
+
+                finalizeNetwork();
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                                              context.translate(ShareRoot, "NO_CAR_TO_COPY").build(sYouName));
+                onExit(context);
+                return;
+            }
+        }
+        else
+        {
+            if (diff_take == 0)
+            {
+
+                finalizeNetwork();
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                                              context.translate(ShareRoot, "NO_CAR_TO_BE_COPIED").build(sYouName));
+                onExit(context);
+                return;
+            }
+        }
+
+
+        res = DialogUtil::openConfirmDialog(context,
+                                            DialogUtil::YESNO,
+                                            context.translate(ShareRoot,
+                                                              sGiveMode
+                                                                  ? "DO_YOU_COPY_CARS_TO"
+                                                                  : "DO_YOU_COPY_CARS_FROM").build(sYouName,
+                                                                                                   sGiveMode ? diff_give : diff_take));
+        if (!res)
+        {
+            if (!sOnExitPassed)
+            {
+                finalizeNetwork();
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                                              context.translate(ShareRoot, "STOP_COPYING"));
+                onExit(context);
+            }
+            return;
+        }
+        
+
+        if (!check_online(context))
+        {
+            if (!sOnExitPassed)
+            {
+                finalizeNetwork();
+
+                message = createCopyFailedMessage(context);
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, message);
+                onExit(context);
+            }
+            return;
+        }
+
+
+        self.sCopyStep = 0;
+        self.sMyPhase = 6;
+        ShareRoot.updateMyShareConfigOnPhaseProgressed(context);
+
+        res = DialogUtil::openConfirmExecDialog(context, nil,
+                                                context.translate(ShareRoot, "WAITING_FOR_OPPONENT"),
+                                                nil, nil, copy_exec, [sGiveMode, diff_give, diff_take],
+                                                nil, true);
+
+
+
+
+
+
+        if (res &&
+            sGiveMode &&
+            diff_take > 0)
+        {
+
+            var res0 = DialogUtil::openConfirmDialog(context,
+                                                     DialogUtil::YESNO,
+                                                     context.translate(ShareRoot, "COPY_DONE_DO_YOU_TAKE").buil(sYouName, diff_take));
+            if (res0)
+            {
+                var added_num = gGameStatus.user_profile.garage.addFrom(sReceivedCarCollection);
+
+
+                gGameStatus.user_profile.calendar.putGarageEvent("NETWORK_TAKE", main::gtengine::MSpecDB::NO_CODE32, 0, diff_take, sYouName);
+
+                game_context().need_save = true;
+            }
+        }
+
+
+
+        if (!sOnExitPassed)
+        {
+
+            if (res)
+            {
+                PlayStream("sound_gt/se/trade2.at3", 0.0, main::sound.menu_se_volume);
+                message = context.translate(ShareRoot, "COPY_DONE");
+            }
+            else
+            {
+                main::sound.play("cancel");
+                if (sOnlineErrorOccured)
+                    message = createCopyFailedMessage(context);
+                else
+                    message = context.translate(ShareRoot, "STOP_COPYING");
+            }
+
+
+            finalizeNetwork();
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, message);
+            onExit(context);
+        }
+    }
+
+
+
+
+    method onPageInEnd(context)
+    {
+        BalloonTip.initialize(context);
+
+        var focus_w = ShareRoot.getFocusWidget();
+        if (focus_w != nil && focus_w['onFocusEnter'] != nil)
+        {
+            focus_w.onFocusEnter(context);
+        }
+    }
+
+
+
+
+    method onFinalize(context)
+    {
+        sYouName = nil;
+        sSendingBuffer = nil;
+        sReceivedBuffer = nil;
+        sReceivedCarCollection = nil;
+
+        main::gtengine::clearEventCallback();
+
+        StopStream();
+    }
+
+
+
+
+    method onCancel(context)
+    {
+
+        return EVENTRESULT_FILTER;
+    }
+
+
+
+
+    function finalizeNetwork()
+    {
+        main::PDINetwork.stopAdHocMatching();
+        main::pdiext::MSystemUtility::disconnectAdHoc();
+    }
+
+
+
+
+    method onExit(context)
+    {
+
+        if (sOnExitPassed)
+            return;
+
+
+        main::sound.play("cancel");
+        finalizeNetwork();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        StartPageOut_XEffect(context, ShareRoot, SelectRoomRoot);
+
+
+
+        sOnExitPassed = true;
+    }
+
+
+
+
+
+
+
+
+    function onAdHocMatchingData(context, peer, data, type) // Presumably commented out
+    {
+
+        if (data != nil)
+        {
+
+        }
+    }
+
+
+
+
+    function onAdHocMatchingEstablished(context, peer, data)
+    {
+    }
+
+
+
+
+
+    function onAdHocMatchingReady(context)
+    {
+    }
+
+
+
+
+
+    function onAdHocMatchingTimeout(context)
+    {
+
+
+
+        finalizeNetwork();
+
+
+        DialogUtil::sayNoConfirmDialog(context);
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                                      ShareRoot.createCopyFailedMessage(context) + " [5]");
+
+
+        ShareRoot.onExit(context);
+    }
+
+
+
+
+    function onAdHocMatchingDeny(context)
+    {
+
+
+
+        finalizeNetwork();
+
+
+        DialogUtil::sayNoConfirmDialog(context);
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                                      context.translate(ShareRoot, "OnlineMessageGT5M", "HOST_DECLINED_PARTICIPATION"));
+
+
+        ShareRoot.onExit(context);
+    }
+
+
+
+
+    function startAdHocMatching()
+    {
+        var res = false;
+        if (sJoinMode)
+        {
+            res = main::PDINetwork.startAdHocMatching(main::pdistd::AdHocMatchingMode::Client,
+                                                      nil,
+                                                      2);
+        }
+        else
+        {
+            res = main::PDINetwork.startAdHocMatching(main::pdistd::AdHocMatchingMode::Host,
+                                                      2,
+                                                      2);
+        }
+
+        if (!res)
+            finalizeNetwork();
+
+
+        return res;
+    }
+}
