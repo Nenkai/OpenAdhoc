@@ -1,0 +1,1153 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module TradeRoot
+{
+    hidden.visible = false;
+
+
+    Offer.active = false;
+    Confirm.active = false;
+    Exchanging.visible = false;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    static sWatcher;
+    static sWatcherRunning = false;
+    static sJoinMode = false;
+    static sRoomNo = 0;
+    static sMyPhase = 0;
+    static sCouldNotAdd = false;
+
+    static sMyName = main::pdiext::MSystemUtility::getNickname();
+    static sYouName = "";
+    static sYouExist = false;
+    static sYouDecided = false;
+    static sOnExitPassed = false;
+
+    static sFloatigCar = nil;
+
+
+
+
+
+
+    attribute sMeCarList = [ [main::gtengine::MSpecDB::NO_CODE64, 0, 0] ];
+
+
+
+    attribute sYouCarList = [ [main::gtengine::MSpecDB::NO_CODE64, 0, 0] ];
+
+
+
+
+
+    method clearAllCarList()
+    {
+        for (var i = 0; i < 1; i++)
+        {
+            self.sMeCarList[i][0] = main::gtengine::MSpecDB::NO_CODE64;
+            self.sMeCarList[i][1] = 0;
+            self.sMeCarList[i][2] = 0;
+        }
+        for (var i = 0; i < 1; i++)
+        {
+            self.sYouCarList[i][0] = main::gtengine::MSpecDB::NO_CODE64;
+            self.sYouCarList[i][1] = 0;
+            self.sYouCarList[i][2] = 0;
+        }
+    }
+
+    method clearMyStateList()
+    {
+        for (var i = 0; i < 1; i++)
+        {
+            self.sMeCarList[i][2] = 0;
+        }
+    }
+
+
+
+
+    method setJoinMode(flg)
+    {
+        sJoinMode = flg;
+    }
+
+
+    method setRoomNo(no)
+    {
+        sRoomNo = no;
+
+        sMyPhase = 1;
+        sCouldNotAdd = false;
+        sYouExist = false;
+        sYouDecided = false;
+    }
+
+
+
+
+    function updateMyTradeConfig(context)
+    {
+        var tc = RaceConfigUtil::getMyTradeConfig();
+        for (var i = 0; i < 1; i++)
+        {
+            tc.car_list[i] = TradeRoot.sMeCarList[i][0];
+            tc.col_list[i] = TradeRoot.sMeCarList[i][1];
+            tc.state_list[i] = TradeRoot.sMeCarList[i][2];
+        }
+        tc.phase = sMyPhase;
+        RaceConfigUtil::setTradeConfig(tc);
+    }
+
+    method youDecided(flg)
+    {
+        var w = ListBoxYou.getItemWidget(0);
+        if (w != nil)
+            w.active = flg;
+    }
+
+    method meDecided(flg)
+    {
+        var w = ListBoxMe.getItemWidget(0);
+        if (w != nil)
+            w.active = flg;
+    }
+
+
+
+
+
+
+
+
+    method save(context)
+    {
+        var data = main::GlobalStatus::getToBeSavedData(gGameStatus);
+
+        var savedata = SaveDataUtilPSP::GameDataForSaveSilent();
+        savedata.title = context.translate(TradeRoot, "SaveDataPSP", "GAME_TITLE_WITHIN_128BYTES");
+
+        savedata.description = context.translate(TradeRoot, "SaveDataGT5M", "GAME_SUBTITLE_WITHIN_128BYTES");
+        savedata.savedataTitle = context.translate(TradeRoot, "SaveDataGT5M", "GAME_DESCRIPTION_WITHIN_1024BYTES");
+
+
+
+
+        savedata.buf = data;
+        var res = SaveDataUtilPSP::save(context, savedata, TradeRoot);
+        return res;
+    }
+
+    method onTick(context)
+    {
+        if (sWatcherRunning == false)
+            return;
+
+        var message;
+
+        if (!main::PDINetwork.isOnline())
+        {
+            if (!main::pdistd::MNetworkInterface::isWirelessSwitchOn())
+            {
+                message = context.translate(TradeRoot, "OnlineMessageGT5M", "DISCONNECTED_WIRELESS_LAN_SWITCH_OFF");
+            } else {
+                message = context.translate(TradeRoot, "OnlineMessageGT5M", "DISCONNECTED");
+            }
+
+            finalizeNetwork();
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, message);
+            onExit(context);
+            return;
+        }
+
+
+        if (!main::PDINetwork.isAdHocMatchingRunning()) {
+            sWatcherRunning = false;
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                                          context.translate(TradeRoot, "OnlineMessageGT5M", "DISCONNECTED") + " [1]");
+            onExit(context);
+            return;
+        }
+
+
+        var you_phase = 0;
+        var your_name = "";
+        var members = main::PDINetwork.getAdHocMatchingMemberList();
+        if (members != nil && members.size >= 2)
+        {
+            var changed = false;
+
+            if (!sYouExist)
+                changed = true;
+            sYouExist = true;
+
+            var you;
+            if (members[0]["isMe"])
+                you = members[1];
+            else
+                you = members[0];
+
+            var your_name = you["nickname"];
+            sYouName = your_name;
+
+
+
+
+            var tc = RaceConfigUtil::getTradeConfig(you["index"]);
+            for (var i = 0; i < 1; i++)
+            {
+                if (tc.car_list[i] != self.sYouCarList[i][0])
+                {
+                    self.sYouCarList[i][0] = tc.car_list[i];
+                    self.sYouCarList[i][1] = tc.col_list[i];
+                    changed = true;
+                }
+                else if (tc.col_list[i] != self.sYouCarList[i][1])
+                {
+                    self.sYouCarList[i][1] = tc.col_list[i];
+                    changed = true;
+                }
+
+                if (tc.state_list[i] != self.sYouCarList[i][2])
+                {
+                    self.sYouCarList[i][2] = tc.state_list[i];
+                    changed = true;
+                }
+            }
+
+
+            you_phase = tc.phase;
+
+
+
+
+
+
+
+            refreshListBox(context, ListBoxYou, TradeRoot.sYouCarList, false);
+        }
+        else
+        {
+            if (sYouExist)
+            {
+
+                finalizeNetwork();
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                                              context.translate(TradeRoot, "OnlineMessageGT5M", "DISCONNECTED") + " [2]");
+                onExit(context);
+                return;
+            }
+            sYouExist = false;
+        }
+
+
+
+
+        switch (self.sMyPhase)
+        {
+            case 0:
+                break;
+
+            case 1:
+                meDecided(false);
+                var selected = false;
+                for (var i = 0; i < 1; i++)
+                {
+                    var carcode = sMeCarList[i][0];
+                    if (carcode != main::gtengine::MSpecDB::NO_CODE64)
+                        selected = true;
+                }
+                Select.active = true;
+                Offer.active = selected;
+                Confirm.active = false;
+                break;
+
+            case 2:
+                meDecided(true);
+                Select.active = true;
+                Offer.active = false;
+                if (you_phase == 2 ||
+                    you_phase == 3)
+                    Confirm.active = true;
+                else
+                    Confirm.active = false;
+                break;
+
+            case 3:
+                meDecided(true);
+                Select.active = false;
+                Offer.active = false;
+                Confirm.active = false;
+                switch (you_phase)
+                {
+                    case 1:
+                        self.sMyPhase = 2;
+                        TradeRoot.updateMyTradeConfig(context);
+                        break;
+
+                    case 2:
+                        break;
+
+                    case 3:
+                    case 4:
+                        self.sMyPhase = 4;
+                        TradeRoot.updateMyTradeConfig(context);
+                        break;
+
+                    default:
+                        break;
+                }
+
+                break;
+
+            case 4:
+                meDecided(true);
+                Offer.active = false;
+                Confirm.active = false;
+                Exchanging.visible = true;
+                if (you_phase == 4)
+                {
+                    PlayStream("sound_gt/se/trade1.at3", 0.0, main::sound.menu_se_volume);
+
+                    {
+                        var res = save(context);
+                        if (!res)
+                        {
+                            onExit(context);
+                            return;
+                        }
+                    }
+                    self.sMyPhase = 5;
+                    TradeRoot.updateMyTradeConfig(context);
+                }
+                break;
+
+            case 5:
+                meDecided(true);
+                Offer.active = false;
+                Confirm.active = false;
+                Exchanging.visible = true;
+                if (you_phase == 5)
+                {
+
+
+                    for (var i = 0; i < 1; i++)
+                    {
+                        var carcode = sMeCarList[i][0];
+                        if (carcode != main::gtengine::MSpecDB::NO_CODE64)
+                        {
+                            sFloatigCar = main::gtengine::MCarThin(carcode, sMeCarList[i][1]);
+                            gGameStatus.user_profile.garage.removeCar(carcode, sMeCarList[i][1]);
+
+
+                            gGameStatus.user_profile.calendar.putGarageEvent("NETWORK_GIVE", carcode, sMeCarList[i][1], nil, your_name);
+                        }
+                    }
+
+
+                    {
+                        var res = save(context);
+                        if (!res)
+                        {
+                            onExit(context);
+                            return;
+                        }
+                    }
+                    self.sMyPhase = 6;
+                    TradeRoot.updateMyTradeConfig(context);
+                }
+                break;
+
+            case 6:
+                meDecided(true);
+                Offer.active = false;
+                Confirm.active = false;
+                Exchanging.visible = true;
+                if (you_phase == 6)
+                {
+
+
+                    for (var i = 0; i < 1; i++)
+                    {
+                        var carcode = sYouCarList[i][0];
+                        if (carcode != main::gtengine::MSpecDB::NO_CODE64)
+                        {
+                            var res = gGameStatus.user_profile.garage.addCar(carcode, sYouCarList[i][1]);
+                            if (res)
+                            {
+                                sFloatigCar = nil;
+
+                                gGameStatus.user_profile.calendar.putGarageEvent("NETWORK_TAKE", carcode, sYouCarList[i][1], nil, your_name);
+
+                                EventFlagsUtil::setEventFlagON(gGameStatus, EventFlagsUtil::FLAGS::GET_FIRST_CAR);
+                                EventFlagsUtil::setEventFlagON(gGameStatus, EventFlagsUtil::FLAGS::UPDATE_CAR_COLLECTION);
+                                EventFlagsUtil::setMessageFlagOFF(gGameStatus, EventFlagsUtil::FLAGS::UPDATE_CAR_COLLECTION);
+                            }
+                            else
+                            {
+                                sFloatigCar = nil;
+                                sCouldNotAdd = true;
+                            }
+                        }
+                    }
+
+
+                    {
+                        var res = save(context);
+                        if (!res)
+                        {
+                            onExit(context);
+                            return;
+                        }
+                    }
+
+                    self.sMyPhase = 7;
+                    TradeRoot.updateMyTradeConfig(context);
+                }
+                break;
+
+            case 7:
+                Exchanging.visible = false;
+                sWatcherRunning = false;
+                PlayStream("sound_gt/se/trade2.at3", 0.0, main::sound.menu_se_volume);
+
+                if (sCouldNotAdd)
+                    DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                                                  context.translate(TradeRoot, "FULL_CAR_NOT_ADD"));
+                else
+                    DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                                                  context.translate(TradeRoot, "TRADE_DONE"));
+                onExit(context);
+                break;
+        }
+
+
+        if (you_phase >= 2)
+        {
+            sYouDecided = true;
+            youDecided(true);
+        }
+        else
+        {
+            sYouDecided = false;
+            youDecided(false);
+        }
+
+
+        {
+            var to_confirm_arrow = sMyPhase == 2;
+            arrow0.visible = !to_confirm_arrow;
+            arrow0_i.visible = to_confirm_arrow;
+        }
+    }
+
+
+
+
+
+
+
+    function onAdHocMatchingData(context, peer, data, type)
+    {
+
+        if (data != nil)
+        {
+
+        }
+    }
+
+
+
+
+    function onAdHocMatchingEstablished(context, peer, data)
+    {
+    }
+
+
+
+
+
+    function onAdHocMatchingReady(context)
+    {
+
+
+
+        updateMyTradeConfig(context);
+    }
+
+
+
+
+    function onAdHocMatchingTimeout(context)
+    {
+
+
+
+        finalizeNetwork();
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                                      context.translate(TradeRoot, "OnlineMessageGT5M", "DISCONNECTED") + " [5]");
+
+
+        TradeRoot.onExit(context);
+    }
+
+
+
+
+    function onAdHocMatchingDeny(context)
+    {
+
+
+
+        finalizeNetwork();
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                                      context.translate(TradeRoot, "OnlineMessageGT5M", "HOST_DECLINED_PARTICIPATION"));
+
+
+        TradeRoot.onExit(context);
+    }
+
+
+
+
+    function startAdHocMatching()
+    {
+        var res = false;
+        if (sJoinMode)
+        {
+            res = main::PDINetwork.startAdHocMatching(main::pdistd::AdHocMatchingMode::Client,
+                                                      nil,
+                                                      2);
+        }
+        else
+        {
+            res = main::PDINetwork.startAdHocMatching(main::pdistd::AdHocMatchingMode::Host,
+                                                      2,
+                                                      2);
+        }
+
+        if (!res)
+            finalizeNetwork();
+
+
+        return res;
+    }
+
+
+
+
+
+
+
+    method onInitialize(context)
+    {
+        sOnExitPassed = false;
+
+
+        main::gtengine::setEventCallback(context, TradeRoot);
+
+
+        main::ORG.clearNetworkGameInformation();
+
+
+        clearMyStateList();
+        updateMyTradeConfig(context);
+
+
+
+
+        RoomNo.image_path = "image/gt5m/icon/room_n%02d.png".format(sRoomNo + 1);
+        RoomNo.doInitialize(context);
+        ListBoxYou.initialize(context);
+        ListBoxMe.initialize(context);
+
+
+        TradeRoot.setFocus(Select);
+        hidden.visible = false;
+        youDecided(false);
+        meDecided(false);
+        Select.active = true;
+        Offer.active = false;
+        Confirm.active = false;
+        Exchanging.panel.label.text = context.translate(TradeRoot, "Exchanging") + "\r\n" + 
+                                      context.translate(TradeRoot, "SaveDataPSP", "NOW_SAVING");
+        Exchanging.visible = false;
+
+
+        sWatcherRunning = false;
+        sWatcher = WatcherUtil::Create(context, onTick, 60);
+
+        context.pushEvent(main::menu::MFunctionEvent(on_initialize, context));
+    }
+
+    method on_initialize(context)
+    {
+        if (!main::PDINetwork.isAdHocMatchingRunning())
+        {
+            var res = startAdHocMatching();
+            if (!res)
+            {
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                                              context.translate(TradeRoot, "OnlineMessageGT5M", "DISCONNECTED") + " [3]");
+                onExit(context);
+                return;
+            }
+        }
+        else
+        {
+            setJoinMode(!main::PDINetwork.isAdHocMatchingHost());
+
+            if (!sJoinMode)
+            {
+
+                main::PDINetwork.openAdHocMatchingEntry();
+            }
+        }
+
+        sWatcherRunning = true;
+
+        var current_car_me = TradeRoot.sMeCarList[0][0];
+        if (current_car_me != main::gtengine::MSpecDB::NO_CODE64)
+            TradeRoot.setFocus(Offer);
+        else
+            TradeRoot.setFocus(Select);
+    }
+
+
+
+
+    method onPageInEnd(context)
+    {
+        BalloonTip.initialize(context);
+
+        var focus_w = TradeRoot.getFocusWidget();
+        if (focus_w != nil && focus_w['onFocusEnter'] != nil)
+        {
+            focus_w.onFocusEnter(context);
+        }
+    }
+
+
+
+
+    method onFinalize(context)
+    {
+
+        if (sWatcher != nil)
+        {
+            WatcherUtil::Delete(sWatcher);
+            sWatcher = nil;
+        }
+
+
+        ListBoxYou.finalize(context);
+        ListBoxMe.finalize(context);
+
+
+        main::gtengine::clearEventCallback();
+
+        StopStream();
+    }
+
+
+
+
+    function finalizeNetwork()
+    {
+        main::PDINetwork.stopAdHocMatching();
+        main::pdiext::MSystemUtility::disconnectAdHoc();
+    }
+
+
+
+
+    method onExit(context, with_dialog)
+    {
+
+        if (sOnExitPassed)
+            return;
+        
+
+        sWatcherRunning = false;
+        finalizeNetwork(context);
+
+        if (sFloatigCar != nil)
+        {
+            gGameStatus.user_profile.garage.addCar(sFloatigCar.code, sFloatigCar.color);
+
+
+            sFloatigCar = nil;
+        }
+
+
+
+
+
+
+
+
+
+        if (with_dialog != nil && with_dialog)
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+                                          context.translate(TradeRoot, "TRADE_ABORTED"));
+                
+
+
+
+
+
+        StartPageOut_XEffect(context, TradeRoot, SelectRoomRoot);
+
+
+        clearAllCarList();
+
+
+        sOnExitPassed = true;
+    }
+
+
+
+
+
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        TradeRoot.setFocus(Exit);
+        return EVENTRESULT_FILTER;
+    }
+
+
+
+
+
+    method refreshListBox(context, listbox, car_list, is_me)
+    {
+        for (var i = 0; i < 1; i++)
+        {
+            var w = listbox.getItemWidget(i, context);
+
+            var prev_image_path = w.CarImage.image_path;
+            var new_image_path;
+
+            var carcode = car_list[i][0];
+            var color = car_list[i][1];
+
+
+            w.bg0.visible = !is_me;
+            w.bg1.visible = is_me;
+
+
+            if (is_me)
+            {
+                if (carcode != main::gtengine::MSpecDB::NO_CODE64)
+                {
+                    var carlabel = main::gtengine::MSpecDB::getCarLabel(carcode);
+                    new_image_path = "/car/thumbnail/%{carlabel}.%02d".format(color);
+                }
+                else
+                {
+                    new_image_path = "";
+                }
+                w.Hatena.visible = false;
+            }
+            else
+            {
+                if (carcode != main::gtengine::MSpecDB::NO_CODE64 &&
+                    sYouDecided)
+                {
+                    var carlabel = main::gtengine::MSpecDB::getCarLabel(carcode);
+                    new_image_path = "/car/thumbnail/%{carlabel}.%02d".format(color);
+                    w.Hatena.visible = false;
+                }
+                else
+                {
+                    new_image_path = "";
+
+                    w.Hatena.visible = sYouExist;
+                }
+            }
+            if (prev_image_path != new_image_path)
+            {
+                w.CarImage.image_path = new_image_path;
+                w.CarImage.doInitialize(context);
+            }
+            if (!w.Hatena.visible && w.CarImage.image_path == "")
+                w.NoCarImage.visible = true;
+            else
+                w.NoCarImage.visible = false;
+
+
+            if (is_me)
+            {
+                var text = "";
+                if (TradeRoot.sMyPhase <= 1)
+                {
+                    text = "#[Cff00c0ff][" + context.translate(TradeRoot, "NOT_OPENED") + "]#[Cffcccccc] ";
+                    w.waku.visible = true;
+                    w.wakua.visible = false;
+                }
+                else
+                {
+                    w.waku.visible = false;
+                    w.wakua.visible = true;
+                }
+                w.InfoName.text = text + context.translate(TradeRoot, "MY_CAR");
+            }
+            else
+            {
+                if (sYouExist)
+                    w.InfoName.text = context.translate(TradeRoot, "YOUR_CAR").build(sYouName);
+                else
+                    w.InfoName.text = "--";
+
+                w.waku.visible = !sYouDecided;
+                w.wakua.visible = sYouDecided;
+            }
+
+
+            if (is_me)
+            {
+                if (carcode != main::gtengine::MSpecDB::NO_CODE64)
+                {
+                    w.InfoCar.text = main::gtengine::MSpecDB::getCarName(carcode);
+                    w.InfoSpec1.text = "%s Cr. %s".format(main::gtengine::MSpecDB::getCarColorName(carcode, color),
+                                                          main::pdiext::GetMoneyString(main::gtengine::MSpecDB::getCarPrice(carcode)));
+                    w.InfoSpec2.text = SpecDatabaseUtil::GetTextDataCarSpec(context, carcode,
+                                                                            true,
+                                                                            false,
+                                                                            true,
+                                                                            TradeRoot);
+                }
+                else
+                {
+                    w.InfoCar.text = context.translate(TradeRoot, "NO_CAR_IS_SELECTED");
+                    w.InfoSpec1.text = "--";
+                    w.InfoSpec2.text = "--";
+                }
+            }
+            else
+            {
+                if (carcode != main::gtengine::MSpecDB::NO_CODE64 &&
+                    sYouDecided)
+                {
+                    w.InfoCar.text = main::gtengine::MSpecDB::getCarName(carcode);
+                    w.InfoSpec1.text = "%s Cr. %s".format(main::gtengine::MSpecDB::getCarColorName(carcode, color),
+                                                          main::pdiext::GetMoneyString(main::gtengine::MSpecDB::getCarPrice(carcode)));
+                    w.InfoSpec2.text = SpecDatabaseUtil::GetTextDataCarSpec(context, carcode,
+                                                                            true,
+                                                                            false,
+                                                                            true,
+                                                                            TradeRoot);
+                }
+                else
+                {
+                    if (sYouExist)
+                        w.InfoCar.text = context.translate(TradeRoot, "NO_CAR_IS_OPENED");
+                    else
+                        w.InfoCar.text = "--";
+                    w.InfoSpec1.text = "--";
+                    w.InfoSpec2.text = "--";
+                }
+            }
+        }
+    }
+
+
+
+
+    module TradeRoot::ListBoxYou
+    {
+        method initialize(context)
+        {
+            self.setItemTemplate(context, hidden::Item);
+            self.setItemCount(1);
+            TradeRoot.refreshListBox(context, self, TradeRoot.sYouCarList, false);
+        }
+
+        method finalize(context)
+        {
+            self.setItemCount(0);
+        }
+    }
+
+
+
+
+    module TradeRoot::ListBoxMe
+    {
+        method initialize(context)
+        {
+            self.setItemTemplate(context, hidden::Item);
+            self.setItemCount(1);
+            TradeRoot.refreshListBox(context, self, TradeRoot.sMeCarList, true);
+        }
+
+        method finalize(context)
+        {
+            self.setItemCount(0);
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    module TradeRoot::Select
+    {
+        method onActivate(context)
+        {
+            if (!self.active)
+            {
+                main::sound.play("cancel");
+                return EVENTRESULT_FILTER;
+            }
+
+            if (TradeRoot.sMyPhase == 2)
+            {
+                TradeRoot.sMyPhase = 1;
+                TradeRoot.updateMyTradeConfig(context);
+            }
+
+            if (TradeRoot.sMyPhase != 1)
+            {
+                main::sound.play("cancel");
+                return EVENTRESULT_FILTER;
+            }
+
+            main::sound.play("ok");
+
+            var index = ListBoxMe.focus_index;
+
+            TradeRoot.sMeCarList[index][2] = 1;
+            TradeRoot.updateMyTradeConfig(context);
+
+            CarRoot.setReturnPage(TradeRoot);
+            CarRoot.setExtMode(&TradeRoot.sMeCarList[index][0], &TradeRoot.sMeCarList[index][1]);
+            CarRoot.setOpenMode(CarRoot::OPEN_MODE_ENUM::TRADE, false);
+            StartPageIn_XEffect(context, TradeRoot, CarRoot);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusEnter(context)
+        {
+            var balloon_text = context.translate(TradeRoot, "BALLOON_SELECT_CAR");
+            BalloonTip.set_value(context, self, balloon_text, 12);
+            return EVENTRESULT_FILTER;
+        }
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+
+
+
+
+
+    module TradeRoot::Offer
+    {
+        method onActivate(context)
+        {
+            if (!self.active)
+            {
+                main::sound.play("cancel");
+                return EVENTRESULT_FILTER;
+            }
+
+            main::sound.play("ok");
+            TradeRoot.sMyPhase = 2;
+
+            TradeRoot.updateMyTradeConfig(context);
+            TradeRoot.refreshListBox(context, ListBoxMe, TradeRoot.sMeCarList, true);
+
+            TradeRoot.setFocus(Confirm);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusEnter(context)
+        {
+            var balloon_text = context.translate(TradeRoot, "BALLOON_OPEN");
+            BalloonTip.set_value(context, self, balloon_text, 12);
+            return EVENTRESULT_FILTER;
+        }
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+
+
+
+
+
+    module TradeRoot::Confirm
+    {
+        method onActivate(context)
+        {
+            if (!self.active)
+            {
+                main::sound.play("cancel");
+                return EVENTRESULT_FILTER;
+            }
+
+            if (TradeRoot.sMyPhase >= 3)
+                return EVENTRESULT_FILTER;
+
+            main::sound.play("ok");
+
+
+            var carcode = sYouCarList[0][0];
+            var carcolor = sYouCarList[0][1];
+            var one_car_max = game_garage().getOneCarMax();
+            if (game_garage().getCarCount(carcode, carcolor) >= one_car_max)
+            {
+                var carname = main::gtengine::MSpecDB::getCarName(carcode);
+                var colname = main::gtengine::MSpecDB::getCarColorName(carcode, carcolor);
+                var message = context.translate(TradeRoot, "YOU_CANNOT_GET_MORE_DO_YOU_PROGRESS").build(carname, colname, one_car_max);
+
+                var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, message);
+                if (!res)
+                    return EVENTRESULT_FILTER;
+            }
+
+            TradeRoot.sMyPhase = 3;
+            TradeRoot.updateMyTradeConfig(context);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusEnter(context)
+        {
+            var balloon_text = context.translate(TradeRoot, "BALLOON_CONFIRM");
+            BalloonTip.set_value(context, self, balloon_text, 12);
+            return EVENTRESULT_FILTER;
+        }
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    module Exit
+    {
+        method onActivate(context)
+        {
+
+
+
+
+
+
+
+
+
+
+
+
+
+            main::sound.play("ok");
+            TradeRoot.onExit(context, true);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusEnter(context)
+        {
+            BalloonTip.set_value(context, self, context.translate(TradeRoot, "Arcade", "close"), 9.9);
+            return EVENTRESULT_FILTER;
+        }
+    }
+}
