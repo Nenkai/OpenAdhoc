@@ -1,0 +1,390 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module ConfirmExecDialog
+{
+
+
+
+
+    static sEventLoop = nil;
+    static sBackGroundEventLoop = nil;
+    static sResult = nil;
+    static sAborted = false;
+
+    static sMessageBegin = nil;
+    static sMessageWaiting = nil;
+    static sMessageSuccess = nil;
+    static sMessageFailed = nil;
+    static sFunc = nil;
+    static sArg = nil;
+    static sEndTimeSec = nil;
+    static sEndTimer = nil;
+    static sIsBackGround = nil;
+
+
+
+
+
+
+
+
+
+
+
+
+    function open(context, message_begin, message_waiting, message_success, message_failed, func, arg, end_time_sec, is_background)
+    {
+
+        sMessageBegin = message_begin;
+        sMessageWaiting = message_waiting;
+        sMessageSuccess = message_success;
+        sMessageFailed = message_failed;
+        sFunc = func;
+        sArg = arg;
+        sEndTimeSec = end_time_sec;
+        sEndTimer = nil;
+        sIsBackGround = is_background == nil ? false : is_background;
+        sResult = false;
+        sAborted = false;
+
+        context.pushPage(ConfirmExecDialog);
+        if (sEventLoop != nil)
+        {
+            sEventLoop.leave();
+            sEventLoop = nil;
+        }
+        sEventLoop = main::menu::EventLoop(context);
+        sEventLoop.enter();
+
+        var res = sResult != false;
+        sResult = nil;
+        return res;
+    }
+
+    function close(context)
+    {
+
+
+        if (sBackGroundEventLoop != nil)
+        {
+            var evntlp = sBackGroundEventLoop;
+            sBackGroundEventLoop = nil;
+            evntlp.leave();
+        }
+        if (sEndTimer != nil)
+        {
+            WatcherUtil::Delete(sEndTimer);
+            sEndTimer = nil;
+        }
+        if (sEventLoop != nil)
+        {
+            sEventLoop.leave();
+            sEventLoop = nil;
+        }
+
+
+        ConfirmExecDialog.actor.out = true;
+
+        context.sync(0.5);
+
+        context.closePage(ConfirmExecDialog);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+
+        sAborted = true;
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onRealize(context)
+    {
+        ConfirmExecDialog.display_priority = 50;
+
+        setFadeActorRoot(ConfirmExecDialog);
+    }
+
+
+    function onInitialize(context)
+    {
+
+
+        BalloonTip.visible = false;
+        BalloonTip.initialize(context);
+
+
+        var ratio = context.cursor_speed_ratio;
+        ConfirmExecDialog.actor.period = 0.25 / ratio;
+        ConfirmExecDialog.actor.on_effect_end = function (context)
+        {
+            BalloonTip.visible = true;
+            main::menu::MFocusEnterEvent(context, ConfirmExecDialog.focus_widget).dispatchEvent();
+        }
+        ActorUtil::ResetActors(ConfirmExecDialog);
+
+
+        Dialog::Buttons::YesNo.insensitive = true;
+        Dialog::Buttons::YesNo.visible = false;
+        Dialog::Buttons::OK.insensitive = true;
+        Dialog::Buttons::OK.visible = false;
+        Dialog::Buttons::Abort.visible = false;
+
+        context.pushEvent(main::menu::MScriptEvent(context, ConfirmExecDialog, "on_initialize"));
+    }
+    function on_initialize(context)
+    {
+        if (sMessageBegin != nil)
+            phase_1(context);
+        else
+            phase_2(context, 1.0);
+    }
+
+    function onFinalize(context)
+    {
+        sMessageBegin = nil;
+        sMessageWaiting = nil;
+        sMessageSuccess = nil;
+        sMessageFailed = nil;
+        sFunc = nil;
+        sArg = nil;
+        sEndTimeSec = nil;
+        sEndTimer = nil;
+        sIsBackGround = nil;
+
+
+
+        if (sEventLoop != nil)
+        {
+            sEventLoop.leave();
+            sEventLoop = nil;
+        }
+    }
+
+
+    function background_func(context)
+    {
+        if (sFunc == nil)
+            return;
+
+        var result = sFunc(context, sArg);
+        if (result != nil)
+        {
+            sResult = result;
+            sBackGroundEventLoop.leave();
+        }
+    }
+
+
+
+
+
+    function phase_1(context)
+    {
+        Dialog::Buttons::YesNo.insensitive = false;
+        Dialog::Buttons::YesNo.visible = true;
+
+        Dialog::Message::message.text = sMessageBegin;
+
+        ConfirmExecDialog.setFocus(Dialog::Buttons::YesNo::No);
+    }
+
+    function phase_2(context, wait_second)
+    {
+        var popup_close = false;
+
+
+        {
+            Dialog::Message::message.text = sMessageWaiting;
+
+            Dialog::Buttons::YesNo.visible = false;
+
+            Dialog::Buttons::OK.insensitive = false;
+            ConfirmExecDialog.setFocus(Dialog::Buttons::OK);
+
+            if (sIsBackGround)
+            {
+                Dialog::Buttons::Abort.visible = true;
+                ConfirmExecDialog.setFocus(Dialog::Buttons::Abort);
+                var watcher = WatcherUtil::Create(context, background_func);
+
+                sBackGroundEventLoop = main::menu::EventLoop(context);
+                sBackGroundEventLoop.enter();
+                WatcherUtil::Delete(watcher);
+                popup_close = true;
+            }
+            else
+            {
+                if (wait_second != nil)
+                    context.wait(wait_second);
+
+                var result = sFunc(context, sArg);
+
+                if (result == nil)
+                    result = false;
+                result.toInt(); // Something half commented-out?
+                if (result != false)
+                {
+                    if (sMessageSuccess != nil)
+                        Dialog::Message::message.text = sMessageSuccess;
+                    else
+                        popup_close = true;
+                }
+                else
+                {
+                    if (sMessageFailed != nil)
+                        Dialog::Message::message.text = sMessageFailed;
+                    else
+                        popup_close = true;
+                }
+
+                sResult = result;
+            }
+        }
+
+        if (popup_close)
+        {
+            close(context);
+            return EVENTRESULT_FILTER;
+        }
+
+        if (sEndTimeSec != nil)
+        {
+
+            sEndTimer = WatcherUtil::Create(context, close, (sEndTimeSec * 60).toInt());
+            Dialog::Buttons::OK.insensitive = true;
+            Dialog::Buttons::OK.visible = false;
+            return EVENTRESULT_FILTER;
+        }
+
+
+
+        Dialog::Buttons::OK.insensitive = false;
+        Dialog::Buttons::OK.visible = true;
+        ConfirmExecDialog.setFocus(Dialog::Buttons::OK);
+
+        return EVENTRESULT_FILTER;
+    }
+
+
+
+
+    method setMessage(message)
+    {
+        Dialog::Message::message.text = message;
+    }
+}
+
+
+
+module ConfirmExecDialog::Dialog::Buttons
+{
+    method onFocusEnter(context, event)
+    {
+        var w = event.widget;
+        if (OK.visible || YesNo.visible || Abort.visible)
+            BalloonTip.set_value(context, w, context.translate(ConfirmExecDialog, "Balloon", w.name), 7.5);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFocusLeave(context)
+    {
+        BalloonTip.reset_value();
+        return EVENTRESULT_FILTER;
+    }
+    
+
+
+
+    module OK
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+
+            close(context);
+
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+
+
+
+    module YesNo::Yes
+    {
+        method onActivate(context)
+        {
+            main::sound.play("return");
+
+            BalloonTip.reset_value();
+
+            Blink.ScalarInterpolator.on_effect_end = function (context)
+            {
+                phase_2(context, 1.0);
+            }
+            Blink.ScalarInterpolator.restart();
+
+
+
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+
+
+
+    module YesNo::No
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+
+            close(context, false);
+
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+
+
+
+
+    module Abort
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+
+            sResult = false;
+            sAborted = true;
+            close(context, false);
+
+            return EVENTRESULT_FILTER;
+        }
+    }
+}
