@@ -1,0 +1,298 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module PatchLogic
+{
+    static ERROR_SUCCESS = 0;
+    static ERROR_PREPARE = 1;
+    static ERROR_CAPACITY = 2;
+    static ERROR_DOWNLOAD = 3;
+    static ERROR_INSTALL = 4;
+
+    function initialize()
+    {
+        main::pdiext::MSystemPatch::begin();
+
+        main::pdiext::MSystemPatch::clear();
+    }
+
+    function terminate()
+    {
+
+        main::pdiext::MSystemPatch::clear();
+        main::pdiext::MSystemPatch::end();
+    }
+
+    class PatchBase
+    {
+        attribute ROOT = nil;
+        attribute progress = main::pdistd::MProgress();
+        attribute aborted = nil;
+        attribute canceling = nil;
+        attribute complete = nil;
+        attribute watcher = nil;
+        attribute success = nil;
+        attribute ignore_progress = nil;
+        attribute auto_next = false;
+        attribute post_process = false;
+
+        method __init__(ROOT)
+        {
+            self.ROOT = ROOT;
+        }
+
+
+        method start() {}
+        method check() {}
+        method begin_message() {}
+        method success_message() {}
+        method failed_message() {}
+        method error_message(error_code) {}
+
+        method closeWatcher()
+        {
+            if (self.watcher != nil)
+            {
+                WatcherUtil::Delete(self.watcher);
+                self.watcher = nil;
+            }
+        }
+
+        method OnProgress(context)
+        {
+            if (self.ignore_progress)
+            {
+                return;
+            }
+            var end = false;
+
+            var val = check();
+
+
+            if (val >= 0)
+            {
+
+                self.progress.value = val.toFloat() * 0.01;
+                ProgressUtil::setRemainSecond(context, self.progress.getRemainSecond());
+
+                if (val == 100)
+                {
+                    self.complete = true;
+                    end = true;
+
+                    if (self.post_process)
+                    {
+                        self.complete = main::pdiext::MSystemPatch::postProcess();
+                    }
+                }
+
+                if (self.aborted)
+                {
+                    self.complete = false;
+                    end = true;
+                }
+            }
+            else
+            {
+
+                if (!self.canceling)
+                {
+                    self.ignore_progress = true;
+                    var text = context.translate(self.ROOT, "SaveDataPSP", error_message(val));
+                    text = text.build(val);
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+                    end = true;
+                }
+            }
+
+            if (end)
+            {
+                if (!self.canceling)
+                {
+                    self.ignore_progress = true;
+
+
+                    ProgressUtil::setProgressCancelCB(nil);
+
+                    context.getUpdateContext().leaveEventLoop();
+                }
+            }
+        }
+
+        method OnCancel(context)
+        {
+
+            self.canceling = true;
+
+            var text = context.translate(self.ROOT, "SaveDataPSP", "DO_YOU_ABORT_INSTALL");
+            var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, text);
+            if (res)
+                self.aborted = true;
+
+            self.canceling = false;
+        }
+
+        method executeImpl(context, args)
+        {
+            
+            self.complete = false;
+
+            start(context);
+
+            self.watcher = WatcherUtil::Create(context, OnProgress, 60);
+
+
+            context.getUpdateContext().enterEventLoop();
+            closeWatcher();
+
+
+            if (self.aborted)
+            {
+                self.complete = false;
+            }
+
+            return [self.complete, self.complete && self.auto_next];
+        }
+
+        method execute(context, cancelable)
+        {
+            self.ignore_progress = false;
+
+            self.progress.value = 0.0;
+
+            ProgressUtil::setProgress(self.progress);
+
+            self.aborted = false;
+
+            self.canceling = false;
+
+            if (cancelable)
+            {
+                ProgressUtil::setProgressCancelCB(OnCancel);
+            }
+            else
+            {
+                ProgressUtil::setProgressCancelCB(nil);
+            }
+
+
+            var res = ProgressUtil::openProgressDialog(context,
+                                                       context.translate(self.ROOT, "SaveDataPSP", begin_message()),
+                                                       context.translate(self.ROOT, "SaveDataPSP", success_message()),
+                                                       context.translate(self.ROOT, "SaveDataPSP", failed_message()),
+                                                       executeImpl,
+                                                       nil);
+
+
+            self.success = res;
+            return self.success;
+        }
+    }
+
+    class Install : PatchBase
+    {
+        method start(context)
+        {
+            self.auto_next = true;
+            main::pdiext::MSystemPatch::startInstall();
+        }
+        method check()
+        {
+            return main::pdiext::MSystemPatch::checkInstall(self.aborted);
+        }
+        method begin_message()
+        {
+            return "NOW_INSTALLING";
+        }
+        method success_message()
+        {
+            return "INSTALL_COMPLETED";
+        }
+        method failed_message()
+        {
+            return "INSTALL_FAILED";
+        }
+
+
+        method error_message(error_code)
+        {
+            if (-3 == error_code)
+            {
+                return "INSTALL_ERROR_READONLY";
+            }
+            else
+            {
+                return "INSTALL_ERROR";
+            }
+        }
+    }
+
+    class CreateSaveData : PatchBase
+    {
+        attribute save_finish = nil;
+        method start(context)
+        {
+            self.post_process = true;
+            self.save_finish = nil;
+
+            var savedata = SaveDataUtilPSP::InstallDataForSave();
+            savedata.title = context.translate(self.ROOT, "SaveDataPSP", "GAME_TITLE_WITHIN_128BYTES");
+
+            savedata.description = context.translate(self.ROOT, "SaveDataGT5M", "GAME_SUBTITLE_WITHIN_128BYTES");
+            savedata.savedataTitle = context.translate(self.ROOT, "SaveDataGT5M", "INSTALLED_GAME_DESCRIPTION_WITHIN_1024BYTES");
+
+
+
+
+            if (nil == savedata.buf)
+            {
+                self.save_finish = false;
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::OK, "[DEV MESSAGE]
+You need DVD or UMD!!")
+            }
+            else
+            {
+                self.save_finish = SaveDataUtilPSP::save(context, savedata);
+            }
+        }
+        method check()
+        {
+            if (nil == self.save_finish)
+            {
+                return 0;
+            }
+            return self.save_finish ? 100 : -1;
+        }
+        method begin_message()
+        {
+            return "NOW_SAVEDATACREATING_FOR_INSTALL";
+        }
+        method success_message()
+        {
+            return "SAVEDATACREATE_COMPLETED_FOR_INSTALL";
+        }
+        method failed_message()
+        {
+            return "SAVEDATACREATE_FAILED_FOR_INSTALL";
+        }
+        method error_message(error_code)
+        {
+            return "SAVEDATACREATE_ERROR_FOR_INSTALL";
+        }
+    }
+}
