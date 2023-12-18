@@ -1,0 +1,924 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module QuickTunePopup
+{
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    function getSignedIntValueText(value)
+    {
+        var sign_text = value > 0 ? "+" : "";
+        return sign_text + "%d".format(value);
+    }
+
+    function getToeValueText(value)
+    {
+        var sign_text;
+        if (value == 0)
+        {
+            sign_text = "";
+        } else if (value > 0)
+        {
+            sign_text = "+";
+        } else
+        {
+            sign_text = "";
+        }
+        return sign_text + "%.2t".format(value);
+    }
+
+    function getCamberValueText(value)
+    {
+        return "%.1t".format(value);
+    }
+
+
+
+
+    function setupLevelSlider(context, slider, min, max, value)
+    {
+        if (min == max)
+        {
+            slider.real_range = [min, max];
+            slider.range = [0, 0];
+            slider.index = slider.toLevel(value);
+            slider.setup(context, 1.0, "-", nil, true);
+            slider.insensitive = true;
+        }
+        else
+        {
+            slider.real_range = [min, max];
+            slider.range = [1, 10];
+            slider.index = slider.toLevel(value);
+            slider.setup(context, 1.0, nil, nil, true);
+            slider.insensitive = false;
+        }
+    }
+    function to_level(real_range, value)
+    {
+        var diff = real_range[1] - real_range[0];
+        if (diff <= 0)
+        {
+            return 0;
+        }
+        var ratiof = ((value.toFloat() - real_range[0]) * 9.0) / diff;
+        var level = (ratiof + 0.5).toInt() + 1;
+        level = level < 1 ? 1 : level > 10 ? 10 : level;
+        return level;
+    }
+    function to_value(real_range, level)
+    {
+        var diff = real_range[1] - real_range[0];
+        var leveltemp = level - 1;
+        var valuef = real_range[0] + ((leveltemp.toFloat() / 9.0) * diff);
+        var value = (valuef + 0.5).toInt();
+        value = value < real_range[0]
+                    ? real_range[0] : value > real_range[1] ? real_range[1] : value;
+        return value;
+    }
+    function to_diff(def, value)
+    {
+        return value - def;
+    }
+    function diff_to_value(def, diff)
+    {
+        return diff + def;
+    }
+
+
+
+
+    function setupDiffSlider(context, slider, min, max, def, value, unit)
+    {
+        if (min == max)
+        {
+            slider.def = def;
+            slider.range = [0, 0];
+            slider.index = value - def;
+            slider.setup(context, 1.0, "-", unit, true);
+            slider.insensitive = true;
+        }
+        else
+        {
+            slider.def = def;
+            slider.range = [min - def, max - def];
+            slider.index = value - def;
+            slider.format_string = "%+d";
+            slider.setup(context, 1.0, nil, unit, true);
+            slider.insensitive = false;
+        }
+    }
+
+    class Data
+    {
+        attribute cp = nil;
+        attribute insensitive_power = nil;
+        attribute insensitive_weight = nil;
+
+        method __init__(cp)
+        {
+            self.cp = cp;
+            self.cp.permanentlyBeginInfo();
+            self.insensitive_power = false;
+            self.insensitive_weight = false;
+        }
+    }
+
+    
+    attribute data = nil;
+    attribute popup = nil;
+    attribute closing = nil;
+    attribute caller_root = nil;
+
+    method open(context, data)
+    {
+        self.data = data;
+        self.closing = false;
+        self.caller_root = context.getRootWindow();
+        self.popup = main::SequenceUtil::ModalPage(context, QuickTunePopup);
+        self.popup.open();
+    }
+
+    method onInitialize(context)
+    {
+
+        setCursor(context, "wait");
+
+        BalloonTip.initialize(context);
+        self.ScalarInterpolator.on_effect_end = function (context)
+        {
+
+            if (QuickTunePopup.caller_root != nil)
+            {
+                QuickTunePopup.caller_root.visible = false;
+            }
+        }
+        ActorUtil::ResetInterpolators(self, false);
+
+        Body::ScrollClip::space.y = 0.0;
+
+        var power_unit = context.translate(QuickTunePopup, "Unit", main::pdiext::MUnit::GetUnitKeywordOfPower());
+        Body::ScrollClip::space::Item0::Title0::TextFace.text = context.translate(QuickTunePopup, "QuickTune", "POWER").build(power_unit);
+        Body::ScrollClip::space::Item0::Title1::TextFace.text = context.translate(QuickTunePopup, "QuickTune", "WEIGHT").build("kg");
+        Body::ScrollClip::space::Item1::Title1::TextFace.text = context.translate(QuickTunePopup, "QuickTune", "RIDE_HEIGHT").build("mm");
+
+        setup(context);
+
+        reflect(context);
+
+        QuickTunePopup.setFocus(OK);
+
+        setCursor(context, "default");
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+
+
+        self.data = nil;
+        self.closing = nil;
+        self.caller_root = nil;
+
+
+        return EVENTRESULT_FILTER;
+    }
+
+
+
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        QuickTunePopup.setFocus(OK);
+        return EVENTRESULT_FILTER;
+    }
+
+    method close(context)
+    {
+        if (nil != self.popup)
+        {
+            if (nil != self.caller_root)
+            {
+                self.caller_root.visible = true;
+            }
+            self.popup.close();
+            self.popup = nil;
+        }
+    }
+
+    method setup(context)
+    {
+        var cp = self.data.cp;
+        cp.beginSetting();
+
+
+        var generic_car_info = cp.getSettingInfoGenericCar();
+        var suspension_info = cp.getSettingInfoSuspension();
+        var racing_modify_info = cp.getSettingInfoRacingModify();
+        var steer_info = cp.getSettingInfoSteer();
+        var drivetrain_info = cp.getSettingInfoDriveTrain();
+
+        var is_drift = main::GlobalStatus::game_context.game_mode == main::gtengine::GameMode::DRIFT_ATTACK;
+
+        {
+            var slider = Body::ScrollClip::space::Item0::POWER_RATIO::slider;
+
+            if (main::gtengine::MSpecDB::checkGenericFlag("power_uneditable", generic_car_info.GeneralFlags))
+            {
+                cp.powerModifyRatio = 0;
+                self.data.insensitive_power = true;
+            }
+            if (!is_drift)
+            {
+                self.data.insensitive_power = true;
+            }
+
+            if (self.data.insensitive_power)
+            {
+                slider.range = is_drift ? [cp.powerModifyRatio, cp.powerModifyRatio] : [0, 0];
+            }
+            else
+            {
+                slider.range = [0, 20];
+            }
+            slider.index = cp.powerModifyRatio;
+            slider.format_function = getSignedIntValueText;
+            slider.setup(context, 1.0, nil, "%", true);
+            self.data.insensitive_power = slider.insensitive = slider.min == slider.max;
+            slider.tooltip_key = slider.insensitive ? (is_drift ? "UNAVAILABLE_FOR_THIS_CAR" : "AVAILABLE_FOR_DRIFT") : "POWER";
+        }
+
+        {
+            var slider = Body::ScrollClip::space::Item0::WEIGHT_RATIO::slider;
+
+
+            if (main::gtengine::MSpecDB::checkGenericFlag("weight_uneditable", generic_car_info.GeneralFlags))
+            {
+                cp.weightModifyRatio = 100;
+                self.data.insensitive_weight = true;
+            }
+            if (!is_drift)
+            {
+                self.data.insensitive_weight = true;
+            }
+
+            if (self.data.insensitive_weight)
+            {
+                slider.range = is_drift ? [cp.weightModifyRatio, cp.weightModifyRatio] : [100, 100];
+            }
+            else
+            {
+                slider.range = [85, 100];
+            }
+            slider.index = cp.weightModifyRatio;
+            slider.setup(context, 1.0, nil, "%", true);
+            self.data.insensitive_weight = slider.insensitive = slider.min == slider.max;
+            slider.tooltip_key = slider.insensitive ? (is_drift ? "UNAVAILABLE_FOR_THIS_CAR" : "AVAILABLE_FOR_DRIFT") : "WEIGHT";
+        }
+
+
+        {
+            var slider = Body::ScrollClip::space::Item1::SPOILER_FRONT::slider;
+            slider.range = [racing_modify_info.clMINF, racing_modify_info.clMAXF];
+            slider.index = cp.FrontCl;
+            slider.setup(context, 1.0, nil, nil, true, 5);
+            slider.insensitive = slider.min == slider.max;
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "SPOILER_FRONT";
+        }
+        {
+            var slider = Body::ScrollClip::space::Item1::SPOILER_REAR::slider;
+            slider.range = [racing_modify_info.clMINR, racing_modify_info.clMAXR];
+            slider.index = cp.RearCl;
+            slider.setup(context, 1.0, nil, nil, true, 5);
+            slider.insensitive = slider.min == slider.max;
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "SPOILER_REAR";
+        }
+
+
+
+        {
+            var slider = Body::ScrollClip::space::Item1::RIDE_HEIGHT_FRONT::slider;
+            setupDiffSlider(context, slider,
+                            suspension_info.rideheightMINF, suspension_info.rideheightMAXF,
+                            suspension_info.rideheightDFF, cp.FrontRideheight);
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "RIDE_HEIGHT_FRONT";
+        }
+        {
+            var slider = Body::ScrollClip::space::Item1::RIDE_HEIGHT_REAR::slider;
+            setupDiffSlider(context, slider,
+                            suspension_info.rideheightMINR, suspension_info.rideheightMAXR,
+                            suspension_info.rideheightDFR, cp.RearRideheight);
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "RIDE_HEIGHT_REAR";
+        }
+
+
+
+        {
+            var slider = Body::ScrollClip::space::Item2::SPRING_RATE_FRONT::slider;
+            setupLevelSlider(context, slider,
+                             suspension_info.springrateMINF, suspension_info.springrateMAXF, cp.FrontSpringRate);
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "SPRING_RATE_FRONT";
+        }
+        {
+            var slider = Body::ScrollClip::space::Item2::SPRING_RATE_REAR::slider;
+            setupLevelSlider(context, slider,
+                             suspension_info.springrateMINR, suspension_info.springrateMAXR, cp.RearSpringRate);
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "SPRING_RATE_REAR";
+        }
+
+
+
+
+
+
+
+
+        {
+            var slider = Body::ScrollClip::space::Item2::DAMPER_FRONT::slider;
+            slider.range = [1, suspension_info.damplevelBF];
+            slider.index = cp.FrontDamperF1B;
+            slider.setup(context, 1.0, "-", nil, true);
+            slider.insensitive = slider.min == slider.max || slider.max == 0 ||
+                                 suspension_info.dampF1BMINF == suspension_info.dampF1BMAXF;
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "DAMPER_FRONT";
+        }
+
+
+
+
+
+        {
+            var slider = Body::ScrollClip::space::Item2::DAMPER_REAR::slider;
+            slider.range = [1, suspension_info.damplevelBR];
+            slider.index = cp.RearDamperF1B;
+            slider.setup(context, 1.0, "-", nil, true);
+            slider.insensitive = slider.min == slider.max || slider.max == 0 ||
+                                 suspension_info.dampF1BMINR == suspension_info.dampF1BMAXR;
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "DAMPER_REAR";
+        }
+
+
+
+        {
+            var slider = Body::ScrollClip::space::Item3::TOE_OUT::slider; // Front toe
+            slider.range = [suspension_info.toeMINF, suspension_info.toeMAXF];
+            slider.index = cp.FrontToe;
+            slider.format_function = getToeValueText;
+            slider.setup(context, 1.0, nil, nil, true, 10);
+            slider.insensitive = slider.min == slider.max;
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "TOE_OUT";
+        }
+        {
+            var slider = Body::ScrollClip::space::Item3::TOE_IN::slider; // Rear toe
+            slider.range = [suspension_info.toeMINR, suspension_info.toeMAXR];
+            slider.index = cp.RearToe;
+            slider.format_function = getToeValueText;
+            slider.setup(context, 1.0, nil, nil, true, 10);
+            slider.insensitive = slider.min == slider.max;
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "TOE_IN";
+        }
+
+
+
+        {
+            var slider = Body::ScrollClip::space::Item3::CAMBER_FRONT::slider;
+            slider.range = [suspension_info.camberMINF, suspension_info.camberMAXF];
+            slider.index = cp.FrontCamber;
+            slider.format_function = getCamberValueText;
+            slider.setup(context, 1.0, nil, nil, true, 5);
+            slider.insensitive = slider.min == slider.max;
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "CAMBER_FRONT";
+        }
+        {
+            var slider = Body::ScrollClip::space::Item3::CAMBER_REAR::slider;
+            slider.range = [suspension_info.camberMINR, suspension_info.camberMAXR];
+            slider.index = cp.RearCamber;
+            slider.format_function = getCamberValueText;
+            slider.setup(context, 1.0, nil, nil, true, 5);
+            slider.insensitive = slider.min == slider.max;
+            slider.tooltip_key = slider.insensitive ? "UNAVAILABLE_FOR_THIS_CAR" : "CAMBER_REAR";
+        }
+
+
+
+        generic_car_info = nil;
+        suspension_info = nil;
+        racing_modify_info = nil;
+        steer_info = nil;
+        drivetrain_info = nil;
+
+        cp.endSetting();
+    }
+
+    method reflect(context)
+    {
+        var cp = self.data.cp;
+        var is_drift = main::GlobalStatus::game_context.game_mode == main::gtengine::GameMode::DRIFT_ATTACK;
+        {
+            var slider = Body::ScrollClip::space::Item0::POWER_RATIO::slider;
+            slider.index = is_drift ? cp.powerModifyRatio : 0;
+            slider.reflect(context);
+        }
+        {
+            var slider = Body::ScrollClip::space::Item0::WEIGHT_RATIO::slider;
+            slider.index = is_drift ? cp.weightModifyRatio : 100;
+            slider.reflect(context);
+        }
+
+
+        {
+            var slider = Body::ScrollClip::space::Item1::SPOILER_FRONT::slider;
+            slider.index = cp.FrontCl;
+            slider.reflect(context);
+        }
+        {
+            var slider = Body::ScrollClip::space::Item1::SPOILER_REAR::slider;
+            slider.index = cp.RearCl;
+            slider.reflect(context);
+        }
+
+
+        {
+            var slider = Body::ScrollClip::space::Item1::RIDE_HEIGHT_FRONT::slider;
+            slider.index = slider.toDiff(cp.FrontRideheight);
+            slider.reflect(context);
+        }
+        {
+            var slider = Body::ScrollClip::space::Item1::RIDE_HEIGHT_REAR::slider;
+            slider.index = slider.toDiff(cp.RearRideheight);
+            slider.reflect(context);
+        }
+
+
+
+        {
+            var slider = Body::ScrollClip::space::Item2::SPRING_RATE_FRONT::slider;
+            slider.index = slider.toLevel(cp.FrontSpringRate);
+            slider.reflect(context);
+        }
+        {
+            var slider = Body::ScrollClip::space::Item2::SPRING_RATE_REAR::slider;
+            slider.index = slider.toLevel(cp.RearSpringRate);
+            slider.reflect(context);
+        }
+
+
+        {
+            var slider = Body::ScrollClip::space::Item2::DAMPER_FRONT::slider;
+            slider.index = cp.FrontDamperF1B;
+            slider.reflect(context);
+        }
+        {
+            var slider = Body::ScrollClip::space::Item2::DAMPER_REAR::slider;
+            slider.index = cp.RearDamperF1B;
+            slider.reflect(context);
+        }
+
+
+
+        {
+            var slider = Body::ScrollClip::space::Item3::TOE_OUT::slider; // Front toe
+            slider.index = cp.FrontToe;
+            slider.reflect(context);
+        }
+        {
+            var slider = Body::ScrollClip::space::Item3::TOE_IN::slider; // Rear toe
+            slider.index = cp.RearToe;
+            slider.reflect(context);
+        }
+
+
+        {
+            var slider = Body::ScrollClip::space::Item3::CAMBER_FRONT::slider;
+            slider.index = cp.FrontCamber;
+            slider.reflect(context);
+        }
+        {
+            var slider = Body::ScrollClip::space::Item3::CAMBER_REAR::slider;
+            slider.index = cp.RearCamber;
+            slider.reflect(context);
+        }
+    }
+
+
+
+
+
+
+    method setDefaultValue(context)
+    {
+        var cp = self.data.cp;
+
+
+        cp.beginSetting();
+
+
+        var generic_car_info = cp.getSettingInfoGenericCar();
+        var suspension_info = cp.getSettingInfoSuspension();
+        var racing_modify_info = cp.getSettingInfoRacingModify();
+        var steer_info = cp.getSettingInfoSteer();
+        var drivetrain_info = cp.getSettingInfoDriveTrain();
+
+
+        {
+            if (!self.data.insensitive_power)
+            {
+                cp.powerModifyRatio = 0;
+            }
+            if (!self.data.insensitive_weight)
+            {
+                cp.weightModifyRatio = 100;
+            }
+
+
+            cp.FrontCl = racing_modify_info.clDFF;
+            cp.RearCl = racing_modify_info.clDFR;
+
+            cp.FrontRideheight = suspension_info.rideheightDFF;
+            cp.RearRideheight = suspension_info.rideheightDFR;
+
+            cp.FrontSpringRate = suspension_info.springrateDFF;
+            cp.RearSpringRate = suspension_info.springrateDFR;
+
+
+
+
+            {
+                cp.FrontDamperF1B = cp.FrontDamperF2B = cp.FrontDamperF1R = cp.FrontDamperF2R =
+                    suspension_info.dampF1BDFF;
+            }
+
+
+
+
+            {
+                cp.RearDamperF1B = cp.RearDamperF2B = cp.RearDamperF1R = cp.RearDamperF2R =
+                    suspension_info.dampF1BDFR;
+            }
+
+            cp.FrontToe = suspension_info.toeDFF;
+            cp.RearToe = suspension_info.toeDFR;
+            cp.FrontCamber = suspension_info.camberDFF;
+            cp.RearCamber = suspension_info.camberDFR;
+        }
+
+
+        generic_car_info = nil;
+        suspension_info = nil;
+        racing_modify_info = nil;
+        steer_info = nil;
+        drivetrain_info = nil;
+
+
+        cp.endSetting();
+
+        reflect(context);
+    }
+
+    module Body::ScrollClip::space
+    {
+        module Item0::POWER_RATIO::slider
+        {
+            method setPower(cp)
+            {
+                cp.permanentlyBeginInfo();
+                cp.beginInfo();
+
+                var [power_data, torque_data, maxPS, maxTorque, curveRPM, revLimitRPM, powerMaxX, torqueMaxX] =
+                    cp.buildEngineData(true, 0.0, 0.0, 0.95, 0.85);
+                var trMaxPS = main::pdiext::MUnit::GetPowerForDisplay(maxPS);
+
+                Body::ScrollClip::space::Item0::POWER::TextFace.text =
+                    Body::ScrollClip::space::Item0::POWER::TextFacei.text = "%d".format(trMaxPS);
+                cp.endInfo();
+            }
+        }
+
+
+
+
+
+
+
+
+
+
+        module Item0::WEIGHT_RATIO::slider
+        {
+            method setWeight(cp)
+            {
+                cp.permanentlyBeginInfo();
+                cp.beginInfo();
+                Body::ScrollClip::space::Item0::WEIGHT::TextFace.text =
+                    Body::ScrollClip::space::Item0::WEIGHT::TextFacei.text =
+                        "%d".format(cp.getWeight());
+                cp.endInfo();
+            }
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+        module Item1::SPOILER_FRONT::slider
+        {
+        }
+
+
+
+
+
+
+
+
+        module Item1::SPOILER_REAR::slider
+        {
+        }
+
+
+
+
+
+
+
+
+        module Item1::RIDE_HEIGHT_FRONT::slider
+        {
+            attribute def = nil;
+            method toDiff(value) { return to_diff(def, value); }
+            method toValue(diff) { return diff_to_value(def, diff); }
+        }
+
+
+
+
+
+
+
+
+
+        module Item1::RIDE_HEIGHT_REAR::slider
+        {
+            attribute def = nil;
+            method toDiff(value) { return to_diff(def, value); }
+            method toValue(diff) { return diff_to_value(def, diff); }
+        }
+
+
+
+
+
+
+
+
+
+        module Item2::SPRING_RATE_FRONT::slider
+        {
+            attribute real_range = nil;
+            method toLevel(value) { return to_level(real_range, value); }
+            method toValue(level) { return to_value(real_range, level); }
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        module Item2::SPRING_RATE_REAR::slider
+        {
+            attribute real_range = nil;
+            method toLevel(value) { return to_level(real_range, value); }
+            method toValue(level) { return to_value(real_range, level); }
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        module Item2::DAMPER_FRONT::slider
+        {
+            attribute real_range = nil;
+            method toLevel(value) { return to_level(real_range, value); }
+            method toValue(level) { return to_value(real_range, level); }
+        }
+
+
+
+
+
+
+
+
+
+
+        module Item2::DAMPER_REAR::slider
+        {
+            attribute real_range = nil;
+            method toLevel(value) { return to_level(real_range, value); }
+            method toValue(level) { return to_value(real_range, level); }
+        }
+
+
+
+
+
+
+
+
+
+
+        module Item3::TOE_OUT::slider
+        {
+        }
+
+
+
+
+
+
+
+
+        module Item3::TOE_IN::slider
+        {
+        }
+
+
+
+
+
+
+
+
+        module Item3::CAMBER_FRONT::slider
+        {
+        }
+
+
+
+
+
+
+
+
+        module Item3::CAMBER_REAR::slider
+        {
+        }
+
+
+
+
+
+
+
+
+        module Item4::SET_DEFAULT::Button
+        {
+            method onActivate(context)
+            {
+                if (!QuickTunePopup.closing)
+                {
+                    main::sound.play("ok");
+                    if (DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, context.translate(QuickTunePopup, "QuickTune", "ARE_YOU_SURE_TO_SET_DEFAULT")))
+                    {
+                        QuickTunePopup.setDefaultValue(context);
+                    }
+                }
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+
+
+    module OK
+    {
+        attribute balloon_text = nil;
+
+        method onInitialize(context)
+        {
+            self.balloon_text = context.translate(QuickTunePopup, "Component", "OK");
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusEnter(context)
+        {
+            if (nil != self.balloon_text)
+            {
+                BalloonTip.set_value(context, self, self.balloon_text, self.h * 0.5);
+            }
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+
+        method onActivate(context)
+        {
+
+            if (!QuickTunePopup.closing)
+            {
+
+                context.event_mask &= ~1;
+
+                QuickTunePopup.closing = true;
+                main::sound.play("ok");
+                QuickTunePopup.ScalarInterpolator.on_effect_end = function (context)
+                {
+                    QuickTunePopup.close(context);
+                    QuickTunePopup.ScalarInterpolator.on_effect_end = nil;
+                }
+
+                if (nil != self.caller_root)
+                {
+                    self.caller_root.visible = true;
+                }
+                ActorUtil::ResetInterpolators(QuickTunePopup, true);
+            }
+            return EVENTRESULT_FILTER;
+        }
+    }
+}
