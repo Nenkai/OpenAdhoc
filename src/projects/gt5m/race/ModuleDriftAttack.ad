@@ -1,0 +1,340 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+__module__.load("/%{main::PROJECT_ROOT_DIR}/race/ModuleReplay");
+
+
+
+
+function onLoad(update_context)
+{
+    setSoundResourceSize(254 * 0x400);
+
+
+
+
+    var crs_size = 0x1C00;
+    if (main::AppOpt.defined("extmem"))
+        crs_size = 15000;
+
+
+    var standard = main::RaceOperator.getMemoryAssign_Standard();
+
+
+    var nb_vehicle = standard.nb_vehicle;
+    var set_size = standard.set_size;
+    var car_size = standard.car_size;
+    var car_opt_size = standard.car_option_size;
+
+
+
+    standard.nb_vehicle = 2;
+    standard.set_size = (crs_size + ((150 + 0x100) * standard.nb_vehicle)) * 0x400;
+    standard.car_size = 0;
+    standard.car_option_size = 0;
+
+
+    main::RaceOperator.allocateResource();
+
+
+    standard.nb_vehicle = nb_vehicle;
+    standard.set_size = set_size;
+    standard.car_size = car_size;
+    standard.car_option_size = car_opt_size;
+
+    var render_context = update_context.getRenderContext();
+
+
+    var no_quickmenu;
+    {
+        var play_style = gSequenceCondition.event.play_style;
+        if (play_style != nil &&
+            play_style.no_quickmenu != nil)
+            no_quickmenu = play_style.no_quickmenu;
+        else
+            no_quickmenu = false;
+    }
+
+    if (no_quickmenu)
+    {
+        gSequenceCondition.quick_root = nil;
+        LoadingRoot.open(render_context);
+    }
+    else
+    {
+        gSequenceCondition.loadProject(render_context, "detail");
+        DetailProject.load("/%{main::PROJECT_ROOT_DIR}/detail/CarDetailPopupImpl");
+        DetailProject.load("/%{main::PROJECT_ROOT_DIR}/detail/CourseDetailPopupImpl");
+        DetailProject.load("/%{main::PROJECT_ROOT_DIR}/detail/QuickTunePopupImpl");
+
+
+        RaceProject.load("/%{main::PROJECT_ROOT_DIR}/race/QuickDriftAttackRootImpl");
+
+        RaceProject.load("/%{main::PROJECT_ROOT_DIR}/race/PrizeRootImpl");
+
+        gSequenceCondition.quick_root = QuickDriftAttackRoot;
+
+        gSequenceCondition.quick_root.open(render_context);
+    }
+
+
+    main::ORG.loadSoundEffect("/sound_gt/se/gtpsp_drift.sgd");
+}
+
+
+
+
+function onUnload(update_context)
+{
+    main::RaceOperator.checkOut();
+    main::ORG.exitCourse();
+    main::RaceOperator.destroyRace();
+    main::RaceOperator.clearResource();
+    setSoundResourceSize(0);
+}
+
+
+
+
+
+
+
+function createReplaySaveDataDescription(context)
+{
+    var root = context.getCurrentPage();
+
+    var cp = getPlayerCar();
+    var dp = getPlayerDriver();
+
+    var carname = main::gtengine::MSpecDB::getCarShortName(cp.getCarCode());
+    var course_code = getCurrentCourse();
+    var course_label = main::gtengine::MSpecDB::getCourseLabel(course_code);
+
+    var layout = "LAYOUT_NORMAL";
+    if (course_label.beginWith("r_"))
+    {
+        course_label = course_label.substr(2);
+        layout = "LAYOUT_REVERSE";
+    }
+    var coursename = "%s / %s".format(context.translate(root, "CourseName", course_label),
+                                      context.translate(root, "TrialSetting", layout));
+
+    var sim_str = context.translate(root, "TrialSetting", dp.physics_pro ? "PhysicsPro" : "PhysicsNormal");
+    var tire_str = getTireString2(context, root, cp, course_code);
+
+
+    var type_str = context.translate(root, "TrialSetting", 0 == gSequenceCondition.last_endless ? "SECTION" : "FULL_LAP");
+
+    var subtitle = context.translate(root, "SaveDataGT5M", "REPLAY_SUBTITLE_WITHIN_128BYTES") +
+                   context.translate(root, "GameModeNameGT5P", "DRIFT_ATTACK");
+
+    var description = context.translate(root, "SaveDataGT5M", "DRIFT_DESCRIPTION_WITHIN_1024BYTES")
+    description = description.build(coursename, carname, type_str, sim_str, tire_str);
+
+
+
+    return [subtitle, description];
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+function onGoToNextSequence(context, is_force_finish)
+{
+    if (!gSequenceCondition.is_buffer_replay_mode)
+    {
+        recordDriftScore(context);
+    }
+
+    var quick_root = gSequenceCondition.quick_root;
+    if (quick_root != nil)
+    {
+        var gotoPrize = true;
+
+
+
+        if (!main::RaceOperator.race_parameter.endless && is_force_finish)
+            gotoPrize = false;
+
+        if (!gSequenceCondition.is_buffer_replay_mode && gotoPrize)
+        {
+            main::ORG.fetchRaceDisplay();
+            var state = main::ORG.getRaceDisplayState(0);
+
+            var score;
+            if (main::RaceOperator.race_parameter.endless)
+            {
+                score = gSequenceCondition.endless_total_score;
+            }
+            else
+            {
+                score = state.drift_total_score;
+            }
+
+            if (score > 0)
+            {
+                PrizeRoot.open(context,
+                               gSequenceCondition,
+                               score,
+                               nil,
+                               getCurrentCourse(),
+                               nil,
+                               gSequenceCondition.quick_root);
+                return;
+            }
+        }
+
+        quick_root.open(context);
+    }
+    else
+        goToMenuSequence(context);
+}
+
+function recordDriftScore(context)
+{
+    var slot_id = getPlayerSlot();
+    if (slot_id < 0)
+    {
+        return;
+    }
+
+    main::ORG.fetchRaceDisplay();
+    var state = main::ORG.getRaceDisplayState(0);
+
+
+
+    var score = state.drift_best_score;
+    if (0 == score)
+    {
+        return;
+    }
+
+    var course_code = getCurrentCourse();
+
+    var board = gSequenceCondition.game_status.user_profile.record.getBoardDA(course_code);
+    if (nil == board)
+    {
+        return;
+    }
+
+
+    var cp = main::ORG.getEntriedCarParameter(slot_id);
+    var dp = main::ORG.getEntriedDriverParameter(slot_id);
+
+    var [tire_f, tire_r] = cp.getTireCategories();
+
+    var physics_pro = dp.physics_pro;
+
+    var color = cp.color;
+
+    var mtime = main::pdistd::MTime::getCurrentTime();
+
+    var result = board.insert(main::RaceOperator.race_parameter.endless, score, cp.getCarCode(),
+                              tire_f, tire_r, physics_pro, color, mtime.getBySecond());
+    gSequenceCondition.new_record = -1 != result;
+
+    if (gSequenceCondition.new_record)
+    {
+
+        gSequenceCondition.game_status.user_profile.calendar.putRunCourseEvent(
+            cp.getCarCode(),
+            color,
+            course_code,
+            "DRIFT_TRIAL",
+            result,
+            main::RaceOperator.race_parameter.endless ? 1 : 0,
+            score
+        );
+        main::GlobalStatus::game_context.need_save = true;
+    }
+}
+
+
+
+
+
+
+
+
+
+method onLapCount(context, slot_id, laps, laptime, is_penalty_lap)
+{
+
+    if (main::RaceOperator.race_parameter.endless)
+    {
+        main::ORG.fetchRaceDisplay();
+        var state = main::ORG.getRaceDisplayState(0);
+        var score = state.drift_last_total_score;
+
+        gSequenceCondition.endless_total_score += score;
+    }
+
+
+}
+
+
+
+
+
+function onPlayMusicWhenComplete(context, result)
+{
+    main::ORG.fetchRaceDisplay();
+    var state = main::ORG.getRaceDisplayState(0);
+    var grade = state.drift_total_grade;
+
+
+    main::sound.play("voice_finish");
+
+
+    var finish_bgm_table = [
+        0 : "license_failed",
+        1 : "finish_4",
+        2 : "finish_3",
+        3 : "finish_2",
+        4 : "finish_drift_1"
+    ];
+    var group = finish_bgm_table.find(grade);
+    if (group == nil)
+        group = "license_failed";
+    else
+        group = group[1];
+
+    SoundUtil::RaceBGMPlayGroup(group, !gSequenceCondition.isPlay(), false);
+}
+
+
+function setSoundResourceSize(size)
+{
+    var op = main::RaceOperator;
+    op.getMemoryAssign_Standard().sound_size = size;
+    op.getMemoryAssign_WithGhost().sound_size = size;
+}

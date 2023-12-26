@@ -1,0 +1,690 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+RaceProject.load("/scripts/gt5m/util/OrdinalUtil");
+
+module TrophyRoot
+{
+
+
+
+
+
+
+    attribute mPerformer = nil;
+    attribute mAlreadyPushedButton = nil;
+
+
+
+    class Performer
+    {
+
+        static sPrizeMap = [
+            main::gtengine::FinishResult::DSQ    : [-1, "failed", LicenseUtil::PRIZE::NONE], // Result enum to trophy colour, music suffix, result enum for profile
+            main::gtengine::FinishResult::GOLD   : [ 1, "gold",   LicenseUtil::PRIZE::GOLD],
+            main::gtengine::FinishResult::SILVER : [ 2, "silver", LicenseUtil::PRIZE::SILVER],
+            main::gtengine::FinishResult::BRONZE : [ 0, "bronze", LicenseUtil::PRIZE::BRONZE],
+        ];
+
+        attribute mFinishCode = nil;
+        attribute mLastResult = nil;
+        
+        attribute mBGMPostfix = nil;
+        attribute mMessageText = nil;
+        attribute mBalloonText = nil;
+        
+        attribute mLapTime = nil;
+        attribute mOrder = nil;
+
+        method __init__(context, finishCode, lastResult)
+        {
+            self.mFinishCode = finishCode;
+            self.mLastResult = lastResult;
+
+            self.mBGMPostfix = "";
+            self.mMessageText = "";
+            self.mBalloonText = [ 'Yes' : "", 'No' : "" ];
+
+            main::ORG.fetchRaceDisplay();
+            var rp = main::ORG.getCurrentRaceParameter();
+            var entryMax = rp.entry_max;
+            var report = main::ORG.getRaceDisplayReport(false, entryMax, 0);
+            self.mLapTime = report.total_time_value[getPlayerSlot()];
+
+            self.mOrder = getEnsuredOrder(getPlayerSlot());
+        }
+
+        method initialize(context)
+        {
+            Pane::Message::label.text = self.mMessageText;
+
+            var hasClearData = false;
+            if (PluginModule::PrizeUtil.defined("hasClearData"))
+            {
+                hasClearData = PluginModule::PrizeUtil::hasClearData();
+            }
+
+            if (hasClearData)
+            {
+                Pane::Info.visible = true;
+
+                var event = gSequenceCondition.game_plan.events[0];
+
+                var credits = [1000, 500, 250];
+
+                if (event.reward != nil && event.reward.prize_table != nil)
+                {
+                    for (var i = 0; i < event.reward.prize_table.size && i < credits.size; i++)
+                    {
+                        credits[i] = event.reward.prize_table[i].toInt();
+                    }
+                }
+
+                var trophyWidgets = ["PrizeGold", "PrizeSilver", "PrizeBronze"];
+                var evalType = main::RaceOperator.game_condition.eval_condition[0];
+
+                var bestNoneText = context.translate(TrophyRoot, "LicenseGT5M", "BEST_TIME_NONE");
+                var creditZeroText = context.translate(TrophyRoot, "LicenseGT5M", "CREDIT_ZERO");
+                var creditFormat = context.translate(TrophyRoot, "LicenseGT5M", "CREDIT_FORMAT");
+
+                var opacityDefault = 1.0;
+                var opacityOpaque = 0.33;
+                var opacity = opacityDefault;
+
+                for (var i = 0; i < trophyWidgets.size; i++)
+                {
+                    var moneyText = "";
+                    var dataText = "";
+
+                    var data = event.eval_condition.data[i];
+
+                    if (data <= 0)
+                    {
+                        opacity = opacityOpaque;
+                        moneyText = creditFormat.build(creditZeroText);
+
+                        if (evalType == main::gtengine::EvalType::TIME)
+                        {
+                            dataText = bestNoneText;
+                        }
+                        else if (evalType == main::gtengine::EvalType::ORDER)
+                        {
+                            dataText = creditZeroText;
+                        }
+                    }
+                    else
+                    {
+                        moneyText = creditFormat.build(main::pdiext::MMisc::GetMoneyString(credits[i]));
+
+                        if (evalType == main::gtengine::EvalType::TIME)
+                        {
+                            dataText = main::pdiext::GetRaceTimeString(data);
+                        }
+                        else if (evalType == main::gtengine::EvalType::ORDER)
+                        {
+                            dataText = OrdinalUtil::getOrdinalNumber(context, TrophyRoot, data.toInt());
+                        }
+                    }
+
+                    var w = Pane::Info::Prize[trophyWidgets[i]];
+                    w.opacity = opacity;
+
+                    if (self.mLastResult < 0 || self.mLastResult > i)
+                    {
+                        w.TextFaceCredit.text = moneyText;
+                        w.TextFaceData.text = dataText;
+                    }
+                    else
+                    {
+                        w.insensitive = true;
+                        w.TextFaceCrediti.text = moneyText;
+                        w.TextFaceDatai.text = dataText;
+                    }
+                }
+
+                var lastLabelText = "";
+                var lastText = "";
+
+                if (evalType == main::gtengine::EvalType::TIME)
+                {
+                    lastLabelText = context.translate(TrophyRoot, "LAST_TIME");
+                    if (self.mLapTime == main::pdiext::MAX_LAPTIME1000)
+                    {
+                        lastText = bestNoneText;
+                    }
+                    else
+                    {
+                        lastText = main::pdiext::GetRaceTimeString(self.mLapTime);
+                    }
+                }
+                else if (evalType == main::gtengine::EvalType::ORDER)
+                {
+                    lastLabelText = context.translate(TrophyRoot, "LAST_POSITION");
+                    lastText = OrdinalUtil::getOrdinalNumber(context, TrophyRoot, self.mOrder + 1);
+                }
+
+                Pane::Info::Prize::Last::TextFaceLast.text = lastLabelText;
+                Pane::Info::Prize::Last::TextFace.text = lastText;
+            }
+            else
+            {
+                Pane::Info.visible = false;
+            }
+
+            self.initializeController(context);
+        }
+
+        method initializeController(context) {}
+
+        method initializeControllerHbox(context, isRetryExit = true)
+        {
+            if (isRetryExit)
+            {
+                self.mBalloonText = [ 'Yes' : context.translate(TrophyRoot, "Balloon", "Retry"),
+                                      'No'  : context.translate(TrophyRoot, "Balloon", "Exit") ];
+            }
+            else
+            {
+                self.mBalloonText = [ 'Yes' : context.translate(TrophyRoot, "Component", "OK"),
+                                      'No'  : "" ];
+            }
+
+            Pane::Controller::HBox::Yes::bg_tmp0.visible = !isRetryExit;
+            Pane::Controller::HBox::Yes::bg_tmp1.visible = isRetryExit;
+            Pane::Controller::HBox::No.visible = isRetryExit;
+        }
+
+        method getBalloonTextmap(context)
+        {
+            return self.mBalloonText;
+        }
+
+        method playSound(context)
+        {
+
+
+
+            main::ORG.getRaceSound().start = false;
+            SoundUtil::MenuBGMCrossfadeGroup("license_" + self.mBGMPostfix, 0.0, 0.1, false);
+        }
+
+        method showTrophy(context) {}
+        method showVeil(context) {}
+
+        method showPane(context)
+        {
+            Pane::ScalarInterpolator.restart();
+            Pane::ScalarInterpolator.on_effect_end = function (context)
+            {
+
+                context.event_mask |= 1;
+
+                context.cursor_visible = true;
+                TrophyRoot.setFocus(Pane::Controller::HBox::Yes);
+            }
+
+            Pane::Message::ScalarInterpolator.restart();
+            Pane::Info::ScalarInterpolator.restart();
+        }
+
+        method updateResult(context)
+        {
+            var code = LicenseUtil::PRIZE::BRONZE;
+            var v = Performer::sPrizeMap[self.mFinishCode];
+            if (v != nil)
+            {
+                code = v[2];
+            }
+
+
+            var index = LicenseUtil::GetIndexByLicenseId(main::GlobalStatus::game_context.license_id);
+            if (index < 0)
+            {
+                index = 0;
+            }
+
+            var resultData;
+            var lapTime;
+            var evalType = main::RaceOperator.game_condition.eval_condition[0];
+            if (evalType == main::gtengine::EvalType::TIME)
+            {
+                resultData = self.mLapTime;
+                lapTime = self.mLapTime;
+            }
+            else if (evalType == main::gtengine::EvalType::ORDER)
+            {
+                resultData = self.mOrder;
+                lapTime = main::pdiext::MAX_LAPTIME1000;
+            }
+
+            var result = gSequenceCondition.game_status.user_profile.record.licenses[index].setResult(code, resultData);
+            if (result > 0)
+            {
+
+                gSequenceCondition.game_status.user_profile.calendar.putRunLicenseEvent(
+                    main::GlobalStatus::game_context.license_id,
+                    code,
+                    result,
+                    lapTime);
+                main::GlobalStatus::game_context.need_save = true;
+            }
+        }
+
+        method show(context)
+        {
+            self.playSound(context);
+            self.showTrophy(context);
+            self.showVeil(context);
+            self.updateResult(context);
+            self.showPane(context);
+        }
+
+        method exit(context)
+        {
+            SoundUtil::BGMFadeout(1.0);
+            RaceRoot.quit(context);
+        }
+
+        method retry(context)
+        {
+            RaceRoot.restart(context);
+        }
+
+        method doYes() {}
+        method doNo() {}
+    }
+
+
+    class Passed : Performer
+    {
+        attribute mIsLastAllCleared = nil;
+
+        method __init__(context, finishCode, lastResult, isLastAllCleared)
+        {
+            __super__::__init__(context, finishCode, lastResult);
+
+            self.mIsLastAllCleared = isLastAllCleared;
+
+            var postfix = "bronze";
+            var v = Performer::sPrizeMap[self.mFinishCode];
+            if (v != nil)
+            {
+                postfix = v[1];
+            }
+            self.mBGMPostfix = postfix;
+            self.mMessageText = context.translate(TrophyRoot, "YOU_PASSED");
+        }
+
+        method showTrophy(context)
+        {
+
+
+            SceneFace.execCommand("setCameraPosition 0.0 0.0 6.0");
+            SceneFace.execCommand("setCameraLookAt 0.0 -0.18 0.0");
+            SceneFace.execCommand("setCameraFovY 20");
+
+            var code = "code:z005";
+            SceneFace.execCommand("loadModel %{code} trophy");
+
+
+
+
+
+
+            var colorIdx = 0;
+            var v = Performer::sPrizeMap[self.mFinishCode];
+            if (v != nil)
+            {
+                colorIdx = v[0];
+            }
+
+            SceneFace.execCommand("setModelVariation %{colorIdx} trophy");
+
+
+
+            context.wait(1.0);
+        }
+
+        method showVeil(context)
+        {
+            Veil::ScalarInterpolator.restart();
+            Veil::ScalarInterpolator.on_effect_end = function (context)
+            {
+                main::ORG.disableRenderingRace();
+                main::ORG.disableSoundingRace();
+                Veil::ScalarInterpolator.on_effect_end = nil;
+            }
+
+            context.wait(1.0);
+        }
+
+        method finishRace(context)
+        {
+
+            main::ORG.clearEventCallback();
+
+
+
+            main::ORG.getRaceSound().start = false;
+
+
+            main::ORG.endSession();
+        }
+
+
+
+        method openPrizeRoot(context)
+        {
+            RaceRoot.addTotalRunningKm();
+            var [order, prizeList] = PluginModule::PrizeUtil::calcEventResult2(self.mFinishCode);
+
+
+            if (order >= 0 && order < prizeList.size && prizeList[order] > 0)
+            {
+                self.finishRace(context);
+
+                PrizeRoot.open(context,
+                               gSequenceCondition,
+                               order,
+                               prizeList,
+                               nil,
+                               [self.mLastResult, self.mIsLastAllCleared],
+                               gSequenceCondition.quick_root);
+            }
+            else
+            {
+                self.exit(context);
+            }
+        }
+
+        method doYes(context)
+        {
+            self.openPrizeRoot(context);
+        }
+    }
+
+    class UpgradePassed : Passed
+    {
+        method __init__(context, finishCode, lastResult, isLastAllCleared)
+        {
+            __super__::__init__(context, finishCode, lastResult, isLastAllCleared);
+        }
+
+        method initializeController(context)
+        {
+            self.initializeControllerHbox(context, false);
+        }
+
+        method doYes(context)
+        {
+            self.openPrizeRoot(context);
+        }
+    }
+
+    class StablePassed : Passed
+    {
+        method __init__(context, finishCode, lastResult, isLastAllCleared)
+        {
+            __super__::__init__(context, finishCode, lastResult, isLastAllCleared);
+        }
+
+        method initializeController(context)
+        {
+            self.initializeControllerHbox(context, true);
+        }
+
+        method doYes(context)
+        {
+            self.retry(context);
+        }
+
+        method doNo(context)
+        {
+            self.exit(context);
+        }
+    }
+
+    class Failed : Performer
+    {
+        method __init__(context, finishCode, lastResult)
+        {
+            __super__::__init__(context, finishCode, lastResult);
+
+            self.mBGMPostfix = "failed";
+            self.mMessageText = context.translate(TrophyRoot, "YOU_FAILED");
+        }
+
+        method initializeController(context)
+        {
+            self.initializeControllerHbox(context, true);
+        }
+
+        method updateResult(context) {}
+
+        method doYes(context)
+        {
+            self.retry(context);
+        }
+
+        method doNo(context)
+        {
+            self.exit(context);
+        }
+    }
+
+
+
+
+
+    method open(context, finishCode)
+    {
+        var index = LicenseUtil::GetIndexByLicenseId(main::GlobalStatus::game_context.license_id);
+        var lastResult = -1;
+        if (index >= 0)
+        {
+            lastResult = gSequenceCondition.game_status.user_profile.record.licenses[index].result;
+        }
+
+        var f = finishCode;
+        if (f == nil || f == main::gtengine::FinishResult::NONE)
+        {
+            f = main::gtengine::FinishResult::DSQ;
+        }
+
+        var performer;
+        if (f == main::gtengine::FinishResult::DSQ)
+        {
+            performer = Failed(context, f, lastResult);
+        }
+        else
+        {
+            var thisResult = LicenseUtil::PRIZE::NONE;
+            var v = Performer::sPrizeMap[finishCode];
+            if (v != nil)
+            {
+                thisResult = v[2];
+            }
+
+            var category = LicenseUtil::GetCategory(index);
+            var isLastAllCleared = LicenseUtil::isAllClear(category, false, gSequenceCondition.game_status);
+
+            if (lastResult < 0 || thisResult < lastResult)
+            {
+                performer = UpgradePassed(context, f, lastResult, isLastAllCleared);
+            }
+            else
+            {
+                performer = StablePassed(context, f, lastResult, isLastAllCleared);
+            }
+        }
+        self.mPerformer = performer;
+
+
+        main::ORG.pauseAvailable = false;
+
+        RaceRoot.visible = false;
+
+        DialogUtil::cancelConfirmDialog(context);
+
+
+        context.pushPage(TrophyRoot);
+    }
+
+
+
+
+
+    function showPerformance(context)
+    {
+        TrophyRoot.mPerformer.initialize(context);
+        TrophyRoot.mPerformer.show(context);
+    }
+
+    method onInitialize(context)
+    {
+
+
+        SceneFace.setClearColorBuffer(false);
+
+
+        context.event_mask &= ~1;
+
+        context.cursor_visible = false;
+        TrophyRoot.setFocus(nil);
+
+        BalloonTip.initialize(context);
+
+        self.mAlreadyPushedButton = false;
+        context.pushEvent(main::menu::MFunctionEvent(showPerformance, context));
+    }
+
+
+
+    method onFinalize(context)
+    {
+
+
+        self.mPerformer = nil;
+        self.mAlreadyPushedButton = nil;
+
+
+        main::ORG.pauseAvailable = true;
+
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onCancel(context)
+    {
+        return EVENTRESULT_FILTER;
+    }
+
+    method onActivate(context)
+    {
+        return EVENTRESULT_FILTER;
+    }
+
+
+
+
+
+    module Pane::Controller::HBox
+    {
+
+
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+            BalloonTip.set_value(context, w, TrophyRoot.mPerformer.getBalloonTextmap(context)[w.name], 3.5);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+
+        method onCancel(context)
+        {
+
+            if (TrophyRoot.mAlreadyPushedButton)
+            {
+
+                return EVENTRESULT_FILTER;
+            }
+
+            if (Pane::Controller::HBox::No.visible)
+            {
+                main::sound.play("cancel");
+                TrophyRoot.setFocus(Pane::Controller::HBox::No);
+            }
+            else
+            {
+                TrophyRoot.mAlreadyPushedButton = true;
+
+                main::sound.play("ok");
+                TrophyRoot.mPerformer.doYes(context);
+            }
+            return EVENTRESULT_FILTER;
+        }
+
+        module Yes
+        {
+            method onActivate(context)
+            {
+                if (TrophyRoot.mAlreadyPushedButton)
+                {
+
+                    return EVENTRESULT_FILTER;
+                }
+                else
+                {
+                    TrophyRoot.mAlreadyPushedButton = true;
+                }
+
+                main::sound.play("ok");
+
+                Blink::ScalarInterpolator.on_effect_end = function (context)
+                {
+                    TrophyRoot.mPerformer.doYes(context);
+                    Blink::ScalarInterpolator.on_effect_end = nil;
+                }
+                Blink::ScalarInterpolator.restart();
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+
+        module No
+        {
+            method onActivate(context)
+            {
+                if (TrophyRoot.mAlreadyPushedButton)
+                {
+
+                    return EVENTRESULT_FILTER;
+                }
+                main::sound.play("ok");
+                TrophyRoot.mPerformer.doNo(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+}

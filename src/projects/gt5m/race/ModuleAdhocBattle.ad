@@ -1,0 +1,289 @@
+#include "projects/gt5m/race/PrizeUtil.ad";
+#include "projects/gt5m/race/SoundArcade.ad";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+RaceProject.load("NetworkEvent");
+
+
+static sExitedByPauseMenu = false;
+
+
+
+
+
+
+
+
+function endInternetSessionLocal()
+{
+    main::PDINetwork.finalizeCommunicator();
+}
+
+
+
+
+
+
+
+
+function onLoad(update_context)
+{
+
+    setSoundResourceSize((58 * 0x400) + 0x80);
+    main::RaceOperator.disableReplay();
+    main::RaceOperator.allocateResource();
+
+    var render_context = update_context.getRenderContext();
+
+    gSequenceCondition.enable_restart = false;
+    gSequenceCondition.enable_driver_change = true;
+
+    RaceProject.load("/%{main::PROJECT_ROOT_DIR}/race/PrizeRootImpl");
+
+
+    render_context.startPage(LoadingRoot);
+
+
+    main::ORG.loadSoundEffect("/sound_gt/se/gtpsp_jackpot.sgd");
+}
+
+
+
+
+function onUnload(update_context)
+{
+    main::RaceOperator.checkOut();
+    main::ORG.exitCourse();
+    main::RaceOperator.destroyRace();
+    main::RaceOperator.clearResource();
+    endInternetSessionLocal();
+    setSoundResourceSize(0);
+}
+
+
+
+
+function onRaceRootInitialize(context)
+{
+
+    RaceProject::sNetworkDisconnectDialogOpening = false;
+
+
+    RaceProject::setCurrentRootForNetworkEvent(RaceRoot);
+
+
+    context.pushEvent(main::menu::MFunctionEvent(checkNetworkConnectionState, context));
+
+
+    if (main::GlobalStatus::game_context.battle_auto_drive)
+    {
+        var slot_id = main::RaceOperator.getAccountSlotID(0);
+        main::ORG.setRidingDriverIndex(slot_id, 1);
+    }
+}
+
+
+
+
+function checkNetworkConnectionState(context)
+{
+
+    if (!main::ORG.isOnline())
+    {
+        onNetworkDisconnect(context, 0);
+    }
+}
+
+
+
+
+function onRaceRootFinalize(context)
+{
+
+    RaceProject::setCurrentRootForNetworkEvent(nil);
+}
+
+
+
+
+
+
+
+function onGoToNextSequence(context)
+{
+    var order = -1;
+    var prize_list = nil;
+    var jackpot_result = nil;
+    var course_code = getCurrentCourse();
+
+    if (sExitedByPauseMenu || !gSequenceCondition.is_fatal_error_happened)
+    {
+        var jackpot_info = gSequenceCondition.jackpot_race_info;
+
+
+        var player_num = jackpot_info.mCarOrderList.size;
+
+
+
+
+
+
+        jackpot_result = [jackpot_info.mIsJackpotRace, jackpot_info.mLuckyPlayerOrder, jackpot_info.mPrizeScaling];
+
+
+
+
+        [order, prize_list] = PrizeUtil::calcEventResult2(gSequenceCondition.finish_result,
+                                                          jackpot_info.mCarOrderList.size);
+
+
+        main::GlobalStatus::game_context.battle_prev_order = order;
+        main::GlobalStatus::game_context.battle_prev_number = player_num;
+    } else {
+        main::GlobalStatus::game_context.battle_prev_order = -1;
+        main::GlobalStatus::game_context.battle_prev_number = -1;
+    }
+
+
+    main::RaceOperator.checkOut();
+    main::ORG.exitCourse();
+    main::RaceOperator.destroyRace();
+    main::RaceOperator.clearResource();
+
+    endInternetSessionLocal();
+
+
+    if (sExitedByPauseMenu)
+    {
+        main::PDINetwork.stopAdHocMatching();
+        main::pdiext::MSystemUtility::disconnectAdHoc();
+    }
+    if (order != -1)
+    {
+        if (0 == order)
+        {
+            var user_profile = gSequenceCondition.game_status.user_profile;
+            var game_config = gSequenceCondition.game_status.config;
+            user_profile.adhocbattle_count_of_1st += 1;
+            if (user_profile.adhocbattle_count_of_1st > game_config.count_of_1st_limit)
+            {
+                user_profile.adhocbattle_count_of_1st = game_config.count_of_1st_limit;
+            }
+        }
+
+
+        if (order >= 0 && order < prize_list.size && prize_list[order] > 0)
+        {
+            PrizeRoot.open(context,
+                           gSequenceCondition,
+                           order,
+                           prize_list,
+                           course_code,
+                           jackpot_result,
+                           nil);
+            return;
+        }
+    }
+
+    goToMenuSequence(context);
+}
+
+
+
+
+function onCreatePauseMenu()
+{
+}
+
+
+
+
+function onExit(context)
+{
+    main::sound.play("start");
+    OnboardMeterRoot::RaceDisplayFace.toStop();
+    RaceMenuUtil::closeAction(context);
+    sExitedByPauseMenu = true;
+    RaceRoot.quit(context);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+method onFinishRace(context, condition_satisfied, buggy_result)
+{
+    if (condition_satisfied) {
+        var me = main::RaceOperator.getAccountSlotID(0);
+        gSequenceCondition.finish_result = getEnsuredOrder(me);
+        gSequenceCondition.jackpot_race_info = PrizeUtil::getJackpotRaceInfo();
+        ResultRoot.open(context, true);
+    }
+}
+
+
+
+
+function onComplete(context, slot_id, result, is_forced, is_target)
+{
+    if (is_forced)
+        return;
+
+
+    var goalVisible = RaceRoot::Info::Goal.visible;
+    var resetInterpolators = false;
+    var play_jingle = false;
+
+
+    if (is_target && main::ORG.getEntryControlType(slot_id) == main::gtengine::ControlType::LOCAL) {
+        goalVisible = true;
+        resetInterpolators = true;
+        play_jingle = true;
+    }
+
+
+    RaceRoot::Info::Goal.visible = goalVisible;
+
+    if (resetInterpolators) {
+        ActorUtil::ResetInterpolators(RaceRoot::Info::Goal::ImageFace, goalVisible);
+        ActorUtil::ResetInterpolators(RaceRoot::Info::Goal::ImageFaceEffect, goalVisible);
+    }
+
+    if (play_jingle)
+        PlayArcadeFinishMusic(result, true);
+}
+
+
+function setSoundResourceSize(size)
+{
+    var op = main::RaceOperator;
+    op.getMemoryAssign_Standard().sound_size = size;
+    op.getMemoryAssign_WithGhost().sound_size = size;
+}

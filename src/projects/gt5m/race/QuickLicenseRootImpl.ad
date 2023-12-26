@@ -1,0 +1,1191 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module QuickLicenseRoot
+{
+
+    RaceProject.load("/scripts/gt5m/util/LicenseUtil");
+    RaceProject.load("/scripts/gt5m/util/OrdinalUtil");
+
+
+
+
+
+    attribute sExternalReplayBuffer = nil;
+    attribute replay_enable = nil;
+    attribute sStartRaceBlock = nil;
+    attribute sStartDemoBlock = nil;
+    attribute sRestartDemoBlock = nil;
+    attribute sCanExit = false;
+    attribute sStreamPlayer = nil;
+    attribute sNarrationWatcher = nil;
+    attribute next_license_id = nil;
+    attribute prev_license_id = nil;
+    attribute license_title = nil;
+    attribute is_demo = nil;
+    attribute is_demo_started = nil;
+
+
+
+
+
+
+
+    function get_next_lid(now_lid, div)
+    {
+        var index = LicenseUtil::GetIndexByLicenseId(now_lid);
+        var category = LicenseUtil::GetCategory(index);
+        var category_index = LicenseUtil::GetCategoryIndex(index);
+
+        var check_index = category_index + div;
+        if (check_index < 0)
+            return nil;
+
+        var next_index = LicenseUtil::GetIndex(category, check_index);
+        if (next_index == nil)
+            return nil;
+        var lid = LicenseUtil::GetLicenseId(next_index);
+        return lid;
+    }
+
+
+
+
+
+
+
+    method onStartLicense(context)
+    {
+
+
+
+
+
+
+
+
+
+        if (QuickLicenseRoot.sStartRaceBlock || QuickLicenseRoot.sStartDemoBlock)
+            return;
+        
+
+        if (TextFaceLoading.visible)
+            return;
+
+
+
+
+        var gc = main::RaceOperator.game_condition;
+        main::ORG.setGameCondition(gc);
+
+        var res = doStartRace(context);
+        if (res)
+        {
+            self.sStartRaceBlock = true;
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+
+
+
+
+    method onExit(context)
+    {
+        SequenceUtil::startSequence(context, main::GameSequence::MENU);
+
+        SoundUtil::BGMFadeout(1.0);
+        main::ORG.getRaceSound().start = false;
+
+        return EVENTRESULT_FILTER;
+    }
+
+
+
+
+    method onStartReplay(context)
+    {
+        PluginModule::doStartReplay(context);
+        return EVENTRESULT_FILTER;
+    }
+
+
+
+
+    method onSaveReplay(context)
+    {
+
+        context.cursor_visible = false;
+        ActorUtil::ResetInterpolators(VeilForSave, false);
+        var targets = [bg, Header, Body, Controller];
+        foreach (var w in targets)
+        {
+            w.visible = false;
+        }
+        PluginModule::doSaveLicenseReplay(context);
+        foreach (var w in targets)
+        {
+            w.visible = true;
+        }
+        ActorUtil::ResetInterpolators(VeilForSave, true);
+        context.cursor_visible = true;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        return EVENTRESULT_FILTER;
+    }
+
+
+
+
+
+
+
+    method onPreTimeLimit(context, limit_frame, elapsed_frame)
+    {
+
+
+        QuickLicenseRoot.sRestartDemoBlock = true;
+
+
+        ActorUtil::ResetInterpolators(RenderControl::ColorFace, true);
+    }
+
+
+
+
+    method onTimeLimit(context, limit_frame, elapsed_frame)
+    {
+
+
+
+        main::ORG.endSession();
+
+
+        main::ORG.startSession(main::ORG.getCurrentRaceParameter(),
+                               true,
+                               true,
+                               false);
+
+
+        RenderControl::ColorFace::ScalarInterpolator.on_effect_end = function (context)
+        {
+            RenderControl::ColorFace::ScalarInterpolator.on_effect_end = nil;
+            QuickLicenseRoot.sRestartDemoBlock = false;
+        }
+        ActorUtil::ResetInterpolators(RenderControl::ColorFace, false);
+    }
+
+
+
+
+
+
+
+
+
+    method open(context)
+    {
+
+        main::ORG.pauseAvailable = false;
+
+        SequenceUtil::startPage(context, QuickLicenseRoot);
+    }
+
+
+
+
+    method on_initialize_info(context)
+    {
+    }
+
+
+
+
+
+    method on_checkin_done(context)
+    {
+        on_initialize_info(context);
+    }
+
+
+
+
+    method startDemo(context)
+    {
+
+        if (QuickLicenseRoot.sStartRaceBlock || QuickLicenseRoot.sStartDemoBlock)
+            return EVENTRESULT_FILTER;
+
+        self.is_demo = true;
+
+
+
+
+
+
+
+
+        VeilForSave.ScalarInterpolator.rt_effect_end = function (context)
+        {
+            RenderControl.visible = true;
+            QuickLicenseRoot.changeState(context, false);
+            VeilForSave.ScalarInterpolator.rt_effect_end = nil;
+        }
+        VeilForSave.ScalarInterpolator.on_effect_end = function (context)
+        {
+            QuickLicenseRoot.is_demo_started = true;
+            VeilForSave.ScalarInterpolator.on_effect_end = nil;
+        }
+        ActorUtil::ResetInterpolators(VeilForSave, false);
+
+        ActorUtil::ResetInterpolators(RenderControl::ColorFace, false);
+
+
+        var fst = main::pdistd::ReadFile("/replay/gt5m/license%03d.dat".format(main::GlobalStatus::game_context.license_id));
+        var buf = fst["buffer"];
+        if (buf != nil)
+        {
+
+            buf = main::pdistd::MCipher::decrypt(buf);
+
+            buf = main::pdistd::Inflate(buf);
+
+            self.sExternalReplayBuffer = buf;
+
+            var res = main::ORG.beginExternalReplayBuffer(self.sExternalReplayBuffer);
+            if (!res)
+            {
+
+                self.sExternalReplayBuffer = nil;
+                return;
+            }
+
+            main::ORG.startReplayWithCurrentRace();
+
+            main::ORG.startSession(main::ORG.getCurrentRaceParameter(),
+                                   true,
+                                   true,
+                                   false);
+        }
+        else
+        {        
+
+
+            var rp = main::gtengine::MRaceParameter();
+
+            rp.deepCopy(main::ORG.getBackRaceParameter());
+
+            rp.race_type = main::gtengine::RaceType::DEMO;
+
+            main::ORG.startSession(rp,
+                                   false, 
+                                   true,
+                                   false)
+        }
+
+        QuickLicenseRoot.sStartDemoBlock = true;
+
+
+
+
+
+        main::ORG.pauseRace = false;
+
+        main::ORG.pauseAvailable = false;
+
+        main::ORG.enableRenderingRace();
+        main::ORG.enableSoundingRace();
+
+
+
+
+
+        SoundUtil::BGMFadeout(0.25);
+        SoundUtil::SetupSound(SoundUtil::SCENE_REPLAY_WITH_NA);
+
+        var p = main::pdiext::MStreamPlayer();
+        p.load("ATRAC3PLUS");
+        p.delay = 1.0;
+        self.sStreamPlayer = p;
+        self.sNarrationWatcher = WatcherUtil::Create(context, on_start_narration, 10);
+    }
+
+
+
+
+
+    function on_start_narration(context)
+    {
+
+        var lang = main::pdistd::MLocale::getLanguage();
+        var player = QuickLicenseRoot.sStreamPlayer;
+        var success = player.start("sound_gt/na/%s/%s_m%03d".format(lang, lang, main::GlobalStatus::game_context.license_id), 0.0, SoundUtil::GetNarrationVolume());
+        if (success)
+        {
+            var watcher = QuickLicenseRoot.sNarrationWatcher;
+            QuickLicenseRoot.sNarrationWatcher = nil;
+            WatcherUtil::Delete(watcher);
+        }
+    }
+
+    method stopDemo(context)
+    {
+        QuickLicenseRoot.sStartDemoBlock = false;
+        self.is_demo_started = false;
+        BalloonTip.reset_value();
+
+
+
+
+
+
+
+
+
+
+        RenderControl::ColorFace::ScalarInterpolator.on_effect_end = function (context)
+        {
+            QuickLicenseRoot.changeState(context, true);
+            RenderControl.visible = false;
+            RenderControl::ColorFace::ScalarInterpolator.on_effect_end = nil;
+            ActorUtil::ResetInterpolators(Controller, false, true);
+        }
+        VeilForSave::ScalarInterpolator.on_effect_end = function (context)
+        {
+            VeilForSave::ScalarInterpolator.on_effect_end = nil;
+            QuickLicenseRoot.is_demo = false;
+        }
+
+        ActorUtil::ResetInterpolators(VeilForSave, true);
+        ActorUtil::ResetInterpolators(Controller, true);
+
+        ActorUtil::ResetInterpolators(RenderControl::ColorFace, true);
+
+
+
+
+        main::ORG.endSession();
+
+        main::ORG.disableRenderingRace();
+        main::ORG.disableSoundingRace();
+
+        main::ORG.endExternalReplayBuffer();
+        self.sExternalReplayBuffer = nil;
+
+
+        var watcher = self.sNarrationWatcher;
+        self.sNarrationWatcher = nil;
+        if (watcher != nil)
+            WatcherUtil::Delete(watcher);
+
+        if (self.sStreamPlayer != nil)
+        {
+            self.sStreamPlayer.stop(0.5);
+            self.sStreamPlayer = nil;
+        }
+        SoundUtil::SetupSound(SoundUtil::SCENE_MENU);
+        startBGM(context);
+    }
+
+
+
+
+
+    method startBGM(context)
+    {
+        var index = LicenseUtil::GetIndexByLicenseId(main::GlobalStatus::game_context.license_id);
+        var category = LicenseUtil::GetCategory(index);
+        var name_bgm = "event_%{category}";
+
+        SoundUtil::BGMPlayGroup('menu', name_bgm);
+    }
+
+    method changeState(context, visible)
+    {
+        bg.visible = visible;
+        Header.visible = visible;
+        Body.visible = visible;
+        VeilForSave.visible = visible;
+        Veil.visible = visible;
+
+
+
+
+
+
+
+
+        Controller.visible = visible;
+        context.cursor_visible = visible;
+    }
+
+
+
+
+
+
+    method on_loading_done(context)
+    {
+        
+        Veil::ScalarInterpolator.reverse = true;
+        Veil::ScalarInterpolator.start();
+
+        on_initialize_demo(context);
+
+
+        TextFaceLoading.visible = false;
+
+        QuickLicenseRoot.sCanExit = true;
+
+        SoundUtil::BGMFadeout(0.5);
+        startBGM(context);
+
+        Controller::HBox::Start.active = true;
+        Controller::HBox::Info.active = true;
+        Controller::HBox::Exit.active = true;
+        Controller::Next.active = true;
+        Controller::Prev.active = true;
+    }
+
+    method on_initialize_demo(context)
+    {
+
+        main::ORG.pauseAvailable = false;
+    }
+
+
+
+
+    method onInitialize(context)
+    {
+
+        main::ORG.pauseRace = true;
+
+        context.cursor_visible = true;
+        self.is_demo = false;
+        self.is_demo_started = false;
+        self.sStartRaceBlock = false;
+        self.sStartDemoBlock = false;
+        self.sRestartDemoBlock = false;
+
+
+        main::ORG.setEventCallback(context, QuickLicenseRoot);
+
+        BalloonTip.visible = false;
+        BalloonTip.initialize(context);
+
+
+        RenderControl.visible = false;
+        ActorUtil::ResetInterpolators(RenderControl::ColorFace, true, true);
+
+
+        RenderControl.begin(main::ORG);
+
+        Veil::ScalarInterpolator.on_effect_end = function (context)
+        {
+            BalloonTip.visible = true;
+            main::menu::MFocusEnterEvent(context, QuickLicenseRoot.focus_widget).dispatchEvent();
+            Veil::ScalarInterpolator.on_effect_end = nil;
+        }
+
+        Veil::ScalarInterpolator.reverse = true;
+        Veil::ScalarInterpolator.restart();
+        Veil::ScalarInterpolator.reverse = false;
+
+        if (main::ORG.canEnterCourse())
+        {
+            self.sCanExit = true;
+            TextFaceLoading.visible = false;
+            self.on_initialize_info(context);
+            self.on_initialize_demo(context);
+            Veil::ScalarInterpolator.reverse = true;
+            Veil::ScalarInterpolator.start();
+            Controller::HBox::Start.active = true;
+            Controller::HBox::Info.active = true;
+            Controller::HBox::Exit.active = true;
+            Controller::Next.active = true;
+            Controller::Prev.active = true;
+
+            startBGM(context);
+        }
+        else
+        {
+            TextFaceLoading.visible = true;
+
+            self.sCanExit = false;
+            LoadingUtil::start(context, self, on_checkin_done, on_loading_done);
+            Controller::HBox::Start.active = false;
+            Controller::HBox::Info.active = false;
+            Controller::HBox::Exit.active = false;
+            Controller::Next.active = false;
+            Controller::Prev.active = false;
+        }
+
+        var index = LicenseUtil::GetIndexByLicenseId(main::GlobalStatus::game_context.license_id);
+        var category = LicenseUtil::GetCategory(index);
+        var category_index = LicenseUtil::GetCategoryIndex(index);
+
+        var bg_index = LicenseUtil::getBGIndex(category);
+        bg::BG_0.visible = 0 == bg_index;
+        bg::BG_1.visible = 1 == bg_index;
+        bg::BG_2.visible = 2 == bg_index;
+
+        Header::type.image_path = "image/gt5m/icon/mission_type_%s.png".format(["green", "orange", "blue"][bg_index]);
+
+
+
+        var event = gSequenceCondition.event;
+        if (nil != event.information)
+        {
+            var i = event.information;
+
+            var category_str = LicenseUtil::GetCategoryString(category);
+            self.license_title = context.translate(QuickLicenseRoot, "LicenseGT5M", i.title);
+            Header::title.text = context.translate(QuickLicenseRoot, "LicenseGT5M", "TITLE_FORMAT").build(category_str,
+                                                                                                          category_index + 1,
+                                                                                                          self.license_title);
+
+
+            Header::sub_title.text = context.translate(QuickLicenseRoot, "LicenseGT5M", "CATEGORY_SUB_TITLE_%d".format(category));
+            Body::Description::ScrollClip::space::TextFace.text = context.translate(QuickLicenseRoot, "LicenseGT5M", i.description);
+        }
+
+
+
+
+
+        Body::Description::ScrollClip.scroll_mode = 2;
+        var adj = main::menu::MAdjustment();
+        Body::Description::ScrollClip.v_adjustment = adj;
+        Body::Description::VScrollbar.adjustment = adj;
+
+        var car = event.entry_set.entries[0].car;
+        var car_label = main::gtengine::MSpecDB::getCarLabel(car.code);
+
+        Body::Car::ImageFace.image_path = "car/thumbnail/%s.%02d".format(car_label, car.color);
+        Body::Car::ImageFace.doInitialize(context);
+        Body::Car::TextFace.text = main::gtengine::MSpecDB::getCarShortName(car.code);
+
+        var course_code = event.track.course_code;
+        var course_label = main::gtengine::MSpecDB::getCourseLabel(course_code);
+        if (course_label.beginWith("r_"))
+        {
+            course_label = course_label.substr(2);
+        }
+        Body::Course::TextFace.text = context.translate(QuickLicenseRoot, "CourseName", course_label);
+
+        Body::LicenseMap::ImageFace.image_path = "piece_gt5m/license_course_map_menu/license_User%03d.img".format(main::GlobalStatus::game_context.license_id);
+        Body::LicenseMap::ImageFace.doInitialize(context);
+
+        var fst = main::pdistd::ReadFile("piece_gt5m/license_course_map_menu/license_User%03d.mpnt".format(main::GlobalStatus::game_context.license_id));
+        var buf = fst["buffer"];
+        if (nil != buf)
+        {
+            var graph = Body::LicenseMap::GraphFace;
+            graph.mpnt = buf;
+            graph.velocity = 120.0;
+            graph.line_width = 5.0;
+            graph.type = "continuity_line";
+
+            graph.index = 0;
+
+            graph.repeat = true;
+            graph.action_enabled = true;
+            graph.image_path = "image/gt5m/mission/line_body.png";
+            graph.head_image_path = "image/gt5m/mission/line_goal.png";
+            graph.tail_image_path = "image/gt5m/mission/line_start.png";
+            graph.head_length = 3;
+            graph.tail_length = 3;
+            graph.head_ratio = 1.5;
+            graph.tail_ratio = 1.5;
+            graph.doInitialize(context);
+            var colors = [
+                [154.0, 240.0,  93.0],
+                [255.0, 184.0,  50.0],
+                [ 66.0, 179.0, 255.0],
+                [255.0,  91.0,  71.0]
+            ];
+            var line_index = LicenseUtil::getLineIndex(category);
+
+
+
+            var c = colors[line_index];
+            graph.setColor(main::menu::MColorObject(c[0] / 255.0, c[1] / 255.0, c[2] / 255.0));
+            graph.repeat_wait = 30;
+        }
+
+
+
+        var eval_type = event.eval_condition.type;
+        if (nil == event.reward)
+        {
+            event.reward = LicenseUtil::getReward(category, category_index);
+        }
+
+
+        if (eval_type == main::gtengine::EvalType::ORDER)
+        {
+            for (var order = 0; order < 3; order++)
+            {
+                var data = event.eval_condition.data[order];
+                if (data <= 0)
+                    event.reward.prize_table[order] = 0;
+            }
+        }
+
+        var credits = [1000, 500, 250];
+
+        if (nil != event.reward && nil != event.reward.prize_table)
+        {
+            for (var i = 0; i < event.reward.prize_table.size && i < credits.size; i++)
+            {
+                credits[i] = event.reward.prize_table[i].toInt();
+            }
+        }
+
+        var trophy_widgets = ["PrizeGold", "PrizeSilver", "PrizeBronze"];
+
+        var best_none_text = context.translate(QuickLicenseRoot, "LicenseGT5M", "BEST_TIME_NONE");
+        var credit_zero_text = context.translate(QuickLicenseRoot, "LicenseGT5M", "CREDIT_ZERO");
+        var credit_format = context.translate(QuickLicenseRoot, "LicenseGT5M", "CREDIT_FORMAT");
+
+        var opacity_default = 1.0;
+        var opacity_opaque = 0.33;
+        var opacity = opacity_default;
+
+        var record_index = LicenseUtil::GetIndexByLicenseId(main::GlobalStatus::game_context.license_id);
+        if (record_index < 0)
+            record_index = 0;
+        var license = gSequenceCondition.game_status.user_profile.record.licenses[record_index];
+
+        for (var i = 0; i < trophy_widgets.size; i++)
+        {
+            var money_text = "";
+            var data_text = "";
+
+            var data = event.eval_condition.data[i];
+
+            if (data <= 0)
+            {
+                opacity = opacity_opaque;
+                money_text = credit_format.build(credit_zero_text);
+
+                if (eval_type == main::gtengine::EvalType::TIME)
+                {
+                    data_text = best_none_text;
+                }
+                else if (eval_type == main::gtengine::EvalType::ORDER)
+                {
+                    data_text = credit_zero_text;
+                }
+            }
+            else
+            {
+                money_text = credit_format.build(main::pdiext::MMisc::GetMoneyString(credits[i]));
+
+                if (eval_type == main::gtengine::EvalType::TIME)
+                {
+                    data_text = main::pdiext::GetRaceTimeString(data);
+                }
+                else if (eval_type == main::gtengine::EvalType::ORDER)
+                {
+                    data_text = OrdinalUtil::getOrdinalNumber(context, QuickLicenseRoot, data.toInt());
+                }
+            }
+
+            var w = Body::Prize[trophy_widgets[i]];
+            w.opacity = opacity;
+
+            if (data <= 0 || license.result < 0 || license.result > i)
+            {
+                w.TextFaceCredit.text = money_text;
+                w.TextFaceTime.text = data_text;
+            }
+            else
+            {
+                w.insensitive = true;
+                w.TextFaceCrediti.text = money_text;
+                w.TextFaceTimei.text = data_text;
+            }
+        }
+
+        var best_label_text = "";
+        var best_text = "";
+
+        if (eval_type == main::gtengine::EvalType::TIME)
+        {
+            best_label_text = context.translate(QuickLicenseRoot, "LicenseGT5M", "BEST_TIME");
+            if (main::pdiext::MAX_LAPTIME1000 == license.best_time)
+            {
+                best_text = best_none_text;
+            }
+            else
+            {
+                best_text = main::pdiext::GetRaceTimeString(license.best_time);
+            }
+        }
+        else if (eval_type == main::gtengine::EvalType::ORDER)
+        {
+            best_label_text = context.translate(QuickLicenseRoot, "LicenseGT5M", "BEST");
+            if (license.best_time < 0 || license.best_time == main::pdiext::MAX_LAPTIME1000)
+            {
+                best_text = credit_zero_text;
+            }
+            else
+            {
+                best_text = OrdinalUtil::getOrdinalNumber(context, QuickLicenseRoot, license.best_time.toInt() + 1);
+            }
+        }
+
+        Body::Prize::Best::TextFaceBest.text = best_label_text;
+        Body::Prize::Best::TextFace.text = best_text;
+
+        self.replay_enable = PluginModule.defined("canStartReplay") && PluginModule::canStartReplay();
+        Controller::HBox.Replay.visible = self.replay_enable;
+
+        self.next_license_id = get_next_lid(main::GlobalStatus::game_context.license_id, 1);
+        Controller::Next.visible = self.next_license_id != nil;
+
+        self.prev_license_id = get_next_lid(main::GlobalStatus::game_context.license_id, -1);
+        Controller::Prev.visible = self.prev_license_id != nil;
+
+        QuickLicenseRoot.setFocus(Controller::HBox::Start);
+    }
+
+
+
+
+    method onFinalize(context)
+    {
+
+
+
+        main::ORG.pauseRace = false;
+
+        self.sStartRaceBlock = nil;
+        self.sStartDemoBlock = nil;
+        self.sRestartDemoBlock = nil;
+
+
+        main::ORG.endSession();
+
+
+        main::ORG.pauseAvailable = true;
+
+
+        main::ORG.disableRenderingRace();
+        main::ORG.disableSoundingRace();
+
+
+        RenderControl.end(main::ORG);
+
+
+        self.sExternalReplayBuffer = nil;
+
+
+
+        main::ORG.clearEventCallback();
+
+        var watcher = self.sNarrationWatcher;
+        self.sNarrationWatcher = nil;
+        if (watcher != nil)
+            WatcherUtil::Delete(watcher);
+    }
+
+
+
+
+    method onCancel(context)
+    {
+        if (!RenderControl.visible)
+        {
+            main::sound.play("cancel");
+            QuickLicenseRoot.setFocus(Controller::HBox::Exit);
+        }
+        return EVENTRESULT_FILTER;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (QuickLicenseRoot.is_demo_started)
+        {
+            if (event.keysym == 0xFF8D) // PSP_PAD_CTRL_START?
+            {
+
+                if (QuickLicenseRoot.sRestartDemoBlock)
+                    return EVENTRESULT_FILTER;
+
+                main::sound.play("cancel");
+                stopDemo(context);
+                return EVENTRESULT_FILTER;
+            }
+            return EVENTRESULT_CONTINUE;
+        }
+        else
+        {
+            var line_height = Body::Description::ScrollClip::space::TextFace.line_height;
+            var status = EVENTRESULT_CONTINUE;
+            if (event.keysym == 0xFF8D) // PSP_PAD_CTRL_START?
+            {
+                if (!RenderControl.visible)
+                {
+
+                    onStartLicense(context);
+                    status = EVENTRESULT_STOP;
+                }
+            }
+            if (event.keysym == 0xFF52) // PSP_PAD_CTRL_L3_UP?
+            {
+                if (Body::Description::ScrollClip.manualTargetIncY(line_height))
+                {
+                    status = EVENTRESULT_STOP;
+                }
+            }
+            if (event.keysym == 0xFF54) // PSP_PAD_CTRL_L3_DOWN?
+            {
+                if (Body::Description::ScrollClip.manualTargetIncY(-line_height))
+                {
+                    status = EVENTRESULT_STOP;
+                }
+            }
+            return status;
+        }
+    }
+
+
+
+
+
+    module Controller
+    {
+        method onFocusEnter(context, event)
+        {
+            if (!QuickLicenseRoot.is_demo)
+            {
+                var w = event.widget;
+                BalloonTip.set_value(context, w, w.balloon.text, 3.5);
+            }
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+
+        module Next
+        {
+            method onActivate(context)
+            {
+
+                if (QuickLicenseRoot.is_demo || QuickLicenseRoot.sStartRaceBlock || QuickLicenseRoot.sStartDemoBlock)
+                {
+                    return EVENTRESULT_FILTER;
+                }
+
+                if (!QuickLicenseRoot.sCanExit)
+                {
+                    main::sound.play("cancel");
+                    return EVENTRESULT_FILTER;
+                }
+
+                main::sound.play("ok");
+
+                Blink.ScalarInterpolator.restart();
+
+
+                var current_game_plan = gSequenceCondition.game_plan;
+
+                main::GlobalStatus::game_context.license_id = QuickLicenseRoot.next_license_id;
+                var filename = "textdata/gt5m/license/license_User%03d.xml".format(QuickLicenseRoot.next_license_id);
+                main::GamePlan::reserveExecuteNext(filename);
+                SequenceUtil::startSequence(context, main::GameSequence::RACE);
+
+                SoundUtil::BGMFadeout(1.0);
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module Prev
+        {
+            method onActivate(context)
+            {
+
+
+                if (QuickLicenseRoot.is_demo || QuickLicenseRoot.sStartRaceBlock || QuickLicenseRoot.sStartDemoBlock)
+                {
+                    return EVENTRESULT_FILTER;
+                }
+
+                if (!QuickLicenseRoot.sCanExit)
+                {
+                    main::sound.play("cancel");
+                    return EVENTRESULT_FILTER;
+                }
+
+                main::sound.play("ok");
+
+                Blink.ScalarInterpolator.restart();
+
+
+                var current_game_plan = gSequenceCondition.game_plan;
+
+                main::GlobalStatus::game_context.license_id = QuickLicenseRoot.prev_license_id;
+                var filename = "textdata/gt5m/license/license_User%03d.xml".format(QuickLicenseRoot.prev_license_id);
+                main::GamePlan::reserveExecuteNext(filename);
+                SequenceUtil::startSequence(context, main::GameSequence::RACE);
+
+                SoundUtil::BGMFadeout(1.0);
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+
+
+
+    module Controller::HBox
+    {
+        module Start
+        {
+            method onActivate(context)
+            {
+
+                if (QuickLicenseRoot.is_demo || QuickLicenseRoot.sStartRaceBlock || QuickLicenseRoot.sStartDemoBlock)
+                {
+                    return EVENTRESULT_FILTER;
+                }
+
+                
+                if (TextFaceLoading.visible)
+                {
+                    main::sound.play("cancel");
+                    return EVENTRESULT_FILTER;
+                }
+
+                Blink.ScalarInterpolator.restart();
+
+
+                QuickLicenseRoot.onStartLicense(context);
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+
+        module Replay::LoadReplay
+        {
+            method onActivate(context)
+            {
+
+                if (QuickLicenseRoot.is_demo || QuickLicenseRoot.sStartRaceBlock || QuickLicenseRoot.sStartDemoBlock)
+                {
+                    return EVENTRESULT_FILTER;
+                }
+                onStartReplay(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+
+        module Replay::SaveReplay
+        {
+            method onActivate(context)
+            {
+
+                if (QuickLicenseRoot.is_demo || QuickLicenseRoot.sStartRaceBlock || QuickLicenseRoot.sStartDemoBlock)
+                {
+                    return EVENTRESULT_FILTER;
+                }
+                onSaveReplay(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+
+        module Opt::LicenseDetail
+        {
+            method showLicenseDetail(context)
+            {
+                var course_code = main::GlobalStatus::game_context.course;
+
+                var cp = getPlayerCar();
+                var dp = getPlayerDriver();
+
+                var index = LicenseUtil::GetIndexByLicenseId(main::GlobalStatus::game_context.license_id);
+                var license = gSequenceCondition.game_status.user_profile.record.licenses[index];
+
+                var data = DetailProject::LicenseDetailPopup::Data();
+                data.cp = cp;
+                data.dp = dp;
+
+
+                data.course_label = main::gtengine::MSpecDB::getCourseLabel(course_code);
+
+
+
+                data.driving_line = main::GlobalStatus::game_context.driving_line;
+                data.constraint = gSequenceCondition.event.constraint;
+                data.ai_skill = nil;
+                data.license_title = QuickLicenseRoot.license_title;
+                data.result = license.result;
+                var entry_set = gSequenceCondition.event.entry_set;
+                if (entry_set.entry_generate != nil &&
+                    entry_set.entry_generate.ai_skill != nil)
+                    data.ai_skill = entry_set.entry_generate.ai_skill;
+
+
+
+                var result = DetailProject::LicenseDetailPopup.open(context, data);
+                if (result["result"])
+                {
+                    var driving_line = result["driving_line"];
+                    main::GlobalStatus::game_context.driving_line = driving_line;
+
+
+                    var option = gSequenceCondition.game_status.user_profile.option;
+                    main::GlobalStatus::game_context.manual = dp.manual;
+                    option.active_steering = dp.active_steering;
+
+
+
+
+
+
+                    setPlayerCar(cp);
+                    setPlayerDriver(dp);
+                }
+
+
+
+
+
+
+
+
+
+
+
+
+
+                return result["result"];
+            }
+
+            method onActivate(context)
+            {
+
+                if (QuickLicenseRoot.is_demo || QuickLicenseRoot.sStartRaceBlock || QuickLicenseRoot.sStartDemoBlock)
+                {
+                    return EVENTRESULT_FILTER;
+                }
+                main::sound.play("ok");
+
+                if (showLicenseDetail(context))
+                {
+
+                }
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+
+
+
+        module Info
+        {
+            method onActivate(context)
+            {
+
+                if (QuickLicenseRoot.is_demo || QuickLicenseRoot.sStartRaceBlock || QuickLicenseRoot.sStartDemoBlock)
+                {
+                    return EVENTRESULT_FILTER;
+                }
+
+                if (!QuickLicenseRoot.sCanExit)
+                {
+                    main::sound.play("cancel");
+                    return EVENTRESULT_FILTER;
+                }
+
+                if (!main::ORG.canEnterCourse())
+                {
+                    main::sound.play("cancel");
+                    return EVENTRESULT_FILTER;
+                }
+                main::sound.play("ok");
+                BalloonTip.reset_value();
+                QuickLicenseRoot.startDemo(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+
+        module Exit
+        {
+            method onActivate(context)
+            {
+
+                if (QuickLicenseRoot.is_demo || QuickLicenseRoot.sStartRaceBlock || QuickLicenseRoot.sStartDemoBlock)
+                {
+                    return EVENTRESULT_FILTER;
+                }
+                if (QuickLicenseRoot.sCanExit) {
+                    main::sound.play("ok");
+                    onExit(context);
+                } else {
+                    main::sound.play("cancel");
+                }
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+}

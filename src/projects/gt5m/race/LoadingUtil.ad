@@ -1,0 +1,175 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module LoadingUtil
+{
+    static sSequence = nil;
+    static sInstance = nil;
+    static sDoneMethod = nil;
+    static sTickMethod = nil;
+    static sWatcher = nil;
+    static sCheckInSuccess = nil;
+    static sSyncComplete = nil;
+
+
+
+
+
+
+
+
+
+    function load_sequence(context, instance, after_checkin_method)
+    {
+        var rp = main::RaceOperator.race_parameter;
+
+        sCheckInSuccess = false;
+        sSyncComplete = true;
+
+
+        sCheckInSuccess = main::RaceOperator.checkIn();
+
+
+        if (!sCheckInSuccess)
+        {
+            yield true;
+            return;
+        }
+
+        yield false;
+
+        (*instance.*after_checkin_method)(context);
+        yield false;
+
+
+        if (rp.online_on) {
+            var start_time = main::pdistd::GetSystemTimeMicroSecond();
+            while (!main::ORG.hasLoadingCarDone())
+            {
+                var elapsed_time = main::pdistd::GetSystemTimeMicroSecond();
+                if ((elapsed_time - start_time) / (1000 * 1000) > 120)
+                {
+                    yield true;
+                    return;
+                }
+                yield false;
+            }
+        }
+        else while (!main::ORG.hasLoadingCarDone())
+        {
+            yield false;
+        }
+
+
+
+        main::ORG.requestLoadingCourse(); yield false;
+
+
+        while (!main::ORG.canEnterCourse())
+        {
+
+            yield false;
+        }
+
+
+        main::ORG.enterCourse();
+        yield false;
+
+
+        if (rp.online_on) {
+            main::ORG.waitRegularRacers(rp.racers_max);
+
+
+            main::ORG.replaceNextGridWithSort(rp, 0);
+
+
+            main::ORG.synchronizedManagement();
+
+            main::RaceOperator.race_parameter = rp;
+
+            if (!main::ORG.isOnline())
+            {
+                sSyncComplete = false;
+            }
+        }
+
+
+
+        yield true;
+    }
+
+
+
+
+    function on_tick(context)
+    {
+
+        if (sSequence != nil)
+        {
+            if (sTickMethod != nil)
+                (*sInstance.*sTickMethod)(context);
+
+            var res = sSequence();
+
+
+            if (res)
+            {
+
+                WatcherUtil::Delete(sWatcher);
+                sWatcher = nil;
+
+
+                (*sInstance.*sDoneMethod)(context, sCheckInSuccess && sSyncComplete);
+
+
+                sSequence = nil;
+                sInstance = nil;
+                sDoneMethod = nil;
+                sCheckInSuccess = nil;
+                sSyncComplete = nil;
+            }
+        }
+    }
+
+
+
+
+
+
+
+
+
+    function start(context, instance, after_checkin_method, done_method, tick_method)
+    {
+
+        main::ORG.disableRenderingRace();
+        main::ORG.disableSoundingRace();
+
+        main::ORG.exitCourse();
+
+        sSequence = load_sequence.generator(context, instance, after_checkin_method);
+
+        sInstance = instance;
+        sDoneMethod = done_method;
+        sTickMethod = tick_method;
+
+        sWatcher = WatcherUtil::Create(context, on_tick);
+    }
+}
