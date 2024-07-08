@@ -4,17 +4,16 @@ OpenAdhoc is an open-source re-implementation of Gran Turismo Scripts based on t
 
 This repository contains compilable game scripts re-created from originally compiled scripts. The goal is to allow source-code level editing for GT4, GT5, GT6 (and potentially others). Scripts operate nearly as the whole of game logic, while the executable mostly serves as the engine and exposes libraries to the script interface.
 
-* Unaltered code is located on the `master` branch
-* Code for the GT6 Spec II Mod is located on the `gt6-spec-ii` branch.
+> [!NOTE]  
+**This code is licensed under GPL-v3. You are required to disclose source/changes including for mods.**
+>
+> GT6 Spec II & GT5 Master Mod are included in separate branches.
 
 ## Games & Progress
 
-### GT6 Completion Progress
-**Most of the main projects are completed (`gtmode`, `race`, `main`, etc) and most of the game logic can already be altered.**
-
 <details>
-  <summary>Table (26 of 49 projects are completed and can be compiled. Version 1.22)</summary>
-  
+  <summary>GT6 (1.22)</summary>
+  26 of 49 projects are completed and can be compiled
   
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|
@@ -67,9 +66,8 @@ This repository contains compilable game scripts re-created from originally comp
 | vision_gt              |    ❌    | Vision GT Menu                                                                   |
 </details>
 
-### GT5 Completion Progress
 <details>
-  <summary>Table (Version 2.11)</summary>
+  <summary>GT5 (2.11)</summary>
   
   
 |          Name          | Completed |                                     Purpose                                      | 
@@ -110,25 +108,38 @@ This repository contains compilable game scripts re-created from originally comp
 
 </details>
 
-### GT4(O) Completion Progress
 <details>
+  <summary>GT4 Online (US)</summary>
 
-* boot (Completed)
-* cursor (Completed)
-* gtmode (Completed)
-* option (Completed)
+|          Name          | Completed |                                     Purpose                                      | 
+|------------------------|-----------|----------------------------------------------------------------------------------|
+| boot                   |    ✔️    |                                                                                  |
+| cursor                 |    ✔️    |                                                                                  |
+| gtmode                 |    ✔️    |                                                                                  |
+| option                 |    ✔️    |                                                                                  |
+
 </details>
 
-### TT/GT Sport
-Nothing at the moment.
+<details>
+  <summary>Tourist Trophy</summary>
+  Nothing at the moment.
+</details>
 
-### GT7
-Out of scope. GT7 uses swift compiled to adhoc bytecode.
+<details>
+  <summary>GT Sport</summary>
+  Nothing at the moment.
+</details>
+
+<details>
+  <summary>GT7</summary>
+  Out of scope. GT7 uses swift compiled to adhoc bytecode.
+</details>
 
 ## ⚙️ Compilation
 
 The [Adhoc toolchain](https://github.com/Nenkai/GTAdhocToolchain) is required to compile game scripts. It is also recommended to install the VS Code Extension. Binaries/Artifacts can be acquired from the Actions tab.
 
+> [!WARNING]  
 ⚠️ It is also recommended to add the path to the toolchain (i.e `adhoc.exe`) to your **PATH**.
 
 Compilation process
@@ -136,6 +147,8 @@ Compilation process
 
 or 
 * "Run Build Task (CTRL+SHIFT+B)" with the VS Code Adhoc Extension on any source file or project file.
+
+For more details refer to the [Adhoc Page](https://nenkai.github.io/gt-modding-hub/concepts/adhoc/adhoc/#adhoc-scripts) on the Modding Hub.
 
 ## 🔧Contributing & Notes
 
@@ -148,20 +161,6 @@ The Adhoc toolchain allows dissasembling scripts into an assembly-like text form
 ### Things that should be preserved, or recommended to have
 * All code of any kind should be present in the scripts.
 * Comments are not needed but appreciated.
-
-## Glossary
-* adc - Adhoc Compiled Script
-* Adhoc - Proprietary scripting language for Gran Turismo. Can also refer to bytecode when compiled from pure Adhoc or Swift (GT7). Not to be confused with PSP Ad hoc
-* Branch - Build type of the game. For GT6 it normally is `gt6`, but it can also be `runviewer`.
-* GPB - An image/resource container for all the assets a project or root uses.
-* MWidget - UI Layout definition for a root.
-* MProject - UI Layout definition for a project, generally many MWidgets combined into one MProject.
-* MPackage - A compressed container for splitted `adc` and `mproject/mwidget` files.
-* Project - A group of menus.
-* Root - A single menu.
-* Runviewer - Name of the debug menu.
-* TinyWeb - Web Server that GT6 and beyond can host which can be used to host pages for external access, or for executing Web Modules.
-* Web Module - An adhoc script which returns a web response. 
 
 ## 📖 History
 * August 2020 - Initial breakthrough in Adhoc, dissasembler built based on reverse-engineering
