@@ -132,7 +132,7 @@ This repository contains compilable game scripts re-created from originally comp
 
 <details>
   <summary>GT7</summary>
-  Out of scope. GT7 uses swift compiled to adhoc bytecode.
+  Out of scope. GT7 no longer uses Adhoc language and instead uses Swift (custom parser & compiler) which is then compiled to adhoc bytecode.
 </details>
 
 ## ⚙️ Compilation
