@@ -139,8 +139,8 @@ This repository contains compilable game scripts re-created from originally comp
 
 The [Adhoc toolchain](https://github.com/Nenkai/GTAdhocToolchain) is required to compile game scripts. It is also recommended to install the VS Code Extension. Binaries/Artifacts can be acquired from the Actions tab.
 
-> [!WARNING]  
-⚠️ It is also recommended to add the path to the toolchain (i.e `adhoc.exe`) to your **PATH**.
+> [!TIP]  
+It is also recommended to add the path to the toolchain (i.e `adhoc.exe`) to your **PATH**.
 
 Compilation process
 * `adhoc build -i <.ad source file or .yaml project file>`
@@ -148,7 +148,7 @@ Compilation process
 or 
 * "Run Build Task (CTRL+SHIFT+B)" with the VS Code Adhoc Extension on any source file or project file.
 
-For more details refer to the [Adhoc Page](https://nenkai.github.io/gt-modding-hub/concepts/adhoc/adhoc/#adhoc-scripts) on the Modding Hub.
+For more details refer to the [Adhoc Page](https://nenkai.github.io/gt-modding-hub/concepts/adhoc/adhoc/) on the Modding Hub.
 
 ## 🔧Contributing & Notes
 
