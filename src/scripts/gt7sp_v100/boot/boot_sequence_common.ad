@@ -1,0 +1,211 @@
+//---------------------------------------------------------------------------------------
+// boot_sequence_common.ad
+//
+// (例)
+// boot_sequence_common.ad
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// function
+//---------------------------------------------------------------------------------------
+
+static sBootTimer = pdistd::MElapsedTimer();
+static sSectionTimer = pdistd::MElapsedTimer();
+static sPreviousTask = "";
+
+#define TASK_LOG(task) \
+    { \
+        log("[" + __FILE__ + ":" + __LINE__ + "]: " + task); \
+        PUT_HERE("%{sPreviousTask} done [%dms]. Start %s".format(sSectionTimer.getByMilliSecond(), task)); \
+        yield; \
+        if (pdiext::MSystemCondition::IsExitGame()) \
+            return; \
+        sPreviousTask = task; \
+        sSectionTimer.reset(); \
+    }
+
+#include "boot_functions.ad"
+#include "init_sound.ad"
+#include "init_network.ad"
+#include "init_db.ad"
+#include "init_peripheral.ad"
+
+class BootState
+{
+    attribute is_new_game;
+    attribute init_save_data_done;
+    attribute recovery_save_data;
+    attribute eula_done;
+    attribute sequence_done;
+    attribute is_corrupted_user_db;
+    attribute disable_background_login;
+
+    method __init__()
+    {
+        self.is_new_game = false;
+        self.init_save_data_done = false;
+        self.recovery_save_data = false;
+        self.eula_done = false;
+        self.sequence_done = false;
+        self.is_corrupted_user_db = false;
+        self.disable_background_login = false;
+    }
+}
+
+static boot_state = BootState();
+
+function log(message)
+{
+    main::ListenerManager::notifyState("BootLogMessage", message);
+}
+
+async function boot_sequence_common(context, type, is_product)
+{
+    PUT_HERE("start boot sequence");
+    sBootTimer.reset();
+    sSectionTimer.reset();
+
+    var network_available = isNetworkAvailable(type);
+    var no_load = false;
+    if (type == "behavior")
+        no_load = true;
+    else if (main::AppOpt.defined("disable_loaddata"))
+        no_load = main::AppOpt["disable_loaddata"].toBool();
+
+    var online_save = !(GetVersionBranch() == "demo");
+    if (main::AppOpt.defined("online_save"))
+        online_save = main::AppOpt["online_save"].toBool();
+
+    initStatic(type);
+    initFundamentalNetworkObjects();
+
+    AwaitTask(function() { main::LoginUserManager.initialize() });
+
+    initResidentProject1(context);
+
+    SaveDataLoader::initialize();
+
+    if (main::AppOpt.defined("disable_save_err_dlg") || main::BOT.isEnabled())
+        FunctionManager::call("SaveData::setDisableSaveErrDlg");
+
+    GarageLoader::Initialize();
+    UsbStorageLoader::initialize();
+    FunctionManager::call("SaveData::loadGame");
+    checkKeyStateForSpecialServer(context);
+    initRaceInterface();
+    initNetworkObjects(context, type);
+
+    TASK_LOG("initDemo");
+    DemoLoader::Initialize();
+    initDemoMode();
+
+    if (network_available)
+    {
+        initNetwork(context, type, is_product);
+    }
+    else
+    {
+        Player.login = pdiapp::MLoginGT7(Player);
+        boot_state.eula_done = true;
+    }
+
+    initResidentProject2(context);
+    initDatabase(type);
+    Player.login_util.checkBackgroundProgress(context);
+    initSound();
+    Player.login_util.checkBackgroundProgress(context);
+
+    initDevice();
+    initController();
+
+    TASK_LOG("initUtility");
+    UtilityLoader::Initialize();
+    Player.login_util.checkBackgroundProgress(context);
+
+    TASK_LOG("SaveData");
+    main::GAME_STATUS = GlobalStatus::Initialize();
+    LiveryEditLoader::Initialize();
+
+    boot_state.is_new_game = boot_state.is_new_game || no_load;
+    var new_game = initSaveData(context, boot_state.is_new_game);
+
+    TASK_LOG("Gallery");
+    main::Gallery = GalleryLoader::Initialize();
+    var new_local_data = initLocalSaveData(no_load);
+    Player.login_util.checkBackgroundProgress(context);
+
+    if (main::AppOpt["feature_release_level"] != nil)
+        VariableManager::set("GameDemo::FeatureReleaseLevel", main::AppOpt["feature_release_level"]);
+
+    if ((GetVersionBranch() == "gt7sp" || GetVersionBranch() == "beta" || GetVersionBranch() == "demo") && new_game)
+    {
+        TASK_LOG("KeyAssign");
+        initKeyAssign();
+    }
+
+    main::ListenerManager::notifyState("LanguageSelection", new_game);
+
+    main::ApplyGlobalOption();
+    
+    TASK_LOG("InitializePlayList");
+    main::SoundUtil::InitializePlaylist();
+    Player.login_util.checkBackgroundProgress(context);
+
+    var synced = loginServer(context, type);
+    
+    initDebug(type);
+
+    if (network_available)
+    {
+        initNetworkService(context, type, synced);
+    }
+
+    TASK_LOG("Setting");
+    main::Setting = SettingLoader::Initialize();
+
+    TASK_LOG("Inventory");
+    InventoryLoader::Initialize();
+
+    TASK_LOG("Achievement");
+    AchievementLoader::Initialize();
+
+    TASK_LOG("LocalRanking");
+    LocalRankingLoader::Initialize();
+    SportModeLoader::Initialize();
+
+    TASK_LOG("Reward");
+    RewardLoader::Initialize();
+
+    TASK_LOG("TokenExchange");
+    TokenExchangeLoader::Initialize();
+
+    TASK_LOG("ContentsTag");
+    ContentsTagLoader::Initialize();
+
+    TASK_LOG("Thumbnail");
+    ThumbnailLoader::Initialize();
+    if (new_game)
+        FunctionManager::call("GarageUtil::removeAllGarageCarThumbnail");
+
+    TASK_LOG("Initialize Race Scripts");
+    var RaceSequence = RaceLoader::Initialize();
+    RaceSequence::InitBehavior();
+    RaceSequence::registFunctions();
+    checkLocalSaveData(new_local_data);
+
+    TASK_LOG("Initialize Online Save status");
+    if (online_save && !no_load)
+    {
+        VariableManager::set("SaveData::EnableOnlineSave", true);
+        initOnlineSave(context, Player.login.isOnline(), new_game);
+    }
+
+    FunctionManager::call("Garage::checkInvalidThumbnail");
+    FunctionManager::call("GameOptionTelemetry::sendOptions");
+    FunctionManager::call("Grim::requestDailyWorkoutCheck");
+    FunctionManager::call("Text::Initialize");
+
+    PUT_HERE("BOOT SEQUENCE DONE [%d sec.]".format(sBootTimer.getBySecond()));
+    boot_state.sequence_done = true;
+}

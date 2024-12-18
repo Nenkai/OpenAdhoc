@@ -1,0 +1,328 @@
+//---------------------------------------------------------------------------------------
+// boot_functions.ad
+//
+// (例)
+// boot_functions.ad
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// function
+//---------------------------------------------------------------------------------------
+
+function initStatic(type)
+{
+
+    
+    TASK_LOG("initStatic");
+
+    main::SaveMemory = pdiext::MSaveDataMemory();
+    if (main::GT7SP_OFFLINE)
+        main::Prefs["telemetry.disable"] = true;
+
+    main::LoginUserManager = gtengine::MLoginUserManager();
+
+    main::UserDataParam = gtengine::MUserData();
+    main::GarageData = gtengine::MGarage();
+    main::GameRecord = gtengine::MGameRecord();
+    main::GameMusic = gtengine::MGameMusic();
+    main::KeyValue = gtengine::MKeyValue();
+    main::GameGallery = gtengine::MGameGallery(10, 100);
+    main::LiveryDataManager = gtengine::MLiveryDataManager(1000);
+    main::OnboardCameraDataMain = gtengine::MOnboardCameraData();
+
+    main::PlayGo = pdiext::MPlayGo();
+    main::PlayGo.initialize();
+
+    pdiext::MSystemConfiguration::GetOSDUserId();
+
+    LoggerLoader::Initialize();
+    LoggerUtil::initialize();
+}
+
+function initResidentProject1(context)
+{
+    TASK_LOG("CursorProject");
+    main::cursor_project = __projects__::CursorProject;
+    WidgetBind::bindingProject(context, main::cursor_project);
+    WidgetBind::bindWindowToProject(context, [context.getCursorRoot()], main::cursor_project);
+
+    TASK_LOG("DialogProject");
+    main::dialog_project = main::manager.loadResidentProject(main::PROJECT_ROOT_DIR + "/dialog/dialog");   
+}
+
+function initResidentProject2(context)
+{
+    TASK_LOG("UIKitProject");
+    main::ui_kit_project = main::manager.loadResidentProject(main::PROJECT_ROOT_DIR + "/ui_kit/ui_kit");
+    WidgetBind::bindingProject(context, main::ui_kit_project);
+
+    TASK_LOG("SettingProject");
+    main::setting_project = main::manager.loadResidentProject(main::PROJECT_ROOT_DIR + "/setting/setting");
+    WidgetBind::bindingProject(context, main::setting_project);
+
+    TASK_LOG("OverlayMenuProject");
+    var overlay_menu = GetVersionBranch() == "beta" ? "overlay_menu" : "overlay_menu2";
+
+    main::overlay_menu_project = main::manager.loadResidentProject(main::PROJECT_ROOT_DIR + "/%{overlay_menu}/%{overlay_menu}");
+}
+
+function initConfig()
+{
+   var config_file = main::GetVersionBranch();
+   main.load("%{main::PROJECT_ROOT_DIR}/config/%{config_file}"); 
+}
+
+async function initRaceInterface()
+{
+    TASK_LOG("initRaceInterface");
+
+    main::RaceInterface = gtengine::MRaceInterface();
+    AwaitTask(function() { main::RaceInterface.initialize() });
+    main::RaceInterface.startGameObjectLoop();
+    main::RaceInterface.enableRenderingRace = true;
+    main::RaceInterface.enableSoundingRace = true;
+    main::ARInformation = gtengine::MARInformation(RaceInterface);
+}
+
+function initDebug(type)
+{
+    TASK_LOG("initDebug");
+
+    if (main::AppOpt.defined("no_meter"))
+    {
+        pdiext::SetDrawPerfMeter(main::AppOpt["no_meter"].toInt() == 0);
+    }
+
+    if (type == "behavior")
+    {
+        pdiext::SetDrawPerfMeter(false);
+    }
+
+    if (main::AppOpt.defined("grpdebug"))
+    {
+        var level = main::AppOpt["grpdebug"].toInt();
+        pdistd::MDynRes::setInt32("ModelSetDebugMode", level);
+        pdistd::MDynRes::setInt32("CourseDebugMode", level);
+        pdistd::MDynRes::setInt32("CameraDebugMode", level);
+
+    }
+}
+
+function initApp()
+{
+    var r = pdistd::MRandom();
+    r.mt_seed = pdiext::getBetterTime().getBySecond();
+    
+    var hi = r.getMTInt().toULong();
+    r.mt_seed = pdistd::GetSystemTimeMicroSecond();
+    
+    var low = r.getMTInt().toULong();
+    pdiapp::play_id = hi << 32 | low;
+
+    PUT_HERE("play_id:%l016x".format(pdiapp::play_id));
+}
+
+function initDemoMode()
+{
+    var result = FunctionManager::call("SaveData::getResult");
+    PUT_HERE(result);
+
+    if (result != main::pdiext::SaveDataError::SAVEDATA_OK)
+    {
+        BREAK_HERE("セーブデータのセットアップに失敗しました。");
+    }
+
+    if (!FunctionManager::call("SaveData::isExistSaveData"))
+        FunctionManager::call("Demo::setupDemoID");
+}
+
+function initSaveData(context, is_new_game)
+{
+    var new_game = is_new_game;
+    main::GameStructure = GAME_STATUS::GameStructure::create();
+    main::GameOption = GAME_STATUS::GameOption::create();
+    main::GameStats = GAME_STATUS::GameStats::create();
+    main::GameContext = GAME_STATUS::GameContext::create();
+    main::GameDemo = GAME_STATUS::GameDemo::create();
+    main::GameBeta = GAME_STATUS::GameBeta::create();
+
+    var result = FunctionManager::call("SaveData::getResult");
+    PUT_HERE(result);
+
+    if (result != main::pdiext::SaveDataError::SAVEDATA_OK)
+    {
+        BREAK_HERE("セーブデータのセットアップに失敗しました。");
+        new_game = true;
+    }
+
+    if (!new_game)
+    {
+        if (!FunctionManager::call("SaveData::isExistSaveData"))
+            new_game = true;
+        else
+        {
+            var version_check = FunctionManager::call("SaveData::checkSaveDataVersion");
+            if (version_check != main::pdiext::SaveDataError::SAVEDATA_OK)
+                new_game = true;
+        }
+    }
+
+    if (!new_game)
+    {
+        var result = FunctionManager::call("SaveData::getLoadResult");
+        if (result != main::pdiext::SaveDataError::SAVEDATA_OK)
+            new_game = true;
+        else
+        {
+            pdiapp::play_id = VariableManager::get("UserData::PlayID");
+            ListenerManager::notifyState("UserData::Cash", pdiext::GetMoneyString(UserDataParam.getMyCash()));
+        }
+    }
+
+    if (new_game)
+    {
+        initApp();
+        VariableManager::set("UserData::PlayID", pdiapp::play_id);
+
+        FunctionManager::call("SaveData::resetSaveData");
+
+        FunctionManager::call("Demo::setup");
+        FunctionManager::call("SaveData::saveAllGameLocal");
+        var result = FunctionManager::call("SaveData::getResult");
+        PUT_HERE(result);
+
+        if (result != main::pdiext::SaveDataError::SAVEDATA_OK)
+        {
+            BREAK_HERE("セーブデータのセーブに失敗しました。");
+        }
+    }
+
+    return new_game;
+}
+
+function initLocalSaveData(is_new_game)
+{
+    main::GameOptionLocal = GAME_STATUS::GameOptionLocal::create();
+
+    var new_local_data = is_new_game;
+    if (new_local_data)
+    {
+        FunctionManager::call("SaveData::createSaveDataLocal");
+    }
+    else if (!FunctionManager::call("SaveData::isExistSaveDataLocal"))
+    {
+        new_local_data = true;
+        FunctionManager::call("SaveData::createSaveDataLocal");
+    }
+    else
+    {
+        FunctionManager::call("SaveData::loadLocalData");
+    }
+
+    return new_local_data;
+}
+
+static s_save_result = nil;
+
+function checkLocalSaveData(new_local_data)
+{
+    if (new_local_data)
+    {
+        s_save_result = FunctionManager::call("SaveData::getSaveResultLocal");
+        while (s_save_result != main::pdiext::SaveDataError::SAVEDATA_OK)
+        {
+            PUT_HERE(s_save_result);
+            DIALOG_ERROR(main::ContextMain, "SaveData", "SAVEDATA_FAILED_TO_CREATE_RETRY");
+
+            var ret = DIALOG_PROGRESS_LOOP(
+                main::ContextMain, 
+                [manager.translate("SaveData", "PROGRESS_RECREATE_SAVEDATA"),
+                 manager.translate("SaveData", "PROGRESS_RECREATE_SAVEDATA_SUCCESS"),
+                 manager.translate("SaveData", "PROGRESS_RECREATE_SAVEDATA_FAILED")
+                ], 
+                (context, args, progress) => 
+                {
+                    FunctionManager::call("SaveData::createSaveDataLocal");
+                    s_save_result = FunctionManager::call("SaveData::getSaveResultLocal");
+                    var res = false;
+                    if (s_save_result == main::pdiext::SaveDataError::SAVEDATA_OK)
+                        res = true;
+
+                    return [res, res];
+                },
+                [nil]);
+        }
+    }
+    else
+    {
+        var snap_result;
+        [s_save_result, snap_result] = FunctionManager::call("SaveData::getLocalLoadData");
+        while (s_save_result != main::pdiext::SaveDataError::SAVEDATA_OK)
+        {
+            PUT_HERE(s_save_result);
+            var res = DIALOG_YESNO(main::ContextMain, "SaveData", "SAVEDATA_DO_YOU_WANT_TO_DELETE");
+            if (res)
+            {
+                var del_result = FunctionManager::call("SaveData::deleteSaveDataLocal");
+                if (del_result == main::pdiext::SaveDataError::SAVEDATA_USER_CANCEL)
+                    continue;
+
+                var ret = DIALOG_PROGRESS_LOOP(
+                    main::ContextMain, 
+                    [manager.translate("SaveData", "PROGRESS_RECREATE_SAVEDATA"),
+                     manager.translate("SaveData", "PROGRESS_RECREATE_SAVEDATA_SUCCESS"),
+                     manager.translate("SaveData", "PROGRESS_RECREATE_SAVEDATA_FAILED")
+                    ], 
+                    (context, args, progress) => 
+                    {
+                        FunctionManager::call("SaveData::createSaveDataLocal");
+                        s_save_result = FunctionManager::call("SaveData::getSaveResultLocal");
+                        var res = false;
+                        if (s_save_result == main::pdiext::SaveDataError::SAVEDATA_OK)
+                            res = true;
+        
+                        return [res, res];
+                    },
+                    [nil]);
+            }
+            else
+            {
+                var ret = DIALOG_PROGRESS_LOOP(
+                    main::ContextMain, 
+                    [manager.translate("SaveData", "PROGRESS_RELOAD_SAVEDATA"),
+                     manager.translate("SaveData", "PROGRESS_RELOAD_SAVEDATA_SUCCESS"),
+                     manager.translate("SaveData", "PROGRESS_RELOAD_SAVEDATA_FAILED")
+                    ], 
+                    (context, args, progress) => 
+                    {
+                        FunctionManager::call("SaveData::loadLocalData");
+
+                        var reload_snap_result;
+                        [s_save_result, reload_snap_result] = FunctionManager::call("SaveData::getLocalLoadData");
+                        var res = false;
+                        if (s_save_result == main::pdiext::SaveDataError::SAVEDATA_OK)
+                            res = true;
+        
+                        return [res, res];
+                    },
+                    [nil]);
+            }
+        }
+    }
+}
+
+function initOnlineSave(context, online, new_game)
+{
+    if (VariableManager::get("UserData::DemoVersion"))
+        return;
+
+    if (!online)
+    {
+        DIALOG_OK(context, "OnlineSave", "CANNOT_SAVE_FAILED_TO_CONNECT_ONLINE");
+        VariableManager::set("SaveData::OnlineState", false);
+        return;
+    }
+
+    FunctionManager::call("SaveData::checkServer", false, new_game);
+}
