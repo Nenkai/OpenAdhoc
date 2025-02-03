@@ -135,6 +135,9 @@ This repository contains compilable game scripts re-created from originally comp
   Out of scope. GT7 no longer uses Adhoc language and instead uses Swift (custom parser & compiler) which is then compiled to adhoc bytecode.
 </details>
 
+> [!NOTE]
+> Original bugs are left as is. You can find a few of them with the `BUG` comments.
+
 ## ⚙️ Compilation
 
 The [Adhoc toolchain](https://github.com/Nenkai/GTAdhocToolchain) is required to compile game scripts. It is also recommended to install the VS Code Extension. Binaries/Artifacts can be acquired from the Actions tab.
