@@ -121,7 +121,7 @@ This repository contains compilable game scripts re-created from originally comp
 </details>
 
 <details>
-  <summary>GT PSP (gt5m)</summar>
+  <summary>GT PSP (gt5m)</summary>
   All projects and scripts fully reversed by pez2k. Adhoc code is identical for all regions and revisions.
 </details>
 
