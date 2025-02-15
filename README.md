@@ -121,8 +121,8 @@ This repository contains compilable game scripts re-created from originally comp
 </details>
 
 <details>
-  <summary>GT PSP</summar>
-  All projects and scripts full reversed by pez2k. Adhoc code is identical for all regions and revisions.
+  <summary>GT PSP (gt5m)</summar>
+  All projects and scripts fully reversed by pez2k. Adhoc code is identical for all regions and revisions.
 </details>
 
 <details>
@@ -131,8 +131,8 @@ This repository contains compilable game scripts re-created from originally comp
 </details>
 
 <details>
-  <summary>GT Sport</summary>
-  Nothing at the moment.
+  <summary>GT Sport (gt7sp)</summary>
+  Only the boot project (1.00) reversed.
 </details>
 
 <details>
