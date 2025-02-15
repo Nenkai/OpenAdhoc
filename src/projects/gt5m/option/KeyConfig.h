@@ -1,29 +1,14 @@
+//---------------------------------------------------------------------------------------
+// KeyConfig.h
+//
+//
+// 
+//---------------------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
 
 static sAnalogCodeMap_forLocalizeKey =
 [
@@ -94,9 +79,8 @@ static sButtonCodeMap_forLocalizeKey =
 
 ];
 
-
-
-class KeyInfo {
+class KeyInfo 
+{
     attribute name;
     attribute button_channel;
     attribute analog_channel;
@@ -112,9 +96,6 @@ class KeyInfo {
         self.key_link_list = _key_link_list;
     }
 
-
-
-
     method findKeyLinkPattern(_src_action, _dst_action)
     {
         var link_list = self.key_link_list;
@@ -126,14 +107,9 @@ class KeyInfo {
                 return [link_list[i].target_name, link_list[i].target_action];
             }
         }
+
         return nil;
     }
-
-
-
-
-
-
 
     method findKeyLinkTarget(_src_action, _dst_action)
     {
@@ -142,16 +118,12 @@ class KeyInfo {
         {
             res = findKeyLinkPattern(nil, _dst_action);
             if (res == nil)
-            {
                 res = findKeyLinkPattern(_src_action, nil);
-            }
         }
+
         return res;
     }
 }
-
-
-
 
 class KeyLinkPattern
 {
