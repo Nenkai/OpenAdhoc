@@ -124,9 +124,9 @@ This repository contains compilable game scripts re-created from originally comp
 | language               |    ❌️    | Language selection screen at bootup                                              |
 | list_box               |    ❌️    |                                                                                  |
 | logger                 |    ❌️    | Replay Analyzer menu, accessed from various Pre-Race menus                       |
-| memcard                |    ❌️    | Save data                                                                        |
+| memcard                |    ❌️    | Likely GT4P leftover                                                             |
 | message                |    ❌️    | Online mode message menu                                                         |
-| network                |    ❌️    | Network Connection setup mode                                                    |
+| network                |    ❌️    | Network Connection and Online mode login                                         |
 | online                 |    ❌️    | Online mode                                                                      |
 | option                 |    ✔️    | Game Options                                                                     |
 | option2                |    ❌️    | GT4P leftover                                                                    |
@@ -148,6 +148,7 @@ This repository contains compilable game scripts re-created from originally comp
 | ranking                |    ❌️    | Rankings menu, accessed from various Pre-Race menus                              |
 | setting                |    ❌️    | Car Setting menu and all of its sub-menus (Change parts and tuning sliders)      |
 | slide                  |    ❌️    | Slideshow mode                                                                   |
+| GT4Application         |    ✔️    | Initializer and Config Script loader / re-loader                                 |
 
 </details>
 
