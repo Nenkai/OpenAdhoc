@@ -118,7 +118,7 @@ This repository contains compilable game scripts re-created from originally comp
 | cursor                 |    ✔️    | Sets up cursor and dialog boxes                                                  |
 | demo_movie             |    ✔️    | Intro when idle at main menu, and any movie that plays after completing event    |
 | event                  |    ❌️    | LAN mode                                                                         |
-| eyetoy                 |    ❌️    | Handles unlocking Nike Car when scanning GT Shirt with the Eyetoy accessory      |
+| eyetoy                 |    ✔️    | Handles unlocking Nike Car when scanning GT Shirt with the Eyetoy accessory      |
 | gtmode                 |    ✔️    | Gran Turismo Mode and all of its sub-menus                                       |
 | labomode               |    ❌️    | Photo lab, Replay Theater, Load & Save Replay, Delete Replay/Film/Photo          |
 | language               |    ❌️    | Language selection screen at bootup                                              |
