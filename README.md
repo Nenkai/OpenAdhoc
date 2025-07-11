@@ -153,7 +153,7 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 | quick-mission          |    ❌️    | GT Mode Mission Pre-Race menu                                                    |
 | quick-mt               |    ❌️    | GT Mode Power & Speed Pre-Race menu                                              |
 | quick-online           |    ❌️    | Online Mode Pre-Race menu                                                        |
-| quick-practice         |    ❌️    | GT Mode Track Meet Pre-Race menu                                                 |
+| quick-practice         |    ✔️    | GT Mode Track Meet Pre-Race menu                                                 |
 | quick-tt               |    ❌️    | Arcade Mode Time Trial Pre-Race menu                                             |
 | ranking                |    ❌️    | Rankings menu, accessed from various Pre-Race menus                              |
 | setting                |    ❌️    | Car Setting menu and all of its sub-menus (Change parts and tuning sliders)      |
