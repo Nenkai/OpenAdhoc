@@ -13,6 +13,9 @@ This repository contains compilable game scripts re-created from originally comp
 
 <details>
   <summary>GT6 (1.22)</summary>
+  
+### GT6
+  
   26 of 49 projects are completed and can be compiled
   
 |          Name          | Completed |                                     Purpose                                      | 
@@ -69,7 +72,10 @@ This repository contains compilable game scripts re-created from originally comp
 <details>
   <summary>GT5 (2.11)</summary>
   
-  
+### GT5
+
+GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and mainly patches exploits/server use and minor other things.
+
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|
 | main                   |    ✔️    | Initial Bootstrap & Utils before `boot`                                          |
@@ -106,11 +112,15 @@ This repository contains compilable game scripts re-created from originally comp
 | user_profile           |    ❌    | N/A                                                                              |
 | user_profile_driver    |    ❌    | N/A                                                                              |
 
+---
+
 </details>
 
 <details>
   <summary>GT4 Online (US)</summary>
 
+### GT4 Online (US)
+  
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|
 | arcade                 |    ❌️    | Arcade mode and all of its sub-menus                                             |
@@ -154,21 +164,33 @@ This repository contains compilable game scripts re-created from originally comp
 
 <details>
   <summary>GT PSP (gt5m)</summary>
+
+### GT PSP (gt5m)
+  
   All projects and scripts fully reversed by pez2k. Adhoc code is identical for all regions and revisions.
 </details>
 
 <details>
   <summary>Tourist Trophy</summary>
+
+### Tourist Trophy
+
   Nothing at the moment.
 </details>
 
 <details>
   <summary>GT Sport (gt7sp)</summary>
+
+### GT Sport (gt7sp)
+
   Only the boot project (1.00) reversed.
 </details>
 
 <details>
   <summary>GT7</summary>
+
+### GT7
+
   Out of scope. GT7 no longer uses Adhoc language and instead uses Swift (custom parser & compiler) which is then compiled to adhoc bytecode.
 </details>
 
@@ -177,7 +199,7 @@ This repository contains compilable game scripts re-created from originally comp
 
 ## ⚙️ Compilation
 
-The [Adhoc toolchain](https://github.com/Nenkai/GTAdhocToolchain) is required to compile game scripts. It is also recommended to install the VS Code Extension. Binaries/Artifacts can be acquired from the Actions tab.
+The [Adhoc Toolchain 1.0.5](https://github.com/Nenkai/GTAdhocToolchain) or later is required to compile game scripts. It is also recommended to install the VS Code Extension. Binaries/Artifacts can be acquired from the Actions tab.
 
 > [!TIP]  
 It is also recommended to add the path to the toolchain (i.e `adhoc.exe`) to your **PATH**.
@@ -192,15 +214,18 @@ For more details refer to the [Adhoc Page](https://nenkai.github.io/gt-modding-h
 
 ## 🔧Contributing & Notes
 
-The Adhoc toolchain allows dissasembling scripts into an assembly-like text form. Most scripts contain symbols which are mandatory and thus allows reconstructing code back into source. Sometimes syntax had to be made up for certain specific features, the documentation is the code.
+The Adhoc toolchain allows dissasembling scripts into an assembly-like text form. Most scripts contain symbols which are mandatory and thus allows reconstructing code back into source. Very rarely syntax had to be made up to support specific adhoc features due to no original source reference, so the documentation is the code.
 
 ### Things that are okay to discard
-* Following line numbers - While the custom toolchain does not currently support defines/macros, it is something that was used therefore can leave holes into the code, same goes for missing comments. It is therefore prefered not to follow line numbers for better readability.
+* Following line numbers - attempting to follow line numbers for code that may be stripped from undefined original preprocessor directives or missing comment blocks could can leave holes in the source, therefore prefered not to follow line numbers for better readability.
 * Logic order - It is common that scripts were written using such pattern: `nil != myObject` or `"Dog" == myString`. For readability, literals should always be on the right-hand side such as `myObject != nil`.
 
 ### Things that should be preserved, or recommended to have
 * All code of any kind should be present in the scripts.
+* Bugs should NOT be fixed but should **always** be marked with a `// BUG: <comment>` block. An example of this is usage of undeclared variables, typos.
 * Comments are not needed but appreciated.
+* Usage of `PROJECT` and `ROOT` defines should be used everywhere besides the main module declarations.
+* Usage of other defines such as `EVENTRESULT` and `PAD` defines (list [here](https://github.com/Nenkai/GTAdhocToolchain/wiki/Builtin-Macros))
 
 ## 📖 History
 * August 2020 - Initial breakthrough in Adhoc, dissasembler built based on reverse-engineering
