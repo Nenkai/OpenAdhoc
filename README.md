@@ -113,10 +113,42 @@ This repository contains compilable game scripts re-created from originally comp
 
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|
-| boot                   |    ✔️    |                                                                                  |
-| cursor                 |    ✔️    |                                                                                  |
-| gtmode                 |    ✔️    |                                                                                  |
-| option                 |    ✔️    |                                                                                  |
+| arcade                 |    ❌️    | Arcade mode and all of its sub-menus                                             |
+| boot                   |    ✔️    | Bootup, new game setup, initial intro movie                                      |
+| cursor                 |    ✔️    | Sets up cursor and dialog boxes                                                  |
+| demo_movie             |    ✔️    | Intro when idle at main menu, and any movie that plays after completing event    |
+| event                  |    ❌️    | LAN mode                                                                         |
+| eyetoy                 |    ✔️    | Handles unlocking Nike Car when scanning GT Shirt with the Eyetoy accessory      |
+| gtmode                 |    ✔️    | Gran Turismo Mode and all of its sub-menus                                       |
+| labomode               |    ❌️    | Photo lab, Replay Theater, Load & Save Replay, Delete Replay/Film/Photo          |
+| language               |    ❌️    | Language selection screen at bootup                                              |
+| list_box               |    ❌️    |                                                                                  |
+| logger                 |    ❌️    | Replay Analyzer menu, accessed from various Pre-Race menus                       |
+| memcard                |    ❌️    | Likely GT4P leftover                                                             |
+| message                |    ❌️    | Online mode message menu                                                         |
+| network                |    ❌️    | Network Connection and Online mode login                                         |
+| online                 |    ❌️    | Online mode                                                                      |
+| option                 |    ✔️    | Game Options                                                                     |
+| option2                |    ❌️    | GT4P leftover                                                                    |
+| option3                |    ❌️    | GT4P leftover                                                                    |
+| photo_save             |    ❌️    | Photo preview and save for Photo Drive                                           |
+| photo_shoot            |    ❌️    | Photo mode camera menu, photo preview and save for Photo Travel                  |
+| print                  |    ❌️    | Print menu, accessed from Photo Lab                                              |
+| quick                  |    ❌️    | GT4P leftover                                                                    |
+| quick-arcade           |    ✔️    | Arcade mode Single Race Pre-Race menu                                            |
+| quick-championship     |    ❌️    | GT Mode Championship Pre-Race menu                                               |
+| quick-event            |    ❌️    | GT Mode Single Race, Practice, and Family Cup Pre-Race menu                      |
+| quick-freerun          |    ❌️    | GT Mode Photo Drive Pre-Race menu                                                |
+| quick-license          |    ❌️    | GT Mode License test Pre-Race menu                                               |
+| quick-mission          |    ❌️    | GT Mode Mission Pre-Race menu                                                    |
+| quick-mt               |    ❌️    | GT Mode Power & Speed Pre-Race menu                                              |
+| quick-online           |    ❌️    | Online Mode Pre-Race menu                                                        |
+| quick-practice         |    ❌️    | GT Mode Track Meet Pre-Race menu                                                 |
+| quick-tt               |    ❌️    | Arcade Mode Time Trial Pre-Race menu                                             |
+| ranking                |    ❌️    | Rankings menu, accessed from various Pre-Race menus                              |
+| setting                |    ❌️    | Car Setting menu and all of its sub-menus (Change parts and tuning sliders)      |
+| slide                  |    ❌️    | Slideshow mode                                                                   |
+| GT4Application         |    ✔️    | Initializer and Config Script loader / re-loader                                 |
 
 </details>
 
