@@ -1,0 +1,576 @@
+module ArcadeProject::CarRoot
+{
+    static watcher = nil;
+    static count = 10 * 60;
+    static car_list = nil;
+    static last_color_index = 0;
+
+    car_list = nil;
+    static current_car = nil;
+    static load_gpb = nil;
+    static original_name_scale_x = CarScroll::Name.scale_x;
+    static original_name_scale_y = CarScroll::Name.scale_y;
+
+    function setMoveActor(widget, x, y)
+    {
+        var actor = main::menu::MMoveActor(widget, widget.x + x, widget.y + y);
+        widget.actor = actor;
+        widget.actor.ratio = 0.2;
+    }
+
+    setMoveActor(CarScroll, 0.0, 400.0);
+    CarScroll.actor.out = false;
+    CarScroll.actor.warp();
+    setMoveActor(ColScroll, 0.0, 400.0);
+    ColScroll.actor.out = true;
+    ColScroll.actor.warp();
+
+    function setFadeActor(widget)
+    {
+        var actor = main::menu::MFadeActor(widget, 1.0);
+        widget.actor = actor;
+        widget.actor.period = 0.5;
+        widget.actor.repeat = true;
+    }
+
+    function setCrossFade(widget, on)
+    {
+        var actor = main::menu::MFadeActor(widget, 1.0);
+        widget.actor = actor;
+        widget.actor.period = 1.0;
+        widget.actor.repeat = true;
+        widget.actor.out = on;
+        widget.actor.over = 1.0;
+        widget.actor.slope = 0.5;
+        widget.actor.warp();
+    }
+
+    function resetCrossFade(widget, on)
+    {
+        widget.actor.out = on;
+        widget.actor.warp();
+    }
+
+    setFadeActor(CarScroll::dec_arrow::bga);
+    setFadeActor(CarScroll::inc_arrow::bga);
+    setFadeActor(ToolTip2);
+    ToolTip2.actor.period = 1.0;
+    ToolTip2.actor.over = 2.0;
+    setCrossFade(Logo::bg, false);
+    setCrossFade(Logo::bg1, true);
+
+    function onInitialize(context)
+    {
+        hidden.visible = false;
+        ToolTip::tip.remove();
+        ToolTip2::tip.remove();
+        ToolTip2::tip.value = context.translate(ROOT, "how to add favorite");
+
+        ToolTip2.visible = main::game.option.limit_favorite_car_only && GameRoot::current_game != "LANBattle";
+
+        if (MethodRoot::getCurrentCategory() != "favorite")
+        {
+            load_gpb = MethodRoot::getCurrentCategory();
+            context.loadGpb("/projects/arcade", load_gpb);
+        }
+
+        car_list = MethodRoot::getCurrentCarList();
+        if (car_list == nil)
+        {
+            if (CourseRoot::isDirt())
+                car_list = CarData["lan_dirt_carlist"];
+            else
+                car_list = CarData["lan_carlist"];
+
+            delayOpenConfirmDialog(context, context.translate(ROOT, "since you do not have any available car"));
+
+            if (load_gpb != nil)
+                context.unloadGpb(load_gpb);
+            
+            load_gpb = "lan";
+            context.loadGpb("/projects/arcade", load_gpb);
+        }
+
+        set_car_select(context);
+        set_car(context);
+        
+        CountDown.visible = false;
+
+        if (GameRoot::current_game == "LANBattle")
+        {
+            main::network.raceMenuNotifySequence(6);
+            watcher = main::menu::MScriptWatcher(context, onTick);
+            watcher.interval = 30;
+            watcher.append();
+        }
+    }
+
+    function onFinalize(context)
+    {
+        unset_car_select(context);
+        car_list = nil;
+
+        if (watcher != nil)
+        {
+            watcher.remove();
+            watcher = nil;
+        }
+
+        if (load_gpb != nil)
+        {
+            context.unloadGpb(load_gpb);
+            load_gpb = nil;
+        }
+    }
+
+    function onTick(context)
+    {
+        import main::network;
+
+        if (!CountDown.visible)
+        {
+            if (network.raceMenuForceEnd())
+            {
+                network.raceMenuEnd();
+                CountDown.visible = true;
+            }
+        }
+        else
+        {
+            CountDown.text = count / 82;
+            count -= 30;
+
+            if (count < 0)
+            {
+                network.raceMenuNotifyStyle("live");
+                GameRoot::doGame(context);
+                return;
+            }
+
+            MatchingRoot::checkDisconnection(context);
+        }
+    }
+
+    function onKeyPress(context, event) 
+    {     
+        return EVENTRESULT_CONTINUE;
+    }
+
+    function getCurrentCar()
+    {
+        if (current_car != nil)
+            return current_car;
+        else
+            ; // 16108
+    }
+
+    function getCurrentColor()
+    {
+        if (last_color_index != nil)
+            return last_color_index;
+        else
+            return 0;
+    }
+
+    function set_car_select(context)
+    {
+        var car_num = car_list.size;
+
+        if (MethodRoot::getCurrentCategory() == "favorite")
+        {
+            Logo::bg.from_disk = true;
+            Logo::bg.cache = true;
+
+            for (var i = 0; i < car_num; i++)
+            {
+                var car = car_list[i];
+
+                var label = main::menu::MCarData::GetCarLabel(car);
+                Logo::bg.image_path = "piece/car_logo2/" + label + ".img";
+                Logo::bg.doInitialize(context);
+            }
+        }
+        else
+        {
+            Logo::bg.from_disk = false;
+            Logo::bg.cache = false;
+        }
+
+        CarScroll::SelectBox.setItemTemplate(context, hidden::MiniItem);
+        CarScroll::SelectBox.setItemCount(car_num);
+        CarScroll::SelectBox.h_justify = 0.5;
+        CarScroll::SelectBox.v_justify = 1.0;
+        CarScroll::SelectBox.focus_callback = CarScroll::SelectBox::onValueChanged;
+
+        for (var i = 0; i < car_num; i++)
+        {
+            var mini = CarScroll::SelectBox.getItemWidget(i, context);
+            var car = car_list[i];
+            var label = main::menu::MCarData::GetCarLabel(car);
+
+            if (MethodRoot::getCurrentCategory() == "favorite")
+            {
+                mini["image"].from_disk = true;
+                mini["image"].image_path = "piece/car_mini/" + label + ".img";
+            }
+            else
+                mini["image"].image_path = "image/piece/car_mini/" + label + ".png";
+
+
+            mini["image"].doInitialize(context);
+            mini["dot"].visible = main::game.favorite_car.has(car) && !main::game.option.limit_favorite_car_only && GameRoot::current_game != "LANBattle";
+            mini["up"].visible = !main::game.option.limit_favorite_car_only && GameRoot::current_game != "LANBattle";
+
+            setFadeActor(mini["up"]);
+        }
+    }
+
+    function unset_car_select(context)
+    {
+        CarScroll::SelectBox.setItemCount(0);
+    }
+    
+    function set_car_info(context, car_data)
+    {
+        var train = car_data.getDTrainType();
+
+        if (train == nil)
+            train = "--";
+
+        var power = car_data.getCatPs("%d%s/%s%s");
+        var torque = car_data.getCatTq("%.2t%s/%s%s");
+        var info = context.translate(ROOT, "car_info");
+        train = context.translate(ROOT, "DriveTrainName", train);
+        ToolTip::tip.value = info.format(train, power, torque);
+    }
+
+    function set_car(context)
+    {
+        ToolTip2.actor.out = true;
+        ToolTip2.actor.warp();
+
+        var index = CarScroll::SelectBox.focus_index;
+
+        if (index < 0)
+            return;
+
+        var car = car_list[index];
+        CarFace.car_code = car;
+        current_car = car;
+        var label = CarFace.car_data.getCarLabel();
+        var tuner = main::menu::MCarData::GetTuner(car);
+
+        if (MethodRoot::getCurrentCategory() == "favorite")
+        {
+            Logo::bg.from_disk = true;
+            Logo::bg.image_path = "piece/car_logo2/" + label + ".img";
+        }
+        else
+        {
+            // GT4O specifically is weird about reloading the same GPB image and will fail to show it when re-requested
+            // So load an invalid path before going back to the intended picture, silly hack but works
+            // Logo::bg.image_path = "image/piece/car_logo2/doesntexist.png"; 
+            Logo::bg.image_path = "image/piece/car_logo2/" + label + ".png";
+        }
+
+        Logo::bg.doInitialize(context);
+        
+        var bg1 = Logo::bg1;
+        bg1.image_path = "image/piece/tuner_logo2/" + tuner + ".png";
+        bg1.doInitialize(context);
+        bg1.adjustSize();
+		bg1.x = Logo::bg.x + (Logo::bg.w - bg1.w) * 0.5;
+        bg1.y = Logo::bg.y + (Logo::bg.h - bg1.h) * 0.5;
+
+        resetCrossFade(Logo::bg, false);
+        resetCrossFade(Logo::bg1, true);
+
+        var ctry = main::menu::MCarData::GetCountry(car);
+        Type::nation.image_path = "image/arcade/common/" + ctry + ".png";
+        Type::nation.doInitialize(context);
+
+        var ctgry = main::menu::MCarData::GetCategory(car);
+        Type::label.text = context.translate(ROOT, ctgry);
+
+        CarScroll::Name.scale_x = original_name_scale_x;
+        CarScroll::Name.scale_y = original_name_scale_y;
+        CarScroll::Name.text = CarFace.car_data.name;
+        CarScroll::Name.adjustScale();
+        
+        CarFace::move_car(false, true);
+
+        last_color_index = 0;
+        
+        set_car_info(context, CarFace.car_data);
+
+        if (main::menu::MSystem::GetVersionBranch() == "vdim")
+        {
+            var col = [2, 3, 0][index];
+
+            CarFace.setColorIndex(col);
+            last_color_index = col;
+        }
+    }
+
+    function set_col_select(context)
+    {
+        CarScroll.actor.out = true;
+        ToolTip2.visible = false;
+
+        var car_data = CarFace.car_data;
+        var col_list = car_data.getColors();
+        var num = col_list.size;
+
+        for (var i = 0; i < num; i++)
+        {
+            var chip = StoreHouse::ColItem.doCopy();
+            chip["chip"].setData(car_data, i);
+            ColScroll::SelectBox.appendChild(context, chip);
+        }
+
+        ColScroll.actor.out = false;
+        ColScroll::SelectBox.index = last_color_index;
+        ColScroll::SelectBox.callFocus(ROOT);
+        
+        set_col(context);
+    }
+
+    function unset_col_select(context)
+    {
+        ToolTip2.visible = true;
+        ColScroll.actor.out = true;
+        ColScroll::SelectBox.clearChildren(context);
+        CarScroll.actor.out = false;
+        CarRoot.setFocus(CarScroll::SelectBox);
+    }
+
+    function set_col(context)
+    {
+        var index = ColScroll::SelectBox.index;
+        last_color_index = index;
+        CarFace.setColorIndex(index);
+        var colname = CarFace.car_data.getColorName(index);
+
+        if (colname != "-")
+            ColScroll::Name.text = colname;
+        else   
+            ColScroll::Name.text = "";
+    }
+}
+
+module ArcadeProject::CarRoot::CarFace
+{
+    function move_car(phase, warp)
+    {
+        if (CarFace.car_model != nil)
+        {
+            if (phase == 0)
+            {
+                CarFace.car_model.motion = 1;
+
+                if (warp == 1)
+                {
+                    CarFace.car_model.tz = 8.5;
+                    CarFace.car_model.ry = 180.0;
+                    CarFace.car_model.warp();
+                }
+
+                CarFace.car_model.tx = 0.0;
+                CarFace.car_model.tz = 0.0;
+                CarFace.car_model.posInterpolateSpeed = 0.025;
+            }
+            else 
+            {
+                CarFace.car_model.motion = 2;
+                CarFace.car_model.tx = -0.9;
+                CarFace.car_model.tz = 1.6;
+                CarFace.car_model.ry = 185.5;
+                CarFace.car_model.posInterpolateSpeed = 0.1;
+                
+                if (warp == 1)
+                    CarFace.car_model.warp();
+            }
+        }
+    }
+}
+
+module ArcadeProject::CarRoot::CarScroll::SelectBox
+{
+    function onValueChanged(context, index)
+    {
+        set_car(context);
+    }
+
+    function onCancel(context, event, item)
+    {
+        if (GameRoot::current_game == "LANBattle")
+            main::sound.play("disable")
+        else 
+        {
+            main::sound.play("cancel");
+
+            context.transition.panOutIn(context);
+            if (GameRoot::isSkipMethod() || main::game.option.special_arcade_tuner != "")
+            {
+                if (GameRoot::current_game == "SplitBattle")
+                    start_page(context, SplitRoot);
+                else
+                    start_page(context, CourseRoot);
+            }
+            else
+            {
+                var root_window = MethodRoot::getCurrentMethodRoot();
+                start_page(context, root_window);
+            }
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        if (event.keysym == PS2_PAD_CTRL_L3_UP || event.keysym == PS2_PAD_CTRL_L3_DOWN)
+        {
+            var fwidget = SelectBox.focus_index >= 0 ? SelectBox.getItemWidget(SelectBox.focus_index) : nil;
+
+            var favorite = main::game.favorite_car;
+
+            if (!favorite.has(current_car))
+            {
+                if (favorite.isFull())
+                {
+                    main::sound.play("disable");
+                    CarFace.quality_level = 0;
+                    openConfirmDialog(context, 2, context.translate(ROOT, "favorite was full"));
+                    CarFace.quality_level = 1;
+                }
+                else
+                {
+                    main::sound.play("ok");
+                    CarFace.quality_level = 0;
+                    var res = openConfirmDialog(context, 1, context.translate(ROOT, "add this car to favorite"));
+                    CarFace.quality_level = 1;
+
+                    if (res)
+                    {
+                        res = favorite.append(current_car);
+
+                        if (res)
+                            if (fwidget != nil)
+                                fwidget["dot"].visible = true;
+                    }
+                }
+            }
+            else
+            {
+                if (!main::game.option.limit_favorite_car_only && GameRoot::current_game != "LANBattle")
+                {
+                    main::sound.play("cancel");
+                    CarFace.quality_level = 0;
+                    var res = openConfirmDialog(context, 1, context.translate(ROOT, "remove this car from favorite"));
+                    CarFace.quality_level = 1;
+
+                    if (res)
+                    {
+                        favorite.remove(current_car);
+                        if (fwidget != nil)
+                            fwidget["dot"].visible = false;
+                    }
+                }
+            }
+
+            return EVENTRESULT_FILTER;
+        }
+
+        return false;
+    }
+
+    function onActivate(context, event, item)
+    {
+        var crs = CourseRoot::getCurrentCourse();
+        var max_entry = main::menu::MCourseData::GetMaxCarNum(crs);
+
+        if (CourseRoot::isDirt() && !main::menu::MCarData::IsDirtRunnable(current_car))
+        {
+            main::sound.play("disable");
+            CarFace.quality_level = 0;
+            openConfirmDialog(context, 2, context.translate(ROOT, "this car cannot run a dirt course and a snow course"));
+            CarFace.quality_level = 1;
+        }
+        else if (GameRoot::current_game == "SingleRace" && main::menu::MCarData::RaceForbidden(current_car))
+        {
+            main::sound.play("disable");
+            CarFace.quality_level = 0;
+            openConfirmDialog(context, 2, context.translate(ROOT, "this car cannot run single race"));
+            CarFace.quality_level = 1;
+        }
+        else if (GameRoot::current_game == "SingleRace" && max_entry < 6 && main::menu::MCarData::GetOpenModelType(current_car) == 2)
+        {
+            main::sound.play("disable");
+            var course_name = context.translate(ROOT, "CourseNameTitle", crs);
+            CarFace.quality_level = 0;
+            openConfirmDialog(context, 2, context.translate(ROOT, "this car cannot run this course by this car").format(course_name));
+            CarFace.quality_level = 1;
+        }
+        else if ((GameRoot::current_game == "LANBattle" || GameRoot::current_game == "SplitBattle") && main::menu::MCarData::GetOpenModelType(current_car) == 2)
+        {
+            main::sound.play("disable");
+            CarFace.quality_level = 0;
+            openConfirmDialog(context, 2, context.translate(ROOT, "this car cannot run with battle race"));
+            CarFace.quality_level = 1;
+        }
+        else 
+        {
+            ROOT.setFocus(nil);
+            main::sound.play("ok");
+            
+            if (main.defined("DEMO_ARCADE_SKIP_COLOR_SELECT"))
+                SettingPopup::open(context);
+            else
+                set_col_select(context);
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module ArcadeProject::CarRoot::ColScroll::SelectBox
+{
+    function onValueChanged(context, index)
+    {
+        set_col(context);
+    }
+
+    function onCancel(context, event, item)
+    {
+        ROOT.setFocus(nil);
+        main::sound.play("cancel");
+        unset_col_select(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onActivate(context, event, item)
+    {
+        if (GameRoot::current_game == "PhotoMode")
+        {
+            main::sound.play("next");
+            GameRoot::doGame(context);
+        }
+        else
+        {
+            main::sound.play("ok");
+            ColScroll.actor.out = true;
+            SettingPopup::open(context);
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        if (event.keysym == PS2_PAD_CTRL_L3_UP || event.keysym == PS2_PAD_CTRL_L3_DOWN)
+            return EVENTRESULT_FILTER;
+
+        return false;
+    }
+}
