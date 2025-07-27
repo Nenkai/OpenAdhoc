@@ -117,10 +117,13 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 </details>
 
 <details>
-  <summary>GT4 Online (US)</summary>
+  <summary>GT4</summary>
 
-### GT4 Online (US)
-  
+### GT4
+
+Most of the reversed projects target GT4 Online Beta (US).
+
+
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|
 | arcade                 |    ❌️    | Arcade mode and all of its sub-menus                                             |
@@ -199,7 +202,7 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 
 ## ⚙️ Compilation
 
-The [Adhoc Toolchain 1.0.5](https://github.com/Nenkai/GTAdhocToolchain) or later is required to compile game scripts. It is also recommended to install the VS Code Extension. Binaries/Artifacts can be acquired from the Actions tab.
+The [Adhoc Toolchain 1.1.0](https://github.com/Nenkai/GTAdhocToolchain) or later is required to compile game scripts. It is also recommended to install the VS Code Extension. Binaries/Artifacts can be acquired from the Actions tab.
 
 > [!TIP]  
 It is also recommended to add the path to the toolchain (i.e `adhoc.exe`) to your **PATH**.
