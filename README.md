@@ -1,21 +1,209 @@
 
 # OpenAdhoc
-OpenAdhoc is an open-source re-implementation of Gran Turismo Scripts based on the proprietary Adhoc scripting language to allow logic-based modding as seen on the [GT6 Spec II Mod](https://www.gtplanet.net/forum/threads/beta6-gt6-spec-ii-mod.399796/) and [GT4 Randomizer/Spec II](https://twitter.com/TheAdmiester/status/1658179881186779144). 
+OpenAdhoc is an open-source re-implementation of the proprietary "Adhoc" scripting language used in Gran Turismo games. OpenAdhoc allows logic-based modding as seen on the [GT6 Spec II Mod](https://www.gtplanet.net/forum/threads/beta6-gt6-spec-ii-mod.399796/) and [GT4 Randomizer/Spec II](https://twitter.com/TheAdmiester/status/1658179881186779144), among other fan projects currently in development.
 
-This repository contains compilable game scripts re-created from originally compiled scripts. The goal is to allow source-code level editing for GT4, GT5, GT6 (and potentially others). Scripts operate nearly as the whole of game logic, while the executable mostly serves as the engine and exposes libraries to the script interface.
+This repository contains compilable game scripts re-created from originally compiled ones. This allows source-code level editing for scripts that have been successfully reverse-engineered in Adhoc-based GT games.<br>
+GT4 Prologue, GT4, TT, GTHD, GT5P, GTPSP, GT5, GT6, GT Sport, and all games in between them are in the scope of OpenAdhoc.<br>
+
+Scripts operate nearly as the whole of game logic, while the executable mostly serves as the engine and exposes libraries to the script interface.
+The games use a system of "projects" to divide the major menu types. Each game mode is made out of a project folder containing the Adhoc logic script(s) (.adc), the UI definition script (.mproject), and assets: localization files, textures, models, and animations packaged into container files (.gpb).
 
 > [!NOTE]  
 **This code is licensed under GPL-v3. You are required to disclose source/changes including for mods.**
 >
-> GT6 Spec II & GT5 Master Mod are included in separate branches.
+> Modified versions of OpenAdhoc for fan projects such as GT6 Spec II & GT5 Master Mod are required to be put into a separate fork.
 
 ## Games & Progress
+
+<details>
+  <summary>GT4 Prologue</summary>
+
+### GT4 Prologue
+Adhoc Version: 5<br>
+GT4 Prologue scripts have PS2ZIP compression applied to them, creating a roadblock for modding purposes.<br>
+Regardless, it is posslble to decompress them with [PDTools.Compression](https://github.com/Nenkai/PDTools/tree/master/PDTools.Compression) and dissassemble for reverse-engineering.<br>
+There are 11 projects.<br>
+No progress has been made currently.
+  
+|          Name          | Completed |                                     Purpose                                      | 
+|------------------------|-----------|----------------------------------------------------------------------------------|
+| language               |    ❌️     |                                                                                  |
+| memcard                |    ❌️     |                                                                                  |
+| option                 |    ❌️     |                                                                                  |
+| option2                |    ❌️     |                                                                                  |
+| prize                  |    ❌️     |                                                                                  |
+| prologue               |    ❌️     |                                                                                  |
+| prologue_arcade        |    ❌️     |                                                                                  |
+| prologue_opening       |    ❌️     |                                                                                  |
+| quick                  |    ❌️     |                                                                                  |
+| quick-arcade           |    ❌️     |                                                                                  |
+| GT4Application         |    ❌️    | Initializer and Config Script loader / re-loader                                  |
+
+</details>
+
+<details>
+  <summary>GT4 Online (US)</summary>
+
+### GT4 Online (US)
+Adhoc Version: 7 (v5-7 compatible)<br>
+12 of 30 projects are completed and can be compiled.<br>
+There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
+There are 6 leftover projects from GT4P that are not relevant to completion
+  
+|          Name          | Completed |                                     Purpose                                      | 
+|------------------------|-----------|----------------------------------------------------------------------------------|
+| arcade                 |    ✔️    | Arcade mode and all of its sub-menus                                             |
+| boot                   |    ✔️    | Bootup, Language select, new game setup, initial intro movie                     |
+| cursor                 |    ✔️    | Sets up cursor and dialog boxes                                                  |
+| demo_movie             |    ✔️    | Intro when idle at main menu, and any movie that plays after completing event    |
+| event                  |    ❌️    | LAN mode                                                                         |
+| eyetoy                 |    ✔️    | Handles unlocking Nike Car when scanning GT Shirt with the Eyetoy accessory      |
+| gtmode                 |    ✔️    | Gran Turismo Mode and all of its sub-menus                                       |
+| labomode               |    ❌️    | Photo lab, Replay Theater, Load & Save Replay, Delete Replay/Film/Photo          |
+| logger                 |    ❌️    | Replay Analyzer menu, accessed from various Pre-Race menus                       |
+| message                |    ❌️    | Online mode message menu                                                         |
+| network                |    ❌️    | Network Connection and Online mode login                                         |
+| online                 |    ❌️    | Online mode                                                                      |
+| option                 |    ✔️    | Game Options                                                                     |
+| photo_save             |    ❌️    | Photo preview and save for Photo Drive                                           |
+| photo_shoot            |    ❌️    | Photo mode camera menu, photo preview and save for Photo Travel                  |
+| print                  |    ❌️    | Print menu, accessed from Photo Lab                                              |
+| quick-arcade           |    ✔️    | Arcade mode Single Race Pre-Race menu                                            |
+| quick-championship     |    ❌️    | GT Mode Championship Pre-Race menu                                               |
+| quick-event            |    ❌️    | GT Mode Single Race, Practice, and Family Cup Pre-Race menu                      |
+| quick-freerun          |    ❌️    | GT Mode Photo Drive Pre-Race menu                                                |
+| quick-license          |    ❌️    | GT Mode License test Pre-Race menu                                               |
+| quick-mission          |    ❌️    | GT Mode Mission Pre-Race menu                                                    |
+| quick-mt               |    ❌️    | GT Mode Power & Speed Pre-Race menu                                              |
+| quick-online           |    ❌️    | Online Mode Pre-Race menu                                                        |
+| quick-practice         |    ✔️    | GT Mode Track Meet Pre-Race menu                                                 |
+| quick-tt               |    ❌️    | Arcade Mode Time Trial Pre-Race menu                                             |
+| ranking                |    ❌️    | Online leaderboards, accessed from Event project                                 |
+| setting                |    ✔️    | Car Setting menu and all of its sub-menus (Change parts and tuning sliders)      |
+| slide                  |    ❌️    | Slideshow mode                                                                   |
+| GT4Application         |    ✔️    | Initializer and Config Script loader / re-loader                                 |
+| --------               | ----     | ---- Stub projects: ----                                                         |
+| language               |    ✔️    | Leftover from GT4P's language select. Contains more language options, appears to be a dev version |
+| list_box               |    ❌️    | Leftover from GT4P's Save/Delete Replay menu. Possibly contains framework for an unused save icon customizer |
+| memcard                |    ✔️    | GT4P leftover                                                                    |
+| option2                |    ❌️    | GT4P leftover                                                                    |
+| option3                |    ❌️    | GT4P leftover                                                                    |
+| quick                  |    ❌️    | GT4P leftover                                                                    |
+
+</details>
+
+<details>
+  <summary>Tourist Trophy</summary>
+
+### Tourist Trophy
+Adhoc Version: 7<br>
+  There are 22 projects.<br>
+  There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
+  No progress has been made currently.
+
+|          Name          | Completed |                                     Purpose                                      | 
+|------------------------|-----------|----------------------------------------------------------------------------------|
+| arcade                 |    ❌️    | Arcade mode and all of its sub-menus                                             |
+| bestshot               |    ❌️    |                                                                                  |
+| boot                   |    ❌️    | Bootup, new game setup, initial intro movie                                      |
+| cursor                 |    ❌️    | Sets up cursor and dialog boxes                                                  |
+| demo_movie             |    ❌️    | Intro when idle at main menu, and any movie that plays after completing event    |
+| labomode               |    ❌️    | Photo lab, Replay Theater, Load & Save Replay, Delete Replay/Film/Photo          |
+| option                 |    ❌️    | Game Options                                                                     |
+| photo_save             |    ❌️    | Photo mode                                                                       |
+| print                  |    ❌️    |                                                                                  |
+| quick-arcade           |    ❌️    |                                                                                  |
+| quick-challenge        |    ❌️    |                                                                                  |
+| quick-championship     |    ❌️    |                                                                                  |
+| quick-event            |    ❌️    |                                                                                  |
+| quick-freerun          |    ❌️    |                                                                                  |
+| quick-license          |    ❌️    |                                                                                  |
+| quick-photo            |    ❌️    |                                                                                  |
+| quick-practice         |    ❌️    |                                                                                  |
+| quick-tt               |    ❌️    |                                                                                  |
+| setting                |    ❌️    | Bike Setting menu and all of its sub-menus (Change parts and tuning sliders)     |
+| slide                  |    ❌️    | Slideshow mode                                                                   |
+| ttmode                 |    ❌️    | Tourist Trophy mode and all of its sub-menus                                     |
+| GT4Application         |    ❌️    | Initializer and Config Script loader / re-loader                                 |
+</details>
+
+<details>
+  <summary>GT HD</summary>
+
+### GT HD
+  Adhoc Version: 10 (v8-10 compatible)<br>
+  No progress has been made currently.
+</details>
+
+<details>
+  <summary>GT5 Prologue</summary>
+
+### GT5 Prologue
+  Adhoc Version: 10<br>
+  No progress has been made currently.
+</details>
+
+<details>
+  <summary>GT PSP (gt5m)</summary>
+
+### GT PSP (gt5m)
+  Adhoc Version: 12<br>
+  All projects and scripts fully reversed by pez2k ✔️<br>
+  Adhoc code is identical for all regions and revisions.
+</details>
+
+<details>
+  <summary>GT5 (2.11)</summary>
+  
+### GT5
+Adhoc Version: 12<br>
+GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and mainly patches exploits/server use and minor other things.
+
+|          Name          | Completed |                                     Purpose                                      | 
+|------------------------|-----------|----------------------------------------------------------------------------------|
+| main                   |    ✔️    | Initial Bootstrap & Utils before `boot`                                          |
+| arcade                 |    ✔️    | Arcade Mode                                                                      |
+| academy                |    ❌    | N/A                                                                              |
+| boot                   |    ✔️    | Boot Project (logic is in bootstrap scripts)                                     |
+| concept                |    ❌    | N/A                                                                              |
+| config                 |    ❌    | N/A                                                                              |
+| cursor                 |    ❌    | N/A                                                                              |
+| demo_movie             |    ❌    | N/A                                                                              |
+| dialog                 |    ❌    | N/A                                                                              |
+| gps_replay             |    ❌    | N/A                                                                              |
+| gtauto                 |    ❌    | N/A                                                                              |
+| gtmode                 |    ❌    | N/A                                                                              |
+| gttop                  |    ✔️    | Main Menu                                                                        |
+| gttv                   |    ❌    | N/A                                                                              |
+| gttv2                  |    ❌    | N/A                                                                              |
+| leavedemo              |    ❌    | N/A                                                                              |
+| manual                 |    ❌    | N/A                                                                              |
+| multimonitor           |    ❌    | N/A                                                                              |
+| museum                 |    ❌    | N/A                                                                              |
+| news                   |    ❌    | N/A                                                                              |
+| online                 |    ❌    | N/A                                                                              |
+| online_bspec           |    ❌    | N/A                                                                              |
+| option                 |    ❌    | N/A                                                                              |
+| photo                  |    ❌    | N/A                                                                              |
+| play_movie             |    ❌    | N/A                                                                              |
+| race                   |    ❌    | N/A                                                                              |
+| race_*                 |    ❌    | N/A                                                                              |
+| ranking                |    ❌    | N/A                                                                              |
+| rcvtst                 |    ❌    | N/A                                                                              |
+| setting                |    ❌    | N/A                                                                              |
+| ui_kit                 |    ❌    | N/A                                                                              |
+| user_profile           |    ❌    | N/A                                                                              |
+| user_profile_driver    |    ❌    | N/A                                                                              |
+
+---
+
+</details>
 
 <details>
   <summary>GT6 (1.22)</summary>
   
 ### GT6
-  
+  Adhoc Version: 12<br>
   26 of 49 projects are completed and can be compiled
   
 |          Name          | Completed |                                     Purpose                                      | 
@@ -70,122 +258,10 @@ This repository contains compilable game scripts re-created from originally comp
 </details>
 
 <details>
-  <summary>GT5 (2.11)</summary>
-  
-### GT5
-
-GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and mainly patches exploits/server use and minor other things.
-
-|          Name          | Completed |                                     Purpose                                      | 
-|------------------------|-----------|----------------------------------------------------------------------------------|
-| main                   |    ✔️    | Initial Bootstrap & Utils before `boot`                                          |
-| arcade                 |    ✔️    | Arcade Mode                                                                      |
-| academy                |    ❌    | N/A                                                                              |
-| boot                   |    ✔️    | Boot Project (logic is in bootstrap scripts)                                     |
-| concept                |    ❌    | N/A                                                                              |
-| config                 |    ❌    | N/A                                                                              |
-| cursor                 |    ❌    | N/A                                                                              |
-| demo_movie             |    ❌    | N/A                                                                              |
-| dialog                 |    ❌    | N/A                                                                              |
-| gps_replay             |    ❌    | N/A                                                                              |
-| gtauto                 |    ❌    | N/A                                                                              |
-| gtmode                 |    ❌    | N/A                                                                              |
-| gttop                  |    ✔️    | Main Menu                                                                        |
-| gttv                   |    ❌    | N/A                                                                              |
-| gttv2                  |    ❌    | N/A                                                                              |
-| leavedemo              |    ❌    | N/A                                                                              |
-| manual                 |    ❌    | N/A                                                                              |
-| multimonitor           |    ❌    | N/A                                                                              |
-| museum                 |    ❌    | N/A                                                                              |
-| news                   |    ❌    | N/A                                                                              |
-| online                 |    ❌    | N/A                                                                              |
-| online_bspec           |    ❌    | N/A                                                                              |
-| option                 |    ❌    | N/A                                                                              |
-| photo                  |    ❌    | N/A                                                                              |
-| play_movie             |    ❌    | N/A                                                                              |
-| race                   |    ❌    | N/A                                                                              |
-| race_*                 |    ❌    | N/A                                                                              |
-| ranking                |    ❌    | N/A                                                                              |
-| rcvtst                 |    ❌    | N/A                                                                              |
-| setting                |    ❌    | N/A                                                                              |
-| ui_kit                 |    ❌    | N/A                                                                              |
-| user_profile           |    ❌    | N/A                                                                              |
-| user_profile_driver    |    ❌    | N/A                                                                              |
-
----
-
-</details>
-
-<details>
-  <summary>GT4</summary>
-
-### GT4
-
-Most of the reversed projects target GT4 Online Beta (US).
-
-
-|          Name          | Completed |                                     Purpose                                      | 
-|------------------------|-----------|----------------------------------------------------------------------------------|
-| arcade                 |    ❌️    | Arcade mode and all of its sub-menus                                             |
-| boot                   |    ✔️    | Bootup, new game setup, initial intro movie                                      |
-| cursor                 |    ✔️    | Sets up cursor and dialog boxes                                                  |
-| demo_movie             |    ✔️    | Intro when idle at main menu, and any movie that plays after completing event    |
-| event                  |    ❌️    | LAN mode                                                                         |
-| eyetoy                 |    ✔️    | Handles unlocking Nike Car when scanning GT Shirt with the Eyetoy accessory      |
-| gtmode                 |    ✔️    | Gran Turismo Mode and all of its sub-menus                                       |
-| labomode               |    ❌️    | Photo lab, Replay Theater, Load & Save Replay, Delete Replay/Film/Photo          |
-| language               |    ❌️    | Language selection screen at bootup                                              |
-| list_box               |    ❌️    |                                                                                  |
-| logger                 |    ❌️    | Replay Analyzer menu, accessed from various Pre-Race menus                       |
-| memcard                |    ❌️    | Likely GT4P leftover                                                             |
-| message                |    ❌️    | Online mode message menu                                                         |
-| network                |    ❌️    | Network Connection and Online mode login                                         |
-| online                 |    ❌️    | Online mode                                                                      |
-| option                 |    ✔️    | Game Options                                                                     |
-| option2                |    ❌️    | GT4P leftover                                                                    |
-| option3                |    ❌️    | GT4P leftover                                                                    |
-| photo_save             |    ❌️    | Photo preview and save for Photo Drive                                           |
-| photo_shoot            |    ❌️    | Photo mode camera menu, photo preview and save for Photo Travel                  |
-| print                  |    ❌️    | Print menu, accessed from Photo Lab                                              |
-| quick                  |    ❌️    | GT4P leftover                                                                    |
-| quick-arcade           |    ✔️    | Arcade mode Single Race Pre-Race menu                                            |
-| quick-championship     |    ❌️    | GT Mode Championship Pre-Race menu                                               |
-| quick-event            |    ❌️    | GT Mode Single Race, Practice, and Family Cup Pre-Race menu                      |
-| quick-freerun          |    ❌️    | GT Mode Photo Drive Pre-Race menu                                                |
-| quick-license          |    ❌️    | GT Mode License test Pre-Race menu                                               |
-| quick-mission          |    ❌️    | GT Mode Mission Pre-Race menu                                                    |
-| quick-mt               |    ❌️    | GT Mode Power & Speed Pre-Race menu                                              |
-| quick-online           |    ❌️    | Online Mode Pre-Race menu                                                        |
-| quick-practice         |    ✔️    | GT Mode Track Meet Pre-Race menu                                                 |
-| quick-tt               |    ❌️    | Arcade Mode Time Trial Pre-Race menu                                             |
-| ranking                |    ❌️    | Online leaderboards, accessed from Event project                                 |
-| setting                |    ✔️    | Car Setting menu and all of its sub-menus (Change parts and tuning sliders)      |
-| slide                  |    ❌️    | Slideshow mode                                                                   |
-| GT4Application         |    ✔️    | Initializer and Config Script loader / re-loader                                 |
-
-</details>
-
-<details>
-  <summary>GT PSP (gt5m)</summary>
-
-### GT PSP (gt5m)
-  
-  All projects and scripts fully reversed by pez2k. Adhoc code is identical for all regions and revisions.
-</details>
-
-<details>
-  <summary>Tourist Trophy</summary>
-
-### Tourist Trophy
-
-  Nothing at the moment.
-</details>
-
-<details>
   <summary>GT Sport (gt7sp)</summary>
 
 ### GT Sport (gt7sp)
-
+  Adhoc Version: 12<br>
   Only the boot project (1.00) reversed.
 </details>
 
@@ -202,7 +278,7 @@ Most of the reversed projects target GT4 Online Beta (US).
 
 ## ⚙️ Compilation
 
-The [Adhoc Toolchain 1.1.0](https://github.com/Nenkai/GTAdhocToolchain) or later is required to compile game scripts. It is also recommended to install the VS Code Extension. Binaries/Artifacts can be acquired from the Actions tab.
+The [Adhoc Toolchain 1.0.5](https://github.com/Nenkai/GTAdhocToolchain) or later is required to compile game scripts. It is also recommended to install the VS Code Extension. Binaries/Artifacts can be acquired from the Actions tab.
 
 > [!TIP]  
 It is also recommended to add the path to the toolchain (i.e `adhoc.exe`) to your **PATH**.
