@@ -1,0 +1,246 @@
+
+
+
+//---------------------------------------------------------------------------------------
+// PatchLogic.ad
+//
+// (例)
+// PatchLogic.ad
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// function
+//---------------------------------------------------------------------------------------
+
+
+
+module PatchLogic
+{
+    static ERROR_SUCCESS = 0;
+    static ERROR_PREPARE = 1;
+    static ERROR_CAPACITY = 2;
+    static ERROR_DOWNLOAD = 3;
+    static ERROR_INSTALL = 4;
+
+    function initialize(putlog)
+    {
+        if (putlog)
+            ;
+        
+        main::pdiext::MSystemPatch::clear();
+    }
+
+    function terminate(result)
+    {
+        main::pdiext::MSystemPatch::clear();
+        if (result != nil)
+        {
+            // Stripped or nothing
+        }
+    }
+
+    class PatchBase
+    {
+        attribute ROOT;
+        attribute progress = main::pdistd::MProgress();
+        attribute aborted;
+        attribute canceling;
+        attribute complete;
+        attribute watcher;
+        attribute success;
+        attribute ignore_progress;
+        attribute auto_next = false;
+
+        method __init__(ROOT)
+        {
+            self.ROOT = ROOT;
+        }
+
+        method start() { }
+        method check() { }
+        method begin_message() { }
+        method success_message() { }
+        method failed_message() { }
+        method error_message() { }
+
+        method closeWatcher()
+        {
+            if (self.watcher != nil)
+            {
+                WatcherUtil::Delete(self.watcher);
+                self.watcher = nil;
+            }
+        }
+
+        method OnProgress(context)
+        {
+            if (self.ignore_progress)
+                return;
+
+            var end = false;
+
+            var val = check();
+            if (val >= 0)
+            {
+
+                self.progress.value = val.toFloat() * 0.01f;
+                DialogUtil::setRemainSecond(context, self.progress.getRemainSecond());
+
+                if (val == 100)
+                {
+                    self.complete = true;
+                    end = true;
+                }
+
+                if (self.aborted)
+                {
+                    self.complete = false;
+                    end = true;
+                }
+            }
+            else if (!self.canceling)
+            {
+                self.ignore_progress = true;
+                var text = context.translate(self.ROOT, "Network", error_message());
+                text = text.build(val);
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+                end = true;
+            }
+
+            if (end)
+            {
+                if (!self.canceling)
+                {
+                    self.ignore_progress = true;
+                    DialogUtil::setProgressCancelCB(context, nil);
+                    context.leaveEventLoop();
+                }
+            }
+        }
+
+        method OnCancel(context)
+        {
+
+            self.canceling = true;
+            var text = context.translate(self.ROOT, "Network", "DO_YOU_ABORT");
+
+            var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, text);
+            if (res)
+                self.aborted = true;
+
+            self.canceling = false;
+        }
+
+        method executeImpl(context, args)
+        {
+            self.complete = false;
+
+            start();
+
+            self.watcher = WatcherUtil::Create(context, OnProgress, 60);
+            context.enterEventLoop();
+            closeWatcher();
+
+            if (self.aborted)
+                self.complete = false;
+
+            return [self.complete, self.complete && self.auto_next];
+        }
+
+        method execute(context, cancelable)
+        {
+            self.ignore_progress = false;
+
+            self.progress.value = 0f;
+
+            DialogUtil::setProgress(context, self.progress);
+
+            self.aborted = false;
+
+            self.canceling = false;
+
+            if (cancelable)
+                DialogUtil::setProgressCancelCB(context, OnCancel);
+            else
+                DialogUtil::setProgressCancelCB(context, nil);
+            
+            var res = DialogUtil::openProgressDialog(context, 
+                context.translate(self.ROOT, "Network", begin_message()),
+                context.translate(self.ROOT, "Network", success_message()),
+                context.translate(self.ROOT, "Network", failed_message()),
+                executeImpl, nil);
+            
+            self.success = res;
+            return self.success;
+        }
+    }
+
+    class Install : PatchBase
+    {
+        method start() 
+        { 
+            main::pdiext::MSystemPatch::startInstall() 
+        }
+
+        method check() 
+        { 
+            return main::pdiext::MSystemPatch::checkInstall(self.aborted);
+        }
+
+        method begin_message() 
+        {
+            return "NOW_INSTALLING";
+        }
+
+        method success_message()
+        {
+            return "INSTALL_COPLETED";
+        }
+
+        method failed_message()
+        {
+            return "INSTALL_FAILED";
+        }
+
+        method error_message()
+        {
+            return "INSTALL_ERROR";
+        }
+    }
+
+
+    class Prepare : PatchBase
+    {
+        method start()
+        {
+            self.auto_next = true;
+            main::pdiext::MSystemPatch::startPrepare();
+        }
+
+        method check()
+        {
+            return main::pdiext::MSystemPatch::checkPrepare(self.aborted);
+        }
+
+        method begin_message() 
+        {
+            return "NOW_PREPRARING_DOWNLOAD";
+        }
+
+        method success_message()
+        {
+            return "PREPARE_DOWNLOAD_COMPLETED";
+        }
+
+        method failed_message()
+        {
+            return "PREPARE_DOWNLOAD_FAILED";
+        }
+
+        method error_message()
+        {
+            return "PREPARE_DOWNLOAD_ERROR";
+        }
+    }
+}

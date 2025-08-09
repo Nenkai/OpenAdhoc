@@ -1,0 +1,124 @@
+//---------------------------------------------------------------------------------------
+// boot_entry.ad
+//
+// (例)
+// boot_entry.ad
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// function
+//---------------------------------------------------------------------------------------
+
+#define PUT_HERE(message) \
+    main::DebugTool::putHere(__FILE__, __LINE__, message);
+
+#define BREAK_HERE(message) \
+    main::DebugTool::breakDialog(__FILE__, __LINE__, message);
+
+#define WARNING_HERE(message) \
+    main::DebugTool::Logger::warningHere(__FILE__, __LINE__, message);
+
+#include "boot_sequence_common.ad"
+#include "Player.ad"
+
+static start_project_name_list = [
+    // branch       | project_name            | boot_project  | is_product
+    "gt7sp" :       ["gtmode",                "boot",          true ],
+    "behavior" :    ["dev_behavior",          "boot",          false],
+    "behavior-sa" : ["dev_behavior",          "boot",          false],
+    "demo" :        ["gtmode",                "boot",          false],
+    "beta" :        ["gtmode",                "boot",          true],
+    "runviewer" :   ["dev_synthetic_viewer",  "boot",          false],
+];
+
+static s_to_finish = false;
+static s_next_project_name;
+
+function boot_target()
+{
+    var target = main::GetVersionBranch();
+    var project_name = start_project_name_list[target][0];
+    var boot_project = start_project_name_list[target][1];
+    var is_product = start_project_name_list[target][2];
+
+    if (main::AppOpt["start_project"] != nil)
+    {
+        project_name = main::AppOpt["start_project"];
+        is_product = false;
+    }
+
+    if (main::AppOpt["boot_project"] != nil)
+    {
+        boot_project = main::AppOpt["boot_project"];
+        if (boot_project == "none")
+            boot_project = nil;
+    }
+
+    return [target, project_name, boot_project, is_product];
+}
+
+function boot_entry(sequence, update_context)
+{
+    var context = update_context.getRenderContext(0);
+    var [target, project_name, boot_project, is_product] = boot_target();
+
+    main::ListenerManager::setDefaultState("LaunchTarget", target);
+    main::ListenerManager::setDefaultState("BootSequenceDone", false);
+
+    var project = nil;
+    if (boot_project != nil)
+    {
+        prln("loading boot project");
+        project = main::manager.loadProject(main::PROJECT_ROOT_DIR + "/" + boot_project + "/" + boot_project);
+        prln("boot project loaded");
+        context.pushEvent(menu::MScriptEvent(project, project.onLoad, update_context, is_product));
+        yield;
+    }
+
+    sequence.registerFunction("FinishBootSequence", function() { s_to_finish = true });
+
+    boot_sequence_common(context, target, is_product);
+    prln("boot_sequence_common is done");
+    main::ListenerManager::notifyState("BootSequenceDone", true);
+    main::ListenerManager::clearDefaultState("LaunchTarget");
+
+    if (project != nil)
+    {
+        do
+        {
+            yield;
+        }
+        while (s_to_finish == false)
+
+        context.clearPage();
+
+        if (project.defined("onUnload"))
+            project.onUnload(update_context);
+
+        main::manager.unloadProject(project);
+        project = nil;
+    }
+
+    main::ListenerManager::clearDefaultState("BootSequenceDone");
+    s_next_project_name = project_name;
+}
+
+function boot(update_context)
+{
+    main::SequenceController::addEntry("Boot", boot_entry);
+    main::SequenceController::requestSequence("Main::Boot", update_context);
+    main::SequenceController::clearSequence("Main");
+    main::SequenceController::removeEntry("Boot");
+    
+    var context = update_context.getRenderContext(0);
+    if (context == nil)
+    {
+        update_context.createRenderContext(1);
+        context = update_context.getRenderContext(0);
+    }
+
+    main::SequenceUtil::setTopProjectName(s_next_project_name);
+    context.finish();
+    PUT_HERE("finish Sequence")
+}

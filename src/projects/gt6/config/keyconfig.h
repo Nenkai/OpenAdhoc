@@ -60,7 +60,7 @@ module KeyConfig
         }
     }
 
-    class ButtonAssign extends KeyAssign
+    class ButtonAssign : KeyAssign
     {
         method __init__(_device, _button_port, _set_action)
         {
@@ -68,7 +68,7 @@ module KeyConfig
         }
     }
 
-    class AnalogAssign extends KeyAssign
+    class AnalogAssign : KeyAssign
     {
         method __init__(_device, _analog_port, _set_action)
         {

@@ -1,0 +1,219 @@
+
+
+//---------------------------------------------------------------------------------------
+// GameMail.ad
+//
+// Creates the save profile entity
+// 
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// module
+//---------------------------------------------------------------------------------------
+module GameMail
+{
+    function clearInitializer()
+    {
+        undef CreateStructure;
+        undef Initialize;
+        undef clearInitializer;
+    }
+
+    function CreateStructure()
+    {
+        var st = STStructure("Impl");
+        GameMail.defineModule(st);
+        st.define("receive_max_id", STULong());
+        st.define("send_max_id", STULong());
+
+        DefineMethod();
+
+        return st;
+    }
+
+    function Initialize(instance)
+    {
+        instance.receive_max_id = 0;
+        instance.send_max_id = 0;
+
+        var sqlite = GlobalStatus::getSqlite();
+        DBUtil::initializeTableCommon(sqlite, "t_receive_mail", 3);
+        DBUtil::initializeTableCommon(sqlite, "t_send_mail", 3);
+
+        var sql_list = [
+            ("CREATE TABLE IF NOT EXISTS t_receive_mail (mail_id INTEGER NOT NULL PRIMARY KEY, user_id TEXT NOT NULL, "
+            "subject TEXT NOT NULL, body TEXT NOT NULL, date INTEGER NOT NULL, new_flag INTEGER NOT NULL)"),
+
+            ("CREATE TABLE IF NOT EXISTS t_send_mail    (mail_id INTEGER NOT NULL PRIMARY KEY, user_id TEXT NOT NULL, "
+             "subject TEXT NOT NULL, body TEXT NOT NULL, date INTEGER NOT NULL)"),
+        ];
+
+        foreach (var sql in sql_list)
+        {
+            var res = sqlite.execute0(sql);
+            DB_ASSERT(res == SQLITE_OK, res);
+        }
+    }
+
+    function DefineMethod()
+    {
+        module Impl
+        {
+            method addSend(mail_list)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "INSERT INTO t_send_mail (mail_id, user_id, subject, body, date) VALUES (?, ?, ?, ?, ?)";
+                var sql_list = [];
+
+                foreach (var mail in mail_list)
+                {
+                    var params = [
+                        mail["mail_id"],
+                        mail["to"],
+                        mail["subject"],
+                        mail["body"],
+                        mail["create_time"].getBySecond()
+                    ];
+
+                    sql_list.push([sql, params]);
+
+                    if (self.send_max_id < mail["mail_id"])
+                        self.send_max_id = mail["mail_id"];
+                }
+
+                var res = sqlite.executeTransaction(sql_list);
+                if (isFailed(res))
+                    return false;
+
+                return true;
+            }
+
+            method addReceive(mail_list)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "INSERT INTO t_receive_mail (mail_id, user_id, subject, body, date, new_flag) VALUES (?, ?, ?, ?, ?, 1)";
+                var sql_list = [];
+
+                foreach (var mail in mail_list)
+                {
+                    var params = [
+                        mail["mail_id"],
+                        mail["from"],
+                        mail["subject"],
+                        mail["body"],
+                        mail["create_time"].getBySecond()
+                    ];
+
+                    sql_list.push([sql, params]);
+
+                    if (self.receive_max_id < mail["mail_id"])
+                        self.receive_max_id = mail["mail_id"];
+                }
+
+                var res = sqlite.executeTransaction(sql_list);
+                if (isFailed(res))
+                    return false;
+
+                return true;
+            }
+
+
+            method readReceive(mail_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "UPDATE t_receive_mail SET new_flag = 0 WHERE mail_id = ?";
+                var params = [mail_id];
+                var res = sqlite.execute(sql, params);
+
+                if (isFailed(res))
+                    return false;
+
+                return true;
+
+            }
+
+            method removeSend(mail_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "DELETE FROM t_send_mail WHERE mail_id = ?";
+                var params = [mail_id];
+                var res = sqlite.execute(sql, params);
+
+                if (isFailed(res))
+                    return false;
+
+                return true;
+            }
+
+            method removeReceive(mail_id)
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "DELETE FROM t_receive_mail WHERE mail_id = ?";
+                var params = [mail_id];
+                var res = sqlite.execute(sql, params);
+
+                if (isFailed(res))
+                    return false;
+
+                return true;
+            }
+
+            method getSendList()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT * FROM t_send_mail ORDER BY mail_id DESC LIMIT 50";
+                var res = sqlite.executeQuery(sql);
+                return res;
+            }
+
+            method getReceiveList()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT * FROM t_receive_mail ORDER BY mail_id DESC LIMIT 50";
+                var res = sqlite.executeQuery(sql);
+                return res;
+            }
+
+            method getReceiveNewCount()
+            {
+                var sqlite = GlobalStatus::getSqlite();
+                var sql = "SELECT COUNT (*) FROM t_receive_mail WHERE new_flag = 1";
+                var res = sqlite.executeQuery(sql);
+                var count = getResult1(res);
+                if (count > 50)
+                    count = 50;
+
+                return count;
+            }
+
+
+            method getSendMaxMailId()
+            {
+                return self.send_max_id;
+            }
+
+            method getReceiveMaxMailId()
+            {
+                return self.receive_max_id;
+            }
+
+            method isFailed(res)
+            {
+                return res != SQLITE_DONE;
+            }
+
+            method getResult1(res)
+            {
+                if (res.size == 0)
+                    return nil;
+
+                var row = res[0];
+                if (row.size == 0)
+                    return nil;
+
+                return res[0][0];
+            }
+        }
+    }
+}

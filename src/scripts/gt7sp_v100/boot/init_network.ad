@@ -1,0 +1,368 @@
+//---------------------------------------------------------------------------------------
+// init_network.ad
+//
+// (例)
+// init_network.ad
+//---------------------------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------------------------
+// function
+//---------------------------------------------------------------------------------------
+
+function initFundamentalNetworkObjects()
+{
+    main::NetHub = pdistd::MNetHub();
+    main::WebServer = main::NetHub.getTinyWebServer();
+}
+
+function initNetworkObjects(context, type)
+{
+    if (GetVersionBuild() == "debug")
+        main::networkServerEnabled = true;
+
+    if (GetVersionBranch() == "demo")
+        main::networkServerEnabled = true;
+
+    
+    main::Grim3 = pdiext::MGrim3();
+
+    NetworkLoader::Initialize();
+    GrimLoader::Initialize();
+    NpLoader::Initialize();
+    TelemetryLoader::Initialize();
+    TrophyLoader::Initialize();
+
+    main::Lobby = main::gtengine::MLobby();
+
+    main::ServicePublisher = gtengine::MServicePublisher();
+
+    main::GTServiceManager = main::gtengine::MGTServiceManager();
+    main::MPS = main::gtengine::MMultiplaySession();
+    main::MPS.setRepresentativeUser(main::LoginUserManager.getFirstLoginUser());
+    main::LanSession = main::gtengine::MLanSession();
+    main::LanSession.setRepresentativeUser(main::LoginUserManager.getFirstLoginUser());
+
+    main::NUS = pdistd::MNetworkUserStorage();
+
+    main::NpEula = pdistd::MNpEula();
+
+    main::NpParty = pdistd::MNpParty();
+    
+    main::ServerUtil::initialize(context);
+
+    var genericDisconnectMessage = manager.translate("OnlineMessage", "DISCONNECTED");
+    pdistd::DisconnectReason["AdhocEnumUnlocalizedText"] = genericDisconnectMessage;
+
+    main::OnlineSession = gtengine::MOnlineSession();
+    main::NetworkEvent::sHandler.setOnlineSession(main::OnlineSession);
+
+    if (GetVersionBranch() == "gt7sp")
+    {
+        setContentsRestriction();
+
+        var req = Player.np.requestCheckNpAvailability();
+        if (!req.wait())
+            WARNING_HERE("Network features are restricted.");
+    }
+}
+
+function setContentsRestriction()
+{
+    var map = [:];
+    var region = pdiext::MProductInformation::GetGameRegionCode();
+
+    switch (region)
+    {
+        case "scej":
+            map = ["default" : 0];
+            break;
+        case "scea":
+            map = ["default" : 6];
+            break;
+        case "scee":
+            map = ["default" : 3];
+            break;
+        case "sceh":
+            map = ["default" : 0];
+            break;
+        default:
+            BREAK_HERE("Unexpected region code [%{region}]");
+    }
+
+    Player.np.setContentsRestriction(map);
+}
+
+function initNetwork(context, type, is_product)
+{
+    TASK_LOG("initGrim");
+    initGrim(type);
+
+    var login = pdiapp::MLoginGT7(Player);
+    Player.login = login;
+
+    if (main::BOT.isEnabled() || !is_product || main::AppOpt.defined("disable_eula") || main::GT7SP_OFFLINE)
+    {
+        login.setNoEula(true);
+    }
+
+    if (!boot_state.disable_background_login)
+    {
+        TASK_LOG("backgroundLogin");
+        backgroundLogin(context, type, false);
+    }
+    else
+    {
+        TASK_LOG("skip background login process.");
+    }
+}
+
+function setApplicationVersion()
+{
+    var specVersion;
+    switch (SpecDatabaseUtil::getSpecType())
+    {
+        case "GT7SP":
+            specVersion = 0;
+            break;
+        case "PREVIEW":
+            specVersion = 1;
+            // BUG: fallthrough?
+        case "DEMO":
+            specVersion = 2;
+            break;
+        default:
+            specVersion = 7;
+            break;
+    }
+
+    var version = 5;
+    version |= specVersion << 6;
+    OnlineSession.setApplicationVersion(version);
+}
+
+function initNetworkService(context, type, synced)
+{
+    TASK_LOG("initNetworkService");
+
+    setApplicationVersion();
+
+    Player.login.setEulaCurrentVersion(VariableManager::get("UserData::EULAVersion"));
+    if (!synced)
+        loginSync(context, type);
+    
+    Player.login.setWaitInterfaceReady(false);
+    checkEula(context);
+    initGTService(context, type);
+}
+
+function checkEula(context)
+{
+    if (!Player.login.isOnline())
+        return;
+
+    if (Player.login.isNoEula())
+    {
+        PUT_HERE("No eula.");
+        return;
+    }
+
+    TASK_LOG("checkEula");
+
+    var withoutFailedMessage = false;
+    if (!Player.login.checkNpEula(withoutFailedMessage))
+        PUT_HERE("checkNpEula() failed.");
+
+    if (!withoutFailedMessage)
+        Player.login_util.checkError(context);
+}
+
+async function initGrim(type)
+{
+    var available = isNetworkAvailable(type);
+    if (!available)
+    {
+        PUT_HERE("Grim is not available.");
+        return;
+    }
+
+    var grim_url = pdiext::MProductInformation::GetGrimURL();
+    if (main::AppOpt["grim"] != nil && main::AppOpt["grim"] == "dev")
+    {
+        var cols = grim_url.split('.') // Symbol const?
+        cols[0] = 'https://gt5pdev01'; // Also a symbol const
+        grim_url = cols.join('.');
+    }
+
+    var region = pdiext::MProductInformation::GetGameRegionCode();
+    var use_db = true;
+
+    var grim_debug = main::AppOpt.defined("grim_debug");
+    
+    if (main::Grim3 != nil)
+    {
+        var prefix = "GT7SP";
+        var root_ca_name = "%{prefix}_ROOT_CA_CERTIFICATE";
+        var cert_name = "%{prefix}_CLIENT_CERTIFICATE";
+        var privkey_name = "%{prefix}_CLIENT_PRIVATEKEY";
+        var language = pdistd::MLocale::getLanguage().downcase();
+        var demo_id = VariableManager::get("SaveData::DemoId");
+        var encode_demo_id = "";
+        if (demo_id != 0)
+            encode_demo_id = VariableManager::get("SaveData::EncodedDemoId");
+
+        AwaitTask(function() { main::Grim3.initialize(grim_url, region, language, use_db, root_ca_name, cert_name, 
+            privkey_name, grim_debug, encode_demo_id) });
+            
+        main::Grim3.initialize2();
+
+        if (AppOpt["clear_cache"] != nil)
+        {
+            Grim3.clearCacheAll();
+            PUT_HERE("Grim3.clearCacheAll");
+        }
+    }
+}
+
+function initGTService(context, type)
+{
+    TASK_LOG("GTService");
+
+    var available = type == "runviewer" || type == "gt7sp" || type == "demo";
+    if (!available)
+    {
+        PUT_HERE("GT service is not available.");
+        return;
+    }
+
+    if (GetVersionBuild() == "debug")
+    {
+        main::GTServiceManager.registerService(gtengine::ServiceType::Toyota86);
+        main::GTServiceManager.registerService(gtengine::ServiceType::MultiDebug);
+        main::GTServiceManager.registerService(gtengine::ServiceType::GTFrameworkDebug);
+        main::GTServiceManager.registerService(gtengine::ServiceType::Mediator);
+    }
+
+    main::GTServiceManager.registerService(gtengine::ServiceType::MachineLearning);
+    main::GTServiceManager.registerService(gtengine::ServiceType::SimulatorInterface);
+    main::GTServiceManager.startUpdate();
+}
+
+function backgroundLogin(context, type, waitForWakingUp)
+{
+    if (main::AppOpt.defined("lanmode"))
+    {
+        OnlineUtility.setIsLanMode(true);
+        return;
+    }
+
+    var available = isNetworkAvailable(type);
+    if (!available)
+    {
+        PUT_HERE("Grim is not available.");
+        return;
+    }
+
+    Player.login.setSkipIfInterfaceDown(false);
+    Player.login.setWaitInterfaceReady(false);
+
+    var res = Player.login_util.tryLoginBackground(context, false);
+
+    if (waitForWakingUp)
+        Player.login.waitForWakingUp();
+}
+
+function checkKeyStateForSpecialServer(context)
+{
+    var keyState = context.getUpdateContext().getPadButtonState(0);
+    if (keyState & 0x40 && 
+        keyState & 0x10 && 
+        keyState & 0x8000 &&
+        keyState & 0x4000)
+    {
+        PUT_HERE("Background login disabled.");
+        boot_state.disable_background_login = true;
+    }
+}
+
+function setupSpecialServer(context, type)
+{
+    var special_server = nil;
+    if (main::AppOpt["server_special_value"] != nil)
+    {
+        special_server = main::AppOpt["server_special_value"];
+        VariableManager::set("GameDemo::UseSpecialServer", true);
+        VariableManager::set("GameDemo::ServerSpecialValue", special_server);
+    }
+    else if (VariableManager::get("GameDemo::UseSpecialServer"))
+    {
+        special_server = VariableManager::get("GameDemo::ServerSpecialValue");
+    }
+
+    if (special_server != nil)
+    {
+        PUT_HERE("Wait for background login...");
+        loginSync(context, type);
+
+        PUT_HERE("Force logout");
+        main::Grim3.setInitialize(false);
+
+        PUT_HERE("special_server = '%{special_server}'");
+        main::Grim3.setSpecialRequestHeader("X-gt-special", special_server);
+    }
+}
+
+function loginSync(context, type)
+{
+    PUT_HERE("loginSync()");
+    
+    var available = isNetworkAvailable(type);
+    if (!available)
+    {
+        PUT_HERE("no need to sync.");
+        return true;
+    }
+
+    var withDialog = LoginUtil::isRegisteredAccountRequired();
+    if (withDialog)
+        return Player.login_util.syncWithDialog(context);
+    else
+        return Player.login_util.sync(context);
+}
+
+function loginServer(context, type)
+{
+    TASK_LOG("loginServer");
+
+    setupSpecialServer(context, type);
+
+    if (boot_state.disable_background_login)
+    {
+        PUT_HERE("Try to login.");
+        backgroundLogin(context, type, true);
+    }
+
+    var synced = false;
+    if (LoginUtil::isRegisteredAccountRequired())
+    {
+        PUT_HERE("Registered account is required.");
+
+        loginSync(context, type);
+        synced = true;
+
+        LoginUtil::checkRegisteredAccount();
+    }
+
+    return synced;
+}
+
+function isNetworkAvailable(type)
+{
+    if (main::GT7SP_OFFLINE)
+    {
+        PUT_HERE("Network disabled.");
+        return false;
+    }
+
+    return type == "gt7sp" || type == "beta" || type == "demo";
+}

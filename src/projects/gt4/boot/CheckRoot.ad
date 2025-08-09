@@ -1,0 +1,298 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module PROJECT::ROOT
+{
+    static manager = nil;
+    static watcher = nil;
+    static datasize = 0;
+    static doTimeout = false;
+    static mode = nil;
+
+    function onInitialize(context)
+    {
+        if (DEMO)
+            ROOT.visible = false;
+
+        mode = 0;
+
+        manager = main::menu::MMemoryCardManager("MODE_SAVE_GAME");
+        watcher = main::menu::MScriptWatcher(context, onCheck);
+        doTimeout = false;
+        watcher.interval = 5;
+
+        watcher.append();
+        datasize = manager.getNewFile().size;
+    }
+
+    function onFinalize(context)
+    {
+        watcher.remove();
+        manager = nil;
+    }
+
+    function exitToCreateData(context)
+    {
+        start_page(context, EntryRoot);
+    }
+
+    function exitNoSave(context)
+    {
+        exitBootSequence(context);
+    }
+
+    function onCancel(context, event, item)
+    {
+        main::sound.play("disabled");
+        return EVENTRESULT_FILTER;
+    }
+
+    static forceclosed = false;
+    static dialogopened = false;
+
+    function openDialog(context, type, message, t, r, y, n)
+    {
+        if (dialogopened)
+        {
+            print "ぐわあああ\n";
+
+            cancelConfirmDialog(context);
+        }
+
+        dialogopened = true;
+        forceclosed = false;
+
+        var r = openConfirmDialog(context, type, message, t, r, y, n);
+        if (forceclosed)
+            print "force closed.";
+        else
+            print "normal closed.";
+
+        dialogopened = false;
+
+        return r;
+    }
+
+    function onCheck(context)
+    {
+        if (manager == nil)
+            return;
+            
+        if (context.time_after_last_input > 60.0)
+        {
+            doTimeout = true;
+            if (dialogopened)
+            {
+                print "timeout!\n";
+                cancelConfirmDialog(context);
+                forceclosed = true;
+                return;
+            }
+        }
+
+        if (!dialogopened)
+        {
+            if (doTimeout)
+            {
+                exitNoSave(context);
+                return;
+            }
+
+            print "check status...\n";
+
+            var newMode = 1;
+            if (manager.isConnect())
+            {
+                if (!manager.isFormat())
+                    newMode = 2;
+                else 
+                {
+                    var file = manager.getNewFile();
+                    var r = 0;
+                    for (var i = 0; i < 3; ++i)
+                    {
+                        r = file.isExist(manager);
+                        if (r >= 0)
+                            break;
+                    }
+
+                    if (r == 0)
+                    {
+                        newMode = 4;
+                        print "exist data!\n";
+                    }
+                    else if (r == 1)
+                    {
+                        if (manager.realFree - 1 < datasize)
+                            newMode = 3;
+                        else
+                            newMode = 2;
+                    }
+                    else
+                        newMode = 1;
+                }
+            }
+
+            print "newmode = %{newMode}\n";
+            mode = newMode;
+            switch (mode)
+            {
+                case 4:
+                    context.pushEvent(main::menu::MScriptEvent(context, ROOT, "autoload"));
+                    break;
+
+                case 2:
+                    context.pushEvent(main::menu::MScriptEvent(context, ROOT, "nodata"));
+                    break;
+
+                case 3:
+                    context.pushEvent(main::menu::MScriptEvent(context, ROOT, "nofree"));
+                    break;
+
+                case 1:
+                    context.pushEvent(main::menu::MScriptEvent(context, ROOT, "notconnect"));
+                    break;
+            }
+        }
+
+        
+        if (manager.isChanged() && dialogopened)
+        {
+            context.time_after_last_input = 0.0;
+            print "差し替えられました.\n";
+            cancelConfirmDialog(context);
+            forceclosed = true;
+            mode = 0;
+        }
+    }
+
+    function autoload(context)
+    {
+        manager = nil;
+
+        print "autoload\n";
+
+        var man = main::menu::MMemoryCardManager("MODE_LOAD_GAME");
+        var r = man.getNewFile().load(man);
+        
+        print "load result = %{r}\n";
+
+        if (r == "OK")
+        {
+            main::sound.play("ok");
+            man.clearAutoSaveDisabled();
+            exitLoaded(context);
+            main::menu::MMemoryCardManager::setExistValidGameData(true);
+            return;
+        }
+
+        man = nil;
+        manager = main::menu::MMemoryCardManager("MODE_SAVE_GAME");
+
+        if (r == "INVALID_FILE")
+        {
+            if (openDialog(context, 3, context.translate(ROOT, "invalid_file_create?")))
+            {
+                exitToCreateData(context);
+                return;
+            }
+        }
+        else
+        {
+            openDialog(context, 0, translateMc(context, "load_error"))
+        }
+    }
+
+    function openCantPlayGT4Dialog(context)
+    {
+        return openDialog(context, 3, context.translate(ROOT, "cant_play_gtmode_ok?"), nil,
+            context.translate(ROOT, "continue"),
+            context.translate(ROOT, "retry"));
+    }
+
+    function nodata(context)
+    {
+        if (DEMO)
+        {
+            exitLoaded(context);
+            return;
+        }
+
+        main::sound.play("ok");
+        if (openDialog(context, 1, context.translate(ROOT, "no_gt4_data_create_data_now?")))
+        {
+            exitToCreateData(context);
+        }
+        else
+        {
+            if (forceclosed)
+                return;
+
+            if (openCantPlayGT4Dialog(context))
+                exitNoSave(context);
+        }
+    }
+
+    function nofree(context)
+    {
+        if (DEMO)
+        {
+            exitLoaded(context);
+            return;
+        }
+
+        main::sound.play("ok");
+        if (openDialog(context, 1, context.translate(ROOT, "no_free_space_need_n_byte_continue?").format(datasize)))
+        {
+            if (openCantPlayGT4Dialog(context))
+            {
+                exitNoSave(context);
+            }
+            else
+            {
+                mode = 0;
+            }
+        }
+        else
+        {
+            if (forceclosed)
+                return;
+
+            openDialog(context, 0, context.translate(ROOT, "please_insert_n_byte_free_card").format(datasize));
+        }
+    }
+
+    function notconnect(context)
+    {
+        if (DEMO)
+        {
+            exitLoaded(context);
+            return;
+        }
+
+        main::sound.play("ok");
+        if (openDialog(context, 1, context.translate(ROOT, "no_card_need_n_byte_continue?").format(datasize)))
+        {
+            if (openCantPlayGT4Dialog(context))
+                exitNoSave(context);
+        }
+        else
+        {
+            if (forceclosed)
+                return;
+
+            openDialog(context, 0, context.translate(ROOT, "please_insert_n_byte_free_card").format(datasize));
+        }
+    }
+}

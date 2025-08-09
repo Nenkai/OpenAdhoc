@@ -1,0 +1,215 @@
+module ArcadeProject::MatchingRoot
+{
+    static watcher = nil;
+    static disable_cancel = nil;
+
+    function setBarActor(widget)
+    {
+        widget.x = -widget.w;
+
+        var actor = main::menu::MMoveActor(widget, 640.0, widget.y);
+        widget.actor = actor;
+        widget.actor.ratio = 0.01;
+        widget.actor.repeat = true;
+        widget.actor.flip = false;
+        widget.actor.linear = true;
+        widget.actor.out = false;
+        widget.actor.warp();
+        widget.actor.out = true;
+    }
+
+    setBarActor(bar);
+
+    function onInitialize(context)
+    {
+        context.cursor_visible = false;
+        main::network.error_exit = false;
+
+        if (main::menu::MSystem::GetVersionBranch() == "subaru")
+        {
+            bg.from_disk = true;
+            bg.image_path = "piece/demo/subaru_wait.img";
+            bg.doInitialize(context);
+        }
+
+        GameRoot::current_game = "LANBattle";
+        var event = main::menu::MScriptEvent(context, ROOT, "auto_matching");
+        context.pushEvent(event);
+        disable_cancel = false;
+    }
+
+    function onFinalize(context)
+    {
+        if (watcher != nil)
+        {
+            watcher.remove();
+            watcher = nil;
+        }
+        disable_cancel = nil;
+    }
+
+    function onKeyPress(context, event) { return false; }
+
+    function onCancel(context)
+    {
+        if (disable_cancel == false)
+        {
+            disable_cancel = true;
+            if (main::network.amIhost())
+            {
+                main::network.setGameClosed();
+                context.sync(0.5);
+            }
+
+            main::network.exitCommunicator();
+            main::network.terminateRTIME();
+            main::network.terminateNetwork();
+            main::network.network_enable = false;
+            
+            main::game.major_menu_page = "";
+            main::game.menuPop();
+            
+            start_project(context, "arcade");
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+
+    function showMessage(message)
+    {
+        Message::tooltip.value = message;
+    }
+
+    function expected_member_num()
+    {
+        var option = main::game.option;
+
+        return option.LAN_player_num + option.LAN_monitor_num;
+    }
+
+    static escape_found = false;
+
+    function event_filter(event)
+    {
+        if (event.isInstanceOf(main::menu::MKeyEvent))
+        {
+            if (event.keysym == PS2_PAD_CTRL_CIRCLE)
+                escape_found.value = true;
+        }
+        return true;
+    }
+
+    function auto_matching(context)
+    {
+        import main::network;
+
+        var option = main::game.option;
+
+        if (option.LAN_host)
+        {
+            var member_num = expected_member_num();
+            var res = network.gcreateLAN(option.LAN_machine_name, "default_gf", member_num, option.LAN_machine_name);
+
+            if (!res)
+            {
+                showMessage("create failed");
+                main::network.error_exit = true;
+                context.finish();
+                return;
+            }
+
+            showMessage(context.translate(ROOT, "cancel") + "    .");
+        }
+        else
+        {
+            showMessage(context.translate(ROOT, "cancel") + "    ...");
+            var game_id = 0;
+            var res = false;
+
+            while (!res)
+            {
+                network.getAvailableGameIdLAN(1, 1000);
+                res = network.gjoinLAN(game_id, option.LAN_machine_name);
+                escape_found.value = false;
+                context.filterEvent(event_filter);
+
+                if (escape_found)
+                {
+                    onCancel(context);
+                    return;
+                }
+
+                context.sync(0.5);
+            }
+
+            showMessage(context.translate(ROOT, "cancel") + "    ..");
+        }
+
+        network.raceMenuNotifyAccountName(option.LAN_machine_name);
+        network.raceMenuNotifyStyle(option.LAN_style);
+        network.raceMenuNotifyTarget(option.LAN_target_name);
+
+        if (network.amIhost())
+            network.raceMenuNotifySequence(1);
+        else
+            network.raceMenuNotifySequence(2);
+
+        watcher = main::menu::MScriptWatcher(context, onTick);
+        watcher.interval = 15;
+        watcher.append();
+    }
+
+    function onTick(context)
+    {
+        import main::network;
+
+        if (network.amIhost())
+        {
+            var my_no = network.raceMenuMyIndex();
+            var my_sq = network.raceMenuPeekSequence(my_no);
+
+            if (my_sq != 2)
+            {
+                var member_num = network.raceMenuGamePlayers();
+                if (member_num >= expected_member_num())
+                {
+                    network.raceMenuNotifyClientCount(member_num);
+                    network.raceMenuNotifyTime(network.gameTime() + 1000);
+                    network.raceMenuNotifySequence(2);
+                }
+            }
+        }
+
+        if (network.raceMenuAllConnected())
+        {
+            disable_cancel = true;
+            showMessage("");
+
+            context.sync(0.5);
+            context.transition.panOutIn(context);
+            CategoryRoot::current_category = "favorite";
+
+            if (main::game.option.LAN_style == "play")
+                context.startPage(CourseRoot);
+            else
+                context.startPage(MonitorRoot);
+
+            context.cursor_visible = true;            
+        }
+    }
+
+    function checkDisconnection(context)
+    {
+        if (main::network.isClientDisconnected() == true || main::network.isDisconnected() == true)
+        {
+            for (var i = 0; i < 5; i++)
+            {
+                main::sound.play("disable");
+                context.sync(0.5);
+            }
+
+            main::network.error_exit = true;
+            start_page(context, nil);
+        }
+    }
+}
