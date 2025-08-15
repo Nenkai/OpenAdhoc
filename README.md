@@ -46,7 +46,7 @@ No progress has been made currently.
 
 ### GT4 Online (US)
 Adhoc Version: 7 (v5-7 compatible)<br>
-12 of 30 projects are completed and can be compiled.<br>
+15 of 30 projects are completed and can be compiled.<br>
 There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
 There are 6 leftover projects from GT4P that are not relevant to completion
   
@@ -72,12 +72,12 @@ There are 6 leftover projects from GT4P that are not relevant to completion
 | quick-championship     |    ❌️    | GT Mode Championship Pre-Race menu                                               |
 | quick-event            |    ❌️    | GT Mode Single Race, Practice, and Family Cup Pre-Race menu                      |
 | quick-freerun          |    ❌️    | GT Mode Photo Drive Pre-Race menu                                                |
-| quick-license          |    ❌️    | GT Mode License test Pre-Race menu                                               |
+| quick-license          |    ✔️    | GT Mode License test Pre-Race menu                                               |
 | quick-mission          |    ❌️    | GT Mode Mission Pre-Race menu                                                    |
-| quick-mt               |    ❌️    | GT Mode Power & Speed Pre-Race menu                                              |
-| quick-online           |    ❌️    | Online Mode Pre-Race menu                                                        |
+| quick-mt               |    ✔️    | GT Mode Power & Speed Pre-Race menu                                              |
+| quick-online           |    ✔️    | Online Mode Pre-Race menu                                                        |
 | quick-practice         |    ✔️    | GT Mode Track Meet Pre-Race menu                                                 |
-| quick-tt               |    ❌️    | Arcade Mode Time Trial Pre-Race menu                                             |
+| quick-tt               |    ✔️    | Arcade Mode Time Trial Pre-Race menu                                             |
 | ranking                |    ❌️    | Online leaderboards, accessed from Event project                                 |
 | setting                |    ✔️    | Car Setting menu and all of its sub-menus (Change parts and tuning sliders)      |
 | slide                  |    ❌️    | Slideshow mode                                                                   |
