@@ -46,9 +46,9 @@ No progress has been made currently.
 
 ### GT4 Online (US)
 Adhoc Version: 7 (v5-7 compatible)<br>
-12 of 30 projects are completed and can be compiled.<br>
+15 of 30 projects are completed and can be compiled.<br>
 There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
-There are 6 leftover projects from GT4P that are not relevant to completion
+There are 8 leftover projects from GT4P and GT4 that are not relevant.
   
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|
@@ -56,14 +56,14 @@ There are 6 leftover projects from GT4P that are not relevant to completion
 | boot                   |    ✔️    | Bootup, Language select, new game setup, initial intro movie                     |
 | cursor                 |    ✔️    | Sets up cursor and dialog boxes                                                  |
 | demo_movie             |    ✔️    | Intro when idle at main menu, and any movie that plays after completing event    |
-| event                  |    ❌️    | LAN mode                                                                         |
 | eyetoy                 |    ✔️    | Handles unlocking Nike Car when scanning GT Shirt with the Eyetoy accessory      |
 | gtmode                 |    ✔️    | Gran Turismo Mode and all of its sub-menus                                       |
 | labomode               |    ❌️    | Photo lab, Replay Theater, Load & Save Replay, Delete Replay/Film/Photo          |
 | logger                 |    ❌️    | Replay Analyzer menu, accessed from various Pre-Race menus                       |
 | message                |    ❌️    | Online mode message menu                                                         |
-| network                |    ❌️    | Network Connection and Online mode login                                         |
-| online                 |    ❌️    | Online mode                                                                      |
+| network (GT4 Online)   |    ❌️    | Network Connection and Online mode login                                         |
+| network (GT4 Retail)   |    ❌️    | Network Connection and LAN Battle mode                                           |
+| online (GT4 Online)    |    ❌️    | Online mode                                                                      |
 | option                 |    ✔️    | Game Options                                                                     |
 | photo_save             |    ❌️    | Photo preview and save for Photo Drive                                           |
 | photo_shoot            |    ❌️    | Photo mode camera menu, photo preview and save for Photo Travel                  |
@@ -72,17 +72,19 @@ There are 6 leftover projects from GT4P that are not relevant to completion
 | quick-championship     |    ❌️    | GT Mode Championship Pre-Race menu                                               |
 | quick-event            |    ❌️    | GT Mode Single Race, Practice, and Family Cup Pre-Race menu                      |
 | quick-freerun          |    ❌️    | GT Mode Photo Drive Pre-Race menu                                                |
-| quick-license          |    ❌️    | GT Mode License test Pre-Race menu                                               |
+| quick-license          |    ✔️    | GT Mode License test Pre-Race menu                                               |
 | quick-mission          |    ❌️    | GT Mode Mission Pre-Race menu                                                    |
-| quick-mt               |    ❌️    | GT Mode Power & Speed Pre-Race menu                                              |
-| quick-online           |    ❌️    | Online Mode Pre-Race menu                                                        |
+| quick-mt               |    ✔️    | GT Mode Power & Speed Pre-Race menu                                              |
+| quick-online           |    ✔️    | Online Mode Pre-Race menu                                                        |
 | quick-practice         |    ✔️    | GT Mode Track Meet Pre-Race menu                                                 |
-| quick-tt               |    ❌️    | Arcade Mode Time Trial Pre-Race menu                                             |
+| quick-tt               |    ✔️    | Arcade Mode Time Trial Pre-Race menu                                             |
 | ranking                |    ❌️    | Online leaderboards, accessed from Event project                                 |
 | setting                |    ✔️    | Car Setting menu and all of its sub-menus (Change parts and tuning sliders)      |
 | slide                  |    ❌️    | Slideshow mode                                                                   |
 | GT4Application         |    ✔️    | Initializer and Config Script loader / re-loader                                 |
 | --------               | ----     | ---- Stub projects: ----                                                         |
+| event                  |    ✔️    | Unused project that appears to be a mode used on demo setups for public events. Seems non-functional. | 
+| online (GT4 Retail)    |    ❌️    | An earlier and unused implementation of online mode, works similarly to GT4 Online's version |
 | language               |    ✔️    | Leftover from GT4P's language select. Contains more language options, appears to be a dev version |
 | list_box               |    ❌️    | Leftover from GT4P's Save/Delete Replay menu. Possibly contains framework for an unused save icon customizer |
 | memcard                |    ✔️    | GT4P leftover                                                                    |
