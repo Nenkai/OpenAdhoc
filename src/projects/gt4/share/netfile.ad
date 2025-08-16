@@ -1,0 +1,232 @@
+module NetFile
+{
+	static sTimeoutEnable = true;
+	static sNetFileWatcher = nil;
+
+	function netFileCreateWatcher(context)
+	{
+		netFileDeleteWatcher();
+	
+		sNetFileWatcher = main::menu::MScriptWatcher(context, onTick);
+		sNetFileWatcher.interval = 60;
+		sNetFileWatcher.count = 0;
+		sNetFileWatcher.append();
+	}
+	
+	function netFileDeleteWatcher()
+	{
+		if (sNetFileWatcher != nil)
+		{
+			sNetFileWatcher.remove();
+			sNetFileWatcher = nil;
+		}
+	}
+
+
+	function netFileGetWatcherCount()
+	{
+		sNetFileWatcher.count;
+	}
+
+	function onTick(context)
+	{
+		if (sTimeoutEnable && netFileGetWatcherCount() >= 10)
+		{
+			main::sound.play("cancel");
+			cancelConfirmDialog(context);
+		}
+	}
+
+	function translateNF(context, key, num)
+	{
+		if (num == nil)
+			return context.translate(PROJECT, "OnlineMessage", key);
+		else
+			return context.translate(PROJECT, "OnlineMessage", key).build(num);
+	}
+
+	function openNetFileErrorDialog(context, value)
+	{
+		main::sound.play("disable");
+		openConfirmDialog(context, 2, value);
+	}
+
+	function handleErrorCode(context, err, mode)
+	{
+		if (err == 0)
+			return true;
+	
+		if (err <= -10)
+		{
+			openOnlineErrorDialog(context);
+			return false;
+		}
+		else
+		{
+			var key = "error:" + err;
+			var value = translateNF(context, key);
+			
+			if (key == value)
+			{
+				if (mode == 0)
+					value = translateNF(context, "DOWNLOAD_ERROR", err);
+				else
+					value = translateNF(context, "UPLOAD_ERROR", err);
+			}
+		
+			openNetFileErrorDialog(context, value);
+			return false;
+		}
+	}
+
+	function downloadReplay(context, manager, event_id, account_id, race_time)
+	{
+		setProgress(context, manager.progress);
+	
+		var mode = 0;
+	
+		openProgressDialog(context, translateNF(context, "NOW_GETTING_LIST"));
+	
+		manager.setFilter(event_id, account_id);
+	
+		var err = manager.updateCurrentList();
+		context.sync(0.25);
+	
+		if (err != 0)
+		{
+			closeProgressDialog(context);
+			handleErrorCode(context, err, mode);
+			return -1;
+		}
+	
+		var file_count = manager.file_count;
+		var replay = nil;
+	
+		race_time = race_time.toInt();
+	
+		var i = 0;
+		while (i < file_count)
+		{
+			var file = manager.getFile(i);
+			var file_race_time = file.race_time.toInt();
+	
+			if (file.isValidInfo() && race_time == file_race_time)
+			{
+				replay = file;
+				break;
+			}
+	
+			i++;
+		}
+	
+		if (replay == nil)
+		{
+			closeProgressDialog(context);
+			openNetFileErrorDialog(context, translateNF(context, "FILE_NOT_FOUND"));
+			return -1;
+		}
+		else
+		{
+			openProgressDialog(context, translateNF(context, "NOW_DOWNLOADING"));
+			
+			err = replay.download(manager);
+			context.sync(0.25);
+			closeProgressDialog(context);
+			
+			if (err != 0)
+			{
+				handleErrorCode(context, err, mode);
+				return -1;
+			}
+			
+			return false;
+		}
+	}
+
+	function uploadBestLapReplay(context, manager, event_id, account_id)
+	{
+		setProgress(context, manager.progress);
+		var mode = 1;
+	
+		openProgressDialog(context, translateNF(context, "NOW_GETTING_LIST"));
+	
+		manager.setFilter(event_id, account_id);
+	
+		var err = manager.updateCurrentList();
+	
+		context.sync(0.25);
+	
+		if (err != 0)
+		{
+			closeProgressDialog(context);
+			handleErrorCode(context, err, mode);
+			return -1;
+		}
+	
+		var file_count = manager.file_count;
+		var new_file = manager.getNewFile();
+		new_file.event_id = event_id.toInt();
+		var new_file_race_time = new_file.race_time.toInt();
+	
+		var deleted_file_count = 0;
+		var unsupported_file_count = 0;
+	
+		for (var i = 0; i < file_count; i++)
+		{
+			var file = manager.getFile(i);
+			var file_race_time = file.race_time.toInt();
+	
+			if (file.isValidInfo())
+			{
+				if (file_race_time >= new_file_race_time)
+				{
+					openProgressDialog(context, translateNF(context, "NOW_REMOVING"));
+					err = file.remove(manager);
+	
+					if (err != 0)
+					{
+						closeProgressDialog(context);
+						handleErrorCode(context, err, mode);
+						return -1;
+					}
+	
+					deleted_file_count++;
+				}
+			}
+			else
+			{
+				unsupported_file_count++;
+			}
+		}
+	
+		if (file_count != (deleted_file_count + unsupported_file_count))
+		{
+			closeProgressDialog(context);
+			main::sound.play("ok");
+			openConfirmDialog(context, 0, translateNF(context, "DO_NO_NEET_UPLOAD|BEST_LAP_REPLAY"));
+			return 1;
+		}
+		else
+		{
+			openProgressDialog(context, translateNF(context, "NOW_UPLOADING|BEST_LAP_REPLAY"));
+			err = new_file.uploadNew(manager);
+			context.sync(0.25);
+			closeProgressDialog(context);
+			
+			if (err == 0)
+			{
+				netFileCreateWatcher(context);
+				main::sound.play("ok");
+				openConfirmDialog(context, 0, translateNF(context, "UPLOAD_DONE"));
+				netFileDeleteWatcher();
+				return 0;
+			}
+			else
+			{
+		
+				handleErrorCode(context, err, mode);
+				return -1;
+			}
+		}
+	}
+}

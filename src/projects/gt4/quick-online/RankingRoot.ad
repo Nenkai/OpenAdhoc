@@ -1,0 +1,635 @@
+module PROJECT::ROOT
+{	
+	static sRank = 0;
+	static gList = nil;
+	static sLineItem = [
+		"Line0", "Line1", "Line2", "Line3", "Line4",
+		"Line5", "Line6", "Line7", "Line8", "Line9"
+	];
+	static sBestLapMode = nil;
+	static sToolTip = nil;
+	static sEventId = nil;
+	static sCurrentEvent = nil;
+
+	function onLoad(context)
+	{
+		setBlinkActor(left);
+		setBlinkActor(right);
+		setFadeActor(ContextMenu, 0.1);
+	}
+
+	function SetupEvent(context, eventList)
+	{
+		if (eventList != nil)
+		{
+			var n = eventList.size;
+			var i = 0;
+			while (i < n)
+			{
+				var event = eventList[i];
+				if (event.getAttribute("ID") == sEventId)
+				{
+					var crs_text = "";
+					if (event["Course"] != nil)
+					{
+						var val = event["Course"][0].value;
+						if (val.beginWith("#"))
+							val = main::menu::MCourseData::GetLabelByID(val.substr(1).toInt());
+						crs_text = context.translate(ROOT, "CourseNameCaption", val);
+					}
+					EventName::EventName.text = crs_text;
+					EventName::EventName.adjustScale();
+					var bg = event["BGImage"][0];
+					setupEventImage(context, bg, EventName::EventImage);
+					sCurrentEvent = event;
+					return true;
+				}
+				i++;
+			}
+		}
+		return false;
+	}
+
+	function gettingRecords(context, args)
+	{
+		var [locationId, start, count] = args;
+		
+		svo::Login(
+			main::network.my_id.toString(),
+			main::network.my_name,
+			main::game.password
+		);
+		
+		var res = svo::GetLocationRanking(locationId, start, count);
+		if (!sBestLapMode)
+			svo::Logout();
+		gHttp.close();
+		return res;
+	}
+
+	function GetRankingData(context)
+	{
+		var id = sEventId;
+		var mydata; // declare this first, gList is a static.
+		[mydata, gList] = openProcessDialog(context, context.translate(ROOT, "NOW_GETTING_RECORDS"), gettingRecords, [id.toString(), 0, 100]);
+
+		if (gList == nil)
+		{
+			openConfirmDialog(context, 0, context.translate(ROOT, "GETTING_RECORDS_FAILED"));
+			return false;
+		}
+		if (!gList.size)
+		{
+			openConfirmDialog(context, 0, context.translate(ROOT, "NO_RECORDS"));
+			return false;
+		}
+		if (mydata == nil)
+		{
+			MyRecord::rank.text = "";
+			MyRecord::car.text = "";
+			MyRecord::time.text = "";
+			MyRecord.can_focus = false;
+		}
+		else
+		{
+			var [rank, carCode, time] = mydata;
+			MyRecord.can_focus = true;
+			defineRankingItem(MyRecord, main::network.my_id, main::network.my_name, carCode, time);
+			var car = main::menu::MCarData::GetCarNameByNumericCode(carCode);
+			if (car == "")
+				car = "----";
+			time = main::menu::MUtility::GetTimeString(time.toInt());
+			MyRecord::rank.text = rank;
+			MyRecord::car.text = car;
+			MyRecord::time.text = time;
+			MyRecord::car.abbreviate();
+		}
+
+		return true;
+	}
+
+	function ClearPage()
+	{
+		var i = 0;
+		while (i < 10)
+		{
+			List::Ranks[sLineItem[i]].visible = false;
+			i++;
+		}
+	}
+	
+	function defineRankingItem(item, id, name, car_code, record_time)
+	{
+		item.defineStatic("id", id.toInt());
+		item.defineStatic("name", name);
+		item.defineStatic("carCode", car_code);
+		item.defineStatic("record_time", record_time.toInt());
+	}
+
+	function UpdatePage(context)
+	{
+		ROOT.visible = false;
+		ClearPage();
+		var count = gList.size - sRank;
+		if (count > 10)
+			count = 10;
+		var i = sRank;
+		while (i < sRank + count)
+		{
+			var [rank, id, name, carCode, time] = gList[i];
+			var car = main::menu::MCarData::GetCarNameByNumericCode(carCode);
+			if (car == "")
+				car = "----";
+			var time_str = main::menu::MUtility::GetTimeString(time.toInt());
+			var item = List::Ranks[sLineItem[i % 10]];
+			item.visible = true;
+			if (MyRecord::rank.text == rank)
+				item.active = true;
+			else
+				item.active = false;
+			defineRankingItem(item, id, name, carCode, time);
+			item["rank"].text = rank;
+			item["driver"].text = name;
+			item["car"].text = car;
+			item["time"].text = time_str;
+			item["driver"].abbreviate();
+			item["car"].abbreviate();
+			i++;
+		}
+		left.visible = (sRank != 0);
+		right.visible = (gList.size > sRank + 10);
+		ROOT.visible = true;
+	}
+
+	function OnInitialize(context)
+	{
+		sFileManager = nil;
+	
+		var mode = main::game.next_menu_arg;
+		sFileManager = main::menu::MNetFileManager(mode);
+		sBestLapMode = (mode == "MODE_DOWNLOAD_BESTLAP_REPLAY");
+		if (sBestLapMode)
+			CreateWatcher(context, onTick, 60);
+		if (sBestLapMode)
+			sEventId = getCurrentEventIDFromGameInfo();
+		else
+			sEventId = main::network.event_id;
+		setTimeTrialEventNow(1);
+		var nodeList = getEventList(context);
+		clearCurrentRuleSet();
+		if (nodeList == nil)
+		{
+			openConfirmDialog(context, 0, context.translate(ROOT, "GETTING_EVENT_LIST_FAILED"));
+			exit(context);
+			return;
+		}
+		var [eventList, oldEventList] = nodeList;
+		if (!SetupEvent(context, eventList))
+		{
+			if (!SetupEvent(context, oldEventList))
+			{
+				openConfirmDialog(context, 0, context.translate(ROOT, "GETTING_EVENT_LIST_FAILED"));
+				exit(context);
+				return;
+			}
+		}
+		sRank = 0;
+		ClearPage();
+		if (!GetRankingData(context))
+		{
+			if (sBestLapMode != nil && sBestLapMode)
+			{
+				exit(context);
+				return;
+			}
+		}
+		else
+		{
+			UpdatePage(context);
+			if (MyRecord.can_focus)
+				ROOT.setFocus(MyRecord);
+			else
+				ROOT.setFocus(List::Ranks::Line0);
+		}
+	}
+
+	function onInitialize(context)
+	{
+		var title = context.translate(ROOT, "TITLE|RANKINGS");
+		if (sCanUseLobbyFunc)
+		{
+			Header::Title::label.visible = false;
+			enterPage(context, ROOT, title);
+			sToolTip = Common::ToolTip;
+		}
+		else
+		{
+			Header::Title::label.visible = true;
+			Header::Title::label.text = title;
+			sToolTip = ToolTip;
+		}
+		sToolTip::tip.remove();
+		ContextMenu.visible = false;
+		main::menu::MNetFileManager::setAction(0);
+		var event = main::menu::MScriptEvent(context, ROOT, "OnInitialize");
+		context.pushEvent(event);
+	}
+
+	function onFinalize(context)
+	{
+		if (sBestLapMode)
+			DeleteWatcher();
+		sFileManager = nil;
+		sBestLapMode = nil;
+		sToolTip = nil;
+		sEventId = nil;
+		sCurrentEvent = nil;
+		gList = nil;
+		if (sCanUseLobbyFunc)
+			leavePage(context, ROOT);
+	}
+
+	function exit(context, is_time_limit)
+	{
+		if (is_time_limit == nil)
+			is_time_limit = 0;
+		var best_lap_mode = 0;
+		if (sBestLapMode != nil)
+			best_lap_mode = sBestLapMode;
+		if (best_lap_mode && is_time_limit)
+			main::game.major_menu_project = "online";
+		else if (best_lap_mode)
+		{
+			main::game.major_menu_project = "online";
+			main::game.major_menu_page = "P2PEventRoot";
+		}
+		main::network.setSystemEventEnable(0);
+		start_page(context, nil);
+	}
+	
+	function onCancel(context)
+	{
+		main::sound.play("cancel");
+		exit(context);
+		return EVENTRESULT_FILTER;
+	}
+
+	function activateCommand(context)
+	{
+		var i = 0;
+		while (i < 10)
+		{
+			List::Ranks[sLineItem[i]].can_focus = true;
+			i++;
+		}
+		if (MyRecord::rank.text != "")
+			MyRecord.can_focus = true;
+		else
+			MyRecord.can_focus = false;
+	}
+
+	function deactivateCommand(context)
+	{
+		var i = 0;
+		while (i < 10)
+		{
+			List::Ranks[sLineItem[i]].can_focus = false;
+			i++;
+		}
+		MyRecord.can_focus = false;
+		ROOT.setFocus(nil);
+	}
+	function downloadReplayFile(context, account_id, race_time)
+	{
+		var event_id = sEventId;
+		var res = NetFile::downloadReplay(
+			context,
+			sFileManager,
+			event_id,
+			account_id,
+			race_time
+		);
+	
+		if (res == 0)
+		{
+			main::sound.play("ok");
+			context.sync(0.5);
+			main::menu::MNetFileManager::setAction(1);
+			sFileManager = nil;
+			exit(context);
+		}
+	}
+	
+	function onTick(context)
+	{
+		var limit = main::network.timeLimit - main::network.gameTime();
+		if (limit < 0)
+		{
+			main::sound.play("cancel");
+			exit(context, 1);
+		}
+	}
+}
+
+module PROJECT::ROOT::MyRecord
+{
+	function onFocusEnter(context, event)
+	{
+		event = main::menu::MScriptEvent(context, ROOT::List::Ranks, "onFocusEnter");
+		context.pushEvent(event);
+		return EVENTRESULT_FILTER;
+	}
+	
+	function onActivate(context, event)
+	{
+		var item = event.widget;
+		main::sound.play("ok");
+		ContextMenu::open(context, item);
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::List::Ranks
+{
+	function setTooltip(context, widget)
+	{
+		if (widget != nil && widget.rank.text != "")
+		{
+			var rank = widget["rank"].text;
+			var rank_max = gList.size.toString();
+	
+			var name = "";
+			if (widget["driver"] != nil)
+				name = widget["driver"].text;
+			else
+				name = main::network.my_name.toString();
+	
+			var time = widget["time"].text;
+	
+			var car = main::menu::MCarData::GetCarNameByNumericCode(widget.carCode);
+			if (car == "")
+				car = "----";
+	
+			var info = context.translate(ROOT, "TOOLTIP|RANKING_INFO").build(
+				rank_max, rank, name, time, car
+			);
+	
+			sToolTip::tip.remove();
+			sToolTip::tip.value = info;
+		}
+	}
+
+	function onFocusEnter(context, event)
+	{
+		if (event != nil)
+		{
+			var widget = event.widget;
+			setTooltip(context, widget);
+		}
+		return EVENTRESULT_FILTER;
+	}
+
+	function onKeyPress(context, event)
+	{
+		if (event.keysym == 65361)
+		{
+			if (sRank != 0)
+			{
+				main::sound.play("cursor");
+				sRank -= 10;
+				UpdatePage(context);
+	
+				var fcs_item = ROOT.getFocusWidget();
+				setTooltip(context, fcs_item);
+			}
+			return EVENTRESULT_FILTER;
+		}
+		if (event.keysym == 65363)
+		{
+			if (gList != nil && gList.size > sRank + 10)
+			{
+				main::sound.play("cursor");
+				sRank += 10;
+				UpdatePage(context);
+	
+				var fcs_item = ROOT.getFocusWidget();
+				if (fcs_item.visible)
+				{
+					setTooltip(context, fcs_item);
+				}
+				else
+				{
+					var index = gList.size - sRank;
+					fcs_item = List::Ranks[sLineItem[index - 1]];
+					ROOT.setFocus(fcs_item);
+					setTooltip(context, fcs_item);
+				}
+			}
+			return EVENTRESULT_FILTER;
+		}
+	
+		return EVENTRESULT_CONTINUE;
+	}
+
+	function onActivate(context, event)
+	{
+		var item = event.widget;
+		if (!item.visible)
+			return EVENTRESULT_FILTER;
+		main::sound.play("ok");
+		ContextMenu::open(context, item);
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::ContextMenu
+{
+	static sCurrentItem = nil;
+	static sContextName = nil;
+	static sContextId = 0;
+	static sContextTime = 0;
+	
+	static sContextMenuItem = [
+		"Profile",
+		"SendIM",
+		"AddBuddy",
+		"DownloadReplay",
+		"DownloadGhost"
+	];
+
+	function open(context, item)
+	{
+		sCurrentItem = item;
+		var me = (item["id"] == main::network.my_id);
+		sContextName = item["name"];
+		sContextId = item["id"];
+		sContextTime = item["record_time"];
+		var title = context.translate(ROOT, "CONTEXTMENU_TITIE").build(sContextName);
+		ContextMenu::Title::title.text = title;
+		if (sCanUseLobbyFunc)
+		{
+			ContextMenu::Profile.visible = true;
+			ContextMenu::SendIM.visible = !me;
+		}
+		else
+		{
+			ContextMenu::Profile.visible = false;
+			ContextMenu::SendIM.visible = false;
+		}
+		ContextMenu::AddBuddy.visible = !me;
+		ContextMenu::DownloadReplay.visible = !sBestLapMode;
+		ContextMenu::DownloadGhost.visible = sBestLapMode;
+		var contextmenu_h = ContextMenu["Title"].h;
+		var i = 0;
+		while (i < sContextMenuItem.size)
+		{
+			contextmenu_h += ContextMenu[sContextMenuItem[i]].h;
+	
+			if (!ContextMenu[sContextMenuItem[i]].visible)
+				contextmenu_h -= ContextMenu[sContextMenuItem[i]].h;
+			i++;
+		}
+		var sy;
+		if (item.sy + item.h + contextmenu_h >= ToolTip.sy)
+			sy = ToolTip.sy - contextmenu_h;
+		else
+			sy = item.sy + item.h;
+		ContextMenu.sy = sy;
+		ContextMenu.visible = true;
+		ContextMenu.actor.out = false;
+		context.sync(0.1);
+		deactivateCommand(context);
+	
+		i = 0;
+		while (i < sContextMenuItem.size)
+		{
+			if (ContextMenu[sContextMenuItem[i]].visible)
+			{
+				ROOT.setFocus(ContextMenu[sContextMenuItem[i]]);
+				break;
+			}
+			i++;
+		}
+	}
+
+	function close(context)
+	{
+		activateCommand(context);
+		ROOT.setFocus(sCurrentItem);
+		sCurrentItem = nil;
+		sContextName = nil;
+		ContextMenu.actor.out = true;
+		context.sync(0.1);
+		ContextMenu.visible = false;
+	}
+
+	function onCancel(context)
+	{
+		main::sound.play("cancel");
+		close(context);
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::ContextMenu::Profile
+{
+	function onActivate(context)
+	{
+		var name = sContextName;
+		ContextMenu::close(context);
+		if(__project__.defined("MessageProject"))
+			MessageProject::openProfile(context, sContextId, name);
+		return EVENTRESULT_FILTER
+	}
+}
+
+module PROJECT::ROOT::ContextMenu::SendIM
+{
+	function onActivate(context)
+	{
+		var name = sContextName;
+		ContextMenu::close(context);
+	
+		var id = main::network.accountIsOnline(name);
+		if (id < 0)
+		{
+			var text = context.translate(ROOT, "ERROR|NOT_ONLINE").build(name);
+			openConfirmDialog(context, 2, text);
+			return EVENTRESULT_FILTER;
+		}
+	
+		if (__project__.defined("MessageProject"))
+			MessageProject::openIM(context, sContextId, name);
+	
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::ContextMenu::AddBuddy
+{
+	function onActivate(context)
+	{
+		var name = sContextName;
+		ContextMenu::close(context);
+		var id = sContextId;
+		var list = main::network.getBuddyList();
+		if (list == nil)
+		{
+			openOnlineErrorDialog(context);
+			return EVENTRESULT_FILTER;
+		}
+
+		if (list.size >= 100)
+		{
+			var text = context.translate(ROOT, "ERROR|YOU_CANNOT_ADD_IT_MORE_THAN_THIS");
+			openConfirmDialog(context, 2, text);
+			return EVENTRESULT_FILTER;
+		}
+		else
+		{
+			var i = 0;
+			while (i < list.size)
+			{
+				if (list[i][0] == id)
+				{
+					var text = context.translate(ROOT, "ERROR|ALREADY_ON_YOUR_BUDDY_LIST");
+					openConfirmDialog(context, 2, text);
+					return EVENTRESULT_FILTER;
+				}
+				i++;
+			}
+		
+			var id2 = main::network.accountIsOnline(name);
+			if (id2 < 0)
+			{
+				var text = context.translate(ROOT, "ERROR|NOT_ONLINE").build(name);
+				openConfirmDialog(context, 2, text);
+				return EVENTRESULT_FILTER;
+			}
+			if (!main::network.buddyAdd(id))
+				openOnlineErrorDialog(context);
+		}
+
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::ContextMenu::DownloadReplay
+{
+	function onActivate(context)
+	{
+		ContextMenu::close(context);
+		downloadReplayFile(context, sContextId, sContextTime);
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::ContextMenu::DownloadGhost
+{
+	function onActivate(context)
+	{
+		ContextMenu::close(context);
+		downloadReplayFile(context, sContextId, sContextTime);
+		return EVENTRESULT_FILTER;
+	}
+}
