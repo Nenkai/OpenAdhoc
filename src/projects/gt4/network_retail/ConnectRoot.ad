@@ -1,0 +1,704 @@
+module NetworkProject::ConnectRoot
+{
+    static sPathString = ["mc0:", "mc1:"];
+    static gPath = "";
+    static gCombination = "";
+    static gIfcName = "";
+    static isDialogOpened = 0;
+    static isFocusInitialized = 0;
+
+    function DeleteAll(context, args)
+    {
+        gNetcnf.DeleteAll(gPath);
+        return 1;
+    }
+
+    function openMyDialog(context, mode, message, title, yes, no)
+    {
+        isDialogOpened = 1;
+        var r = openConfirmDialog(context, mode, message, title, yes, no);
+        isDialogOpened = 0;
+		return r;
+    }
+
+    function openMyProcessDialog(context, message, func, args)
+    {
+        isDialogOpened = 1;
+        var r = openProcessDialog(context, message, func, args);
+        isDialogOpened = 0;
+		return r;
+    }
+
+
+	function CheckError(context, err)
+	{
+		if (err >= 0)
+			return 0;
+	
+		switch (err)
+		{
+			case -5:
+				openMyDialog(context, 0, context.translate(ConnectRoot, "NETCNF_WRITE_ERROR"));
+				return 0;
+	
+			case -7:
+				openMyDialog(context, 0, context.translate(ConnectRoot, "NETCNF_REMOVE_ERROR"));
+				return 0;
+	
+			case -11:
+				openMyDialog(context, 0, context.translate(ConnectRoot, "NETCNF_INVALID_USR_NAME"));
+				return 0;
+	
+			case -12:
+				openMyDialog(context, 0, context.translate(ConnectRoot, "NETCNF_TOO_MANY_ENTRIES"));
+				return 0;
+	
+			case -14:
+				var ret = openMyDialog(context, 3, context.translate(ConnectRoot, "NETCNF_SYNTAX_ERROR"));
+				if (ret != nil && ret)
+				{
+					var r = openMyProcessDialog(context, context.translate(ConnectRoot, "DELETING"), DeleteAll);
+				}
+				return ret;
+	
+			case -15:
+				var ret = openMyDialog(context, 3, context.translate(ConnectRoot, "NETCNF_MAGIC_ERROR"));
+				if (ret != nil && ret)
+				{
+					var r = openMyProcessDialog(context, context.translate(ConnectRoot, "DELETING"), DeleteAll);
+				}
+				return ret;
+	
+			case -16:
+				openMyDialog(context, 0, context.translate(ConnectRoot, "NETCNF_CAPACITY_ERROR"));
+				return 0;
+	
+			case -20:
+				openMyDialog(context, 0, context.translate(ConnectRoot, "NETCNF_AOL_CONFIGURATION"));
+				return 0;
+	
+			default:
+				openMyDialog(context, 0, context.translate(ConnectRoot, "NETCNF_DEFAULT_ERROR"));
+				return 0;
+		}
+	}
+
+
+
+    function CheckErrorUpdate(context, err)
+    {
+        var ret = CheckError(context, err);
+        if (ret != nil && ret)
+        {
+            var event = main::menu::MScriptEvent(context, ConnectRoot, "UpdateList");
+            context.pushEvent(event);
+        }
+        return ret;
+    }
+
+    function MakeAutoSetting(context, args)
+    {
+        var [path, index] = args;
+
+        gNetcnf.InitProperties();
+
+        gNetcnf.use_auth      = 0;
+        gNetcnf.auth_username = "";
+        gNetcnf.auth_password = "";
+
+        gNetcnf.use_dhcp = 0;
+        gNetcnf.ip       = "192.168.0.%d".format(index);
+        gNetcnf.netmask  = "255.255.255.0";
+        gNetcnf.gateway  = "192.168.0.254";
+
+        gNetcnf.use_auto_dns = 0;
+        gNetcnf.dns0 = "192.168.0.254";
+        gNetcnf.dns1 = "192.168.0.254";
+
+        gNetcnf.ModifyProperties();
+        gNetcnf.AddFiles(path, "GT auto setting %d".format(index), gVendor, gProduct);
+		return;
+    }
+
+    function AddConfig(context)
+    {
+        var ret;
+        if (ret = Storage::GetFreeSize() < 134)
+        {
+            openConfirmDialog(context, 0, context.translate(ConnectRoot, "NO_SPACE"));
+            return 0;
+        }
+
+        gNetcnf.InitProperties();
+        gCombination = "";
+        gIfcName     = "";
+
+        start_page(context, ConfigHardware);
+        return 1;
+    }
+
+    function AddList(type, stat, net, ifc, dev, color)
+    {
+        var config = hidden::item.doCopy();
+
+        config.defineStatic("type", type);
+        config.defineStatic("stat", stat);
+        config.defineStatic("net",  net);
+        config.defineStatic("dev",  dev);
+        config.defineStatic("ifcOrg", ifc);
+
+        var [name, index] = net.split("Combination");
+        if (index != nil)
+        {
+            config["netIndex"].text = index;
+            config["ifc"].text = ifc;
+            config["ifc"].abbreviate();
+
+            if (color)
+			{
+                config["ifc"].color = main::menu::MColorObject(1.0, 0.0, 0.0, 1.0);
+			}
+
+            Pane::Config::SelectBox.appendChild(config);
+        }
+    }
+
+    function GetSelection()
+    {
+        var i = 0;
+        while (i < Pane::Config::SelectBox.Count())
+        {
+            var config = Pane::Config::SelectBox.getItem(i);
+            if (config.active)
+                return config;
+            i++;
+        }
+        return nil;
+    }
+
+
+    function GetSelectionIndex()
+    {
+        var i = 0;
+        while (i < Pane::Config::SelectBox.Count())
+        {
+            var config = Pane::Config::SelectBox.getItem(i);
+            if (config.active)
+                return i;
+
+            i++;
+        }
+        return 0;
+    }
+
+    function UpdateSelection(context)
+    {
+        var config = GetSelection();
+        if (config != nil)
+            config.active = 0;
+
+        config = Pane::Config::SelectBox.getItem();
+        config.active = 1;
+
+        if (config["type"] == 0 && config["stat"] >= 0)
+        {
+            Pane::Buttons::Connect.insensitive = 0;
+        }
+        else
+        {
+            Pane::Buttons::Connect.insensitive = 1;
+        }
+
+        if (config["type"] != 3)
+        {
+            Pane::Buttons::Edit.insensitive   = 0;
+            Pane::Buttons::Delete.insensitive = 0;
+        }
+        else
+        {
+            Pane::Buttons::Edit.insensitive   = 1;
+            Pane::Buttons::Delete.insensitive = 1;
+        }
+    }
+
+
+	function UpdateList(context)
+	{
+		// Disable action buttons during refresh
+		Pane::Buttons::Connect.insensitive = true;
+		Pane::Buttons::Edit.insensitive    = true;
+		Pane::Buttons::Delete.insensitive  = true;
+	
+		// Clear list
+		Pane::Config::SelectBox.clearChildren(context);
+	
+		// Close any open dialog
+		if (isDialogOpened)
+		{
+			cancelConfirmDialog(context);
+			isDialogOpened = false;
+		}
+	
+		// Resolve path from location menu
+		var path = sPathString[Pane::Location::OptionMenu.index];
+		gPath = path;
+	
+		// Open storage and early checks
+		Storage::Open(context, path, ConnectRoot, "UpdateList", 2);
+		if (!Storage::IsConnected())
+		{
+			ConnectRoot.setFocus(Pane::Location::OptionMenu);
+			openMyDialog(context, 0, context.translate(ConnectRoot, "NO_STORAGE"));
+			return;
+		}
+	
+		if (!Storage::IsFormatted())
+		{
+			ConnectRoot.setFocus(Pane::Location::OptionMenu);
+			var ret = openMyDialog(context, 3, context.translate(ConnectRoot, "NOT_FORMATTED"));
+			if (ret != nil && ret)
+			{
+				if (Storage::Format(context))
+				{
+					if (!Storage::IsFormatted());
+					else
+					{
+						var event = main::menu::MScriptEvent(context, ConnectRoot, "UpdateList");
+						context.pushEvent(event);
+					}
+				}
+			}
+			return;
+		}
+	
+		// Load lists
+		var netCnt = gNetcnf.GetList(0, path);
+		if (netCnt < 0)
+		{
+			ConnectRoot.setFocus(Pane::Location::OptionMenu);
+			CheckErrorUpdate(context, netCnt);
+			return;
+		}
+	
+		var ifcCnt = gNetcnf.GetList(1, path);
+		if (ifcCnt < 0)
+		{
+			ConnectRoot.setFocus(Pane::Location::OptionMenu);
+			CheckErrorUpdate(context, ifcCnt);
+			return;
+		}
+	
+		var devCnt = gNetcnf.GetList(2, path);
+		if (devCnt < 0)
+		{
+			ConnectRoot.setFocus(Pane::Location::OptionMenu);
+			CheckErrorUpdate(context, devCnt);
+			return;
+		}
+	
+		// If any network config entries exist, maybe auto-connect workflow
+		if (!netCnt)
+		{
+			if (main::game.option.LAN_auto_connect)
+			{
+				var ret = openMyProcessDialog(context, context.translate(ConnectRoot, "AUTO_SETTING"), MakeAutoSetting, [path, main::game.option.LAN_auto_machine_idx]);
+				if (ret == nil)
+					return;
+
+				if (ret >= 0)
+				{
+					var event = main::menu::MScriptEvent(context, ConnectRoot, "UpdateList");
+					context.pushEvent(event);
+					return;
+				}
+				CheckErrorUpdate(context, ret);
+				return;
+			}
+			else
+			{
+				var ret = openMyDialog(context, 1, context.translate(ConnectRoot, "NO_SETTING"));
+				if (ret == nil)
+					return;
+
+				if (ret)
+				{
+					if (!AddConfig(context))
+					{
+						ConnectRoot.setFocus(Pane::Location::OptionMenu);
+						return;
+					}
+				}
+			}
+		}
+	
+		// Build entry list
+		var ifcArray = [];
+		var i = 0;
+		while (i < netCnt)
+		{
+			var [stat, net, ifc, dev] = gNetcnf.GetNetListEntry(i);
+	
+			if (stat < 0)
+			{
+				// Immediate errors that require focus + dialog then return
+				if (stat == -14 || stat == -15)
+				{
+					ConnectRoot.setFocus(Pane::Location::OptionMenu);
+					CheckErrorUpdate(context, stat);
+					return;
+				}
+	
+				// Incomplete combination
+				AddList(0, stat, net, context.translate(ConnectRoot, "INCOMPLETE_COMBINATION"), dev, 1);
+			}
+			else
+			{
+				// Missing interface -> treat as incomplete (-100)
+				if (ifc == "")
+				{
+					stat = -100;
+					AddList(0, stat, net, context.translate(ConnectRoot, "INCOMPLETE_COMBINATION"), dev, 1);
+					continue;
+				}
+				else;
+	
+				// Validate device vendor/product from "vendor/product"
+				var devArray = dev.split("/");
+				if (devArray.size < 2 || devArray[0] != gVendor || devArray[1] != gProduct)
+				{
+					// Mismatch -> -101
+					stat = -101;
+					AddList(0, stat, net, ifc, dev, 1);
+					continue;
+				}
+	
+				// If auto connect is on (fallback path inside loop)
+				if (main::game.option.LAN_auto_connect)
+				{
+					var ret = gNetcnf.GetProperties(path, net);
+					if (ret < 0)
+					{
+						CheckError(context, ret);
+						restart(context);
+						return;
+					}
+	
+					if (gNetcnf.use_auth)
+					{
+						openConfirmDialog(context, 0, context.translate(ConnectRoot, "PPPOE_CONFIG"));
+						restart(context);
+						return;
+					}
+	
+					ret = gNetcnf.SetProperties(path, net);
+					start_page(context, ConnectingRoot);
+					return;
+				}
+	
+				// Normal list row for valid combination
+				AddList(0, stat, net, ifc, dev, 0);
+			}
+	
+			// Track used interfaces
+			ifcArray.push(ifc);
+			i++;
+		}
+	
+		// Re-enable buttons once list is ready
+		Pane::Buttons::Connect.insensitive = false;
+		Pane::Buttons::Edit.insensitive    = false;
+		Pane::Buttons::Delete.insensitive  = false;
+	
+		// Add remaining interfaces that weren't in combinations
+		i = 0;
+		while (i < ifcCnt)
+		{
+			var [sys, usr] = gNetcnf.GetIfcListEntry(i);
+	
+			var j = 0;
+			while (j < ifcArray.size)
+			{
+				if (usr == ifcArray[j])
+					break;
+
+				j++;
+			}
+	
+			if (j == netCnt)
+			{
+				AddList(1, gNetcnf.GetIfcStat(usr), "", usr, "", 1);
+			}
+	
+			i++;
+		}
+	
+		// If there is at least one selectable item and Delete is focused, move focus back to location
+		if (!Pane::Config::SelectBox.Count() && (ConnectRoot.getFocusedWidget() == ConnectRoot::Pane::Buttons::Delete))
+			ConnectRoot.setFocus(Pane::Location::OptionMenu);
+
+	
+		// Offer "new setting" when lists are small
+		if (ifcCnt < 4 && netCnt < 6)
+			AddList(3, 0, "", context.translate(ConnectRoot, "NEW_SETTING"), "", 0);
+
+		UpdateSelection(context);
+	}
+
+
+
+	function OnNoInterface(context)
+	{
+		openConfirmDialog(context, 0, context.translate(ConnectRoot, "NO_INTERFACE"));
+		restart(context);
+	}
+	
+	function onLoad(context)
+	{
+		Pane::Location::OptionMenu::popup::vbox::Mc0::label.adjustScale();
+		Pane::Location::OptionMenu::popup::vbox::Mc1::label.adjustScale();
+	}
+	
+	function onInitialize(context)
+	{
+		Pane::Location::label.adjustScale();
+	
+		if (!GetInterface())
+		{
+			var event = main::menu::MScriptEvent(context, ConnectRoot, "OnNoInterface");
+			context.pushEvent(event);
+			return;
+		}
+	
+		ConnectRoot.setFocus(Pane::Location::OptionMenu);
+	
+		var event = main::menu::MScriptEvent(context, ConnectRoot, "UpdateList");
+		context.pushEvent(event);
+	}
+	
+	function onFinalize(context)
+	{
+		Pane::Config::SelectBox.clearChildren(context);
+		Storage::Close();
+	}
+	
+	function onCancel(context)
+	{
+		main::sound.play("cancel");
+		restart(context);
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module NetworkProject::ConnectRoot::Pane::Location::OptionMenu
+{
+	function onValueChanged(context, index)
+	{
+		main::sound.play("ok");
+		ConnectRoot::UpdateList(context);
+	}
+}
+
+module NetworkProject::ConnectRoot::Pane::Config::SelectBox
+{
+	function onActivate(context, event)
+	{
+		main::sound.play("ok");
+	
+		var config = SelectBox.getItem();
+	
+		if (config["type"] == 3)
+		{
+			ConnectRoot::AddConfig(context);
+		}
+		else
+		{
+			ConnectRoot::UpdateSelection(context);
+		}
+	
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module NetworkProject::ConnectRoot::Pane::Buttons::Connect
+{	
+	function SetDefaultSetting(context, config)
+	{
+		var path = ConnectRoot::sPathString[ConnectRoot::Pane::Location::OptionMenu.index];
+		gNetcnf.SetDefault(path, config["net"]);
+		return 1;
+	}
+
+
+	function onActivate(context, event, item)
+	{
+		main::sound.play("ok");
+	
+		var config = ConnectRoot::GetSelection();
+	
+		// Unknown device
+		if (config["stat"] == -101)
+		{
+			openConfirmDialog(context, 0, context.translate(ConnectRoot, "UNKNOWN_DEV"));
+			return EVENTRESULT_FILTER;
+		}
+	
+		// Invalid configuration
+		if (config["stat"] < 0)
+		{
+			openConfirmDialog(context, 0, context.translate(ConnectRoot, "INVALID_CONFIG"));
+			return EVENTRESULT_FILTER;
+		}
+	
+		var index = ConnectRoot::GetSelectionIndex();
+	
+		if (index != 0)
+		{
+			var ret = openConfirmDialog(context, 1, context.translate(ConnectRoot, "DEFAULT_SETTING"));
+			if (ret)
+			{
+				openProcessDialog(
+					context,
+					context.translate(ConnectRoot, "SAVING"),
+					SetDefaultSetting,
+					config
+				);
+			}
+	
+			var path = ConnectRoot::sPathString[ConnectRoot::Pane::Location::OptionMenu.index];
+	
+			ret = gNetcnf.GetProperties(path, config["net"]);
+			if (ret < 0)
+			{
+				ConnectRoot::CheckErrorUpdate(context, ret);
+				return EVENTRESULT_FILTER;
+			}
+	
+			if (gNetcnf.use_auth)
+			{
+				openConfirmDialog(context, 0, context.translate(ConnectRoot, "PPPOE_CONFIG"));
+				return EVENTRESULT_FILTER;
+			}
+	
+			ret = gNetcnf.SetProperties(path, config["net"]);
+			start_page(context, ConnectingRoot);
+			return EVENTRESULT_FILTER;
+		}
+	}
+
+}
+
+module NetworkProject::ConnectRoot::Pane::Buttons::Edit
+{
+	function onActivate(context)
+	{
+		main::sound.play("ok");
+	
+		// current path
+		var path = ConnectRoot::sPathString[ConnectRoot::Pane::Location::OptionMenu.index];
+	
+		// current selection
+		var config = ConnectRoot::GetSelection();
+		var stat = config["stat"];
+		var net  = config["net"];
+		var ifc  = config["ifcOrg"];
+		var dev  = config["dev"];
+	
+		// incomplete or missing interface
+		if (config["type"] == 1 || stat == -100)
+		{
+			openConfirmDialog(context, 0, context.translate(ConnectRoot, "INCOMPLETE"));
+			return EVENTRESULT_FILTER;
+		}
+	
+		// unknown device
+		if (stat == -101)
+		{
+			openConfirmDialog(context, 0, context.translate(ConnectRoot, "UNKNOWN_DEV"));
+			return EVENTRESULT_FILTER;
+		}
+	
+		// resolve interface status if needed
+		if (stat == 0)
+		{
+			stat = gNetcnf.GetIfcStat(ifc);
+		}
+	
+		if (stat < 0)
+		{
+			ConnectRoot::CheckErrorUpdate(context, stat);
+			return EVENTRESULT_FILTER;
+		}
+	
+		// invalid interface type requires PPP config page
+		if (!gNetcnf.IsValidIfType(ifc))
+		{
+			openConfirmDialog(context, 0, context.translate(ConnectRoot, "PPP_CONFIG"));
+			return EVENTRESULT_FILTER;
+		}
+	
+		// prepare edit
+		ConnectRoot::gCombination = net;
+		ConnectRoot::gIfcName     = ifc;
+	
+		gNetcnf.InitProperties();
+	
+		var ret = gNetcnf.GetProperties(path, net);
+		if (ret < 0)
+		{
+			ConnectRoot::CheckErrorUpdate(context, ret);
+			return EVENTRESULT_FILTER;
+		}
+	
+		start_page(context, ConfigHardware);
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module NetworkProject::ConnectRoot::Pane::Buttons::Delete
+{
+	function Delete(context, args)
+	{
+		var [path, type, net, ifc] = args;
+		var ret = 0;
+	
+		if (type == 0)
+		{
+			ret = gNetcnf.DeleteFiles(path, net);
+		}
+		else
+		{
+			ret = gNetcnf.DeleteFiles(path, ifc);
+		}
+	
+		return ret;
+	}
+	
+	function onActivate(context, event, item)
+	{
+		main::sound.play("ok");
+	
+		var ret = openConfirmDialog(context, 3, context.translate(ConnectRoot, "DELETE_OK"));
+		if (!ret)
+			return EVENTRESULT_FILTER;
+
+	
+		var path = ConnectRoot::sPathString[ConnectRoot::Pane::Location::OptionMenu.index];
+	
+		var config = ConnectRoot::GetSelection();
+		var type = config["type"];
+		var net  = config["net"];
+		var ifc  = config["ifcOrg"];
+	
+		ret = openProcessDialog(
+			context,
+			context.translate(ConnectRoot, "DELETING"),
+			Delete,
+			[path, type, net, ifc]
+		);
+	
+		ConnectRoot::CheckError(context, ret);
+		ConnectRoot::UpdateList(context);
+	
+		return EVENTRESULT_FILTER;
+	}
+}

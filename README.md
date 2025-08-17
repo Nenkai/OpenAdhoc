@@ -62,7 +62,7 @@ There are 8 leftover projects from GT4P and GT4 that are not relevant.
 | logger                 |    ❌️    | Replay Analyzer menu, accessed from various Pre-Race menus                       |
 | message                |    ❌️    | Online mode message menu                                                         |
 | network (GT4 Online)   |    ❌️    | Network Connection and Online mode login                                         |
-| network (GT4 Retail)   |    ❌️    | Network Connection and LAN Battle mode                                           |
+| network (GT4 Retail)   |    ✔️    | Network Connection for LAN Battle mode. Returns to arcade project once established. Also contains some unused menu pages |
 | online (GT4 Online)    |    ❌️    | Online mode                                                                      |
 | option                 |    ✔️    | Game Options                                                                     |
 | photo_save             |    ❌️    | Photo preview and save for Photo Drive                                           |
