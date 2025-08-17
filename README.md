@@ -89,7 +89,7 @@ There are 8 leftover projects from GT4P and GT4 that are not relevant.
 | list_box               |    ✔️    | Leftover from GT4P's Save/Delete Replay menu. Possibly contains framework for an unused save icon customizer |
 | memcard                |    ✔️    | GT4P leftover                                                                    |
 | option2                |    ✔️    | GT4P leftover                                                                    |
-| option3                |    ❌️    | GT4P leftover                                                                    |
+| option3                |    ✔️    | GT4P leftover                                                                    |
 | quick                  |    ❌️    | GT4P leftover                                                                    |
 
 </details>
