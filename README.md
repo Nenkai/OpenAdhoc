@@ -86,7 +86,7 @@ There are 8 leftover projects from GT4P and GT4 that are not relevant.
 | event                  |    ✔️    | Unused project that appears to be a mode used on demo setups for public events. Seems non-functional. | 
 | online (GT4 Retail)    |    ❌️    | An earlier and unused implementation of online mode, works similarly to GT4 Online's version |
 | language               |    ✔️    | Leftover from GT4P's language select. Contains more language options, appears to be a dev version |
-| list_box               |    ❌️    | Leftover from GT4P's Save/Delete Replay menu. Possibly contains framework for an unused save icon customizer |
+| list_box               |    ✔️    | Leftover from GT4P's Save/Delete Replay menu. Possibly contains framework for an unused save icon customizer |
 | memcard                |    ✔️    | GT4P leftover                                                                    |
 | option2                |    ❌️    | GT4P leftover                                                                    |
 | option3                |    ❌️    | GT4P leftover                                                                    |
