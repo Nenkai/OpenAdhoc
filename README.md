@@ -46,9 +46,9 @@ No progress has been made currently.
 
 ### GT4 Online (US)
 Adhoc Version: 7 (v5-7 compatible)<br>
-15 of 30 projects are completed and can be compiled.<br>
+16 of 29 projects are completed and can be compiled.<br>
 There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
-There are 8 leftover projects from GT4P and GT4 that are not relevant.
+There are 9 leftover projects from GT4P and GT4 that are not relevant.
   
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|
@@ -78,12 +78,12 @@ There are 8 leftover projects from GT4P and GT4 that are not relevant.
 | quick-online           |    ✔️    | Online Mode Pre-Race menu                                                        |
 | quick-practice         |    ✔️    | GT Mode Track Meet Pre-Race menu                                                 |
 | quick-tt               |    ✔️    | Arcade Mode Time Trial Pre-Race menu                                             |
-| ranking                |    ❌️    | Online leaderboards, accessed from Event project                                 |
 | setting                |    ✔️    | Car Setting menu and all of its sub-menus (Change parts and tuning sliders)      |
 | slide                  |    ❌️    | Slideshow mode                                                                   |
 | GT4Application         |    ✔️    | Initializer and Config Script loader / re-loader                                 |
 | --------               | ----     | ---- Stub projects: ----                                                         |
-| event                  |    ✔️    | Unused project that appears to be a mode used on demo setups for public events. Seems non-functional. | 
+| event                  |    ✔️    | Unused project that appears to be a mode used on demo setups for public events. Seems non-functional. |
+| ranking                |    ✔️    | Online leaderboards, accessed from Event project                                 |
 | online (GT4 Retail)    |    ❌️    | An earlier and unused implementation of online mode, works similarly to GT4 Online's version |
 | language               |    ✔️    | Leftover from GT4P's language select. Contains more language options, appears to be a dev version |
 | list_box               |    ✔️    | Leftover from GT4P's Save/Delete Replay menu. Possibly contains framework for an unused save icon customizer |
