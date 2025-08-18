@@ -1,0 +1,267 @@
+module PROJECT::ROOT
+{
+    static sProgress = nil;
+
+    function setFadeActor(widget)
+    {
+        var actor = main::menu::MFadeActor(widget, 1.0);
+        actor.repeat = true;
+        actor.period = 0.25;
+        widget.actor = actor;
+    }
+
+    static server_doc = nil;
+
+    function refresh_list(context, server, port)
+    {
+        ScrollBox::SelectBox.clearChildren(context);
+
+        server_doc = [];
+
+        var list = main::network.getUniverseInformation(server, port);
+        if (list == nil)
+        {
+            return false;
+        }
+
+        var news = main::network.getUniverseNews();
+        if (news != nil)
+        {
+            News::label.text = news;
+		}
+        else
+            News::label.text = "";
+
+        var num = list.size;
+        for (var i = 0; i < num; i++)
+        {
+            var item = hidden::Item.doCopy();
+            var columns = list[i];
+
+            var id = columns[0];
+            item.defineStatic("universe_id", id);
+            item.defineStatic("universe_addr", columns[2]);
+            item.defineStatic("universe_port", columns[3]);
+
+            item["Name"].text   = columns[1];
+            item["Player"].text = columns[6];
+            item["Max"].text    = columns[7];
+
+            item.defineStatic("extended_info", columns[10]);
+            item.defineStatic("svo_url",       columns[11]);
+
+            setFadeActor(item["bgf"]);
+
+            ScrollBox::SelectBox.appendChild(context, item);
+
+            var doc = columns[4];
+            server_doc.push(doc);
+        }
+
+        ScrollBox::SelectBox.callFocus(ROOT);
+
+        if (server_doc[0] != nil)
+            Tooltip::tip.value = server_doc[0];
+		
+		return true;
+    }
+
+    function onInitialize(context)
+    {
+        main::network.language = "US";
+        hidden.visible = false;
+
+        var event = main::menu::MScriptEvent(context, ROOT, "onRefresh");
+        context.pushEvent(event);
+    }
+
+    function onFinalize(context)
+    {
+        ScrollBox::SelectBox.clearChildren(context);
+        server_doc = nil;
+        sProgress = nil;
+        DeleteWatcher();
+    }
+
+    function OnDownload(context)
+    {
+        DeleteWatcher();
+
+        var r = gHttp.HasError();
+        gHttp.close();
+        if (r)
+        {
+            openConfirmDialog(context, 0, context.translate(ROOT, "DOWNLOAD_FAILED"));
+            closeProgressDialog(context);
+            return;
+        }
+
+        var size  = gHttp.GetEntitySize();
+        var ksize = (size + 1023) / 1024;
+
+        Storage::Open(context, "mc0:", nil, nil, 0);
+
+        var kfree = Storage::GetFreeSize();
+        kfree += (Storage::GetStoredPatchSize() + 1023) / 1024;
+
+        if (kfree < ksize)
+        {
+            openConfirmDialog(context, 0, context.translate(ROOT, "NO_SPACE"));
+            closeProgressDialog(context);
+            Storage::Close();
+            restart(context);
+            return;
+        }
+
+        var dnas = main::menu::MDnasInst();
+
+        r = dnas.Initialize();
+        if (r < 0)
+        {
+            closeProgressDialog(context);
+            Storage::Close();
+            restart(context);
+            return;
+        }
+
+        r = dnas.Personalize(gHttp.GetMHttp());
+        if (r < 0)
+        {
+            closeProgressDialog(context);
+            Storage::Close();
+            restart(context);
+            return;
+        }
+
+        r = Storage::SavePatch(context, dnas);
+        Storage::Close();
+
+        if (r)
+        {
+            openConfirmDialog(context, 0, context.translate(ROOT, "SAVE_DONE"));
+            downNetwork();
+            main::menu::MSystem::Reboot();
+        }
+        else
+        {
+            openConfirmDialog(context, 0, context.translate(ROOT, "SAVE_FAILED"));
+            restart(context);
+        }
+    }
+
+    function OnFrame(context)
+    {
+        if (gHttp.IsDone())
+        {
+            var event = main::menu::MScriptEvent(context, ROOT, "OnDownload");
+            context.pushEvent(event);
+        }
+		else
+        {
+            var total = gHttp.GetContentLength();
+            if (!total)
+            {
+                sProgress.value = 0.0;
+            }
+            else
+            {
+                var current = gHttp.GetEntitySize();
+                sProgress.value = current.toFloat() / total.toFloat();
+            }
+        }
+    }
+
+    function onRefresh(context)
+    {
+        refresh_list(context, "rogue213.scea.com", 50079);
+    }
+
+    function onCancel(context)
+    {
+        var result = openConfirmDialog(context, 1, context.translate(ConnectRoot, "QUIT"));
+        if (result)
+        {
+            main::network.disconnect();
+            restart(context);
+        }
+        return EVENTRESULT_FILTER;
+    }
+}
+
+
+module PROJECT::ROOT::ScrollBox::SelectBox
+{
+    function onValueChanged(context, index)
+    {
+        main::sound.play("cursor");
+        Tooltip::tip.value = server_doc[index];
+    }
+}
+
+module PROJECT::ROOT::hidden::Item
+{
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+
+        var exinfo = event.widget["extended_info"];
+        var array  = exinfo.split(" ");
+        var ver    = array[0];
+        var elf    = array[1];
+
+        if (ver != main::menu::MSystem::GetVersionString())
+        {
+            openConfirmDialog(context, 0, context.translate(ROOT, "UPDATE_FOUND"));
+
+            Storage::Open(context, "mc0:", nil, nil, 0);
+            if (!Storage::IsConnected())
+            {
+                openConfirmDialog(context, 0, context.translate(ConnectRoot, "NO_STORAGE"));
+                Storage::Close();
+                return EVENTRESULT_FILTER;
+            }
+
+            if (!Storage::IsFormatted())
+            {
+                var ret = openConfirmDialog(context, 1, context.translate(ConnectRoot, "NOT_FORMATTED"));
+                if (ret)
+                {
+                    if (!Storage::Format(context))
+                    {
+                        Storage::Close();
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+                else
+                {
+                    Storage::Close();
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            Storage::Close();
+
+            if (!gHttp.AsyncGet(elf))
+            {
+                openConfirmDialog(context, 0, context.translate(ROOT, "DOWNLOAD_FAILED"));
+                return EVENTRESULT_FILTER;
+            }
+
+            sProgress = main::menu::MProgress();
+            sProgress.value = 0.0;
+
+            setProgress(context, sProgress);
+            openProgressDialog(context, context.translate(ROOT, "DOWNLOADING"), nil);
+
+            CreateWatcher(context, OnFrame, 2);
+            return EVENTRESULT_FILTER;
+        }
+
+        // Version matches: proceed to login flow
+        main::network.svo_url = event.widget["svo_url"];
+        main::network.setAuthAddr(event.widget["universe_addr"], event.widget["universe_port"]);
+
+        start_page(context, LoginRoot);
+        return EVENTRESULT_FILTER;
+    }
+}
