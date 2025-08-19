@@ -71,9 +71,9 @@ There are 9 leftover projects from GT4P and GT4 that are not relevant.
 | quick-arcade           |    ✔️    | Arcade mode Single Race Pre-Race menu                                            |
 | quick-championship     |    ❌️    | GT Mode Championship Pre-Race menu                                               |
 | quick-event            |    ❌️    | GT Mode Single Race, Practice, and Family Cup Pre-Race menu                      |
-| quick-freerun          |    ❌️    | GT Mode Photo Drive Pre-Race menu                                                |
+| quick-freerun          |    ✔️    | GT Mode Photo Drive Pre-Race menu                                                |
 | quick-license          |    ✔️    | GT Mode License test Pre-Race menu                                               |
-| quick-mission          |    ❌️    | GT Mode Mission Pre-Race menu                                                    |
+| quick-mission          |    ✔️    | GT Mode Mission Pre-Race menu                                                    |
 | quick-mt               |    ✔️    | GT Mode Power & Speed Pre-Race menu                                              |
 | quick-online           |    ✔️    | Online Mode Pre-Race menu                                                        |
 | quick-practice         |    ✔️    | GT Mode Track Meet Pre-Race menu                                                 |
@@ -90,7 +90,7 @@ There are 9 leftover projects from GT4P and GT4 that are not relevant.
 | memcard                |    ✔️    | GT4P leftover                                                                    |
 | option2                |    ✔️    | GT4P leftover                                                                    |
 | option3                |    ✔️    | GT4P leftover                                                                    |
-| quick                  |    ❌️    | GT4P leftover                                                                    |
+| quick                  |    ✔️    | GT4P leftover                                                                    |
 
 </details>
 
