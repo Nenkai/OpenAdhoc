@@ -46,7 +46,7 @@ No progress has been made currently.
 
 ### GT4 Online (US)
 Adhoc Version: 7 (v5-7 compatible)<br>
-16 of 29 projects are completed and can be compiled.<br>
+17 of 29 projects are completed and can be compiled.<br>
 There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
 There are 9 leftover projects from GT4P and GT4 that are not relevant.
   
@@ -59,7 +59,7 @@ There are 9 leftover projects from GT4P and GT4 that are not relevant.
 | eyetoy                 |    ✔️    | Handles unlocking Nike Car when scanning GT Shirt with the Eyetoy accessory      |
 | gtmode                 |    ✔️    | Gran Turismo Mode and all of its sub-menus                                       |
 | labomode               |    ❌️    | Photo lab, Replay Theater, Load & Save Replay, Delete Replay/Film/Photo          |
-| logger                 |    ❌️    | Replay Analyzer menu, accessed from various Pre-Race menus                       |
+| logger                 |    ✔️    | Replay Analyzer menu, accessed from various Pre-Race menus                       |
 | message                |    ❌️    | Online mode message menu                                                         |
 | network (GT4 Online)   |    ❌️    | Network Connection and Online mode login                                         |
 | network (GT4 Retail)   |    ✔️    | Network Connection for LAN Battle mode. Returns to arcade project once established. Also contains some unused menu pages |
@@ -281,7 +281,7 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 
 ## ⚙️ Compilation
 
-[Adhoc Toolchain](https://github.com/Nenkai/GTAdhocToolchain) version 1.1.3 or newer is required to compile game scripts. 
+[Adhoc Toolchain](https://github.com/Nenkai/GTAdhocToolchain) version 1.2.0 is required to compile game scripts. 
 The tool itself is command line-based without a native GUI, however it does have a VS Code Extension, and a Python GUI wrapper for streamlined usage / workflow.
 > [!TIP]
 Adhoc Toolchain (i.e `adhoc.exe`) can be added to your **PATH** (Optional)
