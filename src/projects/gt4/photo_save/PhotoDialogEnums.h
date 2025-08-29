@@ -1,0 +1,9 @@
+#ifndef PHOTO_DIALOG_ENUMS_H
+#define PHOTO_DIALOG_ENUMS_H
+
+#define PHOTO_DIALOG_OK 0
+#define PHOTO_DIALOG_QUERY 1
+
+#define PHOTO_DIALOG_RES_NO 0
+#define PHOTO_DIALOG_RES_OK 1
+#endif
