@@ -1,0 +1,357 @@
+module PrintProject::PrintRoot
+{
+	static watcher = nil;
+	static printing = nil;
+	static desc_str = "description";
+	static maintenance = 0;
+	static progress = main::menu::MProgress();
+	static currentIndex = 0;
+	static imageCount = 1;
+
+	function onInitialize(context)
+	{
+		printing = false;
+		maintenance = 0;
+		setProgress(context, progress);
+		startWatcher(context);
+		PR.allocateImageBuffer();
+		context.pushEvent(main::menu::MScriptEvent(context, PrintRoot, "startPrint"));
+	}
+	
+	function onFinalize(context)
+	{
+		endWatcher();
+		printing = nil;
+		print("watcher removed");
+	}
+	
+	function onCancel(context, event, item)
+	{
+		if (printing)
+			return EVENTRESULT_FILTER;
+	
+		main::sound.play("cancel");
+		exit(context);
+		return EVENTRESULT_FILTER;
+	}
+
+	function exit(context)
+	{
+		main::game.next_menu_arg = "PhotoRoot";
+		main::game.menu_result = "labo";
+		start_page(context, nil);
+	}
+	
+	function startWatcher(context)
+	{
+		watcher = main::menu::MScriptWatcher(context, onCheck);
+		watcher.interval = 10;
+		watcher.append();
+	}
+	
+	function endWatcher()
+	{
+		if (watcher != nil)
+			watcher.remove();
+			
+		watcher = nil;
+	}
+	
+	function onCheck(context)
+	{
+		if (printing && maintenance == 0)
+		{
+			var p = PR.getPrinterProgress(context);
+			setProgressValue(p);
+		}
+	}
+
+	function startPrint(context)
+	{
+		if (!startPrintImpl(context))
+		{
+			exit(context);
+		}
+	}
+	
+	function startPrintImpl(context)
+	{
+		currentIndex = 0;
+		if (loadPicture(context))
+		{
+			openPrintDialog(context);
+			return;
+		}
+		return false;
+	}
+	
+	function loadFile(context, manager, file)
+	{
+		var r = file.isExist(manager);
+		if (r != false)
+		{
+			return false;
+		}
+	
+		return (file.load(manager) == "OK");
+	}
+
+	function loadPicture(context)
+	{
+		PR.endPrinter();
+	
+		var printlist = main::menu::MMemoryCardManager::getPrintList();
+		var slot = main::game.option.album_memory_card_slot;
+		var manager = main::menu::MMemoryCardManager("MODE_OPERATION", slot);
+	
+		imageCount = printlist.size;
+	
+		if (currentIndex >= imageCount)
+			return false;
+	
+		var file = printlist.getFile(currentIndex++);
+		if (file != nil)
+		{
+			if (!loadFile(context, manager, file))
+				return false;
+	
+			PR.setPhotoFile(file);
+			return true;
+		}
+		return false;
+	}
+
+	function doPrint(context)
+	{
+		PR.setPaper(PrintDialog::paper);
+		PR.setMedia(PrintDialog::media);
+		PR.setMargin(PrintDialog::margin);
+		PR.setTriming(PrintDialog::triming);
+		PR.setHighQuality(PrintDialog::quality);
+		PR.setCopy(PrintDialog::copies);
+
+		var mes;
+		if (imageCount > 1)
+			mes = context.translate(PrintRoot, "now_printing_n_of_n").format(currentIndex, imageCount);
+		else
+			mes = context.translate(PrintRoot, "now_printing");
+	
+		openProgressDialog(context, mes, printCancel);
+		setProgressValue(0.0);
+		setProgressValue(0.0);
+	
+		var r = PR.printout(context);
+		if (r == "ok")
+		{
+			printing = true;
+			maintenance = 0;
+			print("now printing");
+		}
+		else
+		{
+			closeProgressDialog(context);
+			openConfirmDialog(context, 0, context.translate(PrintRoot, r));
+			return false;
+		}
+		return true;
+	}
+
+	function printNext(context)
+	{
+		if (loadPicture(context))
+		{
+			var r = PR.scanPrinter(context);
+			if (r == "OK")
+			{
+				if (doPrint(context))
+				{
+					return;
+				}
+			}
+			else
+			{
+				openConfirmDialog(context, 0, context.translate(PrintRoot, r));
+			}
+		}
+		exit(context);
+	}
+	
+	function toStartPrint(context)
+	{
+		context.pushEvent(main::menu::MScriptEvent(context, PrintRoot, "startPrint"));
+	}
+	
+	function toNextPrint(context)
+	{
+		context.pushEvent(main::menu::MScriptEvent(context, PrintRoot, "printNext"));
+	}
+	
+	function setProgressValue(val)
+	{
+		progress.value = val + 0.5 - 0.49999;
+	}
+
+	function openPrintDialog(context)
+	{
+		if (printing || maintenance != 0)
+			return false;
+	
+		var prnscnr = PR.scanPrinter(context);
+		if (prnscnr != "OK")
+		{
+			openConfirmDialog(context, 0, context.translate(PrintRoot, prnscnr));
+			return false;
+		}
+	
+		var result = PrintDialog::open(context, PR.getPrinterName() == "ESC/P-R" ? 2 : 1);
+		if (result == 0)
+			return false;
+	
+		if (result == 2)
+		{
+			print("cleaning?");
+			result = openConfirmDialog(context, 1, context.translate(PrintRoot, "cleaning_ok?"));
+			if (!result)
+				return false;
+	
+			openProgressDialog(context, context.translate(PrintRoot, "now_cleaning"));
+			setProgressValue(0.0);
+			setProgressValue(0.3);
+	
+			var r = PR.cleaning(context);
+			if (r == "ok")
+			{
+				maintenance = 1;
+				printing = true;
+				print("now cleaning");
+			}
+			else
+			{
+				closeProgressDialog(context);
+				openConfirmDialog(context, 0, context.translate(PrintRoot, r));
+			}
+		}
+	
+		result = openConfirmDialog(context, 1, context.translate(PrintRoot, "print_ok?"));
+		if (!result)
+			return false;
+	
+		return doPrint(context);
+		return true;
+	}
+
+	function confirmNozzleCheck(context)
+	{
+		print("nozzle check?");
+	
+		var printername = PR.getPrinterName();
+		var e100 = (printername == "E-100" || printername == "PICTUREMATE");
+	
+		var result = openConfirmDialog(context, 1, context.translate(PrintRoot, e100 ? "and_nozzlecheck_e100?" : "and_nozzlecheck?"));
+		if (!result)
+		{
+			return toStartPrint(context);
+		}
+	
+		openProgressDialog(context, context.translate(PrintRoot, "now_nozzlechecking"));
+		setProgressValue(0.0);
+		setProgressValue(0.3);
+	
+		var r = PR.nozzleCheck(context);
+		if (r == "ok")
+		{
+			maintenance = 2;
+			printing = true;
+			print("now nozzle checking");
+		}
+		else
+		{
+			closeProgressDialog(context);
+			openConfirmDialog(context, 0, context.translate(PrintRoot, r));
+			return toStartPrint(context);
+		}
+	}
+
+	function printCancel(context)
+	{
+		print ("print cancel...");
+		PR.printCancel(context);
+	}
+}
+
+module PrintProject::PrintRoot::PR
+{
+	function showMessage(context, message)
+	{
+		main::sound.play("cursor");
+		openConfirmDialog(context, 0, message);
+	}
+
+	function printerNotify(context, code, continuable)
+	{
+		var prevMaintenance = maintenance;
+		var r = continuable;
+	
+		if (code == "done" || code == "cancel" || code == "error")
+		{
+			PR.setPrinterNotifyResult(0);
+			var localizestr = code;
+			
+			if (maintenance == 1)
+				localizestr = "cleaning_" + code;
+			else if (maintenance == 1) // wtf?
+				localizestr = "nozzlecheck_" + code;
+	
+			main::sound.play("ok");
+	
+			var success = false;
+	
+			if (code == "done")
+			{
+				success = true;
+				setProgressValue(1.0);
+				context.sync(0.2);
+				setProgressValue(1.0);
+				context.sync(0.1);
+			}
+	
+			setProgressDialogVisible(context, 0);
+	
+			if (!success || maintenance != 0 || imageCount <= currentIndex)
+				openConfirmDialog(context, 0, context.translate(PrintRoot, localizestr));
+	
+			printing = false;
+	
+			var isMeaintenance = (maintenance != 0);
+			var isCleaning = (maintenance == 1);
+	
+			maintenance = 0;
+	
+			if (success)
+			{
+				if (isCleaning)
+				{
+					var event = main::menu::MScriptEvent(context, PrintRoot, "confirmNozzleCheck");
+					context.pushEvent(event);
+				}
+				else if (isMeaintenance)
+					toStartPrint(context);
+				else
+					toNextPrint(context);
+			}
+			else
+				exit(context);
+		}
+	
+		main::sound.play("cursor");
+		setProgressDialogVisible(context, 0);
+	
+		var r = openConfirmDialog(context, continuable ? 1 : 0, context.translate(PrintRoot, code));
+		PR.setPrinterNotifyResult(r);
+	
+		if (r)
+			setProgressDialogVisible(context, 1);
+		else
+			closeProgressDialog(context);
+	}
+}
