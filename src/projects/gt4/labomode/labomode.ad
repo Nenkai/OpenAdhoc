@@ -1,0 +1,1437 @@
+module LaboModeProject
+{
+	#include "../share/dialog.ad"
+	#include "../share/memorycard.ad"
+	#include "../share/page_util.ad"
+
+	function onLoad(context)
+	{
+		main::sound.load();
+	
+		context.loadGpb("projects/labomode", "Template");
+		context.createRenderContext(1);
+	
+		var render_context = context.getRenderContext(0);
+		render_context.transition = main::menu::MColorTransition();
+		render_context.transition.panIn(render_context);
+	
+		var arg = main::game.next_menu_arg;
+		if (arg == "MODE_SAVE_BESTLAP_REPLAY" || arg == "MODE_SAVE_FULL_REPLAY")
+			render_context.startPage(SaveReplayRoot);
+		else if (arg == "MODE_LOAD_BESTLAP_REPLAY")
+			render_context.startPage(LoadReplayRoot);
+		else if (arg == "")
+			render_context.startPage(PhotoRoot);
+		else
+			render_context.startPage(LaboModeProject[arg]);
+	}
+
+	function onUnload(context)
+	{
+		context.unloadGpb("Template");
+		main::sound.unload();
+	}
+	
+	static manager = nil;
+	static submanager = nil;
+	static watcher = nil;
+	static listcount = 0;
+	static old_count_ = -1;
+	static state_changed_ = 0;
+	static ejected_ = 0;
+	static free = -1;
+	static selectFolder_ = 0;
+	static topCommand_ = nil;
+	static folderlist_ = nil;
+	static selection_ = [];
+	static dragable_ = 0;
+	static aliasMode_ = 0;
+	static hasNewFile_ = 0;
+	static root_ = nil;
+	static current_commands = nil;
+	static folderTipMultiple = "";
+	static folderTipSingle = "";
+	static folderFocus = 0;
+	static focusFolder = "";
+	static selectFolderName = "";
+	static loadListNotify_ = nil;
+	static continueLoadListNotify_ = nil;
+	static autoSetListIndex_ = -1;
+
+	function enterPage(context, root, title)
+	{
+		root.appendChild(context, Template::Common.doCopy());
+	
+		var common = root["Common"];
+		common["ToolTip"]["tip"].attach();
+	
+		var header = common["Header"];
+	
+		if (title != nil)
+		{
+			header["title"].clearChildren(context);
+			header["title"].appendChild(context, title);
+		}
+	
+		hasNewFile_ = 0;
+		root_ = root;
+		manager = nil;
+		submanager = nil;
+		current_commands = nil;
+		loadListNotify_ = nil;
+		continueLoadListNotify_ = nil;
+		autoSetListIndex_ = -1;
+	
+		watcher = main::menu::MScriptWatcher(context, onCheck);
+		watcher.interval = 2;
+		watcher.append();
+	
+		Template::clearCallback();
+		Template::setListActivate(onListActivate);
+		Template::setListKeyPress(onListKeyPress);
+		Template::setListKeyRelease(onListKeyRelease);
+		Template::setListFocusEnter(onListFocusEnter);
+		Template::setListFocusLeave(onListFocusLeave);
+		Template::setListCancel(onListCancel);
+	}
+
+	function leavePage(context, root)
+	{
+		var common = root["Common"];
+		if (common != nil)
+			root.removeChild(context, common);
+	
+		if (manager != nil)
+			manager.isChanged();
+	
+		Template::clearCallback();
+	
+		watcher.remove();
+		watcher = nil;
+	
+		manager = nil;
+		submanager = nil;
+		folderlist_ = nil;
+		root_ = nil;
+	}
+
+	function setToolTipString(str)
+	{
+		root_["Common"]["ToolTip"]["tip"].value = str;
+	}
+	
+	function initCommon(context)
+	{
+		setMcAccessIndicator(getMCardItem()["Indicator"]);
+	
+		getMCardItem()["free"].text = "";
+		free = -1;
+		selection_ = [];
+		ejected_.value = 1;
+		initDrag(context);
+	}
+	
+	function setDragable(f)
+	{
+		dragable_ = (f == nil) ? 1 : f;
+	}
+
+	function setAliasFileMode(f)
+	{
+		aliasMode_ = f;
+	}
+	
+	function setHasNewFile(f)
+	{
+		hasNewFile_ = f;
+	}
+	
+	function saveCurrentFolder()
+	{
+		if (manager != nil && !manager.isConnect())
+		{
+			main::game.labo_folder = -1;
+			main::game.labo_list_index = -1;
+		}
+		else
+		{
+			main::game.labo_folder = selectFolder_;
+			main::game.labo_list_index = getList().focus_index;
+		}
+	}
+
+	function setPreviousFolder(nFolder)
+	{
+		var idx = main::game.labo_folder;
+		if (idx >= 0 && idx <= nFolder)
+		{
+			selectFolder_ = idx;
+			main::game.labo_folder = -1;
+		}
+	}
+	
+	function requestAutoSetPreviousListIndex()
+	{
+		var idx = main::game.labo_list_index;
+		autoSetListIndex_ = idx;
+		main::game.labo_list_index = -1;
+	}
+	
+	function getList()
+	{
+		return root_["Scroll"]["List"];
+	}
+
+
+	function getMCardItem()
+	{
+		return root_["Common"]["Header"]["MCard"];
+	}
+	
+	function getFile(idx)
+	{
+		if (hasNewFile_)
+		{
+			if (idx == 0)
+			{
+				return manager.getNewFile();
+			}
+	
+			--idx;
+		}
+	
+		return manager.getFile(idx);
+	}
+	
+	function getFileCount()
+	{
+		var c = manager.count;
+	
+		if (hasNewFile_)
+		{
+			if (manager.isConnect())
+			{
+				if (c < 0)
+				{
+					;
+				}
+				else
+					return c + 1;
+			}
+			return 0;
+		}
+	
+		return c;
+	}
+
+	function clearList(context)
+	{
+		listcount = 0;
+		old_count_ = -1;
+	
+		getList().setItemCount(0);
+		selection_ = [];
+	
+		initDrag();
+	}
+   
+	function onCheck(context)
+	{
+		if (manager == nil)
+			return;
+	
+		var subman = (submanager == nil) ? manager : submanager;
+	
+		if (!subman.isConnect())
+		{
+			var freeitem = getMCardItem()["free"];
+			freeitem.text = context.translate(Template, "no_card_slot_n").format(root_["currentSlot"]() + 1);
+			free = -1;
+			autoSetListIndex_ = -1;
+			freeitem.scale_x = 1.0;
+			freeitem.adjustScale();
+		}
+		else
+		{
+			var freeitem = getMCardItem()["free"];
+			var prevFree = free;
+			free = subman.isFormat() ? subman.free : 8000;
+	
+			if (free != prevFree)
+			{
+				var slot = root_["currentSlot"]() + 1;
+	
+				if (free == 8000)
+					freeitem.text = context.translate(Template, "unformat_slot_n").format(slot);
+				else
+					freeitem.text = context.translate(Template, "n_kbfree_slot_n").format(free, slot);
+			}
+			freeitem.scale_x = 1.0;
+			freeitem.adjustScale();
+		}
+	
+		var message = root_["Common"]["message"];
+		var list = getList();
+	
+		if (!manager.isConnect())
+		{
+			if (listcount != 0)
+			{
+				//print"ȴ����ޤ�����";
+				clearList(context);
+				handleMcChange(context);
+				EntryRoot::forceCancel(context);
+				changeCommandStateBySelection(context);
+				ejected_.value = 1;
+				autoSetListIndex_ = -1;
+			}
+	
+			message.text = context.translate(Template, "no_card");
+			message.visible = 1;
+			root_["Scroll"].visible = 0;
+	
+			if (ejected_)
+			{
+				resetFocus(listcount, "EJECT");
+				ejected_.value = 0;
+			}
+	
+			return;
+		}
+	
+		var count = getFileCount();
+		root_["Scroll"].visible = (count > 0);
+	
+		if (manager.isNoFile() && !hasNewFile_)
+		{
+			message.text = context.translate(Template, "no_data");
+			message.visible = 1;
+		}
+		else if (count < 0)
+		{
+			message.text = context.translate(Template, "now_reading");
+			message.visible = 1;
+		}
+		else
+			message.visible = 0;
+	
+		var count_valid = 1;
+		if (count < 0)
+		{
+			count_valid = 0;
+			count = 0;
+		}
+	
+		if (count != listcount)
+		{
+			clearList(context, root_);
+			listcount = count;
+	
+			//print("set count = " + count + ""); // STRING_PUSH: StringIndex=3
+	
+			list.setItemCount(count);
+			changeCommandStateBySelection(context);
+	
+			if (autoSetListIndex_ >= 0 && autoSetListIndex_ < count)
+			{
+				list.focus_index = autoSetListIndex_;
+				root_.setFocus(list);
+			}
+			else
+				setFolderTip();
+		}
+	
+		if (count_valid)
+		{
+			if (old_count_ != listcount)
+			{
+				resetFocus(listcount, "COUNT");
+				old_count_.value = listcount;
+			}
+	
+			if (state_changed_)
+			{
+				resetFocus(listcount, "STATE");
+				state_changed_.value = 0;
+			}
+		}
+	
+		manager.cursorPos = list.focus_index;
+	}
+
+
+	function setFolderTip()
+	{
+		//print("select = " + selectFolderName + " " + focusFolder);
+	
+		if (selectFolderName == focusFolder && folderFocus)
+		{
+			var count = getList().getItemCount();
+			if (count == 0)
+				setToolTipString("");
+			else if (count == 1)
+				setToolTipString(folderTipSingle);
+			else
+				setToolTipString(folderTipMultiple.format(count));
+		}
+	}
+
+
+	function beginIndicator()
+	{
+		beginAccessIndicator(1);
+		getMCardItem()["State"].visible = false;
+	}
+
+
+	function endIndicator()
+	{
+		endAccessIndicator();
+		getMCardItem()["State"].visible = true;
+	}
+
+	function set_select(idx, list, flag)
+	{
+		var w = list.getItemWidget(idx);
+		if (w != nil)
+		{
+			w["Icon"]["check"].visible = flag;
+		}
+	}
+
+	function clearSelection(list)
+	{
+		var n = selection_.size;
+		var i = 0;
+		while (i < n)
+		{
+			set_select(selection_[i], list, 0);
+			++i;
+		}
+		selection_ = [];
+	}
+
+	function eraseSelection(idx, list)
+	{
+		var n = selection_.size;
+		var i = n - 1;
+		while (i >= 0)
+		{
+			if (selection_[i] == idx)
+			{
+				selection_.erase(i);
+				set_select(idx, list, 0);
+			}
+			--i;
+		}
+	}
+
+	function isSelection(idx)
+	{
+		var n = selection_.size;
+		var i = 0;
+		while (i < n)
+		{
+			if (selection_[i] == idx)
+			{
+				return 1;
+			}
+			++i;
+		}
+		return 0;
+	}
+
+	function intLess(a, b)
+	{
+		return (a < b);
+	}
+
+
+	function sortSelection()
+	{
+		selection_.sort(intLess);
+	}
+
+	function makeOrderTable(idx, count)
+	{
+		//print("idx " + idx + ", count " + count + ", sel " + selection_);
+	
+		var sidx = 0;
+		var nx = -1;
+	
+		if (sidx == selection_.size)
+		{
+			nx = -1;
+		}
+		else
+		{
+			sortSelection();
+			nx = selection_[sidx++];
+		}
+	
+		var order = [];
+		var i = 0;
+	
+		while (i < idx)
+		{
+			if (i == nx)
+			{
+				if (sidx == selection_.size)
+				{
+					nx = -1;
+				}
+				else
+				{
+					nx = selection_[sidx++];
+				}
+			}
+			else
+			{
+				order.push(i);
+			}
+			++i;
+		}
+	
+		var j = 0;
+		while (j < selection_.size)
+		{
+			order.push(selection_[j]);
+			++j;
+		}
+	
+		while (i < count)
+		{
+			if (i == nx)
+			{
+				if (sidx == selection_.size)
+				{
+					nx = -1;
+				}
+				else
+				{
+					nx = selection_[sidx++];
+				}
+			}
+			else
+			{
+				order.push(i);
+			}
+			++i;
+		}
+	
+		//print("order = " + order);
+		return order;
+	}
+
+	static cancelSelectMode_ = 0;
+	static dragState_ = 0;
+
+	function initDrag()
+	{
+		cancelSelectMode_ = 0;
+		dragState_ = 0;
+	}
+
+	function onListActivate(context)
+	{
+		var state = context.getUpdateContext().getPadButtonState(0);
+		var shift_1 = (state & 0x100);
+		var shift_2 = (state & 0x800);
+		var shift = shift_1 || shift_2;
+		var selall = shift_1 && shift_2;
+	
+		var list = getList();
+		var idx = list.focus_index;
+		if (idx < 0)
+			return;
+	
+		main::sound.play("ok");
+	
+		if (selall)
+		{
+			selection_ = [];
+			var n = list.getItemCount;
+			for (var i = 0; i < list.getItemCount(); ++i)
+			{
+				selection_.push(i);
+			}
+			cancelSelectMode_ = 0;
+			changeCommandStateBySelection(context);
+			list.postRedraw();
+		}
+	
+		if (!shift)
+		{
+			clearSelection(list);
+		}
+	
+		if (shift && isSelection(idx))
+		{
+			cancelSelectMode_ = 1;
+		}
+		else
+		{
+			set_select(idx, list, 1);
+			selection_.push(idx);
+			cancelSelectMode_ = 0;
+			changeCommandStateBySelection(context);
+		}
+	
+		dragState_ = 1;
+	}
+
+	function enterDragMode(context)
+	{
+		dragState_ = 2;
+	
+		var list = getList();
+		var idx = list.focus_index;
+		var w = list.getItemWidget(idx);
+	
+		if (w != nil)
+		{
+			var dx = +40.0;
+			var dy = -40.0;
+	
+			var child = w.getDeepCopy();
+			update_widget(context, idx, child, 1);
+			child["Icon"]["check"].visible = 0;
+			child.x = dx;
+			child.y = dy;
+			child.opacity = 0.5;
+	
+			var drag_icon = Template::hidden::Insert.getDeepCopy();
+			drag_icon.appendChild(child);
+	
+			var n = selection_.size;
+			if (n > 1)
+			{
+				var num = Template::hidden::Num.getDeepCopy();
+				num.x = dx;
+				num.y = dy;
+				num["label"].text = selection_.size.toString();
+				drag_icon.appendChild(num);
+			}
+	
+			list.enterDragMode(context, drag_icon);
+		}
+	}
+
+	function makeAfterSelection(order)
+	{
+		var sel = [];
+		var i = 0;
+		while (i < order.size)
+		{
+			if (isSelection(order[i]))
+			{
+				sel.push(i);
+			}
+			++i;
+		}
+		return sel;
+	}
+
+	function drop(context, list, idx)
+	{
+		//print("drop index = " + idx);
+	
+		var order = makeOrderTable(idx, list.getItemCount());
+		var afterSel = makeAfterSelection(order);
+	
+		root_["playlist"].order(order);
+	
+		if (dragable_)
+		{
+			print("save play list");
+			manager.requestPause();
+			manager.waitPause();
+			beginIndicator();
+	
+			var r = manager.autoloadPlayList.save(manager);
+	
+			if (handleSaveResult(context, r))
+			{
+				main::sound.play("ok");
+			}
+	
+			endIndicator();
+			manager.restart();
+		}
+		else
+		{
+			manager.clear();
+			clearList(context);
+		}
+	}
+
+	function exitDragMode(context)
+	{
+		main::sound.play("cursor");
+	
+		var list = getList();
+		var drop_index = list.focus_index;
+	
+		drop(context, list, drop_index);
+	
+		list.leaveDragMode(context);
+		list.focus_index = drop_index;
+		list.postRedraw();
+	}
+
+	function cancelDrag(context)
+	{
+		var list = getList();
+		list.leaveDragMode(context);
+	}
+
+
+	function setFocusTopCommand()
+	{
+		var vbox = root_["Common"]["Command"]["VBox"];
+		var delmode = root_["Common"]["Command"]["DeleteMode"];
+		var option  = root_["Common"]["Command"]["Option"];
+		var exit    = root_["Common"]["Command"]["Exit"];
+		var focus = nil;
+	
+		var it = vbox.first;
+		while (it != nil)
+		{
+			if (it.can_focus)
+			{
+				focus = it;
+				break;
+			}
+			it = it.next;
+		}
+	
+		if (focus == nil)
+		{
+			if (delmode.can_focus)
+				focus = delmode;
+			else if (option.can_focus)
+				focus = option;
+			else if (exit.can_focus)
+				focus = exit;
+		}
+	
+		if (focus != nil)
+		{
+			main::sound.play("cursor");
+			root_.setFocus(focus);
+			return 1;
+		}
+	
+		return 0;
+	}
+
+
+	function setFocusActiveFolder()
+	{
+		var vbox = getFolderVBox();
+	
+		for (var i = 0; i < folderlist_.size; ++i)
+		{
+			if (i == selectFolder_)
+			{
+				var f = folderlist_[i];
+				var w = vbox[f];
+	
+				if (w.can_focus)
+				{
+					main::sound.play("cursor");
+					root_.setFocus(w);
+					return 1;
+				}
+			}
+		}
+	
+		return 0;
+	}
+
+	function resetFocus(count, msg)
+	{
+		var list = getList();
+		var w = root_.focus_widget;
+	
+		if (w == list)
+		{
+			if (count == 0)
+			{
+				if (setFocusActiveFolder() == 0)
+				{
+					setFocusTopCommand();
+				}
+			}
+		}
+	
+		if (w != nil && !w.can_focus)
+		{
+			if (count > 0)
+			{
+				root_.focus_widget = list;
+			}
+			else
+			{
+				if (setFocusActiveFolder() == 0)
+				{
+					setFocusTopCommand();
+				}
+			}
+		}
+	}
+
+	function onListKeyPress(context, event)
+	{
+		var key = event.keysym;
+	
+		if (key == 65490 || key == 65480)
+			return 1;
+	
+		if (key == 65363)
+		{
+			if (dragState_ == 2)
+			{
+				cancelDrag(context);
+			}
+			dragState_ = 0;
+			setFocusTopCommand();
+			return;
+		}
+	
+		if (key == 65361)
+		{
+			if (dragState_ == 2)
+			{
+				cancelDrag(context);
+			}
+			dragState_ = 0;
+			setFocusActiveFolder();
+			return;
+		}
+	
+		if (key == 65362 || key == 65364)
+		{
+			cancelSelectMode_ = 0;
+	
+			if (dragState_ != 2)
+			{
+				var state = context.getUpdateContext().getPadButtonState(0) & (32 | 128);
+				dragState_ = state ? 1 : 0;
+			}
+	
+			if (dragable_ && dragState_ == 1)
+			{
+				enterDragMode(context);
+	
+				if (key == 65362)
+					return 1;
+			}
+		}
+	
+		return 0;
+	}
+
+	function onListKeyRelease(context, event)
+	{
+		return 0;
+	}
+
+	function onKeyRelease(context, event)
+	{
+		var key = event.keysym;
+	
+		if (key == 65293) // Enter key
+		{
+			if (dragState_ == 2)
+			{
+				exitDragMode(context);
+			}
+			dragState_ = 0;
+	
+			if (cancelSelectMode_)
+			{
+				var list = getList();
+				eraseSelection(list.focus_index, list);
+				changeCommandStateBySelection(context);
+			}
+		}
+	
+		return 0;
+	}
+
+	function onListFocusEnter(context, event)
+	{
+		var list = getList();
+		list.setItemActive(list.focus_index, 1);
+		list.focus_active = true;
+		return 0;
+	}
+	
+	function onListFocusLeave(context, event)
+	{
+		var list = getList();
+		list.setItemActive(list.focus_index, 0);
+		list.focus_active = false;
+		return 0;
+	}
+	
+	function onListCancel(context)
+	{
+		main::sound.play("cancel");
+		clearSelection(getList());
+		changeCommandStateBySelection(context);
+		return 2;
+	}
+
+
+	function getFolderVBox()
+	{
+		return root_["Common"]["Folder"]["VBox"];
+	}
+	
+	function activateFolder(context, index)
+	{
+		selectFolder_ = index;
+		root_["init"](context);
+	}
+
+	function initFolderCommon(context, folderlist)
+	{
+		var vbox = getFolderVBox();
+	
+		if (folderlist_ == nil)
+		{
+			vbox.clearWindow(context);
+		}
+	
+		var i = 0;
+		while (i < folderlist.size)
+		{
+			var f = folderlist[i];
+			var w = (folderlist_ != nil) ? vbox[f] : Template::Folders[f].doCopy();
+	
+			if (i == selectFolder_)
+			{
+				w["selected"].visible = true;
+				selectFolderName = f;
+			}
+			else
+			{
+				w["selected"].visible = false;
+			}
+	
+			if (folderlist_ == nil)
+			{
+				w.defineStatic("activateFunc", activateFolder);
+				w.defineStatic("index", i);
+				w.packing = 1;
+				vbox.appendChild(context, w);
+			}
+	
+			if (i == selectFolder_ && w.can_focus)
+			{
+				root_.setFocus(w);
+			}
+	
+			++i;
+		}
+	
+		folderlist_ = folderlist;
+	}
+
+	function folderFocusEnter(context, event)
+	{
+		print("folder enter!");
+		folderFocus = 1;
+		focusFolder = event.widget.name;
+	}
+	
+	function folderFocusLeave(context, event)
+	{
+		print("folder leave!");
+		folderFocus = 0;
+	}
+	
+	function getCommandVBox()
+	{
+		return root_["Common"]["Command"]["VBox"];
+	}
+
+	function initCommandCommon(context, coms)
+	{
+		var vbox = getCommandVBox();
+		vbox.clearWindow(context);
+	
+		current_commands = coms;
+	
+		var i = 0;
+		while (i < coms.size)
+		{
+			var w = Template::Commands[coms[i][0]].doCopy();
+	
+			w.defineStatic("activateFunc", coms[i][1]);
+			w.opacity = 0.0;
+			w.packing = 1;
+			vbox.appendChild(context, w);
+	
+			if (i == 0)
+			{
+				topCommand_ = w;
+			}
+	
+			++i;
+		}
+	
+		changeCommandStateBySelection(context);
+	}
+
+	function changeCommandStateBySelection(context)
+	{
+		var coms = current_commands;
+		if (coms == nil)
+			return;
+	
+		var vbox = root_["Common"]["Command"]["VBox"];
+		var nsel = selection_.size;
+		topCommand_ = nil;
+	
+		var i = 0;
+		while (i < coms.size)
+		{
+			var c = coms[i];
+			var w = vbox[c[0]];
+	
+			if (c[1] == nil)
+			{
+				w.opacity = 1.0;
+				break;
+			}
+			else
+			{
+				var f;
+				switch(c[2])
+				{
+					case 0:
+					{
+						f = 0;
+						break;
+					}
+					case 1:
+					{
+						f = (nsel != 1);
+						break;
+					}
+					case 2:
+					{
+						f = (nsel == 0);
+						break;
+					}
+					case 3:
+					{
+						f = (getList().getItemCount() == 0);
+						break;
+					}
+				}
+	
+				w.insensitive = f;
+				w.opacity = 1.0;
+	
+				if (!f && topCommand_ == nil)
+					topCommand_ = w;
+			}
+	
+			++i;
+		}
+	
+		if (topCommand_ == nil)
+			topCommand_ = root_["Common"]["Command"]["Option"];
+	
+		state_changed_.value = 1;
+	}
+
+	function commandTrash(context)
+	{
+		print("trash");
+	
+		var nsel = selection_.size;
+		if (nsel <= 0)
+			return;
+	
+		manager.requestPause();
+	
+		var mes = (nsel == 1) ? translateMc(context, "delete selected data ok?") : translateMc(context, "delete selected n data ok?").format(nsel);
+	
+		if ((openMcDialog(context, 3, mes) && nsel == 1) || openMcDialog(context, 3, translateMc(context, "really delete?")))
+		{
+	
+			manager.waitPause();
+		
+			var progress = main::menu::MProgress();
+			progress.value = 0.0;
+		
+			if (nsel == 1)
+				setProgress(context, manager.progress);
+			else
+				setProgress(context, progress);
+		
+			var result = 1;
+			openProgressDialog(context, translateMc(context, "now_deleting"));
+		
+			var i = 0;
+			while (i < selection_.size)
+			{
+				var pv = (i.toFloat() + 1.0) / selection_.size.toFloat();
+				progress.value = pv;
+		
+				var index = selection_[i];
+				//print("delete index = " + index + ", " + pv + "");
+		
+				var file = getFile(index);
+				if (file != nil)
+				{
+					if (!file.remove(manager))
+					{
+						print("failed");
+						result = 0;
+						break;
+					}
+				}
+		
+				++i;
+			}
+		
+			if (result)
+			{
+				main::sound.play("ok");
+				progress.value = 1.0;
+			}
+		
+			closeProgressDialog(context);
+		
+			if (!result)
+			{
+				main::sound.play("disable");
+				openConfirmDialog(context, 0, translateMc(context, "delete_error"));
+			}
+		
+			clearList(context);
+		
+			if (manager != nil)
+				manager.clear();
+		}
+		if (manager != nil)
+			manager.restart();
+	
+		changeCommandStateBySelection(context);
+	}
+
+	function addPlayList(context, list)
+	{
+		sortSelection();
+	
+		var prevcount = list.size;
+		var i = 0;
+	
+		while (i < selection_.size)
+		{
+			var idx = selection_[i];
+			//print("selection index " + idx + "");
+	
+			var file = getFile(idx);
+			if (file != nil && list.search(file) < 0)
+			{
+				list.append(file);
+			}
+	
+			++i;
+		}
+	
+		list.rotate(prevcount);
+	
+		getList().postRedraw();
+	}
+
+	function commandRename(context)
+	{
+		if (selection_.size <= 0)
+			return;
+	
+		print("rename");
+	
+		var index = selection_[0];
+		var file = getFile(index);
+		var text = "";
+	
+		var i = 0;
+		while (i < 1000)
+		{
+			if (file.isInfoValid())
+			{
+				text = file.title;
+				break;
+			}
+	
+			context.sync();
+			++i;
+		}
+	
+		if (file.isInfoValid())
+		{
+	
+			manager.requestPause();
+		
+			var dialog = EntryRoot;
+			root_.visible = 0;
+		
+			if (dialog["open"](context, 1, text))
+			{
+				root_.visible = 1;
+		
+				var changedtext = dialog["getText"]();
+		
+				if (changedtext != text)
+				{
+					file.title = changedtext;
+					print("write info");
+		
+					manager.waitPause();
+					beginIndicator();
+		
+					var r = file.writeInfo(manager);
+					if (handleSaveResult(context, r))
+					{
+						main::sound.play("ok");
+					}
+		
+					endIndicator();
+					getList().postRedraw();
+				}
+			}
+		
+			manager.restart();
+			root_.visible = 1;
+		}
+	}
+
+	static defaultTitleScaleX = 1.0;
+	static defaultTitleScaleY = 1.0;
+
+	function initListCommon(context, templateWidget)
+	{
+		var list = getList();
+		list.setItemTemplate(context, templateWidget);
+	
+		listcount = 0;
+		old_count_ = -1;
+	
+		list.setItemCount(0);
+		list.visible_callback = visible_callback;
+		list.update_callback = update_callback;
+	
+		list.magnify_ratio = 1.0;
+		list.step_min = 1;
+		list.step_max = 1;
+		list.interpolate_ratio = 0.1;
+		list.focus_index = 0;
+		list.focus_active = 1;
+	
+		defaultTitleScaleX = templateWidget["title"].scale_x;
+		defaultTitleScaleX = templateWidget["title"].scale_y; // Bug? should probably be defaultTitleScaleY
+	}
+
+	function setupWidgetCommon(context, i, w)
+	{
+		w["Icon"]["check"].visible = isSelection(i);
+	
+		var f = getFile(i);
+		if (f == nil)
+		{
+			return true;
+		}
+	
+		f.dispstep = 0;
+		w["Date"]["label"].text = f.date;
+	
+		update_widget(context, i, w);
+		return;
+	}
+
+	function update_widget(context, i, w, force)
+	{
+		var f = getFile(i);
+		if (f == nil)
+			return 1;
+	
+		if (force == nil)
+			force = 0;
+	
+		var step = force ? 0 : f.dispstep;
+	
+		if (step == 0 && f.isInfoValid())
+		{
+			w["Car"]["label"].text = f.carName;
+			w["Car"]["label"].abbreviate();
+	
+			var course = w["Course"]["label"];
+			course.text = context.translate(LaboModeProject, "CourseNameCaption", f.courseName);
+			course.scale_x = 1.0;
+			course.scale_y = 1.0;
+			course.adjustScale();
+	
+			var title = w["title"];
+			title.text = f.title;
+			title.scale_x = defaultTitleScaleX;
+			title.adjustScale();
+			title.scale_y = defaultTitleScaleY;
+			
+			var time = f.time;
+			
+			if (time != "")
+			{
+				w["Time"]["label"].text = time;
+				w["Mode"].visible = 1;
+				w["Mode"].active = f.spectatorMode;
+			}
+			
+			var size = f.size;
+			
+			if (aliasMode_)
+			{
+				w["size"].text = "alias";
+			}
+			else
+			{
+				w["size"].text = (f.size < 0) ? "---" : "%dKB".format(size);
+			}
+			
+			step = 1;
+		}
+			
+		if (step == 1 && f.isIconValid())
+		{
+			var tex = f.getIconTexture();
+			var img = w["Icon"]["image"];
+		
+			if (tex != "")
+			{
+				img.image_chunk = tex;
+			}
+		
+			if (f.portrait && w["Icon"].visible == 0)
+			{
+				var width = img.w;
+				img.x += width * 0.21875;
+				img.w = width * 0.5625;
+			}
+		
+			w["Icon"].visible = 1;
+			step = 2;
+		}
+		
+		if (force)
+			return true;
+		
+		f.dispstep = step;
+		
+		return step == 2;
+	}
+
+	function visible_callback(context, index)
+	{
+		var list = getList();
+		var s = index.size;
+	
+		var i = 0;
+		while (i < index.size)
+		{
+			var idx = index[i];
+			var visible = list.getItemVisible(idx);
+	
+			if (visible)
+			{
+				var w = list.getItemWidget(idx, context);
+				var r = root_["setupWidget"](context, idx, w);
+				list.setItemUpdate(idx, r ? 0 : 3);
+			}
+			else
+				list.setItemWidget(idx, context, nil);
+	
+			++i;
+		}
+	}
+
+	function update_callback(context, index)
+	{
+		var list = getList();
+	
+		var i = 0;
+		while (i < index.size)
+		{
+			var idx = index[i];
+			var w = list.getItemWidget(idx);
+	
+			if (w != nil)
+			{
+				var r = update_widget(context, idx, w, list);
+				list.setItemUpdate(idx, r ? 0 : 3);
+			}
+	
+			i++;
+		}
+	}
+
+	function setupWidgetReplay(context, i, w)
+	{
+		var f = getFile(i);
+	
+		if (f != nil)
+		{
+			var name = f.objectName;
+	
+			if (name == "FileReplayLicense")
+			{
+				w["Icon"]["bg_license"].visible = 1;
+				w["Icon"]["bg_full"].visible = 0;
+				w["Icon"]["bg_best"].visible = 0;
+			}
+			else if (name == "FileReplayFull")
+			{
+				w["Icon"]["bg_license"].visible = 0;
+				w["Icon"]["bg_full"].visible = 1;
+				w["Icon"]["bg_best"].visible = 0;
+			}
+			else
+			{
+				w["Icon"]["bg_license"].visible = 0;
+				w["Icon"]["bg_full"].visible = 0;
+				w["Icon"]["bg_best"].visible = 1;
+			}
+		}
+	
+		setupWidgetCommon(context, i, w);
+		return;
+	}
+
+	function hideReplayItem(root)
+	{
+		root["hidden"]["ReplayItem"].active = false;
+		root["hidden"]["ReplayItem"]["Icon"].visible = false;
+		root["hidden"]["ReplayItem"]["Icon"]["bg_license"].visible = true;
+		root["hidden"]["ReplayItem"]["Icon"]["bg_full"].visible = false;
+		root["hidden"]["ReplayItem"]["Icon"]["bg_best"].visible = false;
+		root["hidden"]["ReplayItem"]["Icon"]["check"].visible = false;
+		root["hidden"]["ReplayItem"]["ListCheck"].visible = false;
+		root["hidden"]["ReplayItem"]["Mode"].visible = false;
+	}
+
+	function hidePhotoItem(root)
+	{
+		root["hidden"]["PhotoItem"]["Icon"].visible = false;
+		root["hidden"]["PhotoItem"]["Icon"]["bg_film"].visible = false;
+		root["hidden"]["PhotoItem"]["Icon"]["bg_photo"].visible = false;
+		root["hidden"]["PhotoItem"]["Icon"]["check"].visible = false;
+		root["hidden"]["PhotoItem"]["SlideCheck"].visible = false;
+		root["hidden"]["PhotoItem"]["PrintCheck"].visible = false;
+	}
+}

@@ -1,0 +1,630 @@
+module LaboModeProject::PhotoRoot
+{
+	static playlist = main::menu::MMemoryCardPlayList();
+	static printlist = main::menu::MMemoryCardManager::getPrintList();
+	static bg_initialized = 0;
+	static shuffle_ = 0;
+
+	function onInitialize(context)
+	{
+		PhotoRoot.visible = true;
+	
+		enterPage(context, PhotoRoot, hidden::Title::title.doCopy());
+	
+		PhotoRoot.appendChild(context, Template::Normal::Scroll.doCopy());
+	
+		PreviewRoot::allocateImageBuffer();
+	
+		setPreviousFolder(4);
+	
+		init(context);
+	
+		Template::setExitActivate(commandExit);
+		Template::setOptionActivate(commandOption);
+	}
+
+	function onFinalize(context)
+	{
+		var scroll = PhotoRoot["Scroll"];
+	
+		if (scroll != nil)
+		{
+			PhotoRoot.removeChild(context, scroll);
+		}
+	
+		leavePage(context, PhotoRoot);
+	}
+
+	function exit(context)
+	{
+		main::game.labo_folder = -1;
+		main::game.labo_list_index = -1;
+		main::game.next_menu_project = main::game.major_menu_project;
+		main::game.next_menu_arg = main::game.major_menu_page;
+		main::game.menu_result = "exit";
+	
+		start_sequence(context, "menu");
+	}
+
+	function init(context)
+	{
+		context.cursor_visible = true;
+	
+		hidden.visible = false;
+	
+		hidePhotoItem(PhotoRoot);
+		initBG(context);
+		initCommon(context, PhotoRoot);
+		initList(context);
+		initFolders(context);
+		initCommands(context);
+	
+		setDragable(selectFolder_ == 2);
+		setAliasFileMode(selectFolder_ >= 2);
+	
+		manager = nil;
+	
+		var slot = currentSlot();
+		switch(selectFolder_)
+		{
+			case 0:
+			{
+				manager = main::menu::MMemoryCardManager("MODE_LOAD_PHOTO_FILM", slot);
+				break;
+			}
+			case 1:
+			{
+				manager = main::menu::MMemoryCardManager("MODE_LOAD_PHOTO_PICTURE", slot);
+				manager.autoloadPlayList.list = playlist;
+				break;
+			}
+			case 2:
+			{
+				manager = main::menu::MMemoryCardManager("MODE_PHOTO_PLAYLIST", slot);
+				manager.autoloadPlayList.list = playlist;
+				manager.list = playlist;
+				break;
+			}
+			case 3:
+			{
+				manager = main::menu::MMemoryCardManager("MODE_PHOTO_PRINTLIST", slot);
+				break;
+			}
+		}
+	
+		if (!manager.isChanged())
+			requestAutoSetPreviousListIndex();
+	
+		manager.start();
+	}
+
+	function initBG(context)
+	{
+		if (bg_initialized)
+		{
+			return;
+		}
+		var rnd = main::menu::MRandom();
+		var n = rnd.getValue(0, 16) + 1;
+		var path = "/piece/labo_bg/pa_bg%02d.img".format(n);
+	
+		//print("n = " + n + "  path = " + path + "\n");
+	
+		bg.from_disk = true;
+		bg.image_path = path;
+		bg.doInitialize(context);
+	
+		bg_initialized = true;
+	}
+
+
+	function currentSlot()
+	{
+		return main::game.option.album_memory_card_slot;
+	}
+	
+	static folders_ = ["Film", "Photo", "Slide_Show", "Print"];
+
+	function initFolders(context)
+	{
+		initFolderCommon(context, folders_);
+	
+		var vbox = getFolderVBox();
+		var sel_photo = (selectFolder_ == 1);
+	
+		vbox["Slide_Show"]["drag"].visible = sel_photo;
+		vbox["Print"]["drag"].visible = sel_photo;
+	
+		slidefilm.visible = (selectFolder_ == 2);
+	
+		switch (selectFolder_)
+		{
+			case 0:
+			{
+				folderTipMultiple = context.translate(PhotoRoot, "Film_n_pictures");
+				folderTipSingle = context.translate(PhotoRoot, "Film_1_picture");
+				break;
+			}
+			case 1:
+			{
+				folderTipMultiple = context.translate(PhotoRoot, "Photo_n_pictures");
+				folderTipSingle = context.translate(PhotoRoot, "Photo_1_picture");
+				break;
+			}
+			case 2:
+			{
+				folderTipMultiple = context.translate(PhotoRoot, "SlideShom_pictures");
+				folderTipSingle = context.translate(PhotoRoot, "SlideShom_1_picture");
+				break;
+			}
+			case 3:
+			{
+				folderTipMultiple = context.translate(PhotoRoot, "Print_n_pictures");
+				folderTipSingle = context.translate(PhotoRoot, "Print_1_picture");
+				break;
+			}
+		}
+	}
+
+	function commandDevelop(context)
+	{
+		print("develop");
+	
+		manager.requestPause();
+	
+		if (selection_.size == 1 && openMcDialog(context, 1, context.translate(PhotoRoot, "develop ok?")))
+		{
+			manager.waitPause();
+	
+			var index = selection_[0];
+			var file = getFile(index);
+	
+			if (file != nil)
+			{
+				setProgress(context, manager.progress);
+				openProgressDialog(context, translateMc(context, "now_loading"));
+	
+				var r = file.load(manager);
+	
+				context.sync(0.5);
+				closeProgressDialog(context);
+	
+				if (handleLoadResult(context, r))
+				{
+					main::sound.play("ok");
+					main::game.menu_result = "develop";
+	
+					saveCurrentFolder();
+					start_page(context, nil);
+					manager = nil;
+				}
+			}
+		}
+	
+		if (manager != nil)
+			manager.restart();
+	}
+
+	function commandPreview(context)
+	{
+		print("preview");
+	
+		if (selection_.size == 0)
+			return;
+	
+		manager.requestPause();
+		manager.waitPause();
+	
+		var index = selection_[0];
+		var file = getFile(index);
+	
+		if (file != nil)
+		{
+			context.cursor_visible = 0;
+	
+			setProgress(context, manager.progress);
+			openProgressDialog(context, translateMc(context, "now_loading"));
+	
+			var r = file.load(manager);
+	
+			//print("load result " r);
+	
+			if (r == "OK")
+			{
+				PhotoRoot.visible = 0;
+				main::sound.play("ok");
+				PreviewRoot::setPhotoFile(file);
+				saveCurrentFolder();
+				start_page(context, PreviewRoot);
+				manager = nil;
+			}
+			else if (r == "INVALID_FILE")
+			{
+				main::sound.play("disable");
+				openConfirmDialog(context, 0, translateMc(context, "broken_file"));
+			}
+			else
+			{
+				main::sound.play("disable");
+				openConfirmDialog(context, 0, translateMc(context, "load_error"));
+			}
+	
+			closeProgressDialog(context);
+			context.cursor_visible = 1;
+		}
+	
+		if (manager != nil)
+			manager.restart();
+	}
+
+	function commandTrashAlias(context)
+	{
+		var list = (selectFolder_ == 2) ? playlist : printlist;
+	
+		print("trash alias");
+	
+		sortSelection();
+	
+		var nsel = selection_.size;
+		if (nsel <= 0)
+			return;
+	
+		var i = selection_.size - 1;
+		while (i >= 0)
+		{
+			var index = selection_[i];
+			list.remove(index);
+			--i;
+		}
+	
+		if (selectFolder_ == 2)
+		{
+			print("save play list");
+	
+			manager.requestPause();
+			manager.waitPause();
+	
+			beginIndicator();
+	
+			var r = manager.autoloadPlayList.save(manager);
+	
+			if (handleSaveResult(context, r))
+			{
+				main::sound.play("ok");
+			}
+	
+			endIndicator();
+			manager.restart();
+		}
+	
+		clearList(context);
+		manager.clear();
+		changeCommandStateBySelection(context);
+	}
+	
+	function commandToSlide(context)
+	{
+		if (selection_.size <= 0)
+			return;
+	
+		manager.requestPause();
+		addPlayList(context, playlist);
+	
+		var r = manager.autoloadPlayListResult;
+		//print("autoload result = " r);
+	
+		if (r != "OK")
+		{
+			print("new play list!");
+			var not_create = 1;
+			var invalidlist = (r == "INVALID_FILE");
+	
+			var mes = invalidlist
+				? "broken playlist slot n create?"
+				: "no playlist slot n create?";
+	
+			var slot = currentSlot();
+	
+			if (openMcDialog(context, 1, context.translate(PhotoRoot, mes).format(slot + 1)))
+			{
+	
+				manager.waitPause();
+		
+				var file = manager.autoloadPlayList;
+		
+				if (file != nil)
+				{
+					r = saveVariousDataImpl(
+						context,
+						manager,
+						"slideshow",
+						slot,
+						file.size,
+						file,
+						file
+					);
+					//print("save result = " + r);
+		
+					manager.clear();
+					not_create = false;
+				}
+			}
+	
+			if (not_create)
+			{
+				playlist.clear();
+			}
+		}
+	
+		print("save play list");
+	
+		manager.waitPause();
+		beginIndicator();
+	
+		r = manager.autoloadPlayList.save(manager);
+	
+		if (handleSaveResult(context, r))
+		{
+			main::sound.play("ok");
+		}
+	
+		endIndicator();
+	
+		clearSelection(getList());
+		changeCommandStateBySelection(context);
+	
+		manager.restart();
+		getList().postRedraw();
+	}
+
+	function commandToPrint(context)
+	{
+		if (selection_.size <= 0)
+			return;
+	
+		addPlayList(context, printlist);
+		clearSelection(getList());
+		changeCommandStateBySelection(context);
+	}
+
+	function commandSlideShow(context)
+	{
+		print("slide show");
+	
+		start_page(context, SlideRoot);
+		manager = nil;
+	}
+
+	function commandPrint(context)
+	{
+		if (printlist.size <= 0)
+			return;
+	
+		print("print");
+	
+		main::game.menu_result = "print";
+		saveCurrentFolder();
+		start_page(context, nil);
+	}
+	
+	function commandOutUSB(context)
+	{
+		print("out usb");
+	
+		var nsel = selection_.size;
+		if (nsel <= 0)
+		{
+			return;
+		}
+	
+		manager.requestPause();
+	
+		var mes = (nsel == 1) ?
+		context.translate(PhotoRoot, "out selected data to usb memory ok?")
+		: context.translate(PhotoRoot, "out selected n data to usb memory ok?").format(nsel);
+	
+		if (openMcDialog(context, 3, mes))
+		{
+			manager.waitPause();
+	
+			var progress = main::menu::MProgress();
+			progress.value = 0.0;
+			progress.value = 0.0; // duplicated in bytecode
+			setProgress(context, progress);
+	
+			var result = 1;
+	
+			context.cursor_visible = 0;
+			openProgressDialog(context, context.translate(PhotoRoot, "now_transfer"));
+	
+			var i = 0;
+			while (i < selection_.size)
+			{
+				var pv = (i.toFloat() + 0.3) / selection_.size.toFloat();
+				progress.value = pv;
+	
+				var index = selection_[i];
+	
+				//print("load index = " + index + ", " + pv + "\n");
+	
+				var file = getFile(index);
+				if (file != nil)
+				{
+					var r = file.load(manager);
+					if (r != "OK")
+					{
+						PhotoRoot.visible = 1;
+					}
+	
+					if (handleLoadResult(context, r))
+					{
+						PhotoRoot.visible = 0;
+						PreviewRoot::setPhotoFile(file);
+					}
+					else
+					{
+						result = 0;
+						break;
+					}
+	
+					PhotoRoot.visible = 0;
+					r = PreviewRoot::outUSBStorage(context);
+					if (r != "OK")
+					{
+						PhotoRoot.visible = 1;
+						openConfirmDialog(context, 0, translateMc(context, "usbresult|" + r));
+						result = 0;
+						break;
+					}
+				}
+	
+				++i;
+			}
+	
+			PhotoRoot.visible = 1;
+	
+			if (result)
+			{
+				main::sound.play("ok");
+				progress.value = 1.0;
+				context.sync(0.5);
+			}
+	
+			closeProgressDialog(context);
+			context.cursor_visible = 1;
+		}
+	
+		if (manager != nil)
+		{
+			manager.restart();
+		}
+	}
+
+	function commandPlayMode(context)
+	{
+		print("play mode change.");
+	
+		shuffle_ = (shuffle_ ? 0 : 1);
+	
+		SlideRoot::setShuffle(shuffle_);
+		reflectPlayMode();
+	}
+	
+	function commandOption(context)
+	{
+		print("option!");
+	
+		var slot = currentSlot();
+		OptionAlbumDialog::open(context);
+	
+		if (slot != currentSlot())
+			init(context);
+	}
+
+	function commandExit(context)
+	{
+		print("exit?");
+	
+		main::game.labo_folder = -1;
+		main::game.labo_list_index = -1;
+	
+		if (openConfirmDialog(context, 1, context.translate(PhotoRoot, "exit ok?")))
+			exit(context);
+	}
+
+	function initCommands(context)
+	{
+		var coms = nil;
+	
+		switch (selectFolder_)
+		{
+			case 0:
+			{
+				coms = [
+					["Development", commandDevelop, 1],
+					["Trash", commandTrash, 2],
+					["Rename", commandRename, 1]
+				];
+				break;
+			}
+	
+			case 1:
+			{
+				coms = [
+					["Preview", commandPreview, 1],
+					["ToSlide", commandToSlide, 2],
+					["ToPrint", commandToPrint, 2],
+					["USBPhotoSave", commandOutUSB, 2],
+					["Trash", commandTrash, 2],
+					["Rename", commandRename, 1]
+				];
+				break;
+			}
+	
+			case 2:
+			{
+				coms = [
+					["Preview", commandPreview, 1],
+					["Trash", commandTrashAlias, 2],
+					["Dot", nil],
+					["Play", commandSlideShow, 3],
+					["PlayMode", commandPlayMode, 0]
+				];
+				Template::Commands::PlayMode.active = shuffle_;
+				break;
+			}
+	
+			case 3:
+			{
+				coms = [
+					["Preview", commandPreview, 1],
+					["Trash", commandTrashAlias, 2],
+					["Dot", nil],
+					["Print", commandPrint, 3]
+				];
+				break;
+			}
+		}
+	
+		initCommandCommon(context, coms);
+	}
+
+
+	function reflectPlayMode()
+	{
+		var vbox = getCommandVBox();
+		vbox["PlayMode"].active = shuffle_;
+	}
+
+	function initList(context)
+	{
+		initListCommon(context, hidden::PhotoItem);
+	}
+
+	function setupWidget(context, i, w)
+	{
+		if (selectFolder_ == 0)
+		{
+			w["Icon"]["bg_film"].visible = 1;
+		}
+		else
+		{
+			w["Icon"]["bg_photo"].visible = 1;
+		}
+	
+		if (selectFolder_ == 1)
+		{
+			var f = getFile(i);
+			if (f != nil)
+			{
+				w["SlideCheck"].visible = 1;
+				w["PrintCheck"].visible = 1;
+	
+				w["SlideCheck"].active = (playlist.search(f) >= 0);
+				w["PrintCheck"].active = (printlist.search(f) >= 0);
+			}
+		}
+	
+		setupWidgetCommon(context, i, w);
+	}
+}
