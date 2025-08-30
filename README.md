@@ -281,7 +281,7 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 
 ## ⚙️ Compilation
 
-[Adhoc Toolchain](https://github.com/Nenkai/GTAdhocToolchain) version 1.2.0 is required to compile game scripts. 
+[Adhoc Toolchain](https://github.com/Nenkai/GTAdhocToolchain) version 1.2.3 is required to compile game scripts. 
 The tool itself is command line-based without a native GUI, however it does have a VS Code Extension, and a Python GUI wrapper for streamlined usage / workflow.
 > [!TIP]
 Adhoc Toolchain (i.e `adhoc.exe`) can be added to your **PATH** (Optional)
