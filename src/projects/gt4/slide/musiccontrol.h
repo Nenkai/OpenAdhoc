@@ -1,9 +1,9 @@
 static music_player_id_list = [];
 static music_player_index_list = [];
-static music_player_infinity_loop = 1;
+static music_player_infinity_loop = true;
 static music_player_step = -1;
-static music_player_play = 0;
-static music_player_stop = 0;
+static music_player_play = false;
+static music_player_stop = false;
 static music_player_index = -1;
 static music_player_code = "racing";
 static music_player_volume = 1.0;
@@ -12,9 +12,8 @@ function do_shuffle(list)
 {
 	var rnd = main::menu::MRandom();
 	var lsize = list.size;
-	var i = 0;
 
-	while (i < lsize)
+	for (var i = 0; i < lsize; i++)
 	{
 		var r = rnd.getValue(0, i + 1);
 
@@ -24,7 +23,6 @@ function do_shuffle(list)
 		}
 
 		list.move(i, r);
-		i++;
 	}
 }
 
@@ -48,20 +46,12 @@ function music_player_set_infinity_loop(loop)
 function music_player_entry_list(id_list, index_list, shuffle)
 {
 	music_player_id_list = [];
-	var i = 0;
-	while (i < id_list.size)
-	{
+	for (var i = 0; i < id_list.size; i++)
 		music_player_id_list.push(id_list[i]);
-		i++;
-	}
 
 	music_player_index_list = [];
-	i = 0;
-	while (i < index_list.size)
-	{
+	for (var i = 0; i < index_list.size; i ++)
 		music_player_index_list.push(index_list[i]);
-		i++;
-	}
 
 	if (shuffle)
 		do_shuffle(music_player_id_list);
@@ -74,16 +64,16 @@ function music_player_do_play()
 	{
 		music_player_index = -1;
 		music_player_step = 0;
-		music_player_stop = 0;
-		music_player_play = 1;
+		music_player_stop = false;
+		music_player_play = true;
 	}
 }
 
 function music_player_do_stop()
 {
 	main::sound.stopStream();
-	music_player_play = 0;
-	music_player_stop = 1;
+	music_player_play = false;
+	music_player_stop = true;
 	music_player_index = -1;
 }
 
@@ -102,63 +92,52 @@ function music_player_tick(context)
 {
 	if (music_player_stop)
 	{
-		music_player_stop = 0;
+		music_player_stop = false;
 		return 3;
 	}
 
 	if (music_player_play)
 	{
-
 		var p = main::sound.isPlayingStream();
-		switch(music_player_step)
+		switch (music_player_step)
 		{
 			case -1:
-			{
 				if (p == 0)
-				{
 					music_player_step++;
-				}
 				break;
-			}
+
 			case 0:
-			{
 				music_player_index++;
 				if (music_player_index >= music_player_id_list.size)
 				{
 					if (music_player_infinity_loop)
-					{
 						music_player_index = 0;
-					}
 					else
 					{
 						music_player_do_stop();
+						break;
 					}
-					break;
 				}
 			
 				var next = music_player_id_list[music_player_index];
 				main::sound.startStreamEx("pcm", music_player_code, next, 0, music_player_volume);
 				music_player_step++;
 				break;
-			}
+
 			case 1:
-			{
 				if (p == 1)
 				{
 					music_player_step++;
 					return 1;
 				}
 				break;
-			}
+
 			case 2:
-			{
 				if (p == 0)
-				{
 					music_player_step = -1;
-				}
+
 				return 2;
-			}
-			break;
+				break;
 		}
 	}
 	return 0;
@@ -192,13 +171,11 @@ function init_base_music_list()
 	base_music_list = [];
 
 	var alllist = main::game.getAllMusicList();
-	var i = 0;
-	while (i < alllist.size)
+	for (var i = 0; i < alllist.size; i++)
 	{
 		var l = alllist[i];
 		var music = [l[0], l[1], l[2], l[3]];
 		base_music_list.push(music);
-		i++;
 	}
 }
 
@@ -213,13 +190,8 @@ function get_base_music_list_information(id)
 function make_music_map()
 {
 	var list = [];
-	var i = 0;
-
-	while (i < base_music_list.size)
-	{
+	for (var i = 0; i < base_music_list.size; i++)
 		list.push(0);
-		i++;
-	}
 
 	return list;
 }
@@ -244,14 +216,12 @@ function remove_music_list(list, map, index)
 
 function dump_music_list(list)
 {
-	var i = 0;
-	while (i < list.size)
+	for (var i = 0; i < list.size; i++)
 	{
 		var music = list[i];
 		var id = music[3];
 		var title = music[0] + " / " + music[1];
 		print("<%02d> [%s]".format(id, title));
-		i++;
 	}
 }
 
@@ -310,9 +280,8 @@ function load_playlist(playlist, musiclist, musicmap)
 {
 	var playdata = playlist.play_data;
 	var list = [];
-	var i = 0;
 
-	while (i < playdata.size)
+	for (var i = 0; i < playdata.size; i++)
 	{
 		var pl = playdata[i];
 		if (pl[2])
@@ -320,17 +289,12 @@ function load_playlist(playlist, musiclist, musicmap)
 			var n = [pl[0], pl[1], pl[2], pl[3], i];
 			list.push(n);
 		}
-		i++;
 	}
 
 	list.sort(sortfunc_playlist_dispno);
 
-	i = 0;
-	while (i < list.size)
-	{
+	for (var i = 0; i < list.size; i++)
 		append_music_list(musiclist, musicmap, list[i][4]);
-		i++;
-	}
 }
 
 function apply_playlist(playlist, musiclist, shuffle)
@@ -341,29 +305,20 @@ function apply_playlist(playlist, musiclist, shuffle)
 	if (playdatasize < musiclist.size)
 		playdatasize = musiclist.size;
 
-	var i = 0;
-	while (i < playdatasize)
+	for (var i = 0; i < playdatasize; i++)
 	{
 		var n = [-1, 0, 0, -1];
 		newplaydata.push(n);
-		i++;
 	}
 
 	var playno_list = [];
-	i = 0;
-	while (i < musiclist.size)
-	{
+	for (var i = 0; i < musiclist.size; i++)
 		playno_list.push(i);
-		i++;
-	}
 
 	if (shuffle)
-	{
 		do_shuffle(playno_list);
-	}
 
-	i = 0;
-	while (i < musiclist.size)
+	for (var i = 0; i < musiclist.size; i++)
 	{
 		var id = musiclist[i][3];
 		var pl = newplaydata[id];
@@ -371,12 +326,9 @@ function apply_playlist(playlist, musiclist, shuffle)
 		pl[2] = 1;  // marked
 		pl[3] = playno_list[i];  // play number
 		pl[0] = i;  // display number
-
-		i++;
 	}
 
-	i = 0;
-	while (i < playdatasize)
+	for (var i = 0; i < playdatasize; i++)
 	{
 		var pl = newplaydata[i];
 
@@ -385,8 +337,7 @@ function apply_playlist(playlist, musiclist, shuffle)
 		var playno = pl[3];
 		var dispno = pl[0];
 
-		//print("<%03d>marked:%d dispno:%d playno:%d name:%s".format(i, marked, dispno, playno, base_music_list[i][0]));
-		i++;
+		print("<%03d>marked:%d dispno:%d playno:%d name:%s".format(i, marked, dispno, playno, base_music_list[i][0]));
 	}
 
 	playlist.play_data = newplaydata;
