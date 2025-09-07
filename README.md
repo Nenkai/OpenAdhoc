@@ -20,8 +20,6 @@ The games use a system of "projects" to divide the major menu types. Each game m
 
 ### GT4 Prologue
 Adhoc Version: 5<br>
-GT4 Prologue scripts have PS2ZIP compression applied to them, creating a roadblock for modding purposes.<br>
-Regardless, it is posslble to decompress them with [PDTools.Compression](https://github.com/Nenkai/PDTools/tree/master/PDTools.Compression) and dissassemble for reverse-engineering.<br>
 There are 11 projects.<br>
 No progress has been made currently.
   
