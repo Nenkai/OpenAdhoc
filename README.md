@@ -701,7 +701,7 @@ There are 9 leftover projects from GT4P and GT4 that are not relevant.
 | online (GT4 Online)    |    ❌️    | Online mode                                                                      |
 | option                 |    ✔️    | Game Options                                                                     |
 | photo_save             |    ✔️    | Photo preview and save for Photo Drive                                           |
-| photo_shoot            |    ❌️    | Photo mode camera menu, photo preview and save for Photo Travel                  |
+| photo_shoot            |    ✔️    | Photo mode camera menu, photo preview and save for Photo Travel                  |
 | print                  |    ✔️    | Print menu, accessed from Photo Lab                                              |
 | quick-arcade           |    ✔️    | Arcade mode Single Race Pre-Race menu                                            |
 | quick-championship     |    ❌️    | GT Mode Championship Pre-Race menu                                               |
