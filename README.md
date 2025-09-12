@@ -16,6 +16,643 @@ The games use a system of "projects" to divide the major menu types. Each game m
 ## 🎮 Games & Progress
 
 <details>
+  <summary> Demos & Misc. builds </summary>
+
+  <blockquote>
+
+  <details>
+
+  <summary> GT4 Prologue Era </summary>
+  
+  <blockquote>
+
+  <details>
+
+  <summary> GT4 Prologue Subaru Version </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT4 Prologue E3 2003 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT4 Prius Trial Version </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT Special Edition 2004 Geneva Edition </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT Special Edition 2004 Toyota Demo </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  </blockquote></details>
+
+  <details><summary> GT4 Era </summary><blockquote>
+  <details>
+
+  <summary> GT4 E3 2004 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT4 BMW 1 Series Virtual Drive </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT4 Tokyo Game Show 2004 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT4 First Preview </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT4 - Mazda MX-5 Edition Demo </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+  </blockquote></details>
+
+  <details>
+  <summary> Tourist Trophy Era </summary>
+  <blockquote>
+
+  <details>
+
+  <summary> Tourist Trophy Store Demo </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  </blockquote>
+  </details>
+
+  <details>
+  <summary> GT HD Era </summary>
+  <blockquote>
+
+ <details>
+
+  <summary> GT HD E3 2006 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT HD Tokyo Game Show 2006 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT HD Premium Subaru Impreza Rally Car '99 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT HD Le Mans 2007 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT HD Nissan Xanavi Nismo Z </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT HD "Wedding Version" </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+  </blockquote>
+  </details>
+
+  <details>
+  <summary> GT5 Prologue Era </summary>
+  <blockquote>
+
+  <details>
+
+  <summary> GT5P Games Convention 2007 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5P Tokyo Games Show 2007 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5P Tokyo Motor Show 2007 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5P Free Trial Version </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5P Spec-I (December '07 JP release) </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5P Spec II Nürburgring Special Edition 2008 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5P Games Convention 2008 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5P Special Event Version GT by Citroën </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5P DOME S102 '08 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5P Le Mans Special Edition '09 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+  
+  </blockquote>
+  </details>
+
+  <details>
+  <summary> GT PSP Era </summary>
+  <blockquote>
+    
+  <details>
+
+  <summary> GT PSP E3 2009 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT PSP E3 2009 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT PSP Gamescom 2009 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT PSP Tokyo Games Show 2009 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+  
+  </blockquote>
+  </details>
+
+  <details>
+  <summary> GT5 Era </summary>
+  <blockquote>
+
+  <details>
+
+  <summary> GT5 Gamescom 2009 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 Tokyo Games Show 2009 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 Tokyo Motor Show 2009 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 Time Trial Challenge </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 CES Demo </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 SLS Demo </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 Nür 2010 Demo </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 24 Heures du Mans Demo </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 E3 2010 Demo </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 Kiosk Demo </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 Gamescom 2010 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 Tokyo Games Show 2010 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT5 QA Build </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT Academy 2012 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+  
+  </blockquote>
+  </details>
+
+  <details>
+  <summary> GT6 Era </summary>
+  <blockquote>
+
+  <details>
+
+  <summary> GT Academy 2013 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT E3 2013 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT6 Gamescom 2013 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT6 Tokyo Games Show 2013 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT6 Toyota S-FR Build </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+  
+  </blockquote>
+  </details>
+
+  <details>
+  <summary> GT Sport Era </summary>
+  <blockquote>
+
+  <details>
+
+  <summary> GT Sport E3 2016 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT Sport Gamescom 2016 </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT Sport Essen Motorshow Demo </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT Sport Closed Beta Test Version </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT Sport Open Beta </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT Sport MEGAWEB GR ZONE </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+
+  <details>
+
+  <summary> GT Sport TGS2017 VR Support </summary>
+  
+  <blockquote>
+
+No progress.
+
+  </blockquote></details>
+  
+  </blockquote>
+  </details>
+
+  </blockquote>
+
+</details>
+
+<details>
   <summary>GT4 Prologue</summary>
 
 ### GT4 Prologue
@@ -44,7 +681,7 @@ No progress has been made currently.
 
 ### GT4 Online (US)
 Adhoc Version: 7 (v5-7 compatible)<br>
-22 of 29 projects are completed and can be compiled.<br>
+24 of 29 projects are completed and can be compiled.<br>
 There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
 There are 9 leftover projects from GT4P and GT4 that are not relevant.
   
@@ -64,7 +701,7 @@ There are 9 leftover projects from GT4P and GT4 that are not relevant.
 | online (GT4 Online)    |    ❌️    | Online mode                                                                      |
 | option                 |    ✔️    | Game Options                                                                     |
 | photo_save             |    ✔️    | Photo preview and save for Photo Drive                                           |
-| photo_shoot            |    ❌️    | Photo mode camera menu, photo preview and save for Photo Travel                  |
+| photo_shoot            |    ✔️    | Photo mode camera menu, photo preview and save for Photo Travel                  |
 | print                  |    ✔️    | Print menu, accessed from Photo Lab                                              |
 | quick-arcade           |    ✔️    | Arcade mode Single Race Pre-Race menu                                            |
 | quick-championship     |    ❌️    | GT Mode Championship Pre-Race menu                                               |
@@ -77,7 +714,7 @@ There are 9 leftover projects from GT4P and GT4 that are not relevant.
 | quick-practice         |    ✔️    | GT Mode Track Meet Pre-Race menu                                                 |
 | quick-tt               |    ✔️    | Arcade Mode Time Trial Pre-Race menu                                             |
 | setting                |    ✔️    | Car Setting menu and all of its sub-menus (Change parts and tuning sliders)      |
-| slide                  |    ❌️    | Slideshow mode                                                                   |
+| slide                  |    ✔️    | Slideshow mode                                                                   |
 | GT4Application         |    ✔️    | Initializer and Config Script loader / re-loader                                 |
 | --------               | ----     | ---- Stub projects: ----                                                         |
 | event                  |    ✔️    | Unused project that appears to be a mode used on demo setups for public events. Seems non-functional. |
@@ -132,7 +769,19 @@ Adhoc Version: 7<br>
 
 ### GT HD
   Adhoc Version: 10 (v8-10 compatible)<br>
+  There are 7 projects.<br>
+  There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
   No progress has been made currently.
+
+|          Name          | Completed |                                     Purpose                                      |
+|------------------------|-----------|----------------------------------------------------------------------------------|
+| boot                   |    ❌️    |                                                                                  |
+| cursor                 |    ❌️    |                                                                                  |
+| demo_movie             |    ❌️    |                                                                                  |
+| option                 |    ❌️    |                                                                                  |
+| quick-arcade           |    ❌️    |                                                                                  |
+| trial                  |    ❌️    |                                                                                  |
+| GT4Application         |    ❌️    | Initializer and Config Script loader / re-loader                                 |
 </details>
 
 <details>
@@ -157,7 +806,7 @@ Adhoc Version: 7<br>
   
 ### GT5
 Adhoc Version: 12<br>
-GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and mainly patches exploits/server use and minor other things.
+GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and mainly patches exploits/server use and other minor things.
 
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|

@@ -1,0 +1,1276 @@
+module SlideProject::MusicRoot
+{
+	static music_list = nil;
+	static music_map = nil;
+	
+	static list_mode     = -1;
+	static play_mode     = -1;
+	static playing_mode  = -1;
+	
+	static play_pause = 0;
+	static watcher    = nil;
+	static slide_playing = 0;
+
+	function onInitialize(context)
+	{
+		template.visible = false;
+	
+		SlideRoot::init_music_player();
+		SlideRoot::music_player_set_volume(main::game.option.replay_bgm_volume * 1.3);
+		SlideRoot::music_player_set_infinity_loop(1);
+	
+		slide_icon(context, 1);
+	
+		init_music_list();
+		set_playing_mode(-1);
+		set_play_mode(SlideRoot::get_shuffle_bgm_playlist());
+	
+		watcher = main::menu::MScriptWatcher(context, onCheck);
+		watcher.interval = 5;
+		watcher.append();
+	
+		var event = main::menu::MScriptEvent(context, MusicRoot, "openCB");
+		context.pushEvent(event);
+	
+		context.cursor_visible = true;
+		MusicRoot.focus_widget = Library;
+	}
+
+	function onFinalize(context)
+	{
+		watcher.remove();
+		watcher = nil;
+	
+		context.sync(0.5);
+	
+		var shuffle = get_play_mode();
+	
+		SlideRoot::apply_bgm_playlist(music_list[1], shuffle);
+		SlideRoot::apply_slide_playlist(music_list[2], shuffle);
+	
+		SlideRoot::set_shuffle_bgm_playlist(shuffle);
+		SlideRoot::set_shuffle_slide_playlist(shuffle);
+	
+		List::list_box::Destroy(context);
+	}
+
+	function openCB(context)
+	{
+		set_mode(context, 0);
+	}
+	
+	function onKeyPress(context, event)
+	{
+		if (!slide_playing)
+			return false;
+	
+		var key = event.keysym;
+		if (key == PS2_PAD_CTRL_CIRCLE)
+			slide_stop(context);
+
+		return EVENTRESULT_FILTER;
+	}
+	
+	function onCheck(context)
+	{
+		tick_music_player(context);
+	}
+
+	function set_tooltip(new)
+	{
+		var old = Tooltip::tip.value;
+		if (old != new)
+			Tooltip::tip.value = new;
+	}
+	
+	function setFadeActor(widget, period, out)
+	{
+		var actor = main::menu::MFadeActor(widget, 1.0);
+		widget.actor = actor;
+		widget.actor.period = period;
+		widget.actor.out = out;
+		widget.actor.warp();
+	}
+
+	setFadeActor(Slide::musicinfo, 2.0, 1);
+	setFadeActor(Slide::background, 2.0, 0);
+	setFadeActor(veil, 1.0, 1);
+	setFadeActor(List::list_box, 0.1, 1);
+
+	function init_music_list()
+	{
+		SlideRoot::init_base_music_list();
+	
+		music_list = Array(3);
+		music_map = Array(3);
+	
+		for (var mode = 0; mode < 3; mode++)
+		{
+			music_list[mode] = Array();
+			music_map[mode] = SlideRoot::make_music_map();
+		}
+	
+		SlideRoot::load_bgm_playlist(
+			music_list[1],
+			music_map[1]
+		);
+	
+		SlideRoot::load_slide_playlist(
+			music_list[2],
+			music_map[2]
+		);
+	
+		var list = main::default_library_playlist;
+		for (var i = 0; i < list.size; i++)
+			append_music_list(0, list[i]);
+	}
+
+	function append_music_list(mode, index)
+	{
+		var list = music_list[mode];
+		var map = music_map[mode];
+		SlideRoot::append_music_list(list, map, index);
+	}
+	
+	function remove_music_list(mode, index)
+	{
+		var list = music_list[mode];
+		var map = music_map[mode];
+		SlideRoot::remove_music_list(list, map, index);
+	}
+
+	function set_mode_icons(context)
+	{
+		var mode_table_list = [
+			[1, 1, 0, 1, 0, 0, 0, 1, 0],
+			[0, 0, 1, 0, 1, 0, 1, 0, 1],
+			[0, 0, 1, 0, 0, 1, 1, 0, 1],
+		];
+	
+		var mt = mode_table_list[get_mode()];
+	
+		Append1.visible = mt[0];
+		Append2.visible = mt[1];
+		Trash.visible = mt[2];
+		Library["cursor"].visible = mt[3];
+		PlayList1["cursor"].visible = mt[4];
+		PlayList2["cursor"].visible = mt[5];
+		VisualEffect.visible = mt[6];
+		VisualEffect_library.visible = mt[7];
+		Dot0.visible = mt[8];
+	
+		var v = false;
+		if (get_mode() == 0)
+			v = true;
+	
+		PlayList1["to_race_arrow"].visible = PlayList2["to_race_arrow"].visible = v;
+	}
+
+	function set_mode(context, mode)
+	{
+		if (list_mode == mode)
+			return;
+	
+		list_mode = mode;
+	
+		set_playing_mode(-1);
+		set_mode_icons(context);
+		set_play_mode_icons(context);
+	
+		List::list_box::Init(
+			context,
+			music_list[mode],
+			music_map[mode]
+		);
+	}
+	
+	function get_mode()
+	{
+		return list_mode;
+	}
+	
+	function mselect_callback(have_selected)
+	{
+		Append1.active = Append1.can_focus = have_selected;
+		Append2.active = Append2.can_focus = have_selected;
+		Trash.active = Trash.can_focus = have_selected;
+	}
+
+	function set_play_mode_icons(context)
+	{
+		var visible = (get_mode() != 0);
+		var playmode = get_play_mode();
+	
+		var straight = (playmode == 0) & visible;
+		var shuffle = (playmode == 1) & visible;
+	
+		PlayMode.visible = visible;
+		PlayMode["straight"].visible = straight;
+		PlayMode["shuffle"].visible = shuffle;
+	}
+
+	function set_play_mode(playmode)
+	{
+		play_mode = playmode;
+		set_play_mode_icons(playmode);
+	}
+	
+	function get_play_mode()
+	{
+		return play_mode;
+	}
+	
+	function change_play_mode()
+	{
+		set_play_mode(1 - get_play_mode());
+	}
+	
+	function set_playing_mode(index)
+	{
+		playing_mode = index;
+	}
+
+
+	function get_playing_mode()
+	{
+		return playing_mode;
+	}
+	
+	function do_play(context)
+	{
+		do_stop(context);
+	
+		var playmode = get_play_mode();
+	
+		if (get_mode() == 0)
+			playmode = 0;
+	
+		if (playmode == 1)
+			set_shuffle();
+		else
+			set_straight();
+	
+		set_playing_mode(get_mode());
+		SlideRoot::music_player_do_play();
+	}
+
+	function do_pause(context)
+	{
+		if (play_pause)
+			SlideRoot::music_player_do_resume();
+		else
+			SlideRoot::music_player_do_pause();
+	
+		play_pause = 1 - play_pause;
+	}
+	
+	function do_stop(context)
+	{
+		List::list_box::erase_play(context);
+		set_playing_mode(-1);
+		SlideRoot::music_player_do_stop();
+		play_pause = 0;
+	}
+
+
+	function make_selected_list()
+	{
+		var list = List::list_box::get_mselect();
+		var ml = music_list[get_mode()];
+		if (list.size == 0)
+		{
+			for (var i = 0; i < ml.size; i++)
+				list.push(i);
+		}
+		else if (list.size == 1)
+		{
+			var top = list[0];
+			list = [];
+			for (var i = top; i < ml.size; i++)
+				list.push(i);
+		}
+	
+		return list;
+	}
+
+	function make_id_list(selected_list)
+	{
+		var list = [];
+		var ml = music_list[get_mode()];
+	
+		for (var i = 0; i < selected_list.size; i++)
+		{
+			var id = ml[selected_list[i]][3];
+			list.push(id);
+		}
+	
+		return list;
+	}
+
+
+	function set_straight()
+	{
+		var list = make_selected_list();
+		var id_list = make_id_list(list);
+		SlideRoot::music_player_entry_list(id_list, list, 0);
+	}
+	
+	function set_shuffle()
+	{
+		var list = make_selected_list();
+		var rnd = main::menu::MRandom();
+	
+		if (list != nil)
+		{
+			var lsize = list.size;
+			for (var i = 0; i < lsize; i++)
+			{
+				var r = rnd.getValue(0, i + 1);
+				if (r >= lsize)
+				{
+					continue;
+				}
+
+				list.move(i, r);
+			}
+		}
+		var id_list = make_id_list(list);
+		SlideRoot::music_player_entry_list(id_list, list, 0);
+	}
+
+	function tick_music_player(context)
+	{
+		var event = SlideRoot::music_player_tick(context);
+		switch(event)
+		{
+			case 0:
+				break;
+			case 3:
+				break;
+			case 1:
+				var index = SlideRoot::music_player_get_now_index();
+				var id = SlideRoot::music_player_get_now_id();
+		
+				List::list_box::set_play(context, index, id, 1);
+				List::list_box::set_music_tooltip(context);
+		
+				var info = SlideRoot::get_base_music_list_information(id);
+				slide_setmusicinfo(context, info);
+				break;
+
+			case 2:
+				if (get_playing_mode() != get_mode())
+					do_stop();
+				break;
+		}
+	}
+
+	static memcard_manager = nil;
+	static photo_playlist = main::menu::MMemoryCardPlayList();
+
+	function currentSlot()
+	{
+		return main::game.option.album_memory_card_slot;
+	}
+	
+	function memcard_check_init(context)
+	{
+		var slot = 0;
+		memcard_manager = main::menu::MMemoryCardManager("MODE_PHOTO_PLAYLIST", currentSlot());
+	
+		memcard_manager.autoloadPlayList.list = photo_playlist;
+		memcard_manager.list = photo_playlist;
+	
+		memcard_manager.start();
+	
+		slide_icon(context, 0);
+	}
+	
+	function memcard_check_exit(context)
+	{
+		memcard_manager = nil;
+	}
+	
+	function tick_memcard_check(context)
+	{
+		var have_slide = 0;
+	
+		if (memcard_manager.isConnect())
+		{
+			var count = memcard_manager.count;
+	
+			if (count < 0)
+			{
+			}
+			else
+			{
+				if (count > 0)
+					have_slide = 1;
+			}
+		}
+		else
+		{
+
+		}
+	
+		slide_icon(context, have_slide);
+	}
+
+	function slide_icon(context, have_slide)
+	{
+		{
+			VisualEffect.active = VisualEffect.can_focus = VisualEffect_library.active = VisualEffect_library.can_focus = have_slide;
+			
+			if (!have_slide)
+			{
+				var w = MusicRoot.focus_widget;
+				if (w == VisualEffect || w == VisualEffect_library)
+					MusicRoot.focus_widget = Library;
+			}
+		}
+	}
+
+	function slide_start(context)
+	{
+		context.cursor_visible = false;
+		Slide::musicinfo.visible = false;
+	
+		Slide::background.actor.out = true;
+		Slide::background.actor.warp();
+		Slide::background.actor.out = false;
+	
+		Slide::slide.demo = false;
+		Slide::slide.doPlay();
+	
+		context.sync(1.0);
+	
+		Slide.visible = true;
+		Slide::musicinfo.visible = true;
+		Slide::musicinfo.actor.out = true;
+		Slide::musicinfo.actor.warp();
+		Slide::musicinfo.actor.out = false;
+	
+		slide_setmusicinfo(context, nil);
+	
+		print("playing_mode = %d".format(get_playing_mode()));
+	
+		if (get_playing_mode() < 0)
+			do_play(context);
+		else
+		{
+			var id = SlideRoot::music_player_get_now_id();
+			var info = SlideRoot::get_base_music_list_information(id);
+			slide_setmusicinfo(context, info);
+		}
+	
+		slide_playing = true;
+	}
+
+	function slide_stop(context)
+	{
+		if (!slide_playing)
+			return;
+	
+		Slide::musicinfo.actor.out = true;
+		Slide::slide.doStop();
+
+		veil.active = true;
+		veil.actor.period = 1.0;
+		veil.actor.out = false;
+		Slide::background.actor.out = false;
+		context.sync(0.8);
+
+		Slide.visible = false;
+		veil.actor.period = 1.5;
+		veil.actor.out = true;
+		context.sync(1.0);
+
+		slide_setmusicinfo(context, nil);
+		slide_playing = false;
+		context.sync(0.2);
+
+		context.cursor_visible = true;
+	}
+
+	function slide_setmusicinfo(context, info)
+	{
+		if (info != nil && info.size)
+		{
+			Slide::musicinfo.actor.out = true;
+			Slide::musicinfo.actor.warp();
+	
+			Slide::musicinfo["song_header"].visible = true;
+			Slide::musicinfo["artist"].text = info[1];
+			Slide::musicinfo["artist"].text = info[1]; // Bug?
+			Slide::musicinfo["music"].text = info[0];
+			Slide::musicinfo["genre"].text = info[2];
+	
+			Slide::musicinfo.actor.out = false;
+		}
+		else
+		{
+			Slide::musicinfo["song_header"].visible = false;
+			Slide::musicinfo["artist"].text = "";
+			Slide::musicinfo["music"].text = "";
+			Slide::musicinfo["genre"].text = "";
+		}
+	}
+
+	function seplay(code)
+	{
+		main::sound.play(code);
+	}
+
+	module MusicRoot::List::list_box
+	{	
+		static mselect_mode = 0;
+		static mselect_selected = [];
+		static current_music_list = nil;
+		static current_music_map = nil;
+		static playing_index = -1;
+
+		function Init(context, list, map)
+		{
+			main::sound.stopStream();
+		
+			current_music_list = list;
+			current_music_map = map;
+		
+			list_box.focus_index = 0;
+			list_box.setItemTemplate(context, template::FileNew);
+			list_box.visible_callback = visible_callback;
+			list_box.update_callback = update_callback;
+			list_box.magnify_ratio = 1.0;
+			list_box.repeat = false;
+			list_box.alignment = 0.5;
+			list_box.step_min = 1;
+			list_box.step_max = 2;
+		
+			Reset(context, 1);
+		}
+	
+		function Reset(context, dofade)
+		{
+			context.cursor_visible = false;
+		
+			if (dofade)
+			{
+				list_box.actor.out = true;
+				context.sync(0.1);
+			}
+		
+			list_box.setItemCount(0);
+		
+			current_music_list = music_list[get_mode()];
+		
+			var count = current_music_list.size;
+			list_box.setItemCount(count);
+			list_box.visible = count;
+		
+			init_mselect(count);
+			erase_play(context);
+		
+			if (dofade)
+			{
+				list_box.actor.out = false;
+				context.sync(0.1);
+			}
+		
+			context.cursor_visible = true;
+		}
+	
+		function Destroy(context)
+		{
+		}
+	
+		function set_play(context, index, id, play)
+		{
+			if (play)
+				erase_play(context);
+		
+			var tid = current_music_list[index][3];
+		
+			if (id != tid)
+			{
+				if (!current_music_map[id])
+					return -1;
+				else
+				{
+					index = -1;
+					
+					var ml = current_music_list;
+					for (var i = 0; i < ml.size; i++)
+					{
+						if (ml[i][3] == id)
+						{
+							index = i;
+							break;
+						}
+					}
+				}
+			}
+		
+			if (index == -1)
+				return -1;
+		
+			var ret = false;
+			var w = list_box.getItemWidget(index, context);
+		
+			if (w != nil)
+			{
+				w["play"].visible = play;
+				list_box.focus_index = index;
+				playing_index = index;
+				ret = true;
+			}
+
+			return ret;
+		}
+	
+		function erase_play(context)
+		{
+			if (playing_index >= 0)
+			{
+				var w = list_box.getItemWidget(playing_index, context);
+		
+				if (w != nil)
+					w["play"].visible = false;
+		
+				playing_index = -1;
+			}
+		}
+	
+		function get_play(context)
+		{
+			return playing_index;
+		}
+	
+		function setup_widget(context, i)
+		{
+			if (i >= current_music_list.size)
+				return;
+		
+			var w = list_box.getItemWidget(i, context);
+			if (w != nil)
+			{
+				var music = current_music_list[i];
+				var str = music[0] + " / " + music[1];
+		
+				w["title"].text = str;
+				w["title"].abbreviate();
+			}
+		}
+	
+		function clear_widget(context, i)
+		{
+			if (i >= current_music_list.size)
+				return;
+		
+			var w = list_box.getItemWidget(i, context);
+			if (w != nil)
+			{
+				w["title"].text = "";
+				w["title"].abbreviate();
+			}
+		}
+	
+		function reset_tooltip(context)
+		{
+			set_tooltip(context.translate(MusicRoot, "TOOLTIP|List"));
+		}
+	
+		function set_music_tooltip(context)
+		{
+			var index = list_box.focus_index;
+		
+			if (index < 0)
+				return;
+			if (index >= current_music_list.size)
+				return;
+		
+			var music = current_music_list[list_box.focus_index];
+		
+			var str = "%s%s / %s / %s".format(
+				context.translate(MusicRoot, "songnameheader"),
+				music[0],
+				music[1],
+				music[2]
+			);
+		
+			set_tooltip(str);
+		}
+	
+		function init_mselect(count)
+		{
+			mselect_selected = Array(count);
+			for (var i = 0; i < count; i++)
+				mselect_selected[i] = true;
+		
+			set_mselect_mode(0);
+		}
+		
+		function set_mselect_mode(mode)
+		{
+			mselect_mode = mode;
+		
+			if (mode == 0)
+				cancel_mselect(-1);
+			
+			mselect_callback(mode);
+		}
+	
+		function cancel_mselect(skipindex)
+		{
+			for (var i = 0; i < mselect_selected.size; i++)
+			{
+				if (i == skipindex)
+					continue;
+		
+				if (mselect_selected[i])
+				{
+					mselect_selected[i] = false;
+					update_mselect(i);
+				}
+			}
+		}
+	
+	
+		function get_mselect_mode()
+		{
+			return mselect_mode;
+		}
+		
+		function reverse_mselect(i)
+		{
+			var p = is_mselect(i);
+			p = 1 - p;
+		
+			set_mselect(i, p);
+		
+			if (have_mselect() == -1)
+				set_mselect_mode(0);
+		}
+		
+		function set_mselect(i, flg)
+		{
+			if (flg && !get_mselect_mode())
+				set_mselect_mode(1);
+		
+			mselect_selected[i] = flg;
+			update_mselect(i);
+		}
+
+		function set_mselect_all(flg)
+		{
+			if (flg && !get_mselect_mode())
+				set_mselect_mode(1);
+		
+			for (var i = 0; i < list_box.getItemCount(); i++)
+				mselect_selected[i] = flg;
+
+			update_all_mselect();
+		}
+		
+		function have_mselect()
+		{
+			for (var i = 0; i < mselect_selected.size; i++)
+			{
+				if (is_mselect(i))
+					return i;
+			}
+		
+			return -1;
+		}
+		
+		function get_mselect()
+		{
+			var indexlist = [];
+			for (var i = 0; i < mselect_selected.size; i++)
+			{
+				if (mselect_selected[i])
+					indexlist.push(i);
+			}
+		
+			return indexlist;
+		}
+
+		function is_mselect(i)
+		{
+			return mselect_selected[i];
+		}
+		
+		function update_all_mselect()
+		{
+			for (var i = 0; i < list_box.getItemCount(); i++)
+				update_mselect(i);
+		}
+		
+		function update_mselect_list(indexlist)
+		{
+			for (var i = 0; i < indexlist.size; i++)
+				update_mselect(indexlist[i]);
+		}
+
+		function update_mselect(i)
+		{
+			var w = list_box.getItemWidget(i);
+			if (w != nil)
+			{
+				var visible = mselect_selected[i];
+				w["bgf"].visible = visible;
+			}
+		}
+
+		function drop_mselect(dragi, dropi)
+		{
+			if (dropi == dragi)
+				return;
+		
+			var msel = get_mselect();
+			var mselmax = msel.size;
+		
+			var drop0sel = [];
+			var drop1sel = [];
+
+			for (var i = 0; i < mselmax; i++)
+			{
+				if (dropi > msel[i])
+					drop0sel.push(msel[i]);
+				else
+					drop1sel.push(msel[i]);
+			}
+		
+			print("dropi = %d / drop0sel.size = %d / drop1sel.size = %d".format(dropi, drop0sel.size, drop1sel.size));
+		
+			var n = msel[0];
+			for (var i = 1; i < mselmax; i++)
+			{
+				n++;
+				current_music_list.move(msel[i], n);
+				mselect_selected.move(msel[i], n);
+				msel[i] = n;
+			}
+		
+			dragi = msel[0];
+		
+			if (dragi < dropi)
+			{
+				dropi += drop1sel.size - 1;
+				print("dragi:%d < dropi:%d".format(dragi, dropi));
+		
+				for (var i = 0; i < mselmax; i++)
+					msel[i] -= i;
+		
+				for (var i = 0; i < mselmax; i++)
+				{
+					current_music_list.move(msel[i], dropi);
+					mselect_selected.move(msel[i], dropi);
+				}
+			}
+			else
+			{
+				print("dragi:%d > dropi:%d".format(dragi, dropi));
+				list_box.focus_index = dropi - mselmax;
+		
+				for (var i = 0; i < mselmax; i++)
+				{
+					print("move %d->%d".format(msel[i], dropi));
+					current_music_list.move(msel[i], dropi);
+					mselect_selected.move(msel[i], dropi);
+		
+					if (dropi < current_music_list.size - 1)
+						dropi++;
+				}
+			}
+		}
+
+		function append_playlist(mode)
+		{
+			if (get_mselect_mode() == 0)
+				return;
+		
+			var rlist = get_mselect();
+			var rlistsize = rlist.size;
+		
+			for (var i = 0; i < rlistsize; i++)
+			{
+				var id = current_music_list[rlist[i]][3];
+				append_music_list(mode, id);
+			}
+		}
+
+		function remove_playlist(context, mode)
+		{
+			if (get_mselect_mode() == 0)
+				return;
+		
+			var rlist = get_mselect();
+		
+			List::list_box.setItemCount(List::list_box.getItemCount() - rlist.size);
+		
+			for (var i = rlist.size - 1; i >= 0; i--)
+			{
+				remove_music_list(mode, rlist[i]);
+		
+				if (rlist[i] == get_play(context))
+					erase_play(context);
+			}
+		
+			do_stop(context);
+		
+			List::list_box::Reset(context, 0);
+		
+			List::list_box.focus_index = rlist[0];
+		}
+
+		function visible_callback(context, index)
+		{
+			for (var i = 0; i < index.size; i++)
+				setup_widget(context, index[i]);
+		
+			update_mselect_list(index);
+		}
+
+		function update_callback(context, index)
+		{
+		}
+		
+		function focus_callback(context, new_index, old_index)
+		{
+			var dragindex = list_box.drag_index;
+			var dragmode = (dragindex >= 0) ? 1 : 0;
+		
+			if (!dragmode)
+				set_music_tooltip(context);
+		}
+
+		function drag_and_drop_callback(context, dragindex, focusindex)
+		{
+			if (dragindex >= 0)
+			{
+				drop_callback(context, dragindex, focusindex);
+			}
+			else
+			{
+				set_mselect(focusindex, 1);
+				drag_callback(context, dragindex, focusindex);
+			}
+		}
+
+
+		function drag_callback(context, dragindex, focusindex)
+		{
+			var w = list_box.getItemWidget(focusindex);
+		
+			if (w != nil)
+			{
+				var x = 60.0;
+				var y = -16.0;
+		
+				var child = w.getDeepCopy();
+				child.x = x;
+				child.y = y;
+				child.opacity = 0.6;
+		
+				var drag_icon = template::Separator.getDeepCopy();
+				drag_icon.appendChild(child);
+		
+				var msel = get_mselect();
+		
+				var num = template::Num.getDeepCopy();
+				num["count"].text = "%d".format(msel.size);
+				drag_icon.appendChild(num);
+		
+				list_box.enterDragMode(context, drag_icon);
+			}
+		}
+
+		function drop_callback(context, dragindex, dropindex)
+		{
+			drop_mselect(dragindex, dropindex);
+		
+			if (dragindex < dropindex)
+				--dropindex;
+		
+			if (dropindex < 0)
+				dropindex = 0;
+		
+			list_box.focus_index = dropindex;
+			list_box.postRedraw();
+			list_box.leaveDragMode(context);
+		}
+
+		function onKeyPress(context, event)
+		{
+			var focusindex = list_box.focus_index;
+			var dragindex = list_box.drag_index;
+			var dragmode = (dragindex >= 0) ? 1 : 0;
+			var library = (get_mode() == 0);
+		
+			var state = context.getUpdateContext().getPadButtonState(0) & (256 | 2048 | 128 | 32);
+		
+			if (dragmode)
+			{
+				if (event.keysym == PS2_PAD_CTRL_L3_LEFT || event.keysym == PS2_PAD_CTRL_L3_RIGHT)
+					return true;
+			}
+		
+			if (event.keysym == PS2_PAD_CTRL_L1 || event.keysym == PS2_PAD_CTRL_R1)
+				return true;
+		
+			switch (event.keysym)
+			{
+				case PS2_PAD_CTRL_CROSS:
+				{
+					if (dragmode)
+						drag_and_drop_callback(context, dragindex, focusindex);
+					else
+					{
+						var select = 0;
+						if (state & 0x100) 
+							select++;
+						if (state & 0x800) 
+							select++;
+
+						if (select)
+						{
+							if (select == 2)
+								set_mselect_all(1);
+							else
+								reverse_mselect(focusindex);
+						}
+						else
+						{
+							cancel_mselect(focusindex);
+							set_mselect(focusindex, 1);
+						}
+					
+						reset_tooltip(context);
+					}
+					return EVENTRESULT_STOP;
+				}
+				break;
+
+				case PS2_PAD_CTRL_CIRCLE:
+				{
+					set_mselect_mode(0);
+			
+					if (dragmode)
+					{
+						list_box.focus_index = dragindex;
+						list_box.leaveDragMode(context);
+					}
+			
+					return EVENTRESULT_STOP;
+				}
+				break;
+				
+
+				case PS2_PAD_CTRL_L3_UP:
+				case PS2_PAD_CTRL_L3_DOWN:
+				{
+					if (!dragmode && (state & 0x80 || state & 0x20))
+					{
+						if (!library)
+						{
+							do_stop();
+							drag_and_drop_callback(context, dragindex, focusindex);
+						}
+
+						return EVENTRESULT_STOP;
+					}
+				}
+				break;
+
+				default:
+					break;
+			}
+
+			return EVENTRESULT_CONTINUE;
+		}
+
+		function sort_title(a, b)
+		{
+			return a[3] < b[3];
+		}
+		
+		function onKeyRelease(context, event)
+		{
+			return EVENTRESULT_CONTINUE;
+		}
+		
+		function onFocusEnter(context, event)
+		{
+			list_box.focus_callback = focus_callback;
+			set_music_tooltip(context);
+			return EVENTRESULT_FILTER;
+		}
+		
+		function onFocusLeave(context, event)
+		{
+			return EVENTRESULT_FILTER;
+		}
+	}
+	
+	module MusicRoot::Library
+	{
+		function onFocusEnter(context)
+		{
+			set_tooltip("%s%d".format(
+				context.translate(MusicRoot, "TOOLTIP|FolderLibrary"),
+				music_list[0].size
+			));
+		}
+		
+		function onActivate(context)
+		{
+			MusicRoot::set_mode(context, 0);
+			true;
+		}
+	}
+
+	module MusicRoot::PlayList1
+	{
+		
+		function onFocusEnter(context)
+		{
+			set_tooltip("%s%d".format(
+				context.translate(MusicRoot, "TOOLTIP|FolderRace"),
+				music_list[1].size
+			));
+		}
+		
+		function onActivate(context)
+		{
+			MusicRoot::set_mode(context, 1);
+			true;
+		}
+	}
+	
+	module MusicRoot::PlayList2
+	{
+		function onFocusEnter(context)
+		{
+			set_tooltip("%s%d".format(
+				context.translate(MusicRoot, "TOOLTIP|FolderSlide"),
+				music_list[2].size
+			));
+		}
+		
+		function onActivate(context)
+		{
+			MusicRoot::set_mode(context, 2);
+			true;
+		}
+	}
+	
+	module MusicRoot::Append1
+	{
+		function onActivate(context)
+		{
+			if (Append1.active)
+			{
+				seplay("ok");
+				List::list_box::append_playlist(1);
+			}
+			else
+				seplay("disable");
+
+			return EVENTRESULT_FILTER;
+		}
+	}
+	
+	module MusicRoot::Append2
+	{
+		function onActivate(context)
+		{
+			if (Append2.active)
+			{
+				seplay("ok");
+				List::list_box::append_playlist(2);
+			}
+			else
+				seplay("disable");
+
+			return EVENTRESULT_FILTER;
+		}
+	}
+
+	module MusicRoot::Trash
+	{
+		function onActivate(context)
+		{
+			if (Trash.active)
+			{
+				seplay("ok");
+				var mode = get_mode();
+				List::list_box::remove_playlist(context, mode);
+			}
+			else
+				seplay("disable");
+
+			return EVENTRESULT_FILTER;
+		}
+	}
+	
+	module MusicRoot::Play
+	{
+		function onActivate(context)
+		{
+			do_play(context);
+			List::list_box::set_music_tooltip(context);
+			return EVENTRESULT_FILTER;
+		}
+	}
+	
+	module MusicRoot::Stop
+	{
+		function onActivate(context)
+		{
+			do_stop(context);
+			List::list_box::set_mselect_mode(0);
+			return EVENTRESULT_FILTER;
+		}
+	}
+	
+	module MusicRoot::PlayMode
+	{
+		function onActivate(context)
+		{
+			change_play_mode();
+			return EVENTRESULT_FILTER;
+		}
+	}
+	
+	module MusicRoot::VisualEffect
+	{
+		function onActivate(context)
+		{
+			slide_start(context);
+			return EVENTRESULT_FILTER;
+		}
+	}
+	
+	module MusicRoot::VisualEffect_library
+	{
+		function onActivate(context)
+		{
+			slide_start(context);
+			return EVENTRESULT_FILTER;
+		}
+	}
+	
+	module MusicRoot::Exit
+	{
+		function onActivate(context)
+		{
+			main::sound.play("cancel");
+			do_stop();
+			List::list_box::erase_play();
+			List::list_box::set_mselect_mode(0);
+			main::game.next_menu_project = main::game.major_menu_project;
+			context.finish();
+			return EVENTRESULT_FILTER;
+		}
+	}
+}

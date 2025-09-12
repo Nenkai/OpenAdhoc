@@ -1,0 +1,267 @@
+module PROJECT::ROOT
+{
+	static watcher = nil;
+	static printing = nil;
+	static desc_str = "description";
+	static maintenance = 0;
+	static progress = main::menu::MProgress();
+
+	function onInitialize(context)
+	{
+		context.cursor_visible = false;
+	
+		ToolTip::tip.lock.value = false;
+		ToolTip::tip.key = desc_str;
+		ToolTip::tip.lock.value = true;
+	
+		printing = false;
+		maintenance = 0;
+	
+		setProgress(context, progress);
+		startWatcher(context);
+	}
+
+	function onFinalize(context)
+	{
+		endWatcher();
+		printing = nil;
+		print("watcher removed");
+		context.cursor_visible = true;
+	}
+
+	function startWatcher(context)
+	{
+		watcher = main::menu::MScriptWatcher(context, onCheck);
+		watcher.interval = 10;
+		watcher.append();
+	}
+
+
+	function endWatcher()
+	{
+		if (watcher != nil)
+			watcher.remove();
+	
+		watcher = nil;
+	}
+
+	function onCheck(context)
+	{
+		if (printing && maintenance == 0)
+		{
+			var p = PR.getPrinterProgress(context);
+			setProgressValue(p);
+		}
+	}
+	
+	function setProgressValue(val)
+	{
+		progress.value = (val + 0.5) - 0.49999;
+	}
+
+	function onCancel(context, event, item)
+	{
+		if (printing)
+			return EVENTRESULT_FILTER;
+	
+		main::sound.play("cancel");
+	
+		context.transition.panOut(context);
+		context.transition.syncOut(context);
+		context.startPage(ShootRoot);
+	
+		return EVENTRESULT_FILTER;
+	}
+
+	function onKeyPress(context, event)
+	{
+		if (event.keysym == PS2_PAD_CTRL_START && !printing && maintenance == 0)
+		{
+			if (PR.isRendering(context))
+			{
+				print("now rendering!");
+				return EVENTRESULT_FILTER;
+			}
+	
+			main::sound.play("ok");
+	
+			if (!PR.scanPrinter(context))
+			{
+				ConfirmDialog::open(context, 0, context.translate(ROOT, "no_printer"));
+				return EVENTRESULT_FILTER;
+			}
+	
+			context.cursor_visible = true;
+	
+			var result = PrintDialog::open(context, PR.getPrinterName() == "ESC/P-R" ? 2 : 1);
+	
+			if (result == 0)
+			{
+				context.cursor_visible = false;
+				return EVENTRESULT_FILTER;
+			}
+	
+			if (result == 2)
+			{
+				print("cleaning?");
+				result = ConfirmDialog::open(context, 1, context.translate(ROOT, "cleaning_ok?"));
+				context.cursor_visible = false;
+	
+				if (!result)
+					return EVENTRESULT_FILTER;
+	
+				openProgressDialog(context, context.translate(ROOT, "now_cleaning"));
+				setProgressValue(0.0);
+				setProgressValue(0.3);
+	
+            var r = PR.cleaning(context);
+            if (r == "ok")
+            {
+                maintenance = 1;
+                printing = 1;
+                print("now cleaning");
+            }
+            else
+            {
+                closeProgressDialog(context);
+                openConfirmDialog(context, DIALOG_OK, context.translate(ROOT, r));
+            }
+        }
+		else
+		{
+
+        	// Print workflow
+        	result = ConfirmDialog::open(context, 1, context.translate(ROOT, "print_ok?"));
+        	context.cursor_visible = false;
+
+        	if (result)
+        	{
+        	    PR.setPaper(PrintDialog::paper);
+        	    PR.setMedia(PrintDialog::media);
+        	    PR.setMargin(PrintDialog::margin);
+        	    PR.setHighQuality(PrintDialog::quality);
+        	    PR.setCopy(PrintDialog::copies);
+
+        	    openProgressDialog(context, context.translate(ROOT, "now_printing"), printCancel);
+        	    setProgressValue(0.0);
+        	    setProgressValue(0.0);
+
+        	    var r = PR.printout(context);
+        	    if (r == "ok")
+        	    {
+        	        printing = 1;
+        	        maintenance = 0;
+        	        print("now printing");
+        	    }
+        	    else
+        	    {
+        	        closeProgressDialog(context);
+        	        ConfirmDialog::open(context, 0, context.translate(ROOT, r));
+        	    }
+        	}
+
+			return EVENTRESULT_FILTER;
+		}
+    }
+
+    return EVENTRESULT_CONTINUE;
+}
+
+	function confirmNozzleCheck(context)
+	{
+		print("nozzle check?");
+	
+		var result = ConfirmDialog::open(context, 1, context.translate(ROOT, "and_nozzlecheck?"));
+		context.cursor_visible = false;
+	
+		if (!result)
+			return;
+	
+		openProgressDialog(context, context.translate(ROOT, "now_nozzlechecking"));
+		setProgressValue(0.0);
+		setProgressValue(0.3);
+	
+		var r = PR.nozzleCheck(context);
+	
+		if (r == "ok")
+		{
+			maintenance = 2;
+			printing = true;
+			print("now nozzle checking");
+		}
+		else
+		{
+			closeProgressDialog(context);
+			openConfirmDialog(context, DIALOG_OK, context.translate(ROOT, r));
+		}
+	}
+
+	function printCancel(context)
+	{
+		print("print cancel...");
+		PR.printCancel(context);
+	}
+}
+
+module PROJECT::ROOT::PR
+{
+	function showMessage(context, message)
+	{
+		main::sound.play("cursor");
+		ConfirmDialog::open(context, 0, message);
+	}
+
+	function printerNotify(context, code, continuable)
+	{
+		var r = continuable;
+	
+		if (code == "done" || code == "cancel" || code == "error")
+		{
+			PR.setPrinterNotifyResult(0);
+	
+			var localizestr = code;
+	
+			if (maintenance == 1)
+				localizestr = "cleaning_" + code;
+			else if (maintenance == 1) // Bug? Should be 2?
+				localizestr = "nozzlecheck_" + code;
+	
+			main::sound.play("ok");
+	
+			if (code == "done")
+			{
+				setProgressValue(1.0);
+				context.sync(0.2);
+				setProgressValue(1.0);
+				context.sync(0.1);
+			}
+	
+			setProgressDialogVisible(context, 0);
+	
+			ConfirmDialog::open(context, 0, context.translate(ROOT, localizestr));
+	
+			printing = false;
+			var isCleaning = (maintenance == 1);
+			maintenance = 0;
+	
+			if (isCleaning)
+			{
+				var event = main::menu::MScriptEvent(context, ROOT, "confirmNozzleCheck");
+				context.pushEvent(event);
+			}
+		}
+		else
+		{
+			main::sound.play("cursor");
+			setProgressDialogVisible(context, 0);
+			r = ConfirmBigDialog::open(context, continuable ? 1 : 0, context.translate(ROOT, code));
+			PR.setPrinterNotifyResult(r);
+		}
+
+
+		if (r)
+			setProgressDialogVisible(context, 1);
+		else
+			closeProgressDialog(context);
+	}
+}
