@@ -681,7 +681,7 @@ No progress has been made currently.
 
 ### GT4 Online (US)
 Adhoc Version: 7 (v5-7 compatible)<br>
-22 of 29 projects are completed and can be compiled.<br>
+24 of 29 projects are completed and can be compiled.<br>
 There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
 There are 9 leftover projects from GT4P and GT4 that are not relevant.
   
@@ -714,7 +714,7 @@ There are 9 leftover projects from GT4P and GT4 that are not relevant.
 | quick-practice         |    ✔️    | GT Mode Track Meet Pre-Race menu                                                 |
 | quick-tt               |    ✔️    | Arcade Mode Time Trial Pre-Race menu                                             |
 | setting                |    ✔️    | Car Setting menu and all of its sub-menus (Change parts and tuning sliders)      |
-| slide                  |    ❌️    | Slideshow mode                                                                   |
+| slide                  |    ✔️    | Slideshow mode                                                                   |
 | GT4Application         |    ✔️    | Initializer and Config Script loader / re-loader                                 |
 | --------               | ----     | ---- Stub projects: ----                                                         |
 | event                  |    ✔️    | Unused project that appears to be a mode used on demo setups for public events. Seems non-functional. |
