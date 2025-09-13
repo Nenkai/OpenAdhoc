@@ -681,7 +681,7 @@ No progress has been made currently.
 
 ### GT4 Online (US)
 Adhoc Version: 7 (v5-7 compatible)<br>
-25 of 29 projects are completed and can be compiled.<br>
+26 of 29 projects are completed and can be compiled.<br>
 There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
 There are 9 leftover projects from GT4P and GT4 that are not relevant.
   
@@ -696,7 +696,7 @@ There are 9 leftover projects from GT4P and GT4 that are not relevant.
 | labomode               |    ✔️    | Photo lab, Replay Theater, Load & Save Replay, Delete Replay/Film/Photo          |
 | logger                 |    ✔️    | Replay Analyzer menu, accessed from various Pre-Race menus                       |
 | message                |    ✔️    | Online mode message menu                                                         |
-| network (GT4 Online)   |    ❌️    | Network Connection and Online mode login                                         |
+| network (GT4 Online)   |    ✔️    | Network Connection and Online mode login                                         |
 | network (GT4 Retail)   |    ✔️    | Network Connection for LAN Battle mode. Returns to arcade project once established. Also contains some unused menu pages |
 | online (GT4 Online)    |    ❌️    | Online mode                                                                      |
 | option                 |    ✔️    | Game Options                                                                     |
