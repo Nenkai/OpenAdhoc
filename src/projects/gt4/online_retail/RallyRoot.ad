@@ -1,0 +1,708 @@
+module PROJECT::ROOT
+{
+    static sRankStart = 0;
+    static countdown  = -1;
+
+    static carlist = [];
+    carlist.push("rx8_types_03");
+    carlist.push("r34_gtr_v2_nur_02");
+    carlist.push("r32_gtr_v2_00");
+    carlist.push("amuse_s2000_04");
+    carlist.push("m3_gtr_alms_01");
+    carlist.push("alpine_a110_16s_73");
+    carlist.push("impreza_wrx_sti_02");
+    carlist.push("_300sl_coupe_54");
+    carlist.push("city_turbo2_83");
+    carlist.push("cosmo_sport_68");
+    carlist.push("_120i_04");
+    carlist.push("_117_coupe_68");
+    carlist.push("a112_abarth_79");
+    carlist.push("be1_87");
+    carlist.push("_500_f_65");
+
+    static original_car_x   = CarScroll.x;
+    static original_color_x = ColorScroll.x;
+    static original_rank_y  = RankingScroll.y;
+
+    function set_car(context, car_code, car_color)
+    {
+        main::game.car_code = car_code;
+        CarPane::CarFace.car_code = car_code;
+        CarPane::CarFace.car_color = car_color;
+        main::game.car_color = car_color;
+    }
+
+    function set_color(context, index)
+    {
+        CarPane::CarFace.car_color = index;
+        main::game.car_color = index;
+    }
+
+    function onLoad()
+    {
+        setFadeActor(Pane::Car::bgf);
+        setFadeActor(Pane::Color::bgf);
+        setFadeActor(Pane::Setting::bgf);
+        setFadeActor(Pane::Chat::bgf);
+        setFadeActor(Pane::Ranking::bgf);
+        setFadeActor(InputBox::bgf);
+    }
+
+    function SetStage(tournament_id, stage_index)
+    {
+        var buf = main::network.fileGet("gt4tournaments.xmlz");
+        if (buf == nil)
+        {
+            return false;
+        }
+
+        var xml = main::menu::MXml();
+        xml.parse(buf);
+
+        var node = xml.result;
+        node = node.getFirstNode("RallyTournaments");
+
+        var nodeList;
+        if ((nodeList = node["tournament"]) == nil)
+            return false;
+
+        
+        for (var i = 0; i < nodeList.size; i++)
+        {
+            if (nodeList[i] == nil)
+                continue;
+
+            var tnode = nodeList[i];
+            var id;
+            if ((id = tnode.getAttribute("id")) == nil)
+                continue;
+
+            if (id.toInt() == tournament_id)
+            {
+                var tnodeList;
+                if ((tnodeList = tnode["stage"]) == nil)
+                    return false;
+
+                if (tnodeList.size < (stage_index + 1))
+                    return false;
+
+                if (tnodeList[stage_index] == nil)
+                    return false;
+
+                var snode = tnodeList[stage_index];
+
+                var course;
+                if ((course = snode.getAttribute("course")) == nil)
+                    return false;
+
+                var laps;
+                if ((laps = snode.getAttribute("laps")) == nil)
+                    return false;
+
+                InfoPane::Stage.text = (stage_index + 1).toString() + "  " + course;
+                InfoPane::Laps.text = laps;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function OnInitialize(context)
+    {
+        var info = main::network.getGameInfo();
+        if (info != nil)
+        {
+            enterPage(context, RallyRoot, info[6]);
+            InfoPane::Players.text = "%d/%d".format(info[4], info[1]);
+        }
+        else
+        {
+            enterPage(context, RallyRoot, "Championship");
+        }
+
+        var ret = SetStage(main::network.rally_id, main::network.rally_stage_index);
+        if (!ret)
+        {
+            InfoPane::Stage.text = "------";
+            InfoPane::Laps.text  = "--";
+        }
+
+        var carface = CarPane::CarFace;
+        carface.action_type = "normal";
+        carface.debug_display = 0;
+        carface.car_model.motion = 1;
+        carface.car_model.tx = 0.0;
+        carface.car_model.tz = 0.0;
+        carface.car_model.posInterpolateSpeed = 0.025;
+
+        var car_code = main::game.car_code;
+        if (car_code == "")
+            car_code = carlist[0];
+
+        set_car(context, car_code, main::game.car_color);
+        CarScroll::SelectBox::refresh(context, car_code);
+
+        CreateWatcher(context, onTick, 60);
+    }
+
+    function onInitialize(context)
+    {
+        hidden.visible = false;
+        CarScroll.visible = false;
+        ColorScroll.visible = false;
+        RankingScroll.visible = false;
+        InputBox.visible = false;
+        InfoPane::Time.text = "---";
+
+        if (main::network.rally_stage_index)
+        {
+            Pane::Car.insensitive     = 1;
+            Pane::Color.insensitive   = 1;
+            Pane::Ranking.insensitive = 0;
+            RallyRoot.setFocus(Pane::Setting);
+        }
+        else
+        {
+            Pane::Car.insensitive     = 0;
+            Pane::Color.insensitive   = 0;
+            Pane::Ranking.insensitive = 0;
+            RallyRoot.setFocus(Pane::Car);
+        }
+
+        LogBox::tbox.clear();
+        LogBox::tbox.pipe = main::network.pipe;
+
+        var event = main::menu::MScriptEvent(context, RallyRoot, "OnInitialize");
+        context.pushEvent(event);
+    }
+
+    function onFinalize(context)
+    {
+        DeleteWatcher();
+        CarScroll::SelectBox.clearChildren(context);
+        ColorScroll::SelectBox.clearChildren(context);
+        RankingScroll::SelectBox.clearChildren(context);
+        leavePage(context, RallyRoot);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+
+        var res = openConfirmDialog(context, DIALOG_QUERY, "Do you quit?");
+        if (res)
+        {
+            res = main::network.leaveGame(0);
+            if (!res)
+            {
+                var error_code = main::network.getLastErrorCode();
+                openConfirmDialog(context, DIALOG_OK, error_code);
+                restart(context);
+            }
+            else
+            {
+                start_page(context, RallyEventRoot);
+            }
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+
+    function onTick(context)
+    {
+        if (countdown >= 0)
+        {
+            countdown -= 1;
+            if (countdown >= 0)
+                InfoPane::Time.text = countdown;
+        }
+
+        if (!(GetWatcherCount() % 10))
+        {
+            var info = main::network.getGameInfo();
+            if (info != nil)
+            {
+                InfoPane::Players.text = "%d/%d".format(info[4], info[1]);
+            }
+            else
+            {
+                InfoPane::Players.text = "---/---";
+            }
+        }
+    }
+
+    function StartRace(context)
+    {
+        main::game.major_menu_project = "online";
+        main::game.major_menu_page    = RallyRoot;
+        main::game.course_code        = "tukuba";
+        main::game.laps               = 1;
+        main::game.race_code          = "preview_entry_6";
+        main::game.max_entry          = 1;
+        main::game.next_sequence      = "online_rally_race";
+
+        main::network.rally_stage_index = (main::network.rally_stage_index + 1);
+
+        start_page(context, nil);
+    }
+
+    function onKeyPress(context, event)
+    {
+        var keysym = event.keysym;
+        if (keysym == XK_F5)
+        {
+            main::sound.play("ok");
+            StartRace(context);
+            return EVENTRESULT_FILTER;
+        }
+
+        return false;
+    }
+
+    function onStagingTimeRemaining(context, time)
+    {
+        countdown = time;
+        InfoPane::Time.text = time;
+    }
+
+    function onWorldClosed(context, time)
+    {
+        countdown = time;
+        InfoPane::Time.text = time;
+    }
+
+    function onStageStarting(context, time, stage_index, course_id)
+    {
+        main::sound.play("ok");
+        StartRace(context);
+    }
+
+    function onStageEnd(context, time, stage_index, course_id)
+    {
+        countdown = time;
+        InfoPane::Time.text = time;
+    }
+
+    function onTournamentCompleted(context)
+    {
+        DeleteWatcher();
+
+        var list = main::network.getCurrentBotSortedList();
+        
+        for (var i = 0; i < list.size; i++)
+        {
+            |var user, var id, var lap, var total| = list[i];
+
+            if (id == main::network.my_id)
+            {
+                openConfirmDialog(context, DIALOG_OK, "Championship completed,\nyour are %d out of %d.".format(i + 1, list.size));
+                break;
+            }
+        }
+
+        start_page(context, RallyEventRoot);
+    }
+
+    function onRallyBot(context, message, time_data, stage_index, course_id)
+    {
+		switch (message)
+		{
+			case "StagingTimeRemaining":
+				onStagingTimeRemaining(context, time_data);
+				break;
+
+			case "WorldClosed":
+				onWorldClosed(context, time_data);
+				break;
+
+			case "StageStarting":
+				onStageStarting(context, time_data, stage_index, course_id);
+				break;
+
+			case "FirstGoal":
+				break;
+
+			case "StageEnd":
+				onStageEnd(context, time_data, stage_index, course_id);
+				break;
+
+			case "TournamentCompleted":
+				onTournamentCompleted(context);
+				break;
+
+			case "TournamentCanceled":
+				DeleteWatcher();
+				openConfirmDialog(context, DIALOG_OK, "Championship canceled")
+				start_page(context, RallyEventRoot)
+				break;
+			default:
+				break;
+		}
+    }
+}
+
+module PROJECT::ROOT::Pane::Car
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        CarScroll::open(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::Pane::Color
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        ColorScroll::open(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::Pane::Setting
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        SettingPopup::open(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::Pane::Chat
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        InputBox::open(context);
+        RallyRoot.setFocus(InputBox::input);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::Pane::Ranking
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        RankingScroll::open(context, 1, main::network.getCurrentBotSortedList());
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::InputBox
+{
+    static original_y = InputBox.y;
+
+    function open(context)
+    {
+        InputBox.y = (original_y + 64.0);
+        InputBox.visible = true;
+
+        while (!InputBox.interpolateY(original_y, 0.3))
+            context.sync();
+    }
+
+    function close(context)
+    {
+        if (InputBox.visible)
+        {
+            while (!InputBox.interpolateY((original_y + 64.0), 0.3))
+                context.sync();
+			
+            InputBox.visible = false;
+        }
+    }
+}
+
+module PROJECT::ROOT::InputBox::input
+{
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        RallyRoot.setFocus(Pane::Chat);
+        InputBox::close(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onConfirmed(context, str)
+    {
+        main::shell.putMessage(str);
+
+        var res = main::network.sayGame(str);
+        if (!res)
+        {
+            var error_code = main::network.getLastErrorCode();
+            openConfirmDialog(context, DIALOG_OK, error_code);
+            restart(context);
+        }
+    }
+}
+
+module PROJECT::ROOT::CarScroll
+{
+    function close(context)
+    {
+        SelectBox.outFocus(RallyRoot);
+
+        while (!CarScroll.interpolateX(PS2_SCREEN_W_F, 0.3))
+            context.sync();
+
+        CarScroll.visible = false;
+        Pane::Color.insensitive = (CarPane::CarFace.car_data.getColorNum() <= 1);
+    }
+
+    function open(context)
+    {
+        CarScroll.x = PS2_SCREEN_W_F;
+        CarScroll.visible = true;
+        while (!CarScroll.interpolateX(original_car_x, 0.3))
+            context.sync();
+
+        SelectBox.callFocus(RallyRoot);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        RallyRoot.setFocus(Pane::Car);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::CarScroll::SelectBox
+{
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+        close(context);
+        RallyRoot.setFocus(Pane::Car);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onValueChanged(context, index)
+    {
+        main::sound.play("cursor");
+
+        var widget = SelectBox.getFocusedWidget();
+        set_car(context, widget["carcode"], 0);
+    }
+
+    function refresh(context, focused_car)
+    {
+        SelectBox.clearChildren(context);
+
+        var num = carlist.size;
+        var index = 0;
+        
+        for (var i = 0; i < num; i++)
+        {
+            var item = hidden::CarItem.doCopy();
+
+            var carcode = carlist[i];
+            item.defineStatic("carcode", carcode);
+            item["label"].text = main::menu::MCarData::GetCarName(carcode);
+
+            SelectBox.appendChild(context, item);
+
+            if (carcode == focused_car)
+                index = i;
+        }
+
+        SelectBox.index = index;
+        SelectBox.outFocus(RallyRoot);
+    }
+}
+
+module PROJECT::ROOT::ColorScroll
+{
+    function close(context)
+    {
+        SelectBox.outFocus(RallyRoot);
+
+        while (!ColorScroll.interpolateX(PS2_SCREEN_W_F, 0.3))
+            context.sync();
+		
+        ColorScroll.visible = false;
+    }
+
+    function open(context)
+    {
+        SelectBox::refresh(context);
+
+        ColorScroll.x = PS2_SCREEN_W_F;
+        ColorScroll.visible = true;
+
+        while (!ColorScroll.interpolateX(original_color_x, 0.3))
+            context.sync();
+
+        SelectBox.callFocus(RallyRoot);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        RallyRoot.setFocus(Pane::Color);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::ColorScroll::SelectBox
+{
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+        close(context);
+        RallyRoot.setFocus(Pane::Color);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onValueChanged(context, index)
+    {
+        main::sound.play("cursor");
+        set_color(context, index);
+    }
+
+    function refresh(context)
+    {
+        SelectBox.clearChildren(context);
+
+        var car_data = CarPane::CarFace.car_data;
+        var num = car_data.getColorNum();
+
+        
+        for (var i = 0; i < num; i++)
+        {
+            var item = hidden::ColorItem.doCopy();
+
+            item["label"].text = car_data.getColorName(i);
+            item["chip"].setData(car_data, i);
+
+            SelectBox.appendChild(context, item);
+        }
+
+        SelectBox.outFocus(RallyRoot);
+        SelectBox.index = main::game.car_color;
+    }
+}
+
+module PROJECT::ROOT::RankingScroll
+{
+    function close(context, up)
+    {
+        var y = PS2_SCREEN_H_F;
+        if (up)
+            y = -PS2_SCREEN_H_F;
+
+        SelectBox.outFocus(RallyRoot);
+
+        while (!RankingScroll.interpolateY(y, 0.3))
+            context.sync();
+        RankingScroll.visible = false;
+        SelectBox.clearChildren(context);
+    }
+
+    function open(context, up, list)
+    {
+        SelectBox::refresh(context, list);
+
+        RankingScroll.y = (up ? PS2_SCREEN_H_F : -PS2_SCREEN_H_F);
+        RankingScroll.visible = true;
+
+        while (!RankingScroll.interpolateY(original_rank_y, 0.3))
+            context.sync();
+
+        SelectBox.callFocus(RallyRoot);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context, 0);
+        RallyRoot.setFocus(Pane::Ranking);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        var keysym = event.keysym;
+
+        if (keysym == PS2_PAD_CTRL_L3_UP)
+        {
+            var widget = SelectBox.getFocusedWidget();
+            if (widget["rank"].text != "1")
+            {
+                close(context, 1);
+
+                var list = main::network.getCurrentBotSortedList();
+                sRankStart -= 10;
+
+                open(context, 1, list);
+
+                SelectBox.index = 10;
+                SelectBox.callFocus(RallyRoot);
+            }
+            return EVENTRESULT_FILTER;
+        }
+        else if (keysym == PS2_PAD_CTRL_L3_DOWN)
+        {
+            var list = main::network.getCurrentBotSortedList();
+            if (list.size > (sRankStart + 10))
+            {
+                close(context, 0);
+                sRankStart += 10;
+                open(context, 0, list);
+            }
+            return EVENTRESULT_FILTER;
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::RankingScroll::SelectBox
+{
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+        close(context, 0);
+        RallyRoot.setFocus(Pane::Ranking);
+        return EVENTRESULT_FILTER;
+    }
+
+    function refresh(context, list)
+    {
+        var cnt = list.size;
+        cnt -= sRankStart;
+        if (cnt <= 0) return;
+        cnt = (cnt < 10 ? cnt : 10);
+        
+        for (var i = sRankStart; i < cnt; i++)
+        {
+            |var user, var id, var lap, var total| = list[i];
+
+            var lapStr   = main::menu::MUtility::GetTimeString(lap);
+            var totalStr = main::menu::MUtility::GetTimeString(total);
+
+            var item = hidden::RankItem.doCopy();
+
+            item["rank"].text        = (i + 1).toString();
+            item["rankActive"].text  = (i + 1).toString();
+            item["user"].text        = user;
+            item["userActive"].text  = user;
+            item["lap"].text         = lapStr;
+            item["lapActive"].text   = lapStr;
+            item["total"].text       = totalStr;
+            item["totalActive"].text = totalStr;
+
+            SelectBox.appendChild(context, item);
+        }
+
+        SelectBox.outFocus(RallyRoot);
+    }
+}

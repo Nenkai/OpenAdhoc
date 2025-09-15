@@ -683,7 +683,7 @@ No progress has been made currently.
 Adhoc Version: 7 (v5-7 compatible)<br>
 26 of 29 projects are completed and can be compiled.<br>
 There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
-There are 9 leftover projects from GT4P and GT4 that are not relevant.
+There are 10 leftover projects from GT4P and GT4 that are not relevant.
   
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|
@@ -719,7 +719,8 @@ There are 9 leftover projects from GT4P and GT4 that are not relevant.
 | --------               | ----     | ---- Stub projects: ----                                                         |
 | event                  |    ✔️    | Unused project that appears to be a mode used on demo setups for public events. Seems non-functional. |
 | ranking                |    ✔️    | Online leaderboards, accessed from Event project                                 |
-| online (GT4 Retail)    |    ❌️    | An earlier and unused implementation of online mode, works similarly to GT4 Online's version |
+| message (GT4 Retail)   |    ✔️    | Message handler for the stub Online mode. (Compilable if GT4O_US_BETA define is absent in the YAML) |)
+| online (GT4 Retail)    |    ✔️    | An earlier and unused implementation of online mode, works similarly to GT4 Online's version |
 | language               |    ✔️    | Leftover from GT4P's language select. Contains more language options, appears to be a dev version |
 | list_box               |    ✔️    | Leftover from GT4P's Save/Delete Replay menu. Possibly contains framework for an unused save icon customizer |
 | memcard                |    ✔️    | GT4P leftover                                                                    |
