@@ -1,0 +1,322 @@
+module PROJECT::ROOT
+{
+    function SetFadeActor(widget)
+    {
+        var actor = main::menu::MFadeActor(widget, 1.0);
+        actor.repeat = 1;
+        actor.period = 0.25;
+        widget.actor = actor;
+    }
+
+    SetFadeActor(Pane::Profile::bgf);
+    SetFadeActor(Pane::Add::bgf);
+    SetFadeActor(Pane::Del::bgf);
+    SetFadeActor(Pane::Send::bgf);
+    SetFadeActor(Pane::IM::bgf);
+
+    static sIsBuddy = true;
+    static sMode    = 0;
+    static sAddName = "";
+
+    function open(context, isBuddy)
+    {
+        sIsBuddy = isBuddy;
+        start_page(context, BuddyRoot);
+    }
+
+    function SortFunc(a, b)
+    {
+        var ret = (a["name"] <= b["name"]);
+        return ret;
+    }
+
+    function EqualFunc(a, b)
+    {
+        var ret = (a["name"] == b["name"]);
+        return ret;
+    }
+
+	function UpdateList(context)
+	{
+		var list;
+		if (sIsBuddy)
+			list = main::network.getBuddyList();
+		else
+			list = main::network.getIgnoreList();
+	
+		if (list == nil)
+		{
+			var error_code = main::network.getLastErrorCode();
+			openConfirmDialog(context, DIALOG_OK, error_code);
+			start_page(context, TopRoot);
+			return;
+		}
+	
+		var scnt = ScrollBox::SelectBox.Count();
+		var cnt  = list.size;
+
+		while (scnt--)
+		{
+			var item = ScrollBox::SelectBox.getItem(scnt);
+			for (var i = 0; i < cnt; i++)
+			{
+				if (item["name"] == list[i][1])
+					break;
+			}
+			if (i == cnt)
+			{
+				ScrollBox::SelectBox.removeChild(context, item);
+			}
+		}
+
+		cnt = list.size;
+		
+		for (var i = 0; i < cnt; i++)
+		{
+			var item = hidden::BuddyItem.doCopy();
+			var column = list[i];
+			var id   = column[0];
+			var name = column[1];
+			var stat = column[2];
+			switch (stat)
+			{
+				case 0:
+					item["Stat"]["offline"].visible = true;
+					break;
+
+				case 1:
+				case 2:
+					item["Stat"]["online"].visible = true;
+					break;
+
+				case 3:
+					item["Stat"]["ingame"].visible = true;
+					break;
+			}
+			item.defineStatic("id", id);
+			item.defineStatic("name", name);
+	
+			var text = " [%d] %s".format(id, name);
+			item["label"].text = text;
+	
+			ScrollBox::SelectBox.insertSortChild(context, item, SortFunc, EqualFunc);
+		}
+	
+		Pane::Profile.insensitive = (cnt <= 0);
+		Pane::Del.insensitive     = (cnt <= 0);
+		Pane::Send.insensitive    = (cnt <= 0);
+	
+		var widget = BuddyRoot.getFocusedWidget();
+		if (widget.insensitive == true)
+		{
+			BuddyRoot.setFocus(Pane::Add);
+		}
+	}
+
+	function OnAdd(context)
+	{
+		var id = main::network.accountName2AccountID(sAddName);
+	
+		if (id < 0)
+		{
+			openConfirmDialog(
+				context,
+				DIALOG_OK,
+				"There is no user named %s or not online".format(sAddName)
+			);
+			return;
+		}
+	
+		var r = 1;
+		if (sIsBuddy)
+			r = main::network.buddyAdd(id);
+		else
+			r = main::network.ignoreAdd(id);
+	
+		if (!r)
+		{
+			var error_code = main::network.getLastErrorCode();
+			openConfirmDialog(context, DIALOG_OK, error_code);
+		}
+	
+		if (!sIsBuddy)
+			UpdateList(context);
+	}
+	
+	
+	function onInitialize(context)
+	{
+		if (sIsBuddy)
+			enterPage(context, BuddyRoot, "Buddy List");
+		else
+			enterPage(context, BuddyRoot, "Ignore List");
+	
+		hidden.visible = false;
+	
+		ScrollBox::SelectBox.outFocus(BuddyRoot);
+		BuddyRoot.setFocus(Pane::Profile);
+	
+		ImRoot::ImCreateWatcher(context, Pane::IM, 2);
+	
+		UpdateList(context);
+	
+		AutoTick::begin(context, UpdateList);
+	}
+
+	function onFinalize(context)
+	{
+		ScrollBox::SelectBox.clearChildren(context);
+		ImRoot::ImDeleteWatcher();
+		AutoTick::end();
+		leavePage(context, BuddyRoot);
+	}
+	
+	
+	function onCancel(context)
+	{
+		start_page(context, TopRoot);
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::ScrollBox::SelectBox
+{
+	function onCancel(context)
+	{
+		main::sound.play("cancel");
+	
+		SelectBox.outFocus(BuddyRoot);
+		BuddyRoot.setFocus(Pane::Profile);
+	
+		return EVENTRESULT_FILTER;
+	}
+	
+	function del(id)
+	{
+		if (BuddyRoot::sIsBuddy)
+		{
+			main::network.buddyDelete(id);
+			return;
+		}
+		else
+		{
+			main::network.ignoreDelete(id);
+			return;
+		}
+	}
+
+	function onActivate(context, event)
+	{
+		main::sound.play("ok");
+	
+		var item = event.widget;
+		var id   = item["id"];
+		var name = item["name"];
+	
+		if (BuddyRoot::sMode == 0)
+		{
+			ProfileRoot::open(context, BuddyRoot, name, id);
+		}
+		else if (BuddyRoot::sMode == 1)
+		{
+			var r = openConfirmDialog(context, DIALOG_OK, "Delete?");
+			if (r)
+			{
+				r = openProcessDialog(context, "now deleting".format(name), del, id);
+				if (r)
+				{
+					var error_code = lastProcessError(context);
+					openConfirmDialog(context, DIALOG_OK, error_code);
+				}
+				SelectBox.outFocus(BuddyRoot);
+				BuddyRoot.setFocus(Pane::Del);
+				BuddyRoot::UpdateList(context);
+			}
+		}
+		else
+		{
+			ImRoot::ImOpen(context, id, name);
+		}
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::Pane::Profile
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+
+        BuddyRoot::sMode = 0;
+
+        ScrollBox::SelectBox.callFocus(BuddyRoot);
+
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::Pane::Add
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+
+        var name = InputDialog::open(context, 0, "Input Name", BuddyRoot);
+
+        if (name != nil)
+        {
+            BuddyRoot::sAddName = name;
+
+            var event = main::menu::MScriptEvent(context, BuddyRoot, "OnAdd");
+            context.pushEvent(event);
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::Pane::Del
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+
+        BuddyRoot::sMode = 1;
+
+        ScrollBox::SelectBox.callFocus(BuddyRoot);
+
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::Pane::Send
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+
+        if (main::network.imHaveMessage())
+        {
+            ImRoot::ImOpen(context, -1, "");
+        }
+        else
+        {
+            BuddyRoot::sMode = 2;
+            ScrollBox::SelectBox.callFocus(BuddyRoot);
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::Pane::IM
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+
+        ImRoot::ImOpen(context, -1, "");
+
+        return EVENTRESULT_FILTER;
+    }
+}

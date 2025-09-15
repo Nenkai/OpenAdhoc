@@ -1,0 +1,264 @@
+module PROJECT::ROOT
+{
+    static sNode = nil;
+
+    function SortFunc(a, b)
+    {
+        var ret = (a["GameName"] <= b["GameName"]);
+        return ret;
+    }
+
+    function EqualFunc(a, b)
+    {
+        var ret = (a["game_id"] == b["game_id"]);
+        return ret;
+    }
+
+    function refresh_list(context)
+    {
+        var list = main::network.getGameList();
+        if (list == nil)
+        {
+            openConfirmDialog(context, DIALOG_OK, lastProcessError(context));
+            restart(context);
+            return false;
+        }
+
+        var scnt = ScrollBox::SelectBox.Count();
+        var cnt  = list.size;
+
+        while (scnt--)
+        {
+            var item = ScrollBox::SelectBox.getItem(scnt);
+            var i;
+            for (i = 0; i < cnt; i++)
+            {
+                if (item["game_id"] == list[i][0])
+                    break;
+            }
+
+            if (i == cnt)
+			{
+                ScrollBox::SelectBox.removeChild(context, item);
+			}
+        }
+
+        scnt = 0;
+        cnt  = list.size;
+
+        for (var i = 0; i < cnt; i++)
+        {
+            var column = list[i];
+
+            var id           = column[0];
+            var status       = column[11];
+            var name         = column[13];
+            var stats_string = column[14];
+            var stats        = main::menu::MGameStats::unpack(stats_string);
+
+            if (status != 1)
+                continue;
+
+            scnt++;
+
+            var item = hidden::Item.doCopy();
+            item.defineStatic("game_id", id);
+            item.defineStatic("status", status);
+            item.defineStatic("GameName", name);
+            item.defineStatic("tournament_id", stats.tournament_id);
+
+            item["Name"].text = name;
+            item["Member"].text = "%d/%d".format(column[1], column[3]);
+
+            ScrollBox::SelectBox.insertSortChild(context, item, SortFunc, EqualFunc);
+        }
+
+        if (scnt > 0)
+            ScrollBox::SelectBox.callFocus(RallyEventRoot);
+        else
+        {
+            openConfirmDialog(context, DIALOG_OK, "There is no available game world,\nplease try again later");
+            start_page(context, TopRoot);
+            return false;
+        }
+
+        return true;
+    }
+
+    function onInitialize(context)
+    {
+        hidden.visible = false;
+        enterPage(context, RallyEventRoot, "Championships");
+
+        var event = main::menu::MScriptEvent(context, RallyEventRoot, "on_initialize");
+        context.pushEvent(event);
+    }
+
+    function on_initialize(context)
+    {
+        var buf = main::network.fileGet("gt4tournaments.xmlz");
+        if (buf == nil)
+        {
+            return nil;
+        }
+
+        var xml = main::menu::MXml();
+        xml.parse(buf);
+
+        sNode = xml.result;
+        sNode = sNode.getFirstNode("RallyTournaments");
+
+        if (refresh_list(context))
+            AutoTick::begin(context, refresh_list);
+    }
+
+    function onFinalize(context)
+    {
+        AutoTick::end();
+        ScrollBox::SelectBox.clearChildren(context);
+        sNode = nil;
+        leavePage(context, RallyEventRoot);
+    }
+
+    function onCancel(context)
+    {
+        var res = openConfirmDialog(context, DIALOG_QUERY, "Do you return?");
+        if (res)
+        {
+            start_page(context, TopRoot);
+        }
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::ScrollBox::SelectBox
+{
+    function GetRallySpec(tournament_id)
+    {
+        var nodeList;
+        if ((nodeList = RallyEventRoot::sNode["tournament"]) == nil)
+            return nil;
+
+        
+        for (var i = 0; i < nodeList.size; i++)
+        {
+            if (nodeList[i] == nil)
+                continue;
+
+            var tnode = nodeList[i];
+
+            var id;
+            if ((id = tnode.getAttribute("id")) == nil)
+                continue;
+
+            var name;
+            if ((name = tnode.getAttribute("name")) == nil)
+                continue;
+
+            if (id.toInt() == tournament_id)
+            {
+                var max_players;
+                if ((max_players = tnode.getAttribute("max_players")) == nil)
+                    return nil;
+
+                var player_skill;
+                if ((player_skill = tnode.getAttribute("player_skill")) == nil)
+                    return nil;
+
+                var tnodeList;
+                if ((tnodeList = tnode["stage"]) == nil)
+                    return nil;
+				
+				if (tnodeList.size < 0)
+					return nil;
+
+                var array = [];
+                array.push(tnodeList.size);
+                array.push(max_players);
+                array.push(player_skill);
+
+                
+                for (var i = 0; i < tnodeList.size; i++)
+                {
+                    if (tnodeList[i] == nil)
+                        return nil;
+
+                    var snode = tnodeList[i];
+					
+                    var course;
+                    if ((course = snode.getAttribute("course")) == nil)
+                        return nil;
+
+                    var laps;
+                    if ((laps = snode.getAttribute("laps")) == nil)
+                        return nil;
+
+                    var max_time;
+                    if ((max_time = snode.getAttribute("max_time")) == nil)
+                        return nil;
+
+                    var stage = [];
+                    stage.push(course);
+                    stage.push(laps);
+                    stage.push(max_time);
+                    array.push(stage);
+                }
+
+                return array;
+            }
+        }
+
+        return nil;
+    }
+
+    function join(context, game_id)
+    {
+        var res = nil;
+
+        if (main::network.isMGCLworking())
+            res = main::network.joinGameMGCL(game_id);
+        else
+            res = main::network.joinGame(game_id);
+
+        return res;
+    }
+
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+
+        var item = event.widget;
+
+        var game_id = item["game_id"];
+        var status  = item["status"];
+        var name    = item["GameName"];
+        var tournament_id = item["tournament_id"];
+
+        var array = GetRallySpec(tournament_id);
+        if (array == nil)
+        {
+            openConfirmDialog(context, DIALOG_OK, "cannot get detailed info");
+            return EVENTRESULT_FILTER;
+        }
+
+        var res = RallySpecDialog::open(context, name, array);
+        if (!res)
+            return EVENTRESULT_FILTER;
+
+        res = openProcessDialog(context, "now joining", join, game_id);
+
+        if (res)
+        {
+            main::network.rally_id = tournament_id;
+            main::network.rally_stage_index = 0;
+            start_page(context, RallyRoot);
+        }
+        else
+        {
+            var error_code = lastProcessError(context);
+            openConfirmDialog(context, DIALOG_OK, error_code);
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+}
