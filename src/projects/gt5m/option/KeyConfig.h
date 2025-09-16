@@ -101,11 +101,8 @@ class KeyInfo
         var link_list = self.key_link_list;
         for (var i = 0; i < link_list.size; i++)
         {
-            if (link_list[i].src_action == _src_action &&
-                link_list[i].dst_action == _dst_action)
-            {
+            if (link_list[i].src_action == _src_action && link_list[i].dst_action == _dst_action)
                 return [link_list[i].target_name, link_list[i].target_action];
-            }
         }
 
         return nil;
