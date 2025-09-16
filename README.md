@@ -15,6 +15,9 @@ The games use a system of "projects" to divide the major menu types. Each game m
 
 ## 🎮 Games & Progress
 
+> [!TIP]
+> Percentage/Progression is relative to the overall amount of lines that have been reversed.
+
 <details>
   <summary>[❌️] Demos & Misc. builds</summary>
 
