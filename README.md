@@ -920,12 +920,14 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 
 ### GT7
 
-  Out of scope. GT7 no longer uses Adhoc language and instead uses Swift (custom parser & compiler) which is then compiled to adhoc bytecode.
-  <br>
+Out of scope. GT7 no longer uses Adhoc language and instead uses Swift (custom parser & compiler) which is then compiled to adhoc bytecode.
 
-> [!NOTE]
-> Original bugs are left as is. You can find any the have been identified with the `// BUG` comments.
 </details>
+
+>[!NOTE]
+>Original bugs are left as is. You can find any that have been identified with the `// BUG` comments.
+>
+>Matching notes are usually found starting with `// NOTE` or `// COMPILER NOTE`.
 
 ## ⚙️ Compilation
 
