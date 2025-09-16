@@ -16,7 +16,7 @@ The games use a system of "projects" to divide the major menu types. Each game m
 ## 🎮 Games & Progress
 
 <details>
-  <summary> Demos & Misc. builds </summary>
+  <summary>[❌️] Demos & Misc. builds</summary>
 
   <blockquote>
 
@@ -653,7 +653,7 @@ No progress.
 </details>
 
 <details>
-  <summary>GT4 Prologue</summary>
+  <summary>[❌️] GT4 Prologue</summary>
 
 ### GT4 Prologue
 Adhoc Version: 5<br>
@@ -677,9 +677,9 @@ No progress has been made currently.
 </details>
 
 <details>
-  <summary>GT4 Online (US)</summary>
+  <summary>[🔧] GT4 (>=90%)</summary>
 
-### GT4 Online (US)
+### GT4
 Adhoc Version: 7 (v5-7 compatible)<br>
 28 of 29 projects are completed and can be compiled.<br>
 There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
@@ -731,7 +731,7 @@ There are 10 leftover projects from GT4P and GT4 that are not relevant.
 </details>
 
 <details>
-  <summary>Tourist Trophy</summary>
+  <summary>[❌️] Tourist Trophy</summary>
 
 ### Tourist Trophy
 Adhoc Version: 7<br>
@@ -766,7 +766,7 @@ Adhoc Version: 7<br>
 </details>
 
 <details>
-  <summary>GT HD</summary>
+  <summary>[❌️] GT HD</summary>
 
 ### GT HD
   Adhoc Version: 10 (v8-10 compatible)<br>
@@ -786,7 +786,7 @@ Adhoc Version: 7<br>
 </details>
 
 <details>
-  <summary>GT5 Prologue</summary>
+  <summary>[❌️] GT5 Prologue</summary>
 
 ### GT5 Prologue
   Adhoc Version: 10<br>
@@ -794,7 +794,7 @@ Adhoc Version: 7<br>
 </details>
 
 <details>
-  <summary>GT PSP (gt5m)</summary>
+  <summary>[✅] GT PSP (gt5m) (100%)</summary>
 
 ### GT PSP (gt5m)
   Adhoc Version: 12<br>
@@ -803,7 +803,7 @@ Adhoc Version: 7<br>
 </details>
 
 <details>
-  <summary>GT5 (2.11)</summary>
+  <summary>[🚧] GT5 (2.11) (>=25%)</summary>
   
 ### GT5
 Adhoc Version: 12<br>
@@ -850,7 +850,7 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 </details>
 
 <details>
-  <summary>GT6 (1.22)</summary>
+  <summary>[🔧] GT6 (1.22) (>=70%)</summary>
   
 ### GT6
   Adhoc Version: 12<br>
@@ -908,7 +908,7 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 </details>
 
 <details>
-  <summary>GT Sport (gt7sp)</summary>
+  <summary>[❌] GT Sport (gt7sp)</summary>
 
 ### GT Sport (gt7sp)
   Adhoc Version: 12<br>
@@ -916,7 +916,7 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 </details>
 
 <details>
-  <summary>GT7</summary>
+  <summary>[🛑] GT7</summary>
 
 ### GT7
 
