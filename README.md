@@ -681,7 +681,7 @@ No progress has been made currently.
 
 ### GT4 Online (US)
 Adhoc Version: 7 (v5-7 compatible)<br>
-26 of 29 projects are completed and can be compiled.<br>
+28 of 29 projects are completed and can be compiled.<br>
 There are 2 collections of shared scripts (share and quick-share) that multiple projects use.<br>
 There are 10 leftover projects from GT4P and GT4 that are not relevant.
   
@@ -704,8 +704,8 @@ There are 10 leftover projects from GT4P and GT4 that are not relevant.
 | photo_shoot            |    ✔️    | Photo mode camera menu, photo preview and save for Photo Travel                  |
 | print                  |    ✔️    | Print menu, accessed from Photo Lab                                              |
 | quick-arcade           |    ✔️    | Arcade mode Single Race Pre-Race menu                                            |
-| quick-championship     |    ❌️    | GT Mode Championship Pre-Race menu                                               |
-| quick-event            |    ❌️    | GT Mode Single Race, Practice, and Family Cup Pre-Race menu                      |
+| quick-championship     |    ✔️    | GT Mode Championship Pre-Race menu                                               |
+| quick-event            |    ✔️    | GT Mode Single Race, Practice, and Family Cup Pre-Race menu                      |
 | quick-freerun          |    ✔️    | GT Mode Photo Drive Pre-Race menu                                                |
 | quick-license          |    ✔️    | GT Mode License test Pre-Race menu                                               |
 | quick-mission          |    ✔️    | GT Mode Mission Pre-Race menu                                                    |
