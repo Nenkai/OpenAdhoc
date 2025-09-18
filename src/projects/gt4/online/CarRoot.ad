@@ -1,0 +1,451 @@
+module PROJECT::ROOT
+{
+	static car_list = nil;
+	static current_crs = nil;
+	static current_car = nil;
+	static current_col = nil;
+	static gcar = nil;
+	static sCurrentEvent = nil;
+	static original_name_scale_x = CarScroll::Name.scale_x;
+	static original_name_scale_y = CarScroll::Name.scale_y;
+	
+	function setMoveActor(widget, x, y)
+	{
+		var actor = main::menu::MMoveActor(widget, widget.x + x, widget.y + y);
+		widget.actor = actor;
+		widget.actor.ratio = 0.2;
+	}
+
+	setMoveActor(CarScroll, 0.0, 400.0);
+	CarScroll.actor.out = false;
+	CarScroll.actor.warp();
+	setMoveActor(ColScroll, 0.0, 400.0);
+	ColScroll.actor.out = true;
+	ColScroll.actor.warp();
+	
+	function setFadeActor(widget)
+	{
+		var actor = main::menu::MFadeActor(widget, 1.0);
+		widget.actor = actor;
+		widget.actor.period = 0.5;
+		widget.actor.repeat = 1;
+	}
+	
+	function setCrossFade(widget, on)
+	{
+		var actor = main::menu::MFadeActor(widget, 1.0);
+		widget.actor = actor;
+		widget.actor.period = 1.0;
+		widget.actor.repeat = 1;
+		widget.actor.out = on;
+		widget.actor.over = 1.0;
+		widget.actor.slope = 0.5;
+		widget.actor.warp();
+	}
+	
+	function resetCrossFade(widget, on)
+	{
+		widget.actor.out = on;
+		widget.actor.warp();
+	}
+	
+	setFadeActor(CarScroll::dec_arrow::bga);
+	setFadeActor(CarScroll::inc_arrow::bga);
+	setCrossFade(Logo::bg, 0);
+	setCrossFade(Logo::bg1, 1);
+
+	function onInitialize(context)
+	{
+		enterPage(context, CarRoot, nil);
+		if (!isMyCarEventNow())
+			setHeadCarVisible(CarRoot, 0);
+	
+		hidden.visible = false;
+		Common::ToolTip::tip.remove();
+		CarFace.quality_level = 0;
+		var info = main::network.getCurrentGameInfo();
+		var rule_set = info[7];
+		setCurrentRuleSet(rule_set);
+		var event = main::menu::MScriptEvent(context, CarRoot, "on_initialize_event");
+		context.pushEvent(event);
+	}
+
+	function on_initialize_event(context)
+	{
+		sCurrentEvent = PregridRoot::getEventNode(context);
+		if (sCurrentEvent == nil)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return;
+		}
+		var val = sCurrentEvent["Course"][0].value;
+		if (val.beginWith("#"))
+			val = main::menu::MCourseData::GetLabelByID(val.substr(1).toInt());
+
+		current_crs = val;
+		if (isMyCarEventNow())
+		{
+			gcar = main::game.garage.riding_car;
+			car_list = [ gcar.car_code ];
+		}
+		else
+		{
+			car_list = [];
+			var cars = sCurrentEvent["Car"];
+			
+			for (var i = 0; i < cars.size; i++)
+			{
+				val = cars[i].value;
+				if (val.beginWith("#"))
+				{
+					val = main::menu::MCarData::GetCarLabelByArray([0, val.substr(1).toInt()]);
+				}
+				car_list.push(val);
+			}
+			gcar = nil;
+		}
+		set_car_select(context);
+		set_car(context);
+	}
+
+	function onFinalize(context)
+	{
+		unset_car_select(context);
+		car_list = nil;
+		current_crs = nil;
+		current_car = nil;
+		current_col = nil;
+		gcar = nil;
+		sCurrentEvent = nil;
+		leavePage(context, CarRoot);
+	}
+	
+	function getCurrentCar()
+	{
+		if (current_car != nil)
+			return current_car;
+		else "";
+	}
+	
+	function getCurrentColor()
+	{
+		if (current_col != nil)
+			return current_col;
+
+		return 0;
+	}
+	
+	function set_car_select(context)
+	{
+		var car_num = car_list.size;
+	
+		Logo::bg.from_disk = true;
+		Logo::bg.cache = true;
+	
+		
+		for (var i = 0; i < car_num; i++)
+		{
+			var car = car_list[i];
+			var label = main::menu::MCarData::GetCarLabel(car);
+	
+			Logo::bg.image_path = "piece/car_logo2/" + label + ".img";
+			Logo::bg.doInitialize(context);
+		}
+		CarScroll::SelectBox.setItemTemplate(context, hidden::MiniItem);
+		CarScroll::SelectBox.setItemCount(car_num);
+		CarScroll::SelectBox.h_justify = 0.5;
+		CarScroll::SelectBox.v_justify = 1.0;
+		CarScroll::SelectBox.focus_callback = CarScroll::SelectBox::onValueChanged;
+		
+		for (i = 0; i < car_num; i++)
+		{
+			var mini = CarScroll::SelectBox.getItemWidget(i, context);
+			var car  = car_list[i];
+			var label = main::menu::MCarData::GetCarLabel(car);
+			mini["image"].from_disk = true;
+			mini["image"].image_path = "piece/car_mini/" + label + ".img";
+			mini["image"].doInitialize(context);
+		}
+	}
+
+	function unset_car_select(context)
+	{
+		CarScroll::SelectBox.setItemCount(0);
+	}
+	
+	function set_car_info(context, car_data)
+	{
+		var train = car_data.getDTrainType();
+		if (train == nil)
+			train = "--";
+	
+		var power  = car_data.getCatPs("%d%s/%s%s");
+		var torque = car_data.getCatTq("%.2t%s/%s%s");
+		var info = context.translate(CarRoot, "car_info");
+		train = context.translate(CarRoot, "DriveTrainName", train);
+		Common::ToolTip::tip.value = info.format(train, power, torque);
+	}
+
+	function set_car(context)
+	{
+		CarFace.visible = false;
+		var index = CarScroll::SelectBox.focus_index;
+		if (index < 0)
+			return;
+	
+		var car = car_list[index];
+		if (gcar != nil)
+			CarFace.car_garage = gcar;
+		else
+			CarFace.car_code = car;
+	
+		current_car = car;
+		var label = CarFace.car_data.getCarLabel();
+		var tuner = main::menu::MCarData::GetTuner(car);
+		Logo::bg.from_disk = true;
+		Logo::bg.image_path = "piece/car_logo2/" + label + ".img";
+		Logo::bg.doInitialize(context);
+		var bg1 = Logo::bg1;
+		bg1.from_disk = true;
+		bg1.image_path = "piece/tuner_logo2/" + tuner + ".img";
+		bg1.doInitialize(context);
+		bg1.adjustSize();
+		bg1.x = Logo::bg.x + (Logo::bg.w - bg1.w) * 0.5;
+		bg1.y = Logo::bg.y + (Logo::bg.h - bg1.h) * 0.5;
+		resetCrossFade(Logo::bg, 0);
+		resetCrossFade(Logo::bg1, 1);
+		var ctry = main::menu::MCarData::GetCountry(car);
+		Type::nation.image_path = "image/arcade/common/" + ctry + ".png";
+		Type::nation.doInitialize(context);
+		var ctgry = main::menu::MCarData::GetCategory(car);
+		Type::label.text = context.translate(CarRoot, ctgry);
+		CarScroll::Name.scale_x = original_name_scale_x;
+		CarScroll::Name.scale_y = original_name_scale_y;
+		CarScroll::Name.text = CarFace.car_data.name;
+		CarScroll::Name.adjustScale();
+		CarFace::move_car(0, 1);
+		current_col = 0;
+		set_car_info(context, CarFace.car_data);
+		CarFace.visible = true;
+	}
+
+	function set_col_select(context)
+	{
+		CarScroll.actor.out = true;
+		CarScroll.insensitive = true;
+		var car_data = CarFace.car_data;
+		var col_list = car_data.getColors();
+		var num = col_list.size;
+		
+		for (var i = 0; i < num; i++)
+		{
+			var chip = hidden::ColItem.doCopy();
+			chip["chip"].setData(car_data, i);
+			ColScroll::SelectBox.appendChild(context, chip);
+		}
+		ColScroll.actor.out = false;
+		ColScroll::SelectBox.index = current_col;
+		ColScroll::SelectBox.callFocus(CarRoot);
+		set_col(context);
+	}
+	
+	function unset_col_select(context)
+	{
+		ColScroll.actor.out = true;
+		ColScroll::SelectBox.clearChildren(context);
+		CarScroll.actor.out = false;
+		CarScroll.insensitive = false;
+		CarRoot.setFocus(CarScroll::SelectBox);
+	}
+	
+	function set_col(context)
+	{
+		var index = ColScroll::SelectBox.index;
+		current_col = index;
+		CarFace.setColorIndex(index);
+		var colname = CarFace.car_data.getColorName(index);
+		if (colname != "-")
+			ColScroll::Name.text = colname;
+		else
+			ColScroll::Name.text = "";
+	}
+
+	function doGame(context)
+	{
+		main::network.raceMenuStart();
+		main::game.selected_course = getCurrentEventID();
+		var id = main::network.getCurrentGameWorldID();
+		var remotePlayers = "";
+		svo::Login(main::network.my_id.toString(), main::network.my_name, main::game.password);
+		var ret = svo::CreateArcadeGame(id.toString(), remotePlayers, sCurrentEvent.getAttribute("ID"));
+		gHttp.close();
+		if (!ret)
+		{
+			openConfirmDialog(context, DIALOG_ERROR, context.translate(CarRoot, "ERROR|SVO_CREATE_GAME_FAILED"));
+			if (!restart_flg)
+			{
+				ret = main::network.leaveGameMGCL();
+				if (!ret)
+				{
+					openOnlineErrorDialog(context);
+					restart(context);
+				}
+				else
+				{
+					main::game.major_menu_page = "";
+					start_page(context, P2PEventRoot);
+				}
+			}
+			unset_col_select(context);
+			context.cursor_visible = true;
+			return;
+		}
+		main::network.setSvoCookie(gHttp.GetMHttp());
+		main::game.online_mycar = (gcar != nil);
+		var gc = gcar;
+		if (gc == nil)
+		{
+			gc = main::menu::MCarGarage(current_car, current_col);
+			var specified_tires = sCurrentEvent["SpecifiedTire"];
+			var tire = nil;
+			if (specified_tires != nil)
+				tire = specified_tires[0].value;
+			
+			if (tire != nil)
+				setSpecifiedTire(gc, tire);
+		}
+		else
+			applyEquipedTire(gc);
+		
+		main::network.raceMenuNotifyCarEquipments(gc.getEquipments());
+		main::network.raceMasterNotifyCourse(current_crs);
+		main::network.raceMasterNotifyRaceSetting(main::game.makeBattleSettingRace(0, 0, 0, 0, 0));
+		main::network.raceMenuNotifyEntrySetting(main::game.getBattleSettingEntry());
+		main::game.major_menu_project = "online";
+		main::game.major_menu_page = P2PEventRoot;
+		var message = "RACEBEGIN?";
+		message += makeRuleSetString();
+		message += "&WID=%d".format(main::network.getCurrentGameWorldID());
+		message += "&course=" + current_crs;
+		message += "&car=" + gc.car_code;
+		message += "&color=%d".format(gc.getColorIndex());
+		if (!main::network.postDebugInfo(message))
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return;
+		}
+		main::game.race_code = "freerun_serious";
+		var race_code = sCurrentEvent["RaceCode"];
+		if (race_code != nil)
+			main::game.race_code = race_code[0].value;
+		
+		main::game.max_entry = 1;
+		main::game.next_sequence = "online_time_trial";
+		var timelimit = main::network.gameTime() + (main::NetBattle_TimeTrial_TimeLimit * 1000);
+		main::network.timeLimit = timelimit;
+		main::network.raceMenuEnd();
+		start_page(context, nil);
+	}
+}
+ 
+module PROJECT::ROOT::CarFace
+{
+	function move_car(phase, warp)
+	{
+		if (CarFace.car_model != nil)
+		{
+			if (phase == 0)
+			{
+				CarFace.car_model.motion = 1;
+				if (warp == 1)
+				{
+					CarFace.car_model.tz = 8.5;
+					CarFace.car_model.ry = 180.0;
+					CarFace.car_model.warp();
+				}
+				CarFace.car_model.tx = 0.0;
+				CarFace.car_model.tz = 0.0;
+				CarFace.car_model.posInterpolateSpeed = 0.025;
+			}
+			else
+			{
+				CarFace.car_model.motion = 2;
+				CarFace.car_model.tx = -0.9;
+				CarFace.car_model.tz = 1.6;
+				CarFace.car_model.ry = 185.5;
+				CarFace.car_model.posInterpolateSpeed = 0.1;
+				if (warp == 1)
+				{
+					CarFace.car_model.warp();
+				}
+			}
+		}
+	}
+}
+
+module PROJECT::ROOT::CarScroll::SelectBox
+{
+	function onValueChanged(context, index)
+	{
+		set_car(context);
+	}
+
+	function onCancel(context, event, item)
+	{
+		main::sound.play("cancel");
+		var res = main::network.leaveGameMGCL();
+		if (!res)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+		}
+		else
+		{
+			main::game.major_menu_page = "";
+			P2PEventRoot::gLastEventID = getCurrentEventID();
+			start_page(context, P2PEventRoot);
+		}
+		return EVENTRESULT_FILTER;
+	}
+	
+	function onActivate(context, event, item)
+	{
+		main::sound.play("ok");
+		if (gcar != nil)
+			SettingPopup::openInGarage(context, gcar);
+		else
+			set_col_select(context);
+	
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::ColScroll::SelectBox
+{
+	function onValueChanged(context, index)
+	{
+		set_col(context);
+	}
+
+	function onCancel(context, event, item)
+	{
+		CarRoot.setFocus(nil);
+		main::sound.play("cancel");
+		unset_col_select(context);
+		return EVENTRESULT_FILTER;
+	}
+	
+	function onActivate(context, event, item)
+	{
+		main::sound.play("ok");
+		ColScroll.actor.out = true;
+		if (gcar != nil)
+			SettingPopup::openInGarage(context, gcar);
+		else
+			SettingPopup::open(context);
+	
+		return EVENTRESULT_FILTER;
+	}
+}

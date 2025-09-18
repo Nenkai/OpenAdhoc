@@ -1,0 +1,2586 @@
+module PROJECT::ROOT
+{
+	static sCarList = nil;
+	static sSpecifiedTire = nil;
+	static sCurrentEvent = nil;
+	static sFullCarNode = nil;
+	static sLimitPower = nil;
+	static sReadyNow = nil;
+	static sActivePane = nil;
+	static sCountdown = nil;
+	static sRefreshCount = nil;
+	static sShownCount = nil;
+	static sCurrentPrivateCourseList = nil;
+	static sGenPane = [Gen0Pane, Gen1Pane, Gen2Pane, Gen3Pane];
+	static sGenPaneLevel = nil;
+	static sCourseIndex = nil;
+
+	function onLoad(context)
+	{
+		setDialogMoveActorH(MessagePane::Pane::InputBox);
+		setDialogMoveActorH(CarView::CarFace);
+		setDialogMoveActorH(CoursePane);
+		setDialogMoveActorH(ColorPane);
+		setDialogMoveActorH(Gen0Pane);
+		setDialogMoveActorH(Gen1Pane);
+		setDialogMoveActorH(Gen2Pane);
+		setDialogMoveActorH(Gen3Pane);
+		setDialogMoveActorH(CarSettingPane);
+		setDialogMoveActorH(SettingPane);
+		setDialogMoveActorH(LapPane);
+		setFadeActor(ContextMenu, 0.1);
+	}
+
+	function onLoadInitialize(context)
+	{
+		SettingPane::onLoadInitialize(context);
+	}
+
+	function get_pulse(context, message)
+	{
+		var commands = message.split(",");
+		var course = nil;
+		var laps = nil;
+		var name = nil;
+		var force = false;
+	
+		
+		for (var i = 0; i < commands.size; i++)
+		{
+			var comlist = commands[i].split(":");
+			switch(comlist[0])
+			{
+				case "course":
+					course = comlist[1];
+					if (main::network.amIhost())
+						set_course_by_master(context, course);
+					
+					break;
+
+				case "lap":
+					laps = comlist[1];
+					if (main::network.amIhost())
+						set_lap_by_master(context, laps);
+					
+					break;
+
+				case "name":
+					name = comlist[1];
+					break;
+
+				case "force":
+					force = true;
+					if (main::network.amIhost())
+						goRaceSignal(context);
+					
+					break;
+			}
+		}
+		var pipe = MessagePane::Pane::Log::tbox.pipe;
+		if (course != nil && name != nil)
+		{
+			var crsname = context.translate(PregridRoot, "CourseNameCaption", course);
+			pipe.put("%C008" + context.translate(PregridRoot, "CHANGED_COURSE").build(name, crsname) + "");
+		}
+		else if (laps != nil && name != nil)
+			pipe.put("%C008" + context.translate(PregridRoot, "CHANGED_LAPS").build(name, laps) + "");
+		else if (force && name != nil)
+			pipe.put("%C008" + context.translate(PregridRoot, "FORCE_START").build(name) + "");
+	}
+
+	function set_course_by_master(context, course_code)
+	{
+		main::game.course_code = course_code;
+		main::network.raceMasterNotifyCourse(course_code);
+		PlayerPane::refreshCourse(context);
+	}
+	
+	function set_lap_by_master(context, laps)
+	{
+		main::game.laps = laps;
+		main::network.raceMasterNotifyRaceSetting(
+			main::game.makeBattleSettingRace(
+				laps,
+				getSlowCarBoost(),
+				2,
+				0,
+				sLimitPower
+			)
+		);
+		PlayerPane::refreshCourse(context);
+	}
+
+	function set_course(context, course_code, laps, msg_call)
+	{
+		if (msg_call == nil)
+			msg_call = true;
+	
+		if (main::network.amIhost())
+		{
+			set_course_by_master(context, course_code);
+			set_lap_by_master(context, laps);
+		}
+	
+		if (msg_call)
+		{
+			var pipe = MessagePane::Pane::Log::tbox.pipe;
+			var crsname = context.translate(PregridRoot, "CourseNameCaption", course_code);
+			pipe.put("%C008" + context.translate(PregridRoot, "CHANGED_COURSE").build(main::network.my_name, crsname) + "");
+			main::network.sendGamePulse("course:" + course_code + ",lap:" + laps + ",name:" + main::network.my_name);
+		}
+	}
+
+	function set_lap(context, laps, msg_call)
+	{
+		if (msg_call == nil)
+			msg_call = true;
+	
+		if (main::network.amIhost())
+			set_lap_by_master(context, laps);
+	
+		if (msg_call)
+		{
+			var pipe = MessagePane::Pane::Log::tbox.pipe;
+			pipe.put("%C008" + context.translate(PregridRoot, "CHANGED_LAPS").build(main::network.my_name, laps) + "");
+			main::network.sendGamePulse("lap:" + laps + ",name:" + main::network.my_name);
+		}
+	}
+	
+	function getMenuItemName(widget, node_name)
+	{
+		var itext = "--";
+		if (widget["OptionMenu"]["popup"]["vbox"][node_name] != nil)
+			itext = widget["OptionMenu"]["popup"]["vbox"][node_name]["label"].text;
+	
+		return itext;
+	}
+
+	function notifyCarEquipments(gcar)
+	{
+		if (sSpecifiedTire != nil)
+			setSpecifiedTire(gcar, sSpecifiedTire);
+	
+		main::network.raceMenuNotifyCarEquipments(gcar.getEquipments());
+		main::network.raceMenuNotifyCar(gcar.car_code, gcar.getColorIndex());
+	}
+	
+	
+	function make_sure_set_car()
+	{
+		var gcar = nil;
+		if (!isMyCarEventNow())
+			gcar = main::menu::MCarGarage(main::game.car_code, main::game.car_color);
+		else
+			gcar = main::game.garage.riding_car;
+	
+		notifyCarEquipments(gcar);
+	}
+
+	function set_car(context, gcar)
+	{
+		main::game.car_code = gcar.car_code;
+		main::game.car_color = gcar.getColorIndex();
+		CarView::CarFace.car_garage = gcar;
+		CarView::CarFace.car_model.ry = 180.0;
+		notifyCarEquipments(gcar);
+		PlayerPane::refreshMyself(context);
+		if (isMyCarEventNow())
+		{
+			var rid_car = main::game.garage.riding_car;
+			var text = getMenuItemName(CarSettingPane::Set, "SettingItem" + rid_car.slot);
+			CommandPane::ChangeCarSetting::info.text = text;
+		}
+		else
+			CommandPane::ChangeCarSetting::info.text = "--";
+	
+		if (CarView::CarFace.car_data.getColorNum() > 1)
+			CommandPane.setEnable(CommandPane::ChangeColor);
+		else
+			CommandPane.setDisable(CommandPane::ChangeColor);
+	
+		var ColorName = CarView::CarFace.car_data.getColorName(gcar.getColorIndex());
+		if (ColorName != "")
+			CommandPane::ChangeColor::info.text = ColorName;
+		else
+			CommandPane::ChangeColor::info.text = "--";
+	}
+
+	function set_color(context, index)
+	{
+		main::game.car_color = index;
+		CarView::CarFace.car_color = index;
+		var gcar = main::menu::MCarGarage(main::game.car_code, index);
+		notifyCarEquipments(gcar);
+		var ColorName = CarView::CarFace.car_data.getColorName(index);
+		if (ColorName != "")
+			CommandPane::ChangeColor::info.text = ColorName;
+		else
+			CommandPane::ChangeColor::info.text = "--";
+	
+		PlayerPane::refreshMyself(context);
+	}
+	
+	function shiftCarCode(course)
+	{
+		if (!isMyCarEventNow())
+		{
+			var car = main::game.car_code;
+			var car2 = main::menu::MCarData::ShiftCarCode(car, course);
+			if (car != car2)
+			{
+				var gcar = main::menu::MCarGarage(car2, main::game.car_color);
+				notifyCarEquipments(gcar);
+			}
+		}
+	}
+
+	function getEventNode(context)
+	{
+		if (P2PEventRoot::gXmlEventList == nil)
+			P2PEventRoot::fetchEventList(context);
+	
+		if (P2PEventRoot::gXmlEventList != nil)
+		{
+			var size = P2PEventRoot::gXmlEventList.size;
+			
+			for (var i = 0; i < size; i++)
+			{
+				var event = P2PEventRoot::gXmlEventList[i];
+				var event_id = event.getAttribute("ID").toInt();
+				if (event_id == getCurrentEventID())
+					return event;
+			}
+		}
+		if (P2PEventRoot::gXmlEventListOld != nil)
+		{
+			var size = P2PEventRoot::gXmlEventListOld.size;
+			
+			for (var i = 0; i < size; i++)
+			{
+				var event = P2PEventRoot::gXmlEventListOld[i];
+				var event_id = event.getAttribute("ID").toInt();
+	
+				if (event_id == getCurrentEventID())
+					return event;
+			}
+		}
+		return nil;
+	}
+
+	function onInitialize(context)
+	{
+		enterPage(context, PregridRoot, "Pregrid", deactivateCarView, activateCarView);
+		if (!isMyCarEventNow())
+			setHeadCarVisible(PregridRoot, 0);
+	
+		sLimitPower = false;
+		sCountdown = -1;
+		sRefreshCount = false;
+		sShownCount = -1;
+		sReadyNow = false;
+		sCourseIndex = 0;
+		main::network.raceMenuStart();
+		main::network.setLobbyMessageEnable(0);
+		main::network.raceMenuNotifyReadyToRace(0);
+		main::network.raceMenuNotifySequence(1);
+		hidden.visible = false;
+		ContextMenu.visible = false;
+		PlayerPane.initialize_All(context);
+		CommandPane.initialize_All(context);
+		CoursePane.visible = false;
+		ColorPane.visible = false;
+		CarSettingPane.visible = false;
+	
+		if (!isTimeTrialNow())
+			MessagePane.open();
+		else
+			MessagePane.close();
+	
+		MessagePane::Pane::InputBox.visible = false;
+		MessagePane::Pane::Log::tbox.clear();
+		main::network.pipe.clear();
+		MessagePane::Pane::Log::tbox.pipe = main::network.pipe;
+		var carface = CarView::CarFace;
+		carface.actor.out = false;
+		carface.action_type = "normal";
+		carface.quality_level = 0;
+		carface.mirror = false;
+		carface.debug_display = false;
+		carface.car_model.motion = 1;
+		carface.car_model.tx = 0.0;
+		carface.car_model.tz = 0.0;
+		carface.model_rotate = [0, 90, 0];
+		carface.car_model.posInterpolateSpeed = 0.025;
+		activateCommand(context);
+		PregridRoot.setFocus(CommandPane::Ready::button);
+		var info = main::network.getCurrentGameInfo();
+		var rule_set = info[7];
+		setCurrentRuleSet(rule_set);
+		SettingPane.visible = false;
+		SettingPane.initialize(context);
+		if (isFullCarSelect())
+		{
+			var region = main::menu::MSystem::GetRegionCode();
+			var xmlname = nil;
+			if (isCurrentCourseCategoryDirt())
+				xmlname = "_full_dirt.xml";
+			else
+				xmlname = "_full.xml";
+	
+			sFullCarNode = loadXmlNode(context, "projects/online/xml/" + region + xmlname);
+		}
+		else
+			sFullCarNode = nil;
+	
+		if (!won())
+		{
+			var event = main::menu::MScriptEvent(context, PregridRoot, "openErrorDialogAndRestart");
+			context.pushEvent(event);
+			return;
+		}
+		if (isPrivateEventNow())
+		{
+			var event = main::menu::MScriptEvent(context, PregridRoot, "on_initialize_private");
+			context.pushEvent(event);
+		}
+		else
+		{
+			var event = main::menu::MScriptEvent(context, PregridRoot, "on_initialize_event");
+			context.pushEvent(event);
+		}
+		sGenPaneLevel = -1;
+		Gen0Pane::ScrollBox::ListBox::init(context);
+		Gen1Pane::ScrollBox::ListBox::init(context);
+		Gen2Pane::ScrollBox::ListBox::init(context);
+		Gen3Pane::ScrollBox::ListBox::init(context);
+		retrieveGenpaneIndexStack();
+		if (isAutoMenu())
+		{
+			var event = main::menu::MScriptEvent(context, CommandPane::Ready, "onActivate");
+			context.pushEvent(event);
+		}
+		setGamePulseCB(get_pulse);
+	}
+
+	function openErrorDialogAndRestart(context)
+	{
+		openOnlineErrorDialog(context);
+		restart(context);
+	}
+
+	function on_initialize_event(context)
+	{
+		sCurrentEvent = getEventNode(context);
+		if (sCurrentEvent == nil)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return;
+		}
+		if (isMyCarEventNow())
+		{
+			CarSettingPane.initialize(context);
+		}
+		var max_laps = 0;
+		var max_laps_node = sCurrentEvent["MaxLaps"];
+		if (max_laps_node != nil)
+			max_laps = max_laps_node[0].value.toInt();
+	
+		if (max_laps > 0)
+			LapPane::Lap::slider.initialize(max_laps);
+		else
+			LapPane::Lap::slider.max = 0;
+	
+		if (main::network.amIhost())
+		{
+			if (main::game.course_code == "")
+			{
+				var node = sCurrentEvent["Course"][0];
+				var val = node.value;
+				if (val.beginWith("#"))
+					val = main::menu::MCourseData::GetLabelByID(val.substr(1).toInt());
+	
+				main::game.course_code = val;
+				var laps = node.getAttribute("default_laps", 2).toInt();
+				main::game.laps = laps;
+			}
+			if (isMyCarEventNow())
+			{
+				var reg = sCurrentEvent["Regulation"];
+				if (reg != nil)
+				{
+					var limit_power = reg[0]["LimitPS"];
+					if (limit_power != nil)
+						sLimitPower = limit_power[0].value.toInt();
+				}
+			}
+			set_course(context, main::game.course_code, main::game.laps, 0);
+		}
+		CoursePane::ScrollBox::SelectBox::refresh_event(context, sCurrentEvent);
+		var gcar = nil;
+		if (!isMyCarEventNow())
+		{
+			sCarList = [];
+			
+			for (var i = 0; i < sCurrentEvent["Car"].size; i++)
+			{
+				var val = sCurrentEvent["Car"][i].value;
+				if (val.beginWith("#"))
+					val = main::menu::MCarData::GetCarLabelByArray([0, val.substr(1).toInt()]);
+	
+				sCarList.push(val);
+			}
+			var specified_tires = sCurrentEvent["SpecifiedTire"];
+			if (specified_tires == nil)
+				sSpecifiedTire = nil;
+			else
+				sSpecifiedTire = specified_tires[0].value;
+	
+			var car_code = main::game.car_code;
+			if (car_code == "")
+			{
+				if (sFullCarNode != nil)
+					car_code = sFullCarNode["Car"][0].value;
+				else
+					car_code = sCarList[0];
+	
+				gcar = main::menu::MCarGarage(car_code);
+			}
+			else
+				gcar = main::menu::MCarGarage(car_code, main::game.car_color);
+		}
+		else
+			sCarList = nil;
+			gcar = main::game.garage.riding_car;
+	
+		set_car(context, gcar);
+		CommandPane::ChangeSetting.updateInfo();
+		PregridRoot.setFocus(CommandPane::Ready::button);
+		CreateWatcher(context, onTick, 10);
+		if (main::network.amIhost())
+			main::network.setGameClosed(0);
+	
+		CommandPane::init_visibility(context);
+		CommandPane::update_insensitive(context);
+	}
+
+	function on_initialize_private(context)
+	{
+		var info = main::network.getCurrentGameInfo();
+		var stats_string = info[5];
+		var stats = main::menu::MGameStats::unpack(stats_string);
+		var course_code = stats.course;
+		var max_laps = stats.laps;
+		if (course_code == "all")
+		{
+			var course_category = PrivateRaceCommon::getCourseCategoryCodeFromIndex(getCurrentCourseCategoryIndex());
+			sCurrentPrivateCourseList = PrivateRaceCommon::getCourseList(course_category, info[1], 1);
+		}
+		else
+			sCurrentPrivateCourseList = [course_code];
+	
+		if (sCurrentPrivateCourseList == nil || sCurrentPrivateCourseList.size == 0)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+		}
+		if (main::network.amIhost())
+		{
+			if (main::game.course_code == "")
+			{
+				var current_course_code = sCurrentPrivateCourseList[0];
+				main::game.course_code = current_course_code;
+				if (max_laps < 2)
+					main::game.laps = 1;
+				else
+					main::game.laps = 2;
+			}
+			if (main::game.laps > max_laps)
+				main::game.laps = max_laps;
+	
+			set_course(context, main::game.course_code, main::game.laps, 0);
+		}
+		else
+		{
+			var blob = main::network.raceMasterPeekRaceSetting();
+			var laps = main::game.analysisBattleSettingRace(blob)[0];
+			main::game.laps = laps;
+		}
+		CoursePane::ScrollBox::SelectBox::refresh_private(context, sCurrentPrivateCourseList);
+		LapPane::Lap::slider.initialize(max_laps);
+		CommandPane::update_visibility(context);
+		var gcar = nil;
+		if (isFullCarSelect())
+		{
+			var car_code = main::game.car_code;
+			if (car_code == "")
+			{
+				car_code = sFullCarNode["Car"][0].value;
+				gcar = main::menu::MCarGarage(car_code);
+			}
+			else
+				gcar = main::menu::MCarGarage(car_code, main::game.car_color);
+		}
+		else
+			gcar = main::game.garage.riding_car;
+	
+		set_car(context, gcar);
+		CommandPane::ChangeSetting.updateInfo();
+		PregridRoot.setFocus(CommandPane::Ready::button);
+		CreateWatcher(context, onTick, 10);
+		if (main::network.amIhost())
+			main::network.setGameClosed(0);
+	
+		CommandPane::init_visibility(context);
+		CommandPane::update_insensitive(context);
+	}
+
+	function onFinalize(context)
+	{
+		setGamePulseCB(nil);
+		sCurrentEvent = nil;
+		sFullCarNode = nil;
+		sLimitPower = nil;
+		P2PEventRoot::gXmlEventList = nil;
+		sCarList = nil;
+		sSpecifiedTire = nil;
+		sReadyNow = nil;
+		sActivePane = nil;
+		sCountdown = nil;
+		sRefreshCount = nil;
+		sShownCount = nil;
+		sCurrentPrivateCourseList = nil;
+		sGenPaneLevel = nil;
+		sReadyNow = nil;
+		sCourseIndex = nil;
+		Gen0Pane::finalize();
+		Gen1Pane::finalize();
+		Gen2Pane::finalize();
+		Gen3Pane::finalize();
+		DeleteWatcher();
+		CoursePane::ScrollBox::SelectBox.clearChildren(context);
+		ColorPane::ScrollBox::SelectBox.clearChildren(context);
+		main::network.setLobbyMessageEnable(1);
+		leavePage(context, PregridRoot);
+	}
+
+	function activatePane(context, pane)
+	{
+		CarView::CarFace.actor.out = true;
+		var prev_pane = sActivePane;
+		deactivateCommand(context);
+		if (isTimeTrialNow() && pane == MessagePane)
+		{
+			if (prev_pane != nil)
+			{
+				prev_pane.close(context);
+				prev_pane.actor.out = true;
+			}
+			context.sync(0.25);
+			if (prev_pane != nil)
+				prev_pane.visible = false;
+	
+			sActivePane = nil;
+		}
+	
+		if (pane != nil)
+			pane.visible = true;
+	
+		if (prev_pane != nil)
+			prev_pane.close(context);
+	
+		if (pane != nil)
+			pane.open(context);
+	
+		if (prev_pane != nil)
+			prev_pane.actor.out = true;
+	
+		if (pane != nil)
+			pane.actor.out = false;
+	
+		context.sync(0.25);
+		if (prev_pane != nil)
+			prev_pane.visible = false;
+	
+		sActivePane = pane;
+		CarView::CarFace.visible = false;
+	}
+
+	function deactivatePane(context)
+	{
+		var prev_pane = sActivePane;
+		if (__project__.defined("MessageProject"))
+		{
+			if (!MessageProject::isOpenIMNow())
+				CarView::CarFace.actor.out = false;
+		}
+	
+		if (prev_pane != nil)
+		{
+			prev_pane.close(context);
+			prev_pane.actor.out = true;
+		}
+		context.sync(0.25);
+		if (prev_pane != nil)
+			prev_pane.visible = false;
+	
+		CarView::CarFace.visible = true;
+		sActivePane = nil;
+		activateCommand(context);
+	}
+
+
+	function activateCarView()
+	{
+		CarView::CarFace.visible = true;
+		CarView::CarFace.actor.out = false;
+	}
+	
+	function deactivateCarView()
+	{
+		CarView::CarFace.actor.out = true;
+		CarView::CarFace.visible = false;
+	}
+
+	function activateCommand(context)
+	{
+		CommandPane::Ready::button.can_focus = true;
+		CommandPane::ChangeCar::button.can_focus = true;
+		CommandPane::ChangeColor::button.can_focus = true;
+		CommandPane::ChangeCarSetting::button.can_focus = true;
+		CommandPane::ChangeSetting::button.can_focus = true;
+		CommandPane::Chat::button.can_focus = true;
+		CommandPane::ChatQuickly::button.can_focus = true;
+		CommandPane::ForceStart::button.can_focus = true;
+		CommandPane::ChangeCourse::button.can_focus = true;
+		CommandPane::ChangeLap::button.can_focus = true;
+		PlayerPane::Player0.can_focus = true;
+		PlayerPane::Player1.can_focus = true;
+		PlayerPane::Player2.can_focus = true;
+		PlayerPane::Player3.can_focus = true;
+		PlayerPane::Player4.can_focus = true;
+		PlayerPane::Player5.can_focus = true;
+	}
+
+	function deactivateCommand(context)
+	{
+		CommandPane::Ready::button.can_focus = false;
+		CommandPane::ChangeCar::button.can_focus = false;
+		CommandPane::ChangeColor::button.can_focus = false;
+		CommandPane::ChangeCarSetting::button.can_focus = false;
+		CommandPane::ChangeSetting::button.can_focus = false;
+		CommandPane::Chat::button.can_focus = false;
+		CommandPane::ChatQuickly::button.can_focus = false;
+		CommandPane::ForceStart::button.can_focus = false;
+		CommandPane::ChangeCourse::button.can_focus = false;
+		CommandPane::ChangeLap::button.can_focus = false;
+		PlayerPane::Player0.can_focus = false;
+		PlayerPane::Player1.can_focus = false;
+		PlayerPane::Player2.can_focus = false;
+		PlayerPane::Player3.can_focus = false;
+		PlayerPane::Player4.can_focus = false;
+		PlayerPane::Player5.can_focus = false;
+		PregridRoot.setFocus(nil);
+	}
+
+	function pushGenPane(context, node, title, noactivate)
+	{
+		var selecting_car = false;
+		var node_list = node["CarNode"];
+		if (node_list == nil)
+		{
+			node_list = node["Car"];
+			selecting_car = true;
+		}
+	
+		if (node_list != nil)
+		{
+			sGenPaneLevel++;
+			sGenPane[sGenPaneLevel].refresh(
+				context,
+				node_list,
+				selecting_car,
+				title
+			);
+	
+			if (noactivate == nil || !noactivate)
+				activatePane(context, sGenPane[sGenPaneLevel]);
+		}
+	}
+
+	function pushColorPane(context, car_code)
+	{
+		sGenPaneLevel++;
+		sGenPane[sGenPaneLevel].refreshAsColor(context, car_code);
+		activatePane(context, sGenPane[sGenPaneLevel]);
+	}
+
+	function popGenPane(context)
+	{
+		sGenPaneLevel--;
+		if (sGenPaneLevel >= 0)
+		{
+			activatePane(context, sGenPane[sGenPaneLevel]);
+			PregridRoot.setFocus(sGenPane[sGenPaneLevel].ScrollBox.ListBox);
+		}
+		else
+		{
+			sGenPaneLevel = -1;
+			deactivatePane(context);
+			PregridRoot.setFocus(CommandPane::ChangeCar::button);
+		}
+	}
+	
+	function flushGenPane(context)
+	{
+		sGenPaneLevel = -1;
+		deactivatePane(context);
+		PregridRoot.setFocus(CommandPane::ChangeCar::button);
+	}
+
+	function jumpLastGenPane(context)
+	{
+		if (sFullCarNode != nil)
+			pushGenPane(context, sFullCarNode, context.translate(PregridRoot, "Car"), true);
+		else
+			pushGenPane(context, sCurrentEvent, context.translate(PregridRoot, "Car"), true);
+
+		var genpane = sGenPane[0];
+		
+		for (var gidx = 0; gidx < sGenPane.size; gidx++)
+		{
+			genpane = sGenPane[gidx];
+			var listbox = genpane["ScrollBox"]["ListBox"];
+			var index = genpane["sLastIndex"];
+			if (index != nil)
+			{
+				listbox.focus_index = index;
+	
+				var next_genpane = (gidx + 1) < sGenPane.size ? sGenPane[gidx + 1] : nil;
+	
+				if (next_genpane != nil && next_genpane["sLastIndex"] != nil)
+					listbox["doNext"](context, index, 1);
+				else
+					break;
+			}
+			else
+				break;
+		}
+		activatePane(context, genpane);
+	}
+
+	function goRaceSignal(context)
+	{
+		main::network.setGameClosed(1);
+		main::network.raceMenuNotifySequence(2);
+		context.sync(0.1);
+		startCountDown(context);
+	}
+	
+	function applyGenpaneIndexStack()
+	{
+		var array = [];
+		
+		for (var gidx = 0; gidx < sGenPane.size; gidx++)
+		{
+			var idx = sGenPane[gidx]["sLastIndex"];
+			if (idx == nil)
+				break;
+				
+			array.push(idx);
+		}
+		main::game.layered_selected_list = array;
+	}
+
+	function retrieveGenpaneIndexStack()
+	{
+		var array = main::game.layered_selected_list;
+	
+		
+		for (var i = 0; i < array.size; i++)
+		{
+		}
+		
+		for (var gidx = 0; gidx < sGenPane.size; gidx++)
+		{
+			if (gidx < array.size)
+				sGenPane[gidx]["sLastIndex"] = array[gidx];
+			else
+				sGenPane[gidx]["sLastIndex"] = nil;
+		}
+	}
+
+	function startCountDown(context)
+	{
+		var course = main::network.raceMasterPeekCourse();
+		if (isMyCarEventNow())
+			setAppropriateTire(main::game.garage.riding_car, course);
+		else
+			shiftCarCode(course);
+	
+		make_sure_set_car();
+		sCountdown = 8000;
+		deactivatePane(context);
+		CommandPane.setDisable(CommandPane::ChangeColor);
+		CommandPane.setDisable(CommandPane::ChangeCar);
+		CommandPane.setDisable(CommandPane::ChangeCarSetting);
+		CommandPane.setDisable(CommandPane::Chat);
+		CommandPane.setDisable(CommandPane::ChatQuickly);
+		CommandPane.setDisable(CommandPane::ChangeCourse);
+		CommandPane.setDisable(CommandPane::ChangeSetting);
+		CommandPane.setDisable(CommandPane::ChangeLap);
+		CommandPane::ForceStart::button.active = false;
+		MessagePane::Pane::InputBox.visible = false;
+		PregridRoot.setFocus(nil);
+		context.cursor_visible = false;
+		applyGenpaneIndexStack();
+		setPrize();
+		bet();
+	}
+
+
+	function bet()
+	{
+		var stats = main::menu::MPlayerStats::unpack(main::network.accountGetStats());
+		var bet = Rating::getBet(stats.point, main::network.raceMenuGamePlayers());
+		stats.point = stats.point - bet;
+		stats.num_game = stats.num_game + 1;
+		var ret = main::network.accountUpdateStats(stats.pack());
+		if (!ret)
+			return nil;
+	
+		return bet;
+	}
+
+
+	function setPrize()
+	{
+		var prize = 0;
+		var list = main::network.getGamePlayers();
+		if (list == nil)
+			return false;
+	
+		var num = list.size;
+		
+	
+		for (var i = 0; i < num; i++)
+		{
+			var strStats = list[i][2];
+			var stats = main::menu::MPlayerStats::unpack(strStats);
+			prize += Rating::getBet(stats.point, num);
+		}
+	
+		if (main::network.amIhost())
+		{
+			main::network.raceMasterNotifyTotalPrize(prize);
+			main::network.raceMasterNotifyLastPlayersNum(num);
+			if (num != main::network.raceMenuGamePlayers())
+				;
+		}
+	
+		return true;
+	}
+
+
+	function won()
+	{
+		var max_players = main::network.getCurrentGameInfo()[1];
+		var me = main::network.raceMenuMyIndex();
+		var last_rank = main::network.raceMenuPeekLastRank(me);
+		if (last_rank >= max_players)
+			return true;
+	
+		var total_prize = main::network.raceMasterPeekTotalPrize();
+		var last_players_num = main::network.raceMasterPeekLastPlayersNum();
+		var prize = Rating::getPrize(last_rank, total_prize, last_players_num);
+		var stats = main::menu::MPlayerStats::unpack(main::network.accountGetStats());
+		stats.point = stats.point + prize;
+		var point = stats.point;
+		if (last_rank == 0)
+			stats.num_win = stats.num_win + 1;
+	
+		if (!main::network.accountUpdateStats(stats.pack()))
+			return false;
+	
+		var message = "RACEEND?";
+		message += "uid=%d&name=%s&WID=%d".format(
+			main::network.my_id,
+			main::network.my_name,
+			main::network.getCurrentGameWorldID()
+		);
+		message += "&rank=%d&players=%d&prize=%d&point=%d".format(
+			last_rank + 1,
+			last_players_num,
+			prize,
+			point
+		);
+		if (!main::network.postDebugInfo(message))
+			return false;
+	
+		return true;
+	}
+
+	function closeMenuAndModalDialogs(context)
+	{
+		context.closeOSKeyboard();
+	
+		if (ContextMenu::isOpenNow())
+			ContextMenu::forcedClose(context);
+	
+		if (QuickInputRoot::isOpenNow())
+		{
+			QuickInputRoot::forcedClose(context);
+			activateCarView();
+		}
+	
+		if (__project__.defined("MessageProject"))
+		{
+			if (MessageProject::isOpenProfileNow())
+				MessageProject::forcedCloseProfile(context);
+		}
+	}
+
+	function doPostInfo(betting_value)
+	{
+		var message = "RACEBEGIN?";
+		message += makeRuleSetString();
+		message += "&uid=%d&name=%s&WID=%d".format(
+			main::network.my_id,
+			main::network.my_name,
+			main::network.getCurrentGameWorldID()
+		);
+		var crsid = main::menu::MCourseData::GetID(main::game.course_code);
+		message += "&course=" + (crsid != nil ? crsid.toString() : "-1");
+		if (isMyCarEventNow())
+		{
+			var gcar = main::game.garage.riding_car;
+			var pair = main::menu::MCarData::GetArrayCarCode(gcar.car_code);
+			message += "&car=0x%08x%08x".format(pair[0], pair[1]);
+			message += "&color=%d".format(gcar.getColorIndex());
+		}
+		else
+		{
+			var pair = main::menu::MCarData::GetArrayCarCode(main::game.car_code);
+			message += "&car=0x%08x%08x".format(pair[0], pair[1]);
+			message += "&color=%d".format(main::game.car_color);
+		}
+		if (betting_value != nil)
+		{
+			var stats = main::menu::MPlayerStats::unpack(main::network.accountGetStats());
+			var point = stats.point;
+			message += "&bet=%d&total_prize=%d&point=%d".format(
+				betting_value,
+				main::network.raceMasterPeekTotalPrize(),
+				point
+			);
+		}
+		return main::network.postDebugInfo(message);
+	}
+
+	function onTick(context)
+	{
+		if (!main::network.isRTIMEInitialized())
+			return;
+	
+		if (sCountdown < 0)
+		{
+			CommandPane::update_visibility(context);
+			main::game.course_code = main::network.raceMasterPeekCourse();
+			if (main::network.raceMenuChanged() || sRefreshCount > 12)
+			{
+				sRefreshCount = false;
+				if (PlayerPane::refresh_and_check_ready(context))
+					goRaceSignal(context);
+				else
+					PlayerPane::refreshCourse(context);
+			}
+			else
+				sRefreshCount++;
+	
+			var players = main::network.raceMenuGamePlayers();
+			
+			for (var i = 0; i < players; i++)
+			{
+				if (main::network.raceMenuPeekSequence(i) == 2)
+				{
+					startCountDown(context);
+					break;
+				}
+			}
+		}
+		if (sCountdown >= 0)
+		{
+			sCountdown -= 200;
+			closeMenuAndModalDialogs(context);
+			if (sCountdown <= 0)
+			{
+				main::network.fixGameIndex();
+				if (!main::network.isGameIndexFixed())
+				{
+					sCountdown += 200;
+					return;
+				}
+				main::game.major_menu_project = "online";
+				main::game.major_menu_page = PregridRoot;
+				main::network.raceMenuNotifyEntrySetting(main::game.getBattleSettingEntry());
+				main::network.raceMenuNotifySequence(3);
+				main::network.raceMenuNotifyReadyToRace(0);
+				var betting_value = nil;
+				if (isTimeTrialNow())
+				{
+					main::game.race_code = "freerun_serious";
+					main::game.max_entry = 1;
+					main::game.next_sequence = "online_time_trial";
+				}
+				else
+				{
+					main::game.race_code = "preview_entry_6";
+					main::game.max_entry = 6;
+					main::game.next_sequence = "online_p2p_race";
+				}
+	
+				doPostInfo(betting_value);
+				main::game.online_mycar = isMyCarEventNow();
+				main::network.raceMenuEnd();
+				main::network.setSystemEventEnable(0);
+				start_page(context, nil);
+			}
+			else
+			{
+				var value = (sCountdown / 1000) - 1;
+				if (value < 0)
+					value = 0;
+	
+				if (sShownCount != value)
+				{
+					main::sound.play("cursor");
+					var pipe = MessagePane::Pane::Log::tbox.pipe;
+					pipe.put("%C008" + context.translate(PregridRoot, "SECOND_TO_START").build(value) + "");
+					sShownCount = value;
+				}
+			}
+		}
+		PlayerPane::refreshSpeaker(context);
+		if (main::ShowDebugInfoOnNetObject)
+			PlayerPane::refresh_game_time(context);
+	}
+
+	function onKeyPress(context, event)
+	{
+		var keysym = event.keysym;
+		switch(keysym)
+		{
+			case PS2_PAD_CTRL_R3_UP:
+				var res = MessagePane::Pane::Log::tbox.scroll(-3);
+				main::sound.play(res ? "cursor" : "disable");
+				return EVENTRESULT_FILTER;
+
+			case PS2_PAD_CTRL_R3_DOWN:
+				var res = MessagePane::Pane::Log::tbox.scroll(3);
+				main::sound.play(res ? "cursor" : "disable");
+				return EVENTRESULT_FILTER;
+
+			case PS2_PAD_CTRL_R1:
+				main::network.voiceChatStartRecording();
+				return EVENTRESULT_FILTER;
+
+			case PS2_PAD_CTRL_L2:
+				if (isCountDownNow() || main::network.voicechat_speaker_name == main::network.my_name)
+					return EVENTRESULT_FILTER;
+				return false;
+
+			case PS2_PAD_CTRL_L3_RIGHT:
+				if (isCountDownNow())
+					return EVENTRESULT_FILTER;
+				return false;
+
+			case PS2_PAD_CTRL_L3_LEFT:
+				if (isCountDownNow())
+					return EVENTRESULT_FILTER;
+				return false;
+		}
+		return false;
+	}
+
+	function onKeyRelease(context, event)
+	{
+		var keysym = event.keysym;
+		switch(keysym)
+		{
+			case PS2_PAD_CTRL_R1:
+				main::network.voiceChatStopRecording();
+				return EVENTRESULT_FILTER;
+		}
+	}
+
+	function leavePregrid(context)
+	{
+		var game_id = main::network.getCurrentGameWorldID();
+		var game_info = main::network.getGameInfo(game_id);
+		var res = main::network.leaveGameMGCL();
+		if (!res)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+		}
+		PregridRoot["Common"]["Header"]["Title"]["label"].color = main::menu::MColorObject(0.8, 0.8, 0.8);
+		if (!isPrivateEventNow())
+		{
+			P2PEventRoot::gLastEventID = getCurrentEventID();
+			start_page(context, P2PEventRoot);
+		}
+		ChatRoot::sendLeftRaceMessage(context);
+		ChatRoot::setChannelInfo((game_info != nil) ? game_info[9] : 0, nil);
+		start_page(context, ChatRoot);
+	}
+
+	function onCancel(context)
+	{
+		if (isCountDownNow())
+		{
+			main::sound.play("disable");
+			return EVENTRESULT_FILTER;
+		}
+		if (CommandPane::Ready::button.active)
+		{
+			main::sound.play("disable");
+			openConfirmDialog(context, DIALOG_ERROR, context.translate(PregridRoot, "YOU_CANNOT_QUIT_WHEN_READY"));
+			return EVENTRESULT_FILTER;
+		}
+		main::sound.play("cancel");
+		var res = openConfirmDialog(context, DIALOG_DEFAULT_NO, context.translate(PregridRoot, "DO_YOU_QUIT"));
+		if (res)
+		{
+			if (isCountDownNow())
+			{
+				openConfirmDialog(context, DIALOG_ERROR, context.translate(PregridRoot, "YOU_CANNOT_QUIT_WHEN_COUNTDOWN"));
+				return EVENTRESULT_FILTER;
+			}
+			leavePregrid(context);
+			main::game.major_menu_page = "";
+		}
+		return EVENTRESULT_FILTER;
+	}
+
+	function onReady(context)
+	{
+		main::sound.play("ok");
+		CommandPane::Ready::button.active = true;
+		sReadyNow = true;
+		CommandPane::update_insensitive(context);
+		main::network.raceMenuNotifyReadyToRace(1);
+		if (PlayerPane::refresh_and_check_ready(context))
+			goRaceSignal(context);
+	
+		return EVENTRESULT_FILTER;
+	}
+
+	function onNotReady(context)
+	{
+		main::sound.play("ok");
+		CommandPane::Ready::button.active = false;
+		sReadyNow = false;
+		CommandPane::update_insensitive(context);
+		main::network.raceMenuNotifyReadyToRace(0);
+		PlayerPane::refresh_and_check_ready(context);
+		return EVENTRESULT_FILTER;
+	}
+
+	function isCountDownNow()
+	{
+		return (sCountdown >= 0);
+	}
+}
+
+module PROJECT::ROOT::MessagePane
+{
+    function open(context)
+    {
+        MessagePane.visible = true;
+    }
+
+    function close(context)
+    {
+        MessagePane.visible = false;
+    }
+}
+
+module PROJECT::ROOT::MessagePane::Pane::InputBox
+{
+    function open(context)
+    {
+        InputBox.visible = true;
+        InputBox.actor.out = false;
+        deactivateCommand(context);
+        PregridRoot.setFocus(input);
+    }
+
+    function close(context)
+    {
+        InputBox.actor.out = true;
+        activateCommand(context);
+        PregridRoot.setFocus(CommandPane::Chat::button);
+        context.sync(0.25);
+        InputBox.visible = false;
+    }
+}
+
+module PROJECT::ROOT::MessagePane::Pane::InputBox::input
+{
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onConfirmed(context, str)
+    {
+        main::shell.putMessage(str);
+        var res = main::network.sayGame(str);
+        if (!res)
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+        }
+    }
+
+    function onOpenKeyboard(context)
+    {
+    }
+
+    function onCloseKeyboard(context)
+    {
+    }
+}
+
+module PROJECT::ROOT::PlayerPane
+{
+	module Player0{static index = 0;}
+	module Player1{static index = 1;}
+	module Player2{static index = 2;}
+	module Player3{static index = 3;}
+	module Player4{static index = 4;}
+	module Player5{static index = 5;}
+	static items = [Player0, Player1, Player2, Player3, Player4, Player5];
+
+	function setReadyShut(w)
+	{
+		w["Ready"].active = false;
+		w["Ready"]["shut"].visible = true;
+		w["Ready"]["on"].visible = true;
+		w["Ready"]["off"].visible = true;
+	}
+	
+	function setReadyOn(w)
+	{
+		w["Ready"].active = true;
+		w["Ready"]["shut"].visible = true;
+		w["Ready"]["on"].visible = true;
+		w["Ready"]["off"].visible = false;
+	}
+	
+	function setReadyOff(w)
+	{
+		w["Ready"].active = true;
+		w["Ready"]["shut"].visible = true;
+		w["Ready"]["on"].visible = false;
+		w["Ready"]["off"].visible = true;
+	}
+	
+	function initialize(w)
+	{
+		setReadyShut(w);
+		w.active = false;
+		w["Speaker"].visible = false;
+		w["chip"].visible = false;
+		w["Name"].text = "--";
+		w["Namea"].text = "--";
+		w["Car"].text = "--";
+		w["Cara"].text = "--";
+		w["bad"].visible = false;
+	}
+
+	function initialize_All(context)
+	{
+		var max_players = main::network.getCurrentGameInfo()[1];
+		
+		for (var i = 0; i < items.size; i++)
+		{
+			if (i < max_players)
+			{
+				PlayerPane["Player" + i].visible = true;
+				initialize(PlayerPane["Player" + i]);
+			}
+			else
+			{
+				PlayerPane["Player" + i].visible = false;
+			}
+		}
+	}
+
+	function refreshCourse(context)
+	{
+		var course_code = main::game.course_code;
+		if (course_code == "")
+			return;
+	
+		var name = context.translate(PregridRoot, "CourseNameCaption", course_code);
+		var blob = main::network.raceMasterPeekRaceSetting();
+		var laps = main::game.analysisBattleSettingRace(blob)[0];
+		main::game.laps = laps;
+		var laptxt = "";
+		if (laps <= 1)
+			laptxt = context.translate(PregridRoot, "Lap");
+		else
+			laptxt = context.translate(PregridRoot, "Laps");
+
+		var cPane = PregridRoot::CommandPane;
+		cPane["ChangeCourse"]["info"].text = name;
+		cPane["ChangeLap"]["info"].text = laps.toString() + " " + laptxt;
+	}
+
+	function refreshMyself(context)
+	{
+		refresh_and_check_ready(context, 1);
+	}
+
+	function refresh_and_check_ready(context, myself_only)
+	{
+		var num = items.size;
+		var max_players = main::network.getCurrentGameInfo()[1];
+		var players = main::network.raceMenuGamePlayers();
+		var me = main::network.raceMenuMyIndex();
+		var ready_num = 0;
+		var myself_only = myself_only != nil && myself_only;
+	
+		var rankArray = [];
+		
+		for (var i = 0; i < players; i++)
+		{
+			rankArray.push([i, main::network.raceMenuPeekLastRank(i)]);
+		}
+		for (var i = 0; i < players - 1; i++)
+		{
+			
+			for (var j = i + 1; j < players; j++)
+			{
+				if (rankArray[i][1] > rankArray[j][1])
+				{
+					var tmp = rankArray[i];
+					rankArray[i] = rankArray[j];
+					rankArray[j] = tmp;
+				}
+			}
+		}
+		
+		for (var i = 0; i < num; i++)
+		{
+			var item = items[i];
+			if (i >= max_players)
+			{
+				item.visible = false;
+				continue;
+			}
+			item.visible = true;
+			if (i >= players)
+			{
+				item.active = false;
+				var name = "--";
+				item["Name"].text = name;
+				item["Namea"].text = name;
+				var carname = "--";
+				item["Car"].text = carname;
+				item["Cara"].text = carname;
+				item["chip"].visible = false;
+				item["bad"].visible = false;
+				item["ltncy"].text = "";
+				setReadyShut(item);
+			}
+	
+			var index = rankArray[i][0];
+			item.index = index;
+			if (main::ShowDebugInfoOnNetObject)
+			{
+				var lates = main::network.getLatency(i);
+				if (lates != nil)
+				{
+					var bad = false;
+					|var avg, var min, var max| = lates;
+					if (avg == 0 && min != 0 && max == 0)
+					{
+						bad = true;
+					}
+					if (min >= main::KickOutThreasholdMin &&
+					avg >= main::KickOutThreasholdAvg &&
+					max >= main::KickOutThreasholdMax)
+					{
+						bad = true;
+					}
+
+	
+					item["bad"].visible = bad;
+					item["ltncy"].text = "%d,%d,%d".format(avg, min, max);
+				}
+			}
+			if (index == me)
+			{
+				item.active = true;
+				var name = main::network.my_name;
+				hidden::PlayerItem::Name.text = name;
+				hidden::PlayerItem::Name.abbreviate();
+				var text = hidden::PlayerItem::Name.text;
+				item["Name"].text = text;
+				item["Namea"].text = text;
+				var car_code = main::game.car_code;
+				var car_color = main::game.car_color;
+				var carname = main::menu::MCarData::GetShortCarName(car_code);
+				hidden::PlayerItem::Car.text = carname;
+				hidden::PlayerItem::Car.abbreviate();
+				text = hidden::PlayerItem::Car.text;
+				item["Car"].text = text;
+				item["Cara"].text = text;
+				var gcar = main::menu::MCarGarage(car_code);
+				item["chip"].setData(gcar, car_color);
+				if (sReadyNow)
+					setReadyOn(item);
+				else
+					setReadyOff(item);
+	
+				item["chip"].visible = true;
+			}
+			else if (!myself_only)
+			{
+				item.active = false;
+				var name = main::network.raceMenuPeekAccountName(index);
+				hidden::PlayerItem::Name.text = name;
+				hidden::PlayerItem::Name.abbreviate();
+				var text = hidden::PlayerItem::Name.text;
+				item["Name"].text = text;
+				item["Namea"].text = text;
+				var car_code = main::network.raceMenuPeekCar(index)[0];
+				var car_color = main::network.raceMenuPeekCar(index)[1];
+				if (car_code != "")
+				{
+					var carname = main::menu::MCarData::GetShortCarName(car_code);
+					hidden::PlayerItem::Car.text = carname;
+					hidden::PlayerItem::Car.abbreviate();
+					text = hidden::PlayerItem::Car.text;
+					item["Car"].text = text;
+					item["Cara"].text = text;
+					var gcar = main::menu::MCarGarage(car_code);
+					item["chip"].setData(gcar, car_color);
+				}
+				else
+				{
+					item["Car"].text = "";
+					item["Cara"].text = "";
+				}
+				if (main::network.raceMenuPeekReadyToRace(index))
+					setReadyOn(item);
+				else
+					setReadyOff(item);
+	
+				item["chip"].visible = true;
+			}
+	
+			if (item["Ready"].active && item["Ready"]["on"].visible)
+				ready_num++;
+		}
+	
+		if (main::network.amIhost() && ready_num == max_players)
+			return true;
+		else
+			return false;
+	}
+
+	function refreshSpeaker(context)
+	{
+		var num = items.size;
+		var speaker = main::network.voicechat_speaker_name;
+		
+		for (var i = 0; i < num; i++)
+		{
+			var item = items[i];
+			if (item["Name"].text == speaker)
+				item["Speaker"].visible = true;
+			else
+				item["Speaker"].visible = false;
+		}
+	}
+	
+	function clear(context)
+	{
+		var num = items.size;
+		
+		for (var i = 0; i < num; i++)
+		{
+			items[i].visible = false;
+		}
+	}
+
+	function refresh_game_time(context)
+	{
+		var num = items.size;
+		var me = main::network.raceMenuMyIndex();
+		var players = main::network.raceMenuGamePlayers();
+		
+		for (var i = 0; i < num; i++)
+		{
+			if (i == me)
+			{
+				// NOTE: Likely some logic existed here but was removed. This does nothing now.
+				continue; 
+			}
+			var item = items[i];
+			item["time"].text = "";
+		}
+		var item = items[me];
+		var time = main::network.gameTime();
+		time /= 1000;
+		var sec = time % 60;
+		time /= 60;
+		var minute = time % 60;
+		time /= 60;
+		var hour = time % 60;
+		var time_text = "";
+		if (hour > 0)
+			time_text = "%d:%02d'%02d".format(hour.toInt(), minute.toInt(), sec.toInt());
+		else
+			time_text = "%02d'%02d".format(minute.toInt(), sec.toInt());
+	
+		item["time"].text = time_text;
+	}
+
+	function onKeyPress(context, event)
+	{
+		if (isCountDownNow())
+			return EVENTRESULT_FILTER;
+	
+		var keysym = event.keysym;
+		if (keysym == PS2_PAD_CTRL_L3_RIGHT)
+		{
+			main::sound.play("cursor");
+			PregridRoot.setFocus(CommandPane::Ready::button);
+			return EVENTRESULT_FILTER;
+		}
+		if (48 <= keysym && keysym <= 122)
+		{
+			MessagePane::Pane::InputBox::open(context);
+			return EVENTRESULT_CONTINUE;
+		}
+		return EVENTRESULT_CONTINUE;
+	}
+
+	function onActivate(context, event)
+	{
+		if (isCountDownNow())
+			return EVENTRESULT_FILTER;
+	
+		var item = event.widget;
+		if (item.Name.text == "--")
+			return EVENTRESULT_FILTER;
+	
+		main::sound.play("ok");
+		ContextMenu::open(context, item);
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::CommandPane
+{
+	function initialize_All(context)
+	{
+		ChangeCourse.initialize(context);
+		ChangeLap.initialize(context);
+		ChangeCar.initialize(context);
+		ChangeCarSetting.initialize(context);
+		ChangeSetting.initialize(context);
+		Ready.initialize(context);
+		ForceStart.initialize(context);
+		ChangeColor.initialize(context);
+		// Redundant second initialization block??
+		ChangeCourse.initialize(context);
+		ChangeLap.initialize(context);
+		ChangeCar.initialize(context);
+		ChangeCarSetting.initialize(context);
+		ChangeSetting.initialize(context);
+		Ready.initialize(context);
+		ForceStart.initialize(context);
+		ChangeColor.initialize(context);
+	}
+
+	function setEnable(w)
+	{
+		if (!w["button"].active)
+			return;
+	
+		if (w["button"]["shut"] != nil)
+			w["button"]["shut"].visible = true;
+	
+		if (w["button"]["enable"] != nil)
+			w["button"]["enable"].visible = true;
+	
+		if (w["button"]["disable"] != nil)
+			w["button"]["disable"].visible = false;
+	}
+
+	function setDisable(w)
+	{
+		if (!w["button"].active)
+			return;
+	
+		if (w["button"]["shut"] != nil)
+			w["button"]["shut"].visible = true;
+	
+		if (w["button"]["disable"] != nil)
+			w["button"]["disable"].visible = true;
+	
+		if (w["button"]["enable"] != nil)
+			w["button"]["enable"].visible = false;
+	}
+
+
+	function setEnable_CheckAll()
+	{
+		var car_isstv = nil;
+		if (isFullCarSelect())
+			car_isstv = true;
+		else if(sCurrentEvent == nil || sCurrentEvent["Car"] == nil || sCurrentEvent["Car"].size <= 1)
+			car_isstv = false;
+		else
+			car_isstv = true;
+	
+		if (car_isstv)
+			setEnable(ChangeCar);
+		else
+			setDisable(ChangeCar);
+
+		if (CoursePane::ScrollBox::SelectBox.Count() > 1)
+			setEnable(ChangeCourse);
+		else
+			setDisable(ChangeCourse);
+
+		if (LapPane::Lap::slider.max > 1)
+			setEnable(ChangeLap);
+		else
+			setDisable(ChangeLap);
+	
+		setEnable(ChangeSetting);
+		if (CarView::CarFace.car_data.getColorNum() > 1)
+			setEnable(ChangeColor);
+		else
+			setDisable(ChangeColor);
+
+		setEnable(ChangeCarSetting);
+		setEnable(Chat);
+		setEnable(ChatQuickly);
+		setEnable(ForceStart);
+	}
+
+	function init_visibility(context)
+	{
+		Ready::button.active = false;
+		ChangeCourse::button.active = !isTimeTrialNow();
+		ChangeLap::button.active = !isTimeTrialNow();
+		ChangeCar::button.active = !isMyCarEventNow();
+		ChangeColor::button.active = !isMyCarEventNow();
+		ChangeCarSetting::button.active = isMyCarEventNow();
+		ChangeSetting::button.active = true;
+		Chat::button.active = !isTimeTrialNow();
+		ChatQuickly::button.active = !isTimeTrialNow();
+		ForceStart::button.active = !isTimeTrialNow();
+		PregridRoot["Common"]["Header"]["Title"]["label"].color = (main::network.amIhost() ? main::menu::MColorObject(0.9, 0.55, 0.0) : main::menu::MColorObject(0.8, 0.8, 0.8));
+		setEnable_CheckAll();
+	}
+
+	function update_visibility(context)
+	{
+		PregridRoot["Common"]["Header"]["Title"]["label"].color = (main::network.amIhost() ? main::menu::MColorObject(0.9, 0.55, 0.0) : main::menu::MColorObject(0.8, 0.8, 0.8));
+	}
+
+	function update_insensitive(context)
+	{
+		if (!sReadyNow)
+		{
+			CommandPane.setEnable_CheckAll();
+		}
+		CommandPane.setDisable(CommandPane::ChangeColor);
+		CommandPane.setDisable(CommandPane::ChangeCar);
+		CommandPane.setDisable(CommandPane::ChangeCarSetting);
+		CommandPane.setDisable(CommandPane::ChangeCourse);
+		CommandPane.setDisable(CommandPane::ChangeSetting);
+		CommandPane.setDisable(CommandPane::ChangeLap);
+	}
+
+	function onKeyPress(context, event)
+	{
+		var keysym = event.keysym;
+		if (48 <= keysym && keysym <= 122)
+		{
+			MessagePane::Pane::InputBox::open(context);
+			return EVENTRESULT_CONTINUE;
+		}
+		if (isCountDownNow())
+			return EVENTRESULT_FILTER;
+	
+		return EVENTRESULT_CONTINUE;
+	}
+}
+
+module PROJECT::ROOT::CommandPane::ChangeCourse
+{
+	function initialize(context)
+	{
+		button.active = false;
+		button::enable.visible = false;
+		button::disable.visible = false;
+		info.text = "";
+	}
+
+	function onActivate(context)
+	{
+		if (button.active && button::enable.visible) {
+			main::sound.play("ok");
+			activatePane(context, CoursePane);
+		}
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::CommandPane::ChangeLap
+{
+	function initialize(context)
+	{
+		button.active = false;
+		button::enable.visible = false;
+		button::disable.visible = false;
+		info.text = "";
+	}
+
+	function onActivate(context)
+	{
+		if (button.active && button::enable.visible) {
+			main::sound.play("ok");
+			activatePane(context, LapPane);
+		}
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::CommandPane::ChangeSetting
+{
+    function initialize(context)
+    {
+        button.active = false;
+        button::enable.visible = false;
+        button::disable.visible = false;
+        info.text = "";
+    }
+
+    function onActivate(context)
+    {
+        if (button.active && button::enable.visible) {
+            main::sound.play("ok");
+            activatePane(context, SettingPane);
+        }
+        return EVENTRESULT_FILTER;
+    }
+
+    function updateInfo()
+    {
+        var m_idx = main::game.manual;
+        var a_idx = 0;
+        if (main::game.assist_tcs)
+		{
+            a_idx = 1;
+            if (main::game.assist_asm)
+                a_idx = 2;
+        }
+        var m_text = getMenuItemName(SettingPane::Mission, "SettingItem" + m_idx.toString());
+        var a_text = getMenuItemName(SettingPane::Assist, "SettingItem" + a_idx.toString());
+        info.text = m_text + "/" + a_text;
+    }
+}
+
+module PROJECT::ROOT::CommandPane::ChangeCar
+{
+    function initialize(context)
+    {
+        button.active = false;
+        button::enable.visible = false;
+        button::disable.visible = false;
+    }
+
+    function onActivate(context)
+    {
+        if (button.active && button::enable.visible)
+		{
+            main::sound.play("ok");
+            jumpLastGenPane(context);
+        }
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::CommandPane::ChangeColor
+{
+    function initialize(context)
+    {
+        button.active = false;
+        button::enable.visible = false;
+        button::disable.visible = false;
+        info.text = "";
+    }
+
+    function onActivate(context)
+    {
+        if (button.active && button::enable.visible) {
+            main::sound.play("ok");
+            activatePane(context, ColorPane);
+        }
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        var keysym = event.keysym;
+        if (keysym == PS2_PAD_CTRL_L3_LEFT)
+		{
+            main::sound.play("cursor");
+            PregridRoot.setFocus(PlayerPane::Player0);
+            return EVENTRESULT_FILTER;
+        }
+        return EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::CommandPane::ChangeCarSetting
+{
+    function initialize(context)
+    {
+        button.active = false;
+        button::enable.visible = false;
+        button::disable.visible = false;
+        info.text = "";
+    }
+
+    function onActivate(context)
+    {
+        if (button.active && button::enable.visible)
+		{
+            main::sound.play("ok");
+            activatePane(context, CarSettingPane);
+        }
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        var keysym = event.keysym;
+        if (keysym == PS2_PAD_CTRL_L3_LEFT)
+		{
+            main::sound.play("cursor");
+            PregridRoot.setFocus(PlayerPane::Player0);
+            return EVENTRESULT_FILTER;
+        }
+        return EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::CommandPane::Ready
+{
+    function initialize(context)
+    {
+        button.active = false;
+        button::off = false;
+        button::on = true;
+    }
+
+    function onActivate(context)
+    {
+        if (!sReadyNow)
+            onReady(context);
+		else
+            onNotReady(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        var keysym = event.keysym;
+        if (keysym == PS2_PAD_CTRL_L3_LEFT)
+		{
+            main::sound.play("cursor");
+            PregridRoot.setFocus(PlayerPane::Player0);
+            return EVENTRESULT_FILTER;
+        }
+        return EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::CommandPane::ForceStart
+{
+    function initialize(context)
+    {
+        button.active = false;
+        button::enable.visible = true;
+    }
+
+    function onActivate(context)
+    {
+        var alone = main::network.raceMenuGamePlayers() <= 1;
+        if (alone)
+		{
+            main::sound.play("disable");
+            openConfirmDialog(context, DIALOG_ERROR, context.translate(PregridRoot, "ERROR|YOU_CANNOT_RACE_ALONE"));
+            return EVENTRESULT_FILTER;
+        }
+        if (button.active)
+		{
+			main::sound.play("ok");
+			var res = openConfirmDialog(context, DIALOG_QUERY, context.translate(PregridRoot, "DO_YOU_FORCE_START"));
+			if (res != nil && res)
+			{
+				var pipe = MessagePane::Pane::Log::tbox.pipe;
+				pipe.put("%C008" + context.translate(PregridRoot, "FORCE_START").build(main::network.my_name) + "");
+				main::network.sendGamePulse("force:,name:" + main::network.my_name);
+				if (main::network.amIhost())
+					goRaceSignal(context);
+			}
+		}
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::CommandPane::ChatQuickly
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        deactivateCarView();
+        var input_box = MessagePane::Pane::InputBox;
+        QuickInputRoot::open(context, input_box, input_box["input"], 1);
+        activateCarView();
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::CommandPane::Chat
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        MessagePane::Pane::InputBox::open(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::CoursePane
+{
+    function open(context)
+    {
+        ScrollBox::SelectBox.index = sCourseIndex;
+        ScrollBox::SelectBox.callFocus(PregridRoot);
+    }
+
+    function close(context)
+    {
+        ScrollBox::SelectBox.outFocus(PregridRoot);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        deactivatePane(context);
+        PregridRoot.setFocus(CommandPane::ChangeCourse::button);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        return event.keysym == PS2_PAD_CTRL_L2 ? EVENTRESULT_FILTER : EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::CoursePane::ScrollBox::SelectBox
+{
+	method onActivate(context, event)
+	{
+		main::sound.play("ok");
+		sCourseIndex = SelectBox.index;
+		var widget = self.getFocusedWidget();
+		if (main::game.course_code != widget.course_code)
+		{
+			if (isPrivateEventNow())
+				set_course(context, widget.course_code, main::game.laps);
+			else
+				set_course(context, widget.course_code, widget.laps);
+		}
+		close(context);
+		deactivatePane(context);
+		PregridRoot.setFocus(CommandPane::ChangeCourse::button);
+		return EVENTRESULT_FILTER;
+	}
+
+	function onValueChanged(context, index)
+	{
+		main::sound.play("cursor");
+	}
+
+	function refresh_event(context, event)
+	{
+		SelectBox.clearChildren(context);
+		var course_list = event["Course"];
+		var num = course_list.size;
+		var index = 0;
+		
+		for (var i = 0; i < num; i++)
+		{
+			var item = hidden::CourseItem.doCopy();
+			var val = course_list[i].value;
+			if (val.beginWith("#"))
+				val = main::menu::MCourseData::GetLabelByID(val.substr(1).toInt());
+	
+			var course_code = val;
+			var laps = course_list[i].getAttribute("default_laps", 2).toInt();
+			item.defineStatic("course_code", course_code);
+			item.defineStatic("laps", laps);
+			item["label"].text = context.translate(PregridRoot, "CourseNameCaption", course_code);
+			SelectBox.appendChild(context, item);
+			if (course_code == main::game.course_code)
+				index = i;
+		}
+		SelectBox.index = index;
+		SelectBox.outFocus(PregridRoot);
+	}
+
+	function refresh_private(context, course_list)
+	{
+		SelectBox.clearChildren(context);
+		var num = course_list.size;
+		var index = 0;
+		
+		for (var i = 0; i < num; i++)
+		{
+			var item = hidden::CourseItem.doCopy();
+			var course_code = course_list[i];
+			item.defineStatic("course_code", course_code);
+			item.defineStatic("laps", main::game.laps);
+			item["label"].text = context.translate(PregridRoot, "CourseNameCaption", course_code);
+			SelectBox.appendChild(context, item);
+			if (course_code == main::game.course_code)
+				index = i;
+		}
+		SelectBox.index = index;
+		SelectBox.outFocus(PregridRoot);
+	}
+}
+
+module PROJECT::ROOT::ColorPane
+{
+    function open(context)
+    {
+        ScrollBox::SelectBox.index = CarView::CarFace.car_color;
+        ScrollBox::SelectBox::refresh(context);
+        ScrollBox::SelectBox.callFocus(PregridRoot);
+    }
+
+    function close(context)
+    {
+        ScrollBox::SelectBox.outFocus(PregridRoot);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        deactivatePane(context);
+        PregridRoot.setFocus(CommandPane::ChangeColor::button);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        return event.keysym == PS2_PAD_CTRL_L2 ? EVENTRESULT_FILTER : EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::ColorPane::ScrollBox::SelectBox
+{
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+        set_color(context, SelectBox.index);
+        close(context);
+        deactivatePane(context);
+        PregridRoot.setFocus(CommandPane::ChangeColor::button);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onValueChanged(context, index)
+    {
+        main::sound.play("cursor");
+    }
+
+    function refresh(context)
+    {
+        SelectBox.clearChildren(context);
+        var car_data = CarView::CarFace.car_data;
+        var num = car_data.getColorNum();
+        
+        for (var i = 0; i < num; i++)
+        {
+            var item = hidden::ColorItem.doCopy();
+            item["label"].text = car_data.getColorName(i);
+            item["chip"].setData(car_data, i);
+            SelectBox.appendChild(context, item);
+        }
+        SelectBox.outFocus(PregridRoot);
+        SelectBox.index = main::game.car_color;
+    }
+}
+
+module PROJECT::ROOT::CarSettingPane
+{
+    method initialize(context)
+    {
+        var cg = main::game.garage.riding_car;
+        var current_slot = cg.slot;
+        if (!isPrivateEventNow())
+        {
+            var limited_regulation = makeRegulationFromEvent(sCurrentEvent);
+            var stats = main::menu::MPlayerStats::unpack(main::network.accountGetStats());
+            var point = stats.point;
+            var insensitive_list = Array(3);
+            
+            for (var i = 0; i < 3; i++)
+            {
+                cg.slot = i;
+                var regulation = getViolatedRegulationFromStructure(cg, point, limited_regulation);
+                insensitive_list[i] = regulation.violated;
+            }
+            cg.slot = current_slot;
+            Set::OptionMenu.setInsensitive(context, insensitive_list);
+        }
+        Set::OptionMenu.setIndex(context, current_slot);
+        self.minimum_height = 0;
+    }
+
+    function open(context)
+    {
+        var gcar = main::game.garage.riding_car;
+        Set::OptionMenu.setIndex(context, gcar.slot);
+        PregridRoot.setFocus(Set::OptionMenu);
+    }
+
+    function close(context)
+    {
+        PregridRoot.setFocus(nil);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        deactivatePane(context);
+        PregridRoot.setFocus(CommandPane::ChangeCarSetting::button);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        return event.keysym == PS2_PAD_CTRL_L2 ? EVENTRESULT_FILTER : EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::CarSettingPane::Set::OptionMenu
+{
+    method onValueChanged(context, index)
+    {
+    }
+}
+
+module PROJECT::ROOT::CarSettingPane::Buttons::OK
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        var gcar = main::game.garage.riding_car;
+        gcar.slot = Set::OptionMenu.index;
+        set_car(context, gcar);
+        deactivatePane(context);
+        PregridRoot.setFocus(CommandPane::ChangeCarSetting::button);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::SettingPane
+{
+	function initialize_optionmenu_onload(context, optionmenu, options)
+	{
+		var vbox = optionmenu["popup"]["vbox"];
+		var num = options.size;
+		
+		for (var i = 0; i < num; i++)
+		{
+			var item = hidden::SettingItem.doCopy();
+			item["label"].text = context.translate(PregridRoot, options[i]);
+			item.name = "SettingItem" + i.toString();
+			vbox.appendChild(item);
+		}
+		optionmenu.applyAppend(context);
+	}
+	
+	function onLoadInitialize(context)
+	{
+		var mission_options = ["AUTOMATIC", "MANUAL"];
+		initialize_optionmenu_onload(context, Mission::OptionMenu, mission_options);
+		var assist_options = ["None", "TCSOnly", "TCSAndASM"];
+		initialize_optionmenu_onload(context, Assist::OptionMenu, assist_options);
+		CommandPane::ChangeSetting.updateInfo();
+	}
+
+	method initialize(context)
+	{
+		self.minimum_height = 0;
+		Mission::OptionMenu.initialize(context);
+		Assist::OptionMenu.initialize(context);
+		Volume::slider.initialize();
+	}
+
+	function open(context)
+	{
+		Mission::OptionMenu.initialize(context);
+		Assist::OptionMenu.initialize(context);
+		var index = main::VoiceChat_Playback_Volume;
+		Volume::slider.index = index;
+		Volume::slider::popup::pinch::value.text = index;
+		Volume::slider::label.text = index;
+		PregridRoot.setFocus(Mission::OptionMenu);
+	}
+
+	function close(context)
+	{
+		PregridRoot.setFocus(nil);
+	}
+
+	function onCancel(context)
+	{
+		main::sound.play("cancel");
+		deactivatePane(context);
+		PregridRoot.setFocus(CommandPane::ChangeSetting::button);
+		return EVENTRESULT_FILTER;
+	}
+	
+	function onKeyPress(context, event)
+	{
+		return event.keysym == PS2_PAD_CTRL_L2 ? EVENTRESULT_FILTER : EVENTRESULT_CONTINUE;
+	}
+}
+
+module PROJECT::ROOT::SettingPane::Mission::OptionMenu
+{
+    method initialize(context)
+    {
+        self.setIndex(context, main::game.manual ? 1 : 0);
+    }
+}
+
+module PROJECT::ROOT::SettingPane::Assist::OptionMenu
+{
+    method initialize(context)
+    {
+        var a_idx = 0;
+        if (main::game.assist_tcs)
+		{
+            a_idx = 1;
+            if (main::game.assist_asm)
+                a_idx = 2;
+        }
+        self.setIndex(context, a_idx);
+    }
+}
+
+module PROJECT::ROOT::SettingPane::Volume::slider
+{
+    method initialize()
+    {
+        if (isVoiceEnabledNow())
+		{
+            Volume.visible = true;
+            slider::popup::min.text = slider.min.toInt();
+            slider::popup::max.text = slider.max.toInt();
+            main::network.voicechat_recording_volume = 50;
+            main::network.voicechat_playback_volume = main::VoiceChat_Playback_Volume;
+        }
+		else
+            Volume.visible = false;
+    }
+
+    function onValueChanged(context, index)
+    {
+        main::sound.play("cursor");
+        popup::pinch::value.text = slider.index;
+        slider::label.text = slider.index;
+    }
+}
+
+module PROJECT::ROOT::SettingPane::Buttons::OK
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        main::game.manual = (Mission::OptionMenu.index != 0);
+        main::game.assist_asm = (Assist::OptionMenu.index == 2);
+        main::game.assist_tcs = (Assist::OptionMenu.index > 0);
+        if (isVoiceEnabledNow())
+		{
+            main::network.voicechat_playback_volume = Volume::slider.index;
+            main::VoiceChat_Playback_Volume.value = Volume::slider.index;
+        }
+        deactivatePane(context);
+        CommandPane::ChangeSetting.updateInfo();
+        PregridRoot.setFocus(CommandPane::ChangeSetting::button);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::LapPane
+{
+    function open(context)
+    {
+        var blob = main::network.raceMasterPeekRaceSetting();
+        var laps = main::game.analysisBattleSettingRace(blob)[0];
+        main::game.laps = laps;
+        Lap::slider.index = laps;
+        Lap::slider::popup::pinch::value.text = laps;
+        Lap::slider::label.text = laps;
+        PregridRoot.setFocus(Lap::slider);
+    }
+
+    function close(context)
+    {
+        PregridRoot.setFocus(nil);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        deactivatePane(context);
+        PregridRoot.setFocus(CommandPane::ChangeLap::button);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        return event.keysym == PS2_PAD_CTRL_L2 ? EVENTRESULT_FILTER : EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::LapPane::Lap::slider
+{
+    method initialize(max_laps)
+    {
+        slider::popup::min.text = slider.min.toInt();
+        slider.max = max_laps.toInt();
+        slider::popup::max.text = max_laps.toInt();
+        slider::popup::pinch::value.text = slider.index;
+        slider::label.text = slider.index;
+    }
+
+    function onValueChanged(context, index)
+    {
+        main::sound.play("cursor");
+        popup::pinch::value.text = slider.index;
+        slider::label.text = slider.index;
+    }
+}
+
+module PROJECT::ROOT::LapPane::Buttons::OK
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        if (main::game.laps != Lap::slider.index)
+		{
+            set_lap(context, Lap::slider.index);
+        }
+        deactivatePane(context);
+        PregridRoot.setFocus(CommandPane::ChangeLap::button);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::Gen0Pane
+{
+	#include "genpane.h"
+}
+
+module PROJECT::ROOT::Gen1Pane
+{
+	#include "genpane.h"
+}
+
+module PROJECT::ROOT::Gen2Pane
+{
+	#include "genpane.h"
+}
+
+module PROJECT::ROOT::Gen3Pane
+{
+	#include "genpane.h"
+}
+
+module PROJECT::ROOT::ContextMenu
+{
+    static sCurrentItem = nil;
+    static sContextName = nil;
+    static sEquipments = nil;
+    static sIsOpenNow = nil;
+
+    function open(context, item)
+    {
+        sCurrentItem = item;
+        sIsOpenNow = true;
+        var me = (item.index == main::network.raceMenuMyIndex());
+        var name = me ? main::network.my_name : main::network.raceMenuPeekAccountName(item.index);
+
+        if (name == nil || name == "error")
+            return;
+
+        sContextName = name;
+        var title = context.translate(PregridRoot, "CONTEXTMENU_TITIE").build(name);
+        ContextMenu::Title::title.text = title;
+        ContextMenu::PeekSetting.visible = false;
+        ContextMenu::Profile.visible = true;
+        ContextMenu::SendIM.visible = !me;
+        ContextMenu::AddBuddy.visible = !me;
+        ContextMenu.sx = item.sx;
+        ContextMenu.sy = item.sy + item.h;
+        ContextMenu.visible = true;
+        ContextMenu.actor.out = false;
+        context.sync(0.1);
+        deactivateCommand(context);
+        PregridRoot.setFocus(Profile);
+    }
+
+    function close(context)
+    {
+        activateCommand(context);
+        PregridRoot.setFocus(sCurrentItem);
+        sCurrentItem = nil;
+        sContextName = nil;
+        sEquipments = nil;
+        sIsOpenNow = nil;
+        ContextMenu.actor.out = true;
+        context.sync(0.1);
+        ContextMenu.visible = false;
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        return event.keysym == PS2_PAD_CTRL_L2 ? EVENTRESULT_FILTER : EVENTRESULT_CONTINUE;
+    }
+
+    function isOpenNow()
+    {
+        return sIsOpenNow != nil && sIsOpenNow;
+    }
+
+    function forcedClose(context)
+    {
+        if (isOpenNow())
+        {
+            var event = main::menu::MScriptEvent(context, ContextMenu, "onCancel");
+            context.pushEvent(event);
+        }
+    }
+}
+
+module PROJECT::ROOT::ContextMenu::PeekSetting
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        var cg = main::menu::MCarGarage(sEquipments);
+        var res = cg.updateCurrentStatus();
+        if (!res)
+        {
+            main::sound.play("disable");
+            ContextMenu::close(context);
+            openConfirmDialog(context, DIALOG_ERROR, context.translate(PregridRoot, "ERROR|YOU_CANNOT_GET_INFO_NOW"));
+            return EVENTRESULT_FILTER;
+        }
+        var pipe = MessagePane::Pane::Log::tbox.pipe;
+        pipe.put("%C008" + context.translate(PregridRoot, "SPEC|HEAD").build(sContextName) + "");
+        var value = "----";
+        var v = cg.getCurrentPower();
+        if (v > 0)
+            value = "%d%s".format(v, main::menu::MUnit::GetUnitOfPower());
+
+        pipe.put("%C008" + context.translate(PregridRoot, "SPEC|POWER").build(value) + "");
+        value = cg.getCurrentMs("%d%s");
+        pipe.put("%C008" + context.translate(PregridRoot, "SPEC|WEIGHT").build(value) + "");
+        value = context.translate(PregridRoot, "DriveTrainName", cg.getDTrainType());
+        pipe.put("%C008" + context.translate(PregridRoot, "SPEC|DRIVETRAIN").build(value) + "");
+        pipe.put("%C008" + context.translate(PregridRoot, "SPEC|TAIL").build(sContextName) + "");
+        ContextMenu::close(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::ContextMenu::Profile
+{
+    function onActivate(context)
+    {
+        var name = sContextName;
+        ContextMenu::close(context);
+        var id = main::network.accountName2AccountID(name);
+        if (id < 0)
+        {
+            openOnlineErrorDialog(context);
+            return EVENTRESULT_FILTER;
+        }
+        if (__project__.defined("MessageProject"))
+        {
+            MessageProject::openProfile(context, id, name);
+            return EVENTRESULT_FILTER;
+        }
+    }
+}
+
+module PROJECT::ROOT::ContextMenu::SendIM
+{
+    function onActivate(context)
+    {
+        var name = sContextName;
+        ContextMenu::close(context);
+        var id = main::network.accountName2AccountID(name);
+        if (id < 0)
+        {
+            openOnlineErrorDialog(context);
+            return EVENTRESULT_FILTER;
+        }
+        MessageProject::openIM(context, id, name);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::ContextMenu::AddBuddy
+{
+    function onActivate(context)
+    {
+        var name = sContextName;
+        ContextMenu::close(context);
+        main::sound.play("ok");
+        PrivateRaceCommon::buddyAdd(context, name);
+        return EVENTRESULT_FILTER;
+    }
+}

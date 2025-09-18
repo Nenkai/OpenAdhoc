@@ -1,0 +1,1759 @@
+module PROJECT::ROOT
+{
+	static sChatChannelId = nil;
+	static sChatChannelName = nil;
+	static sActivePane = nil;
+	static sChatWatcher = nil;
+	static sDidEchoGreetingMessage = nil;
+	static sDoEchoEnteredMessage = nil;
+	static sDoEchoLeftRaceMessage = nil;
+	
+	function onLoad(context)
+	{
+		setDialogMoveActorV(ChatPane::InputBox);
+		setDialogMoveActorH(LobbyPlayerListPane);
+		setDialogMoveActorH(RaceListPane);
+		setDialogMoveActorH(RaceListPane::ListPane::Races);
+		setBlinkActor(ListArrow::left);
+		setBlinkActor(ListArrow::right);
+		setDialogMoveActorH(PlayerListPane);
+	}
+	
+	function onUnload(context)
+	{
+		sChatChannelId = nil;
+		sChatChannelName = nil;
+		sDidEchoGreetingMessage = nil;
+		sDoEchoEnteredMessage = nil;
+		sDoEchoLeftRaceMessage = nil;
+	}
+	
+	function onInitialize(context)
+	{
+		enterPage(context, ChatRoot, "Chat Room");
+		ChatRoot["RoomName"].text = "";
+		hidden.visible = false;
+		PrivateRaceCommon::setToolTip(ChatRoot["Common"]["ToolTip"]["tip"]);
+		ListArrow::left.active = false;
+		ListArrow::left.active = false;
+		LobbyPlayerListPane::initialize(context);
+		ChatPane::initialize(context);
+		RaceListPane::initialize(context);
+		PlayerListPane::initialize(context);
+		activateCommand(context);
+		ChatRoot.setFocus(CommandPane::Say);
+		main::game.course_code = "";
+		main::game.car_code = "";
+		main::game.layered_selected_list = nil;
+		setChatPipe(main::network.pipe);
+		sDidEchoGreetingMessage = false;
+		CreateWatcher(context, PlayerListPane::ScrollBox::ListBox::onTick, 10);
+		var event = main::menu::MScriptEvent(context, ChatRoot, "on_initialize");
+		context.pushEvent(event);
+	}
+	
+	function on_initialize(context)
+	{
+		if (main::game.major_menu_page == "ChatRoot")
+		{
+			main::game.major_menu_page = "";
+			sendLeftRaceMessage(context);
+			setChannelInfo(main::network.getCurrentLobbyWorldID(), nil);
+		}
+		if (!setGameListFilter_PrivateRaceAndCurrentLobby(context))
+		{
+			return;
+		}
+		if (sChatChannelId == nil || sChatChannelId <= 0)
+		{
+			start_page(context, HomeRoot);
+			return;
+		}
+		if (sChatChannelName == nil || sChatChannelName == "")
+		{
+			var info = main::network.getChannelInfo(sChatChannelId);
+			if (info == nil)
+			{
+				openOnlineErrorDialog(context);
+				restart(context);
+				return;
+			}
+			sChatChannelName = PrivateRaceCommon::getChatChannelNameForPresentation(context, info[0]);
+		}
+		ChatRoot["RoomName"].text = sChatChannelName;
+	}
+	
+	function onFinalize(context)
+	{
+		sActivePane = nil;
+		setChatPipe(nil);
+		PrivateRaceCommon::disposeToolTip();
+		LobbyPlayerListPane::finalize(context);
+		ChatPane::finalize(context);
+		RaceListPane::finalize(context);
+		PlayerListPane::finalize(context);
+		DeleteWatcher();
+		leavePage(context, ChatRoot);
+	}
+	
+	function onKeyPress(context, event)
+	{
+		var keysym = event.keysym;
+		switch(keysym)
+		{
+			case PS2_PAD_CTRL_R3_UP:
+				var res = ChatPane::ScrollBox::tbox.scroll(-3);
+				main::sound.play(res ? "cursor" : "disable");
+				return EVENTRESULT_FILTER;
+
+			case PS2_PAD_CTRL_R3_DOWN:
+				var res = ChatPane::ScrollBox::tbox.scroll(3);
+				main::sound.play(res ? "cursor" : "disable");
+				return EVENTRESULT_FILTER;
+
+		}
+		return EVENTRESULT_CONTINUE;
+	}
+	
+	function onCancel(context)
+	{
+		main::sound.play("cancel");
+		var res = leaveChatChannel(context);
+		if (res)
+		{
+			LobbyRoot::open(context);
+		}
+		return EVENTRESULT_FILTER;
+	}
+	
+	function sendLeftRaceMessage(context)
+	{
+		var res = main::network.sendChatMemberLeftRaceMessage();
+		if (!res)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return false;
+		}
+		sDidEchoGreetingMessage = false;
+		sDoEchoLeftRaceMessage = true;
+		chatCreateWatcher(context);
+		return true;
+	}
+
+	function setChannelInfo(chat_channel_id, chat_channel_name)
+	{
+		sChatChannelId = chat_channel_id;
+		sChatChannelName = chat_channel_name;
+	}
+	
+	function activatePane(context, pane)
+	{
+		pane.visible = true;
+		pane.open(context);
+		pane.actor.out = false;
+		context.sync(0.25);
+		sActivePane = pane;
+	}
+	
+	function deactivatePane(context)
+	{
+		if (sActivePane == nil)
+		{
+			return;
+		}
+		sActivePane.close(context);
+		sActivePane.actor.out = true;
+		context.sync(0.25);
+		sActivePane.visible = false;
+		sActivePane = nil;
+	}
+	
+	function activateCommand(context)
+	{
+		CommandPane::RaceList.can_focus = true;
+		CommandPane::CreateRace.can_focus = true;
+		CommandPane::LobbyPlayerList.can_focus = true;
+		CommandPane::BuddyList.can_focus = true;
+		CommandPane::Say.can_focus = true;
+		CommandPane::SayQuickly.can_focus = true;
+	}
+	
+	function deactivateCommand(context)
+	{
+		CommandPane::RaceList.can_focus = false;
+		CommandPane::CreateRace.can_focus = false;
+		CommandPane::LobbyPlayerList.can_focus = false;
+		CommandPane::BuddyList.can_focus = false;
+		CommandPane::Say.can_focus = false;
+		CommandPane::SayQuickly.can_focus = false;
+	}
+	
+	function joinChatChannel(context, do_retry, id, password)
+	{
+		if (id == nil || id <= 0)
+		{
+			return false;
+		}
+	
+		if (do_retry == nil)
+		{
+			do_retry = false;
+		}
+	
+		if (password == nil)
+		{
+			password = "";
+		}
+	
+		var text = context.translate(ChatRoot, "NOW_JOINING_CHAT_CHANNEL");
+		var res  = openProcessDialog(context, text, joinChatChannelImpl, [do_retry, id, password]);
+	
+		if (res)
+		{
+			context.sync(0.5);
+			res = main::network.sendChatMemberEnteredMessage();
+			if (!res)
+			{
+				openOnlineErrorDialog(context);
+				restart(context);
+				return false;
+			}
+			sDidEchoGreetingMessage = false;
+			sDoEchoEnteredMessage   = true;
+			chatCreateWatcher(context);
+		}
+		return res;
+	}
+	
+	function joinChatChannelImpl(context, args)
+	{
+		var do_retry;
+		var id;
+		var password;
+		|do_retry, id, password| = args;
+	
+		var info = main::network.getChannelInfo();
+		if (info == nil)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return false;
+		}
+	
+		if (PrivateRaceCommon::isWorldTypeVisible(info[0]))
+		{
+			var res = main::network.sendChatMemberLeftMessage();
+			if (!res)
+			{
+				openOnlineErrorDialog(context);
+				restart(context);
+				return false;
+			}
+		}
+	
+		var res = main::network.joinChannel(id, password);
+		if (!res)
+		{
+			var error_code = main::network.getLastErrorCode();
+			if (error_code == "0:978:0:0:0")
+			{
+				if (do_retry)
+				{
+					res = InputDialog::InputPassword::open(context, [0, id, 0]);
+				}
+				else
+				{
+					openOnlineErrorDialog(context);
+				}
+			}
+			else
+			{
+				openOnlineErrorDialog(context);
+			}
+		}
+		return res;
+	}
+	
+	function leaveChatChannel(context)
+	{
+		var text = context.translate(ChatRoot, "NOW_LEAVING");
+		openProcessDialog(context, text, leaveChatChannelImpl, [0, 1]);
+		return;
+	}
+
+
+	function leaveChatChannelImpl(context, args)
+	{
+		var confirm_already_leave;
+		var send_message;
+		|confirm_already_leave, send_message| = args;
+	
+		if (confirm_already_leave)
+		{
+			var current_info = main::network.getChannelInfo();
+			if (current_info == nil)
+			{
+				openOnlineErrorDialog(context);
+				restart(context);
+				return false;
+			}
+			if (current_info[0].size <= 18)
+				;
+			else if (PrivateRaceCommon::isWorldTypeVisible(current_info[0]))
+				return true;
+		}
+	
+		if (send_message)
+		{
+			var res = main::network.sendChatMemberLeftMessage();
+			if (!res)
+			{
+				openOnlineErrorDialog(context);
+				restart(context);
+				return false;
+			}
+		}
+		if (!main::network.setLobbyWorldFilter(0, 0, 1, 0, 1, (1 << 6)))
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return false;
+		}
+	
+		var total_chat_count = main::network.getTotalChannels();
+		if (total_chat_count < 0)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return false;
+		}
+		var join_success = false;
+		if (total_chat_count > 0)
+		{
+			var page_num = ((total_chat_count - 1) / 16) + 1;
+			var current_page = 0;
+			
+			for (var i = 0; i < (page_num + 1); i++)
+			{
+				var chat_channel_list = main::network.getChannels(current_page + 1, 16);
+				if (chat_channel_list == nil)
+				{
+					openOnlineErrorDialog(context);
+					restart(context);
+					return false;
+				}
+				var num = chat_channel_list.size;
+				
+				for (var j = 0; j < num; j++)
+				{
+					var column = chat_channel_list[j];
+					if (column[2] > column[1])
+					{
+						join_success = main::network.joinChannel(column[0], "");
+						if (join_success)
+						{
+							break;
+						}
+					}
+				}
+	
+				if (join_success)
+					break;
+	
+				current_page++;
+			}
+		}
+		if (total_chat_count <= 0 || !join_success)
+		{
+			var prefix = PrivateRaceCommon::getPrefixWorldName("IU");
+			var name   = (prefix + "User Room");
+			var chat_channel_id = main::network.createChannel(name, "", 256, 0, 0, 1, 0, (1 << 6));
+			if (chat_channel_id <= 0)
+			{
+				openOnlineErrorDialog(context);
+				restart(context);
+				return false;
+			}
+			if (chat_channel_id > 0)
+			{
+				join_success = main::network.joinChannel(chat_channel_id, "");
+				if (!join_success)
+				{
+					openOnlineErrorDialog(context);
+					restart(context);
+					return false;
+				}
+			}
+		}
+		return join_success;
+	}
+	
+	function setGameListFilter_PrivateRaceAndCurrentLobby(context)
+	{
+		if (!main::network.clearGameListFilter())
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return false;
+		}
+	
+		InputDialog::InputPrivateRace::sFilterIPRType = nil;
+		var rule_set = makeCurrentRuleSet(nil, 1, nil, nil, nil, nil, nil, nil, nil, nil);
+		var filter = main::network.setGameListFilter("RULES_SET", "EQUAL_TO", rule_set, 1);
+		if (filter > 0)
+			filter = main::network.setGameListFilter("GENERIC_FIELD_2", "EQUAL_TO", sChatChannelId);
+	
+		if (filter <= 0)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return false;
+		}
+		return true;
+	}
+	
+	function chatDeleteWatcher()
+	{
+		if (sChatWatcher != nil)
+		{
+			sChatWatcher.remove();
+			sChatWatcher = nil;
+		}
+	}
+	
+	function chatCreateWatcher(context)
+	{
+		chatDeleteWatcher();
+		sChatWatcher = main::menu::MScriptWatcher(context, onTick);
+		sChatWatcher.interval = 10;
+		sChatWatcher.count = 0;
+		sChatWatcher.append();
+	}
+
+	function onTick(context)
+	{
+		if (sDidEchoGreetingMessage != nil && !sDidEchoGreetingMessage)
+		{
+			if (sDoEchoEnteredMessage != nil && sDoEchoEnteredMessage)
+			{
+				onChatMemberEntered(context, main::network.my_name);
+				sDoEchoEnteredMessage = false;
+			}
+	
+			if (sDoEchoLeftRaceMessage != nil && sDoEchoLeftRaceMessage)
+			{
+				onChatMemberLeftRace(context, main::network.my_name);
+				sDoEchoLeftRaceMessage = false;
+			}
+			sDidEchoGreetingMessage = true;
+			chatDeleteWatcher();
+		}
+	}
+
+	function joinGameMGCL(context, game_id, password, use_voice_chat)
+	{
+		if (game_id == nil || game_id <= 0)
+			return false;
+	
+		if (password == nil)
+			password = "";
+	
+		if (use_voice_chat == nil)
+			use_voice_chat = false;
+
+		var text = context.translate(ChatRoot, "NOW_JOINING_RACE");
+		openProcessDialog(context, text, joinGameMGCLImpl, [game_id, password, use_voice_chat]);
+		return;
+	}
+	
+	function joinGameMGCLImpl(context, args)
+	{
+		var game_id;
+		var password;
+		var use_voice_chat;
+		|game_id, password, use_voice_chat| = args;
+		main::network.setVoiceChatEnable(use_voice_chat);
+		var res = main::network.joinGameMGCL(game_id, password);
+		if (!res)
+			openOnlineErrorDialog(context);
+
+		return res;
+	}
+}
+
+module PROJECT::ROOT::ChatPane
+{
+    static sScrollBoxOriginalH = ScrollBox.h;
+    static sInputBoxOriginalY = InputBox.y;
+    static sScrollBoxReduceH = 210.0;
+
+    function initialize(context)
+    {
+        InputBox::initialize(context);
+        main::network.pipe.clear();
+        ScrollBox::tbox.clear();
+        ScrollBox::tbox.pipe = main::network.pipe;
+    }
+
+    function finalize(context)
+    {
+    }
+}
+
+module PROJECT::ROOT::ChatPane::InputBox
+{
+    function initialize(context)
+    {
+        InputBox.actor.ratio = 0.2;
+        InputBox.actor.out = true;
+        InputBox.actor.warp();
+    }
+
+    function open(context)
+    {
+        CommandPane::Say.active = true;
+        InputBox.visible = true;
+        InputBox.actor.ratio = 0.2;
+        InputBox.actor.out = false;
+
+        deactivateCommand(context);
+        ChatRoot.setFocus(input);
+    }
+
+    function close(context)
+    {
+        InputBox.actor.destinationY = PS2_SCREEN_H_F;
+        InputBox.actor.out = true;
+
+        activateCommand(context);
+        ChatRoot.setFocus(CommandPane::Say);
+        context.sync(0.25);
+
+        InputBox.visible = false;
+        CommandPane::Say.active = false;
+    }
+}
+
+module PROJECT::ROOT::ChatPane::InputBox::input
+{
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        ChatPane::ScrollBox.h = sScrollBoxOriginalH;
+        close(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onConfirmed(context, str)
+    {
+        main::sound.play("ok");
+        var res = main::network.say(str);
+        if (!res)
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+			return;
+        }
+    }
+
+    function onFocusEnter(context, event)
+    {
+        PrivateRaceCommon::clearToolTipValue();
+        PrivateRaceCommon::attachToolTip();
+        return EVENTRESULT_FILTER;
+    }
+
+    function onOpenKeyboard(context)
+    {
+        ChatPane::ScrollBox.h -= sScrollBoxReduceH;
+        InputBox.actor.ratio = 0.5;
+        InputBox.actor.destinationY = (sInputBoxOriginalY - sScrollBoxReduceH);
+        InputBox.actor.out = true;
+    }
+
+    function onCloseKeyboard(context)
+    {
+        InputBox.actor.ratio = 0.5;
+        InputBox.actor.destinationY = sInputBoxOriginalY;
+        ChatPane::ScrollBox.h = sScrollBoxOriginalH;
+    }
+}
+
+module PROJECT::ROOT::LobbyPlayerListPane
+{
+    static sCurrentLobbyPlayerList = nil;
+
+    function initialize(context)
+    {
+        LobbyPlayerListPane.visible = false;
+        LobbyPlayerListPane.actor.out = true;
+        LobbyPlayerListPane.actor.warp();
+        sCurrentLobbyPlayerList = nil;
+        ScrollBox::ListBox::initialize(context);
+    }
+
+    function finalize(context)
+    {
+        sCurrentLobbyPlayerList = nil;
+    }
+
+    function open(context)
+    {
+        deactivateCommand(context);
+        ScrollBox::ListBox::updateList(context);
+        ChatRoot.setFocus(ScrollBox::ListBox);
+    }
+
+    function close(context)
+    {
+        activateCommand(context);
+        ChatRoot.setFocus(CommandPane::LobbyPlayerList);
+    }
+
+    function add(context, args)
+    {
+        var name;
+        var is_buddy;
+        |name, is_buddy| = args;
+        if (is_buddy)
+            PrivateRaceCommon::buddyAdd(context, name);
+        else
+            PrivateRaceCommon::ignoreAdd(context, name);
+    }
+
+    function onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        deactivatePane(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::LobbyPlayerListPane::ScrollBox::ListBox
+{
+    function initialize(context)
+    {
+        ListBox.setItemTemplate(context, hidden::LobbyPlayerItem);
+        ListBox.visible_callback = visible_callback;
+        ListBox.focus_callback = focus_callback;
+        ListBox.step_min = 1;
+        ListBox.step_max = 2;
+    }
+
+    function setup_widget(context, i, w)
+    {
+        var player = sCurrentLobbyPlayerList[i];
+
+        var name = w["name"];
+        name["name"].text = player[1];
+        name["name"].adjustScale();
+
+        var stats = main::menu::MPlayerStats::unpack(player[2]);
+        if (!stats.hasRidingCar())
+        {
+            var car = w["car"];
+            car["chip"].visible = false;
+            car["chip0"].visible = false;
+            car["name"].text = "--";
+        }
+        else
+        {
+            var car_label = main::menu::MCarData::GetCarLabelByArray(stats.carcode);
+            var short_car_name = main::menu::MCarData::GetShortCarName(car_label);
+
+            var car = w["car"];
+            car["chip"].visible = true;
+            car["chip0"].visible = true;
+            car["name"].text = short_car_name;
+            car["name"].abbreviate();
+
+            var gcar = main::menu::MCarGarage(car_label);
+            car["chip"].setData(gcar, stats.car_color_index);
+        }
+    }
+
+    function visible_callback(context, index)
+    {
+        
+        for (var i = 0; i < index.size; i++)
+        {
+            var visible = ListBox.getItemVisible(index[i]);
+            if (visible)
+            {
+                var w = ListBox.getItemWidget(index[i], context);
+                setup_widget(context, index[i], w);
+                ListBox.setItemUpdate(index[i], 3);
+            }
+        }
+    }
+
+    function focus_callback(context, new_index, old_index)
+    {
+        var player = sCurrentLobbyPlayerList[new_index];
+
+        var car_name = nil;
+        var stats = main::menu::MPlayerStats::unpack(player[2]);
+        if (!stats.hasRidingCar())
+        {
+            car_name = "--";
+        }
+        else
+        {
+            var car_label = main::menu::MCarData::GetCarLabelByArray(stats.carcode);
+            car_name = main::menu::MCarData::GetShortCarName(car_label);
+        }
+
+        var info = context.translate(ChatRoot, "TOOLTIP|LOBBY_PLAYER_INFO").build(car_name);
+        PrivateRaceCommon::setToolTipOnValue(0, info);
+    }
+
+    function compare_func(a, b)
+    {
+        return (a[1] < b[1]);
+    }
+
+    function updateList(context)
+    {
+        var lobby_player_list = main::network.getLobbyPlayers();
+        if (lobby_player_list == nil)
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+            return;
+        }
+
+        lobby_player_list.sort(compare_func);
+
+        ListBox.setItemCount(0);
+        ListBox.setItemCount(lobby_player_list.size);
+
+        sCurrentLobbyPlayerList = lobby_player_list;
+    }
+
+	function joinGameByExtraInfo(context, player_id)
+	{
+		if (player_id == nil || player_id <= 0)
+			return false;
+	
+		var text = context.translate(ChatRoot, "GETTING_INFORMATION");
+		var game_info = openProcessDialog(context, text, getVaildGameInfo, player_id);
+		if (game_info == nil)
+			return false;
+	
+		if (game_info.size == 0)
+		{
+			text = context.translate(ChatRoot, "ERROR|CANNOT_GET_VALID_GAME_INFO");
+			main::sound.play("disable");
+			openConfirmDialog(context, DIALOG_ERROR, text);
+			return false;
+		}
+		var name = PrivateRaceCommon::getRemovedPrefixWorldName(game_info[6]);
+		text = context.translate(ChatRoot, "DO_YOU_JOIN_THIS_GAME").build(name);
+		var res = openConfirmDialog(context, DIALOG_QUERY, text);
+		if (res)
+		{
+			clearCurrentRuleSet();
+			setCurrentRuleSet(game_info[7]);
+			var course_category_index = getCurrentCourseCategoryIndex();
+			var is_full_car = isFullCarSelect();
+			var pass_req = isCurrentPasswordRequired();
+			var is_voice = isVoiceEnabledNow();
+			clearCurrentRuleSet();
+			var stats = main::menu::MGameStats::unpack(game_info[5]);
+			RaceListPane::ListPane::Races::joinGame(context,
+				[game_info[11], name, course_category_index, stats.course, is_full_car, pass_req, is_voice]);
+		}
+		return true;
+	}
+
+	function getVaildGameInfo(context, player_id)
+	{
+		var player_extra_list = main::network.getLobbyPlayerNames();
+		if (player_extra_list == nil)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return nil;
+		}
+		PrivateRaceCommon::sortList(player_extra_list);
+		var pos = PrivateRaceCommon::id_bsearch(
+			player_extra_list,
+			player_id,
+			PrivateRaceCommon::getFirstColumnFromList
+		);
+		var game_info = [];
+		if (pos >= 0 && player_extra_list[pos][4] > 0)
+		{
+			game_info = main::network.getGameInfo(player_extra_list[pos][4]);
+			if (game_info == nil)
+			{
+				openOnlineErrorDialog(context);
+				restart(context);
+				return nil;
+			}
+			game_info.push(player_extra_list[pos][4]);
+		}
+		return game_info;
+	}
+
+	function onActivate(context, event)
+	{
+		main::sound.play("ok");
+		var player = sCurrentLobbyPlayerList[ListBox.focus_index];
+		var player_id = player[0];
+		var player_name = player[1];
+		var mode = 0;
+		if (player_name == main::network.my_name)
+			mode = 2;
+		else
+			mode = 3;
+	
+		var item = ListBox.getItemWidget(ListBox.focus_index, context);
+		var selected_item = InputDialog::ContextMenu::open(context, item, [mode, player_name]);
+		switch(selected_item)
+		{
+			case 1:
+				if (__project__.defined("MessageProject"))
+					MessageProject::openProfile(context, player_id, player_name);
+				break;
+				
+			case 2:
+				MessageProject::openIM(context, player_id, player_name);
+				break;
+				
+			case 5:
+				main::sound.play("ok");
+				var text = context.translate(ChatRoot, "NOW_ADDING").build(player_name);
+				openProcessDialog(context, text, PrivateRaceCommon::buddyAdd, player_name);
+				break;
+				
+			case 6:
+				main::sound.play("ok");
+				var text = context.translate(ChatRoot, "NOW_ADDING").build(player_name);
+				openProcessDialog(context, text, PrivateRaceCommon::ignoreAdd, player_name);
+				break;
+				
+			case 8:
+				main::sound.play("ok");
+				joinGameByExtraInfo(context, player_id);
+				break;
+				
+			break;
+		}
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::PlayerListPane
+{
+	static sIsInChatRoom = true;
+	
+	function isBuddyListModeNow()
+	{
+		return true;
+	}
+	
+	function isIgnoreListModeNow()
+	{
+		return false;
+	}
+	
+	function setFocusButton()
+	{
+		ScrollBox::ListBox.focus_callback = nil;
+		ScrollBox::ListBox.focus_active   = false;
+		ChatRoot.setFocus(CommandPane::BuddyList);
+	}
+	
+	#include "playerlist.h"
+}
+
+module PROJECT::ROOT::PlayerListPane::ScrollBox::ListBox
+{
+	function initialize(context)
+	{
+		ListBox.setItemTemplate(context, hidden::PlayerItem);
+		ListBox.visible_callback = visible_callback;
+		ListBox.step_min = 1;
+		ListBox.step_max = 2;
+		ScrollBox::ListBox.focus_active = false;
+	}
+	
+	function setConnectStatus(item, stat)
+	{
+		item["Stat"]["Indicator"].visible = false;
+		switch(stat)
+		{
+			case 0:
+				item["Stat"]["Indicator"].visible = true;
+				item["Stat"]["Indicator"].active = false;
+				break;
+				
+			case 1:
+			case 2:
+			case 3:
+				item["Stat"]["Indicator"].visible = true;
+				item["Stat"]["Indicator"].active = true;
+				break;
+		}
+	}
+
+	function setPlayerInfo(w, is_add_player_column, id, name)
+	{
+		setBlinkActor(w["Stat"]["Indicator"]["bga"]);
+		w.defineStatic("sIsAddPlayerColumn", is_add_player_column);
+		w.defineStatic("sId", id);
+		w.defineStatic("sName", name);
+		w["name"].text = name;
+	}
+	
+	function setup_widget(context, i, w)
+	{
+		var player = sCurrentPlayerList[i];
+		if (i == 0)
+		{
+			setPlayerInfo(w, 1, player[0], player[1]);
+		}
+		else
+		{
+			setPlayerInfo(w, 0, player[0], player[1]);
+			setConnectStatus(w, player[2]);
+		}
+	}
+
+	function visible_callback(context, index)
+	{
+		
+		for (var i = 0; i < index.size; i++)
+		{
+			var visible = ListBox.getItemVisible(index[i]);
+			if (visible)
+			{
+				var w = ListBox.getItemWidget(index[i], context);
+				setup_widget(context, index[i], w);
+				ListBox.setItemUpdate(index[i], 3);
+			}
+		}
+	}
+	
+	function setToolTipValue(context, focus_index)
+	{
+		var player = sCurrentPlayerList[focus_index];
+		if (focus_index == 0)
+		{
+			var label;
+			if (isBuddyListModeNow())
+				label = context.translate(ProfileRoot, "LABEL|BUDDY_LIST");
+			else
+				label = context.translate(ProfileRoot, "LABEL|IGNORE_LIST");
+	
+			var text = context.translate(ProfileRoot, "TOOLTIP|LIST_ADD_COLUMN").build(label);
+			PrivateRaceCommon::setToolTipOnValue(0, text);
+		}
+		else
+		{
+			var text = context.translate(ProfileRoot, "TOOLTIP|LIST_PLAYER_COLUMN");
+			PrivateRaceCommon::setToolTipOnValue(1, text);
+		}
+	}
+
+	function onFocusEnter(context, event)
+	{
+		setToolTipValue(context, ListBox.focus_index);
+	}
+	
+	function focus_callback(context, new_index, old_index)
+	{
+		setToolTipValue(context, new_index);
+	}
+	
+	function onTick(context)
+	{
+		if (isBuddyListModeNow() || isIgnoreListModeNow())
+		{
+			if (sCurrentBARESACount != sBARESACount || sCurrentBAREQCount != sBAREQCount)
+			{
+				updateList(context, 0);
+				sCurrentBARESACount = sBARESACount;
+				sCurrentBAREQCount = sBAREQCount;
+			}
+		}
+	}
+
+	function updateList(context, IsOnOpen)
+	{
+		sIsOnOpen = IsOnOpen;
+		updateListImpl(context);
+	}
+	
+	function updateListImpl(context)
+	{
+		var player_list = nil;
+		if (isBuddyListModeNow())
+			player_list = main::network.getBuddyList();
+		else
+			player_list = main::network.getIgnoreList();
+		
+		if (player_list == nil)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return;
+		}
+		var text = context.translate(ProfileRoot, "ADD_PLAYER");
+		var add_player = [-1, "[%s]".format(text)];
+		player_list.sort(compare_func);
+		player_list.unshift(add_player);
+		var count = player_list.size;
+		ListBox.setItemCount(0);
+		ListBox.setItemCount(count);
+		sCurrentPlayerList = player_list;
+		if (sIsOnOpen)
+		{
+			var label = "";
+			var max_count = 100;
+			if (isBuddyListModeNow())
+			{
+				label = context.translate(ProfileRoot, "LABEL|BUDDY_LIST");
+				max_count = 100;
+			}
+			else
+			{
+				label = context.translate(ProfileRoot, "LABEL|IGNORE_LIST");
+				max_count = 32;
+			}
+			text = context.translate(ProfileRoot, "TOOLTIP|LIST_COUNT").build(label, count - 1, max_count);
+			PrivateRaceCommon::setToolTipOnValue(0, text);
+		}
+	}
+
+	function compare_func(a, b)
+	{
+		return a[1] < b[1];
+	}
+
+	function joinChat(context, id)
+	{
+		if (id == nil || id <= 0)
+			return false;
+	
+		if (!canRaceByTheCar(context))
+			return false;
+	
+		var text = context.translate(ProfileRoot, "GETTING_INFORMATION");
+		var info = openProcessDialog(context, text, getValidChatInfo, id);
+		if (info == nil)
+			return false;
+	
+		if (info.size == 0 || info[0].size < 2)
+		{
+			text = context.translate(ProfileRoot, "ERROR|CANNOT_GET_VALID_CHAT_INFO");
+			main::sound.play("disable");
+			openConfirmDialog(context, DIALOG_ERROR, text);
+			return false;
+		}
+		if (info.size >= 2 && info[1].size >= 2)
+		{
+			if (info[0][0] == info[1][0])
+			{
+				text = context.translate(ProfileRoot, "ERROR|YOU_ALREADY_WERE_JOINING_THIS_CHAT_ROOM");
+				main::sound.play("disable");
+				openConfirmDialog(context, DIALOG_ERROR, text);
+				return false;
+			}
+		}
+		var presentation_name = PrivateRaceCommon::getChatChannelNameForPresentation(context, info[0][1]);
+		text = context.translate(ProfileRoot, "DO_YOU_JOIN_THIS_CHAT_CHANNEL").build(presentation_name);
+		var res = openConfirmDialog(context, DIALOG_QUERY, text);
+		if (res)
+		{
+			res = joinChatImpl(context, info[0][0], presentation_name);
+			return res;
+		}
+		return true;
+	}
+
+	function getValidChatInfo(context, id)
+	{
+		var buddy_info = [];
+		var list = main::network.getBuddyList();
+		if (list == nil)
+		{
+			openOnlineErrorDialog(context);
+			restart(context);
+			return nil;
+		}
+		PrivateRaceCommon::sortList(list);
+		var pos = PrivateRaceCommon::id_bsearch(list, id, PrivateRaceCommon::getFirstColumnFromList);
+		if (pos >= 0 && list[pos][3] > 0)
+		{
+			var buddy = list[pos];
+			if (PrivateRaceCommon::isWorldTypeVisible(buddy[5]))
+				buddy_info = [buddy[3], buddy[5]];
+		}
+	
+		var my_info = [];
+		if (sIsInChatRoom)
+		{
+			var info = main::network.getChannelInfo();
+			if (info == nil)
+			{
+				openOnlineErrorDialog(context);
+				restart(context);
+				return nil;
+			}
+			my_info = [main::network.getCurrentLobbyWorldID(), info[0]];
+		}
+		return [buddy_info, my_info];
+	}
+
+	function joinChatImpl(context, id, name)
+	{
+		var res = ROOT::joinChatChannel(context, 1, id, "");
+		if (res)
+		{
+			ROOT::setChannelInfo(id, name);
+			start_page(context, ROOT);
+		}
+		return res;
+	}
+
+	function deletePlayer(context, id, name)
+	{
+		if (id == nil || id <= 0 || name == nil || name == "")
+			return false;
+	
+		var text = context.translate(ProfileRoot, "DO_YOU_DELETE");
+		var res = openConfirmDialog(context, DIALOG_QUERY, text);
+		if (res)
+		{
+			text = context.translate(ProfileRoot, "NOW_DELETING").build(name);
+			if (isBuddyListModeNow())
+				res = openProcessDialog(context, text, PrivateRaceCommon::buddyDelete, [id, name]);
+			else
+				res = openProcessDialog(context, text, PrivateRaceCommon::ignoreDelete, [id, name]);
+	
+			if (res)
+			{
+				main::sound.play("ok");
+				updateList(context, 0);
+			}
+		}
+		return res;
+	}
+
+	function onActivate(context, event)
+	{
+		var item = ListBox.getItemWidget(ListBox.focus_index, context);
+		if (item == nil) return;
+		if (item["sIsAddPlayerColumn"] == nil) return;
+		if (item["sId"] == nil) return;
+		if (item["sName"] == nil) return;
+		main::sound.play("ok");
+		if (item["sIsAddPlayerColumn"])
+		{
+			var res = InputDialog::InputPlayer::open(context, isBuddyListModeNow() ? 0 : 1);
+			if (res != nil && res)
+			{
+				main::sound.play("ok");
+				updateList(context, 0);
+			}
+		}
+		var selected_item = InputDialog::ContextMenu::open(context, item, isBuddyListModeNow() ? 0 : [1, item["sName"]]);
+		switch(selected_item)
+		{
+			case 1:
+				if (__project__.defined("MessageProject"))
+				{
+					main::sound.play("ok");
+					MessageProject::openProfile(context, item["sId"], item["sName"]);
+				}
+				break;
+				
+			case 2:
+				var id = main::network.accountName2AccountID(item["sName"]);
+				var id2 = main::network.accountIsOnline(item["sName"]);
+				if (id <= 0 || id2 <= 0)
+				{
+					main::sound.play("disable");
+					var text = context.translate(ProfileRoot, "OnlineMessage", "YOU_CANNOT_SEND_IM").build(item["sName"]);
+					openConfirmDialog(context, DIALOG_ERROR, text);
+				}
+				else if (__project__.defined("MessageProject"))
+					MessageProject::openIM(context, item["sId"], item["sName"]);
+				break;
+				
+			case 3:
+			case 4:
+				main::sound.play("ok");
+				deletePlayer(context, item["sId"], item["sName"]);
+				break;
+
+			case 7:
+				main::sound.play("ok");
+				joinChat(context, item["sId"]);
+				break;
+				
+			break;
+		}
+		return EVENTRESULT_FILTER;
+	}
+
+	function onKeyPress(context, event)
+	{
+		var keysym = event.keysym;
+		if (keysym == PS2_PAD_CTRL_L3_LEFT)
+			return EVENTRESULT_FILTER;
+
+		if (keysym == PS2_PAD_CTRL_L3_RIGHT)
+			return EVENTRESULT_FILTER;
+		
+		if((keysym == PS2_PAD_CTRL_L3_UP && ListBox.focus_index == 0) || (keysym == PS2_PAD_CTRL_L3_DOWN && ListBox.focus_index == (ListBox.getItemCount() - 1)))
+			return EVENTRESULT_FILTER;
+	
+		return EVENTRESULT_CONTINUE;
+	}
+	
+	function onCancel(context, event, item)
+	{
+		main::sound.play("cancel");
+		setFocusButton();
+		deactivatePane(context);
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::RaceListPane
+{
+    static sCurrentPage = nil;
+    static sRacesNum = nil;
+    static sPageNum = nil;
+    static sPassword = nil;
+    static sLineName = ["Line0", "Line1", "Line2", "Line3", "Line4", "Line5", "Line6", "Line7", "Line8", "Line9"];
+
+    function initialize(context)
+    {
+        RaceListPane.visible = false;
+        RaceListPane.actor.out = true;
+        RaceListPane.actor.warp();
+        sCurrentPage = 0;
+        sRacesNum = 0;
+        sPageNum = 0;
+        sPassword = "";
+    }
+
+    function finalize(context)
+    {
+        sCurrentPage = nil;
+        sRacesNum = nil;
+        sPageNum = nil;
+        sPassword = nil;
+    }
+
+    function open(context)
+    {
+        deactivateCommand(context);
+        initializeOnOpen(context);
+        activateListPane(context, nil);
+        ChatRoot.setFocus(CommandPane::Filter);
+        ListArrow::left.active = true;
+        ListArrow::right.active = true;
+    }
+
+    function close(context)
+    {
+        ListArrow::left.active = false;
+        ListArrow::right.active = false;
+        activateCommand(context);
+        ChatRoot.setFocus(ChatRoot::CommandPane::RaceList);
+    }
+
+    function onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        close(context);
+        deactivatePane(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function initializeOnOpen(context)
+    {
+        var text = context.translate(ChatRoot, "GETTING_INFORMATION");
+        openProcessDialog(context, text, initialize_list, nil);
+    }
+
+    function initialize_list(context)
+    {
+        var res = main::network.getTotalGamesFiltered();
+        if (res < 0)
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+            return;
+        }
+        sPageNum = ((res - 1) / 10) + 1;
+        refresh_list(context, 0);
+    }
+
+    function refresh_list(context, add_value)
+    {
+        if (add_value == nil)
+        {
+            add_value = 0;
+        }
+        var NextPage = sCurrentPage + add_value;
+        var CurrentPage = sCurrentPage;
+        if (NextPage < 0)
+        {
+            return false;
+        }
+        var total_races = main::network.getTotalGamesFiltered();
+        if (total_races < 0)
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+            return false;
+        }
+        var MaxPage = ((total_races - 1) / 10) + 1;
+        if (MaxPage <= 0)
+        {
+            MaxPage = 1;
+        }
+        if (NextPage >= MaxPage)
+        {
+            if (add_value > 0)
+            {
+                openConfirmDialog(context, DIALOG_ERROR, context.translate(ChatRoot, "NOT_NEXT_PAGE"));
+                return false;
+            }
+            CurrentPage = MaxPage - 1;
+        }
+        else
+            CurrentPage += add_value;
+
+        var race_list = main::network.getGameList(CurrentPage + 1, 10);
+        if (race_list == nil)
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+            REFRASH_ERROR;
+            return;
+        }
+        ChatRoot.visible = false;
+        sCurrentPage = CurrentPage;
+        if (sCurrentPage < 0)
+            sCurrentPage = 0;
+
+        sPageNum = MaxPage;
+        ListPane::Info::races.text = context.translate(ChatRoot, "TOTAL_RACES").build(total_races);
+        ListPane::Info::page.text = context.translate(ChatRoot, "PAGE_NUMBER").build(sCurrentPage + 1, sPageNum);
+        ListArrow::left.visible = !(sCurrentPage <= 0);
+        ListArrow::right.visible = (total_races > 0);
+        for (var i = 0; i < 10; i++)
+        {
+            ListPane::Races[sLineName[i]].visible = false;
+        }
+        sRacesNum = race_list.size;
+        var line_index = 0;
+        for (var i = 0; i < sRacesNum; i++)
+        {
+            var item = ListPane::Races[sLineName[line_index]];
+            if (PrivateRaceCommon::isWorldTypeVisible(race_list[i][13]))
+            {
+                var column = race_list[i];
+                set_item(context, item, column);
+                line_index++;
+            }
+        }
+        ChatRoot.visible = true;
+        if (total_races == 0)
+            return EVENTRESULT_FILTER;
+
+        return true;
+    }
+
+    function set_item(context, item, column)
+    {
+        var id = column[0];
+        var race_name = column[13];
+        var player_count = column[1];
+        var max_players = column[3];
+        var game_stats = column[14];
+        var rule_set = column[6];
+        var world_status = column[11];
+        item.visible = true;
+        item.defineStatic("sId", id);
+        var name_item = item["name"];
+        var text = PrivateRaceCommon::getRemovedPrefixWorldName(race_name);
+        name_item.text = text;
+        name_item.abbreviate();
+        name_item.defineStatic("sName", text);
+        var stats = main::menu::MGameStats::unpack(game_stats);
+        set_images_and_statics(context, item, rule_set, stats, world_status);
+        item["member"].text = "%d/%d".format(player_count, max_players);
+    }
+
+    function set_images_and_statics(context, item, rule_set, stats, world_status)
+    {
+        clearCurrentRuleSet();
+        setCurrentRuleSet(rule_set);
+        item.defineStatic("sCourseCategoryIndex", getCurrentCourseCategoryIndex());
+        item.defineStatic("sCourseCode", stats.course);
+        item.defineStatic("sLaps", stats.laps);
+        item.defineStatic("sIsFullCar", isFullCarSelect());
+        var race_item = item["race"];
+        var is_during_race = (world_status == 3);
+        race_item.visible = is_during_race;
+        race_item.defineStatic("sDuringRace", is_during_race);
+        var password_item = item["password"];
+        password_item.visible = isCurrentPasswordRequired();
+        password_item.defineStatic("sPasswordRequired", isCurrentPasswordRequired());
+        var voice_item = item["voice_chat"];
+        voice_item.visible = isVoiceEnabledNow();
+        voice_item.defineStatic("sUseVoiceChat", isVoiceEnabledNow());
+        clearCurrentRuleSet();
+    }
+
+    function activateListPane(context, args)
+    {
+        ListPane::Races.visible = true;
+        ListPane::Races.actor.out = false;
+        context.sync(0.25);
+        ListArrow::left.active = true;
+        ListArrow::right.active = true;
+    }
+
+    function deactivateListPane(context)
+    {
+        ListArrow::left.active = false;
+        ListArrow::right.active = false;
+        ListPane::Races.actor.out = true;
+        context.sync(0.25);
+        ListPane::Races.visible = false;
+    }
+}
+
+module PROJECT::ROOT::RaceListPane::CommandPane::Filter
+{
+    function onActivate(context)
+    {
+        deactivateListPane(context);
+        var res = InputDialog::InputPrivateRace::open(context, [1, sChatChannelId]);
+        if (res)
+            refresh_list(context, 0);
+
+        activateListPane(context, nil);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(ChatRoot, "TOOLTIP|RaceListPane::CommandPane::Filter");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}
+
+module PROJECT::ROOT::RaceListPane::CommandPane::Reload
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        deactivateListPane(context);
+        refresh_list(context, 0);
+        activateListPane(context, nil);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(ChatRoot, "TOOLTIP|RaceListPane::CommandPane::Reload");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}
+
+module PROJECT::ROOT::RaceListPane::ListPane::Races
+{
+	function joinGame(context, args)
+	{
+		|var id, var name, var course_category_index, var course_code, var is_full_car, var pass_req, var use_voice| = args;
+		var no_problem_car = true;
+		if (!is_full_car)
+		{
+			if (!main::game.garage.hasRidingCar())
+			{
+				main::sound.play("disable");
+				openConfirmDialog(context, DIALOG_ERROR, context.translate(HomeRoot, "RIDE_YOUR_CAR"));
+				return;
+			}
+	
+			if (!PrivateRaceCommon::isHavingOrEquipedLimitedTire(context, course_category_index, course_code))
+				return;
+		}
+		var res = false;
+		if (pass_req)
+			res = InputDialog::InputPassword::open(context, [1, id, use_voice]);
+		else
+			res = joinGameMGCL(context, id, "", use_voice);
+	
+		if (res != nil && res)
+		{
+			res = main::network.sendChatMemberEnteredRaceMessage(name);
+	
+			if (!res)
+			{
+				openOnlineErrorDialog(context);
+				restart(context);
+				return EVENTRESULT_CONTINUE;
+			}
+			start_page(context, PregridRoot);
+		}
+	}
+	
+	function onActivate(context, event)
+	{
+		var item = event.widget;
+		if (!item.visible)
+			return EVENTRESULT_FILTER;
+	
+		main::sound.play("ok");
+		var name = item["name"]["sName"];
+		var text = context.translate(ChatRoot, "DO_YOU_JOIN_THIS_GAME").build(name);
+		var res = openConfirmDialog(context, DIALOG_QUERY, text);
+		if (res)
+		{
+			joinGame
+			(
+				context,
+				[
+					item["sId"],
+					name,
+					item["sCourseCategoryIndex"],
+					item["sCourseCode"],
+					item["sIsFullCar"],
+					item["password"]["sPasswordRequired"],
+					item["voice_chat"]["sUseVoiceChat"]
+				]
+			);
+		}
+		return EVENTRESULT_FILTER;
+	}
+	
+	function onKeyPress(context, event)
+	{
+		if (event.keysym == PS2_PAD_CTRL_L3_LEFT || event.keysym == PS2_PAD_CTRL_L3_RIGHT)
+		{
+			main::sound.play("cursor");
+			var res = 1;
+			if (event.keysym == PS2_PAD_CTRL_L3_LEFT)
+			{
+				if (ListArrow::left.visible)
+				{
+					res = refresh_list(context, -1);
+					if (res == 1)
+					{
+						var fcs_item = ChatRoot.getFocusWidget();
+						if (fcs_item.visible)
+						{
+							setTooltip(context, fcs_item);
+						}
+						else
+						{
+							fcs_item = ListPane::Races[sLineName[sRacesNum - 1]];
+							ChatRoot.setFocus(fcs_item);
+							setTooltip(context, fcs_item);
+						}
+					}
+					else if (res == 2)
+						ChatRoot.setFocus(CommandPane::Filter);
+				}
+			}
+	
+			if (ListArrow::right.visible)
+			{
+				res = refresh_list(context, 1);
+				if (res == 1)
+				{
+					var fcs_item = ChatRoot.getFocusWidget();
+					if (fcs_item.visible)
+					{
+						setTooltip(context, fcs_item);
+					}
+					else
+					{
+						fcs_item = ListPane::Races[sLineName[sRacesNum - 1]];
+						ChatRoot.setFocus(fcs_item);
+						setTooltip(context, fcs_item);
+					}
+				}
+			}
+			return EVENTRESULT_FILTER;
+		}
+		return EVENTRESULT_CONTINUE;
+	}
+	
+	function setTooltip(context, item)
+	{
+		if(item["name"]["sName"] == nil
+			&& item["sCourseCode"] == nil
+			&& item["sCourseCategoryIndex"] == nil
+			&& item["sLaps"] == nil
+			&& item["sIsFullCar"] == nil) {return;}
+	
+		var name = item["name"]["sName"].toString();
+		var course_category_index = item["sCourseCategoryIndex"];
+		var course_code = item["sCourseCode"];
+		var laps = item["sLaps"];
+		var is_full_car = item["sIsFullCar"];
+		var course_category = PrivateRaceCommon::getCourseCategoryListText(context, course_category_index);
+		var course_name = "";
+		if (course_code == "all")
+			course_name = context.translate(ChatRoot, "OnlineMessage", "ALL");
+		else
+			course_name = context.translate(ChatRoot, "CourseNameCaption", course_code);
+	
+		var car_text = "";
+		if (is_full_car)
+			car_text = context.translate(InputDialog, "LABEL|ITEM_FULL_CAR");
+		else
+			car_text = context.translate(InputDialog, "LABEL|ITEM_MY_CAR");
+	
+		var info = context.translate(ChatRoot, "TOOLTIP|RACE_INFO").build(name, course_category, course_name, laps, car_text);
+		PrivateRaceCommon::setToolTipOnValue(0, info);
+	}
+	
+	function onFocusEnter(context, event)
+	{
+		var item = event.widget;
+		setTooltip(context, item);
+	}
+}
+
+module PROJECT::ROOT::CommandPane
+{
+    function onKeyPress(context, event)
+    {
+        var keysym = event.keysym;
+        if (48 <= keysym && keysym <= 122)
+        {
+            ChatPane::InputBox::open(context);
+            return EVENTRESULT_CONTINUE;
+        }
+        return EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::CommandPane::RaceList
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        activatePane(context, RaceListPane);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(ChatRoot, "TOOLTIP|CommandPane::RaceList");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}
+
+module PROJECT::ROOT::CommandPane::CreateRace
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        var res = InputDialog::InputPrivateRace::open(context, [0, sChatChannelId]);
+        if (res == nil)
+        {
+            restart(context);
+        }
+
+        if (res)
+        {
+            res = main::network.sendChatMemberEnteredRaceMessage(InputDialog::InputPrivateRace::getRaceName());
+            if (!res)
+            {
+                openOnlineErrorDialog(context);
+                restart(context);
+                return EVENTRESULT_CONTINUE;
+            }
+            start_page(context, PregridRoot);
+        }
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(ChatRoot, "TOOLTIP|CommandPane::CreateRace");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}
+
+module PROJECT::ROOT::CommandPane::LobbyPlayerList
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        activatePane(context, LobbyPlayerListPane);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(ChatRoot, "TOOLTIP|CommandPane::LobbyPlayerList");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}
+
+module PROJECT::ROOT::CommandPane::BuddyList
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        activatePane(context, PlayerListPane);
+        PlayerListPane::setFocusPane();
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(ProfileRoot, "TOOLTIP|CommandPane::BuddyList");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}
+
+module PROJECT::ROOT::CommandPane::SayQuickly
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        var input_box = ChatPane::InputBox;
+        QuickInputRoot::open(context, input_box, input_box["input"], 0);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(ChatRoot, "TOOLTIP|CommandPane::SayQuickly");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}
+
+module PROJECT::ROOT::CommandPane::Say
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        ChatPane::InputBox::open(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(ChatRoot, "TOOLTIP|CommandPane::Say");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}

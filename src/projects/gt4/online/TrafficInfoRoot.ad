@@ -1,0 +1,367 @@
+module PROJECT::ROOT
+{
+    static sActiveWidget = nil;
+    static sIsOpenNow = nil;
+
+    function onLoad(context)
+    {
+        setDialogMoveActorV(Pane);
+    }
+
+    function onInitialize(context)
+    {
+    }
+
+    function onFinalize(context)
+    {
+        sActiveWidget = nil;
+        sIsOpenNow = nil;
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function open(context, sx, sy)
+    {
+        sActiveWidget = nil;
+        sIsOpenNow = true;
+        Pane.visible = false;
+        Pane.Title.title.text = context.translate(TrafficInfoRoot, "GT4 Online Traffic Information (Debug Version Only)");
+        Pane.doColorize();
+        setTrafficInfo(context);
+        activateWidget(context, sx, sy);
+        context.getUpdateContext().enterEventLoop();
+    }
+
+    function close(context)
+    {
+        TrafficInfoRoot.setFocus(nil);
+        deactivateWidget(context);
+        context.getUpdateContext().leaveEventLoop();
+    }
+
+    function activateWidget(context, _sx, _sy)
+    {
+        var sx = Pane.sx;
+        var sy = (PS2_SCREEN_H_F - Pane.h) / 2.0;
+        if (_sx != nil)
+			sx = _sx;
+		
+        if (_sy != nil)
+			sy = _sy;
+		
+        Pane.sx = sx;
+        Pane.sy = sy;
+        Pane.actor.out = true;
+        Pane.actor.warp();
+        Pane.visible = true;
+        Pane.actor.out = false;
+        context.sync(0.25);
+        context.pushPage(TrafficInfoRoot);
+        sActiveWidget = Pane;
+        TrafficInfoRoot.setFocus(Pane::Buttons::UpdateOK::Update);
+    }
+
+    function deactivateWidget(context)
+    {
+        sActiveWidget.actor.out = true;
+        context.sync(0.25);
+        sActiveWidget.visible = false;
+        context.closePage(TrafficInfoRoot);
+        sActiveWidget = nil;
+    }
+
+    function isOpenNow()
+    {
+        return (sIsOpenNow != nil && sIsOpenNow);
+    }
+
+    function forcedClose(context)
+    {
+        if (isOpenNow())
+        {
+            var event = main::menu::MScriptEvent(context, Pane::Buttons::OK, "onActivate");
+            context.pushEvent(event);
+        }
+    }
+
+    function setTrafficInfo(context)
+    {
+        var res = openProcessDialog(context, "Getting Information.\nPlease wait...", Pane::setTrafficInfoImpl, nil);
+        if (!res)
+            openConfirmDialog(context, DIALOG_ERROR, "Failed.");
+    }
+}
+
+module PROJECT::ROOT::Pane
+{
+    function setTrafficInfoImpl(context)
+    {
+        var res = setQuickRaceInfo(context);
+        res = setTunerCarRaceInfo(context);
+        res = setPrivateRaceInfo(context);
+        res = setTimeAttackInfo(context);
+        res = setRaceTotalInfo(context);
+        res = setOtherInfo(context);
+        res = setPlayerTotalInfo(context);
+        if (res)
+        {
+            calcPart();
+            clearFilter(context);
+        }
+        return res;
+    }
+
+    function setQuickRaceInfo(context)
+    {
+        var rule_set = makeCurrentRuleSet(nil, 0, 0, 0, nil, nil, nil, nil, nil, nil);
+        var res = getGameInfoCommon(context, rule_set, 7);
+        if (res == nil)
+            return false;
+
+        |var race_num, var player_num| = res;
+        QuickRace::RaceNum.text = race_num;
+        QuickRace::PlayerNum.text = player_num;
+        return true;
+    }
+
+    function setTunerCarRaceInfo(context)
+    {
+        var rule_set = makeCurrentRuleSet(nil, 0, 0, 1, nil, nil, nil, nil, nil, nil);
+        var res = getGameInfoCommon(context, rule_set, 7);
+        if (res == nil)
+            return false;
+
+        |var race_num, var player_num| = res;
+        TunerCarRace::RaceNum.text = race_num;
+        TunerCarRace::PlayerNum.text = player_num;
+        return true;
+    }
+
+    function setPrivateRaceInfo(context)
+    {
+        var rule_set = makeCurrentRuleSet(nil, 1, nil, nil, nil, nil, nil, nil, nil, nil);
+        var res = getGameInfoCommon(context, rule_set, 1);
+        if (res == nil)
+            return false;
+
+        |var race_num, var player_num| = res;
+        PrivateRace::RaceNum.text = race_num;
+        PrivateRace::PlayerNum.text = player_num;
+        LobbyRoot::clearLobbyWorldFilter(context);
+        res = search_chat(context);
+        if (res == nil)
+            return false;
+
+        |var chat_num, var member_num| = res;
+        PrivateRace::ChatRoomNum.text   = chat_num;
+        PrivateRace::ChatMemberNum.text = member_num;
+        return true;
+    }
+
+    function setTimeAttackInfo(context)
+    {
+        var rule_set = makeCurrentRuleSet(nil, nil, 1, nil, nil, nil, nil, nil, nil, nil);
+        var res = getGameInfoCommon(context, rule_set, 3);
+        if (res == nil)
+            return false;
+
+        |var race_num, var player_num| = res;
+        TimeAttack::RaceNum.text   = race_num;
+        TimeAttack::PlayerNum.text = player_num;
+        return true;
+    }
+
+    function setOtherInfo(context)
+    {
+        if (!main::network.setLobbyWorldFilter(0, 0, 1, 0, 1, (1 << 6)))
+            return false;
+
+        var res = search_chat(context);
+        if (res == nil)
+            return false;
+
+        |var chat_num, var member_num| = res;
+        var qr_player_num  = QuickRace::PlayerNum.text.toInt();
+        var tcr_player_num = TunerCarRace::PlayerNum.text.toInt();
+        var ta_player_num  = TimeAttack::PlayerNum.text.toInt();
+        var player_num = (member_num - (qr_player_num + tcr_player_num + ta_player_num));
+        Other::PlayerNum.text = player_num;
+        return true;
+    }
+
+    function getGameInfoCommon(context, rule_set, filter_mask)
+    {
+        main::network.clearGameListFilter();
+        main::network.setGameListFilter("GENERIC_FIELD_3", "EQUAL_TO", 0);
+        var filter = main::network.setGameListFilter("RULES_SET", "EQUAL_TO", rule_set, filter_mask);
+        if (filter < 0)
+            return nil;
+
+        return search_game(context);
+    }
+
+    function search_game(context)
+    {
+        var total_races = main::network.getTotalGamesFiltered();
+        if (total_races < 0)
+            return nil;
+
+        if (total_races == 0)
+            return [0, 0];
+
+        var page_unit = 16;
+        var race_num = 0;
+        var player_num = 0;
+        var page_num = ((total_races - 1) / page_unit) + 1;
+        var current_page = 0;
+        
+        for (var i = 0; i < (page_num + 1); i++)
+        {
+            var race_list = main::network.getGameList(current_page + 1, page_unit);
+            if (race_list == nil)
+                return nil;
+
+            var num = race_list.size;
+            
+            for (var j = 0; j < num; j++)
+            {
+                var column = race_list[j];
+                player_num += column[1];
+            }
+            race_num += num;
+            current_page++;
+        }
+        return [race_num, player_num];
+    }
+
+    function search_chat(context)
+    {
+        var total_chat_count = main::network.getTotalChannels();
+        if (total_chat_count < 0)
+            return nil;
+
+        if (total_chat_count == 0)
+            return [0, 0];
+
+        var page_unit = 16;
+        var chat_num = 0;
+        var member_num = 0;
+        var page_num = ((total_chat_count - 1) / page_unit) + 1;
+        var current_page = 0;
+        
+        for (var i = 0; i < (page_num + 1); i++)
+        {
+            var chat_channel_list = main::network.getChannels(current_page + 1, page_unit);
+            if (chat_channel_list == nil)
+                return nil;
+
+            var num = chat_channel_list.size;
+            
+            for (var j = 0; j < num; j++)
+            {
+                var column = chat_channel_list[j];
+                member_num += column[1];
+            }
+            chat_num += num;
+            current_page++;
+        }
+        return [chat_num, member_num];
+    }
+
+    function calcPart()
+    {
+        calcRace();
+        calcPlayer();
+    }
+
+    function calcRace()
+    {
+        var total = RaceTotal::RaceNum.text;
+        QuickRace::RaceNum.text += setParenthesisAndUnit(calcPartValue(QuickRace::RaceNum.text, total));
+        TunerCarRace::RaceNum.text += setParenthesisAndUnit(calcPartValue(TunerCarRace::RaceNum.text, total));
+        PrivateRace::RaceNum.text += setParenthesisAndUnit(calcPartValue(PrivateRace::RaceNum.text, total));
+        TimeAttack::RaceNum.text += setParenthesisAndUnit(calcPartValue(TimeAttack::RaceNum.text, total));
+        RaceTotal::RaceNum.text += setParenthesisAndUnit(calcPartValue(1, 1));
+    }
+
+    function calcPlayer()
+    {
+        var total = RaceTotal::PlayerNum.text;
+        QuickRace::PlayerNum.text += setParenthesisAndUnit(calcPartValue(QuickRace::PlayerNum.text, total));
+        TunerCarRace::PlayerNum.text += setParenthesisAndUnit(calcPartValue(TunerCarRace::PlayerNum.text, total));
+        PrivateRace::PlayerNum.text += setParenthesisAndUnit(calcPartValue(PrivateRace::PlayerNum.text, total));
+        TimeAttack::PlayerNum.text += setParenthesisAndUnit(calcPartValue(TimeAttack::PlayerNum.text, total));
+        RaceTotal::PlayerNum.text += setParenthesisAndUnit(calcPartValue(1, 1));
+    }
+
+    function setParenthesisAndUnit(value)
+    {
+        return " (" + value + "%%)";
+    }
+
+    function calcPartValue(value, total)
+    {
+        if (total <= 0)
+            return "--";
+
+        return (value.toInt() / total.toInt()) * 100;
+    }
+
+    function setRaceTotalInfo(context)
+    {
+        var qr_race_num  = QuickRace::RaceNum.text.toInt();
+        var tcr_race_num = TunerCarRace::RaceNum.text.toInt();
+        var pr_race_num  = PrivateRace::RaceNum.text.toInt();
+        var ta_race_num  = TimeAttack::RaceNum.text.toInt();
+        var race_total_race_num = (qr_race_num + tcr_race_num + pr_race_num + ta_race_num);
+        var qr_player_num  = QuickRace::PlayerNum.text.toInt();
+        var tcr_player_num = TunerCarRace::PlayerNum.text.toInt();
+        var pr_player_num  = PrivateRace::PlayerNum.text.toInt();
+        var ta_player_num  = TimeAttack::PlayerNum.text.toInt();
+        var race_total_player_num = (qr_player_num + tcr_player_num + pr_player_num + ta_player_num);
+        RaceTotal::RaceNum.text    = race_total_race_num;
+        RaceTotal::PlayerNum.text  = race_total_player_num;
+    }
+
+    function setPlayerTotalInfo(context)
+    {
+        var qr_player_num = QuickRace::PlayerNum.text.toInt();
+        var tcr_player_num = TunerCarRace::PlayerNum.text.toInt();
+        var pr_chat_member_num = PrivateRace::ChatMemberNum.text.toInt();
+        var ta_player_num = TimeAttack::PlayerNum.text.toInt();
+        var o_player_num = Other::PlayerNum.text.toInt();
+        var player_total_num = (qr_player_num + tcr_player_num + pr_chat_member_num + ta_player_num + o_player_num);
+        PlayerTotal::num.text = player_total_num;
+    }
+
+    function clearFilter(context)
+    {
+        main::network.clearGameListFilter();
+        LobbyRoot::clearLobbyWorldFilter(context);
+    }
+}
+
+module PROJECT::ROOT::Pane::Buttons::UpdateOK::Update
+{
+    function onActivate(context, event, item)
+    {
+        main::sound.play("ok");
+        setTrafficInfo(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::Pane::Buttons::UpdateOK::OK
+{
+    function onActivate(context, event, item)
+    {
+        main::sound.play("ok");
+        close(context);
+        return EVENTRESULT_FILTER;
+    }
+}
