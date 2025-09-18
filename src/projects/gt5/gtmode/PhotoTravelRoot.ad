@@ -1,0 +1,414 @@
+module ROOT
+{
+    hidden.visible = false;
+
+    static sProject;
+    static sProjectDir;
+    static sReturnPage;
+    static sFocusIndex;
+
+    static sUnlockTopSceneMap = [
+        "photo_bern" : "top_bern",
+        "photo_ahrweiler2" : "top_ahrweiler02",
+        "photo_ahrweiler3" : "top_ahrweiler03",
+        "photo_shorenin" : "top_shorenin",
+        "photo_galgano" : "photo_galgano",
+        "photo_luzern" : "photo_luzern",
+        "photo_campo01" : "top_campo",
+        "photo_sangimi" : "top_sangimi",
+    ];
+
+    method open(context, project_dir, project, root)
+    {
+        sProjectDir = project_dir == nil ? "gtmode" : project_dir;
+        sProject = project == nil ? PROJECT : project;
+        sReturnPage = root;
+
+        SequenceUtil::startPage(context, self);
+    }
+
+    method close(context)
+    {
+        if (sProject.history.defined('GTModeProject'))
+            sProject.history['GTModeProject'] = 0;
+
+        if (sReturnPage != nil)
+        {
+            var return_page = sReturnPage;
+            return_page.open(context);
+        }
+        else
+            GTModeRoot.open(context);
+    }
+
+    method onInitialize(context)
+    {
+        self.insensitive = true;
+
+        if (getVersionBranch() == "demo")
+        {
+            HeaderGT5::HBox::AspecLevel.visible = false;
+            HeaderGT5::HBox::BspecLevel.visible = false;
+            HeaderGT5::HBox::Credits.visible = false;
+        }
+
+        context.pushEvent(main::menu::MFunctionEvent(postInitialize, context));
+
+    }
+
+    method onFinalize(context)
+    {
+        sReturnPage = nil;
+        sProject = nil;
+        sProjectDir = nil;
+    }
+
+    method postInitialize(context)
+    {
+        self.FadeEffect.start();
+
+        self.insensitive = false;
+        SoundUtil::MenuBGMCrossfadeGroup("menu", 0.0, 3.0);
+
+        LocationSelector.appear(context, false, true);
+
+        self.openModeIntroduction(context);
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        close(context);
+
+        return EVENTRESULT_FILTER
+    }
+
+    method openModeIntroduction(context)
+    {
+        if (!GAME_STATUS.user_profile.game_flags.getFlag("INTRODUCTION", "PHOTO_TRAVEL"))
+        {
+            context.wait(0.5);
+
+            DialogUtil::openInformationDialog(context, context.translate(ROOT, "IntroductionGT5", "PHOTO_TRAVEL"));
+
+            GAME_STATUS.user_profile.game_flags.setFlag("INTRODUCTION", "PHOTO_TRAVEL", true);
+        }
+    }
+
+    function checkDebugCommand(context)
+    {
+        if (pdiext::isQABuild())
+        {
+            var state = context.getUpdateContext().getPadButtonState(0);
+            if (state & 0x800)
+                return true;
+        }
+
+        return false;
+    }
+}
+
+module ROOT::LocationSelector
+{
+
+    static sLocations;
+    attribute finder_;
+
+    method appear(context, warp, on_root_open)
+    {
+        if (warp)
+        {
+            self.MoveEffect.reverse = false;
+            self.MoveEffect.start();
+            self.MoveEffect.warp();
+        }
+
+        else
+        {
+            self.MoveEffect.reverse = false;
+            self.MoveEffect.start();
+        }
+
+        self.insensitive = false;
+
+        context.pushEvent(main::menu::MFunctionEvent(self.finder_.onFocus, context, ROOT));
+    }
+
+    method hide(context, warp)
+    {
+        BalloonTip.reset_value();
+
+        if (warp)
+        {
+            self.MoveEffect.reverse = true;
+            self.MoveEffect.start();
+            self.MoveEffect.warp();
+        }
+        else
+        {
+            self.MoveEffect.reverse = true;
+            self.MoveEffect.start();
+        }
+
+        self.insensitive = true;
+    }
+
+    function getLocations(context, xml_data)
+    {
+        var locations = [];
+        var xml = main::pdistd::MXml();
+        xml.parse(xml_data);
+
+        var dom = xml.result;
+        var xml_nodes = dom["PhotoTravel"];
+
+        if (xml_nodes.size <= 0)
+            return [];
+
+        var xml_node = xml_nodes[0];
+        var location_nodes = xml_node["Location"];
+
+        if (location_nodes == nil)
+            return [];
+
+        for (var i = 0; i < location_nodes.size; i++)
+        {
+            var node = location_nodes[i];
+            var location_map = [ : ];
+
+            var base_node = node["base"][0];
+
+            var location_code = base_node.getAttribute("code");
+            var location_name = base_node.getAttribute("name");
+
+            if (!checkDebugCommand(context))
+            {
+                if (GAME_STATUS.user_profile.game_flags.getFlag("PHOTO_STAGES", location_code))
+                    locations.push([location_code, location_name]);
+            }
+            else
+                locations.push([location_code, location_name]);
+        }
+
+        return locations;
+    }
+
+    method onInitialize(context)
+    {
+        var filename = "/textdata/gt5/photo_travel.xml";
+
+        var fst = main::pdistd::ReadFile(filename);
+        var buf = fst["buffer"];
+
+        if (buf != nil)
+            self.sLocations = getLocations(context, buf);
+
+        var images = [];
+        foreach (var location in self.sLocations)
+        {
+            var location_code = location[0];
+            location_code -= "photo_";
+
+            images.push("image/gt5/photo/flyer_%{location_code}.dds");
+        }
+
+        ListBox3D.setImages(images);
+
+        var initial_data = self.getInitialData(context, self.sLocations);
+
+        self.finder_ = UIKitProject::FinderRoot.setCopy(context, self.Composite, initial_data, false);
+
+        ROOT::ButtonHelpGT5.set(context, [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")],
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+        ]);
+
+        hide(context, true);
+    }
+
+    method onFinalize(context)
+    {
+        if (self.finder_ != nil)
+        {
+            var parent = self.finder_.parent;
+            parent.removeChild(context, self.finder_);
+            self.finder_ = nil;
+        }
+    }
+
+    method cb_on_activate(context, folder_data, func_close, arg)
+    {
+        var candidate_data = folder_data.getItemData();
+        var location_code = candidate_data.value_[0];
+        var unlock_top_scene = ROOT::sUnlockTopSceneMap[location_code];
+
+        if (unlock_top_scene != nil)
+            GLOBAL_STATUS.user_profile.game_flags.setFlag("TOP_SCENES", unlock_top_scene, true);
+
+        main::GameSequence::setArgumentObject(location_code);
+
+        sProject.history['GTModeProject'] = candidate_data.item_index_;
+
+        var strlog = "GP=%s:GU=%s".format(location_code, main::PDINetwork.getClientName());
+        main::Grim2.requestPutLog(strlog);
+
+        if (sProjectDir != nil)
+        {
+            sProject.history['LastPageName'] = ROOT.name;
+            SequenceUtil::startProject(context, "photo", sProjectDir);
+        }
+        else
+        {
+            PROJECT.history['LastPageName'] = ROOT.name;
+            SequenceUtil::startProject(context, "photo", "gtmode");
+        }
+    }
+
+    method cb_init_item(context, candidate_data, item_w, arg)
+    {
+        var location_code = candidate_data.value_[0];
+        location_code -= "photo_";
+        item_w.ImageFace.image_path = "image/gt5/photo/thumb_%{location_code}.dds";
+    }
+
+    method cb_focus_enter(context, candidate_data, item_w, old_candidate_data, old_item_w, arg)
+    {
+        var location_name = candidate_data.value_[1];
+
+        BalloonTip.set_value(context, item_w, context.translate(ROOT, "PhotoMode", location_name), 24);
+
+        ListBox3D.focus_index = candidate_data.item_index_;
+    }
+
+    method getInitialData(context, locations)
+    {
+        var focus_index = 0;
+        if (sProject.history.defined('GTModeProject'))
+            focus_index = sProject.history['GTModeProject'];
+
+        var initial_data = UIKitProject::FinderRoot.InitialData();
+
+        initial_data.view_type_ = UIKitProject::FinderRoot::ViewType::SCROLL_H;
+        initial_data.item_type_ = UIKitProject::FinderRoot::ItemType::COMMON_THUMB_S;
+
+        initial_data.candidates_ = UIKitProject::FinderRoot.makeCandidates(locations);
+
+        initial_data.translate_page_ = ROOT;
+        initial_data.load_image_from_disk_ = false;
+
+        initial_data.cb_on_activate_ = self.cb_on_activate;
+        initial_data.cb_init_item_ = self.cb_init_item;
+        initial_data.cb_focus_enter_ = self.cb_focus_enter;
+
+        initial_data.focus_index_ = focus_index;
+        initial_data.extended_item_ = hidden::Thumb;
+
+        initial_data.h_scrollbar_ = self.HScrollbar;
+        initial_data.import_iconbox_parameter_ = self.Composite::IconBox;
+
+        initial_data.activate_sound_ = "next";
+
+        return initial_data
+    }
+}
+
+module ROOT::LocationSelector::Photo
+{
+
+    method onActivate(context)
+    {
+        sound.play("ok");
+        PhotoPopup.open(context, pdistd::getPlayerName(), 1);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onCancel(context)
+    {
+        PROJECT::playBackHomeSound();
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFocusEnter(context, event)
+    {
+        BalloonTip.set_value(context, event.widget, context.translate(ROOT, "GTModeProject::GTModeRoot", "PHOTO"), 20);
+        return EVENTRESULT_STOP;
+    }
+
+    method onFocusLeave(context, event)
+    {
+        BalloonTip.reset_value();
+
+        return EVENTRESULT_STOP;
+    }
+    }
+
+module ROOT::ListBox3D
+{
+    static images_ = [];  
+
+    function setImages(images)
+    {
+        images_ = images;
+    }
+
+    function onInitialize(context)
+    {
+        hidden::Item::ImageFace.image_path = "";
+        ListBox3D.setItemTemplate(context, hidden::Item);
+        ListBox3D.setItemCount(images_.size);
+    }
+
+    method onVisibleNotify(context, indexes)
+    {
+        foreach (var i in indexes)
+        {
+            if (self.getItemVisible(i))
+            {
+                var w = self.getItemWidget(i, context);
+                if (w != nil)
+                {
+                    var ii = i % images_.size;
+                    w.ImageFace.image_path = images_[ii];
+                }
+            }
+        }
+
+    }
+}
+
+module ROOT::MyHome
+{
+    method onActivate(context)
+    {
+        PROJECT::playBackHomeSound();
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onCancel(context)
+    {
+        PROJECT::playBackHomeSound();
+
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFocusEnter(context, event)
+    {
+        BalloonTip.set_value(context, event.widget, context.translate(ROOT, "MyHome", "MYHOME_BACK_BUTTON"), 20);
+
+        return EVENTRESULT_STOP;
+    }
+
+    method onFocusLeave(context, event)
+    {
+        BalloonTip.reset_value();
+
+        return EVENTRESULT_STOP;
+    }
+}

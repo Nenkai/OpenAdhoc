@@ -1,0 +1,458 @@
+static exporter = nil;
+
+function getCarName(context, photo)
+{
+    var car_label = photo.car_label;
+
+    if (car_label == nil || car_label == "")
+        return "---";
+
+    return main::gtengine::MSpecDB::getCarShortName(photo.car_label);
+}
+
+function resizeForOnline(context, photo)
+{
+    context.beginImageRender();
+
+    context.loadImage(photo.filename);
+
+    var w = context.getImageWidth();
+    var h = context.getImageHeight();
+
+    var scale = 1.0;
+
+    if (w > h)
+        var scale = 1024.0 / w.toFloat();
+    else
+        var scale = 768.0 / h.toFloat();
+
+    if (scale > 1.0)
+        return photo.filename;
+
+    context.scaleImage(scale);
+
+    var output_file = "/APP_DATA_RAW/photo/test.jpg";
+    context.saveImage(output_file);
+    context.endImageRender();
+
+    return output_file;
+}
+
+class BaseImageUploader : UIKitProject::ProgressRoot::GrimHttp
+{
+    attribute photo;
+
+    method __init__(photo)
+    {
+        self.photo = photo;
+        self.auto_mode = true;
+    }
+
+    method begin_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_UPLOADING");
+    }
+
+    method failed_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_UPLOAD_FAILED");
+    }
+}
+
+class ImageUploader : BaseImageUploader
+{
+    method success_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_FRIEND_OPEN");
+    } 
+
+    method cancel_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "QUERY_UPLOAD_CANCEL");
+    }
+
+    method beginImpl(context)
+    {
+        VulgarityFilterUtil::begin();
+
+        |var res, var sanitized_text| = VulgarityFilterUtil::check(self.photo.description);
+        VulgarityFilterUtil::end();
+
+        if (!res)
+            return false;
+
+        var comment = sanitized_text;
+        var resized_jpg_file = resizeForOnline(context, self.photo);
+
+        var jpg = pdistd::ReadFile(resized_jpg_file);
+        self.request = Photo.requestUploadImage(jpg["buffer"], self.photo.title, getCarName(context, self.photo),
+        comment, function (args) {});
+
+        if (resized_jpg_file != self.photo.filename)
+            pdistd::RemoveFile(resized_jpg_file);
+
+        return true;
+    }
+}
+
+class AvatarImageUploader : BaseImageUploader
+{
+    method success_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_SET_AS_PROFILEPHOTO");
+    }
+
+    method beginImpl(context)
+    {
+        var jpg = pdistd::ReadFile(self.photo.filename_t);
+
+        self.request = Photo.requestUploadAvatarImage(jpg["buffer"], self.photo.title,
+        getCarName(context, self.photo), self.photo.description, function (args) {});
+
+        return true;
+    }
+}
+
+function load(context)
+{
+    pdiext::MPhotoSysUtil().load();
+}
+
+function unload(context)
+{
+    pdiext::MPhotoSysUtil().unload();
+}
+
+function initialize(context, is_friend)
+{
+    if (!is_friend)
+    {
+        if (exporter == nil)
+            exporter = pdiext::MPhotoSysUtil();
+
+        do
+        {
+
+        } while (!exporter.isFinalizeFinished());
+
+        exporter.initialize();
+    }
+}
+
+function finalize(context)
+{
+    if (exporter != nil)
+    {
+        do
+        {
+
+        } while(!exporter.isReady());
+
+        exporter.finalize();
+        exporter = nil;
+    }
+}
+
+function setFavorite(context, photo, args, callback, item_w)
+{
+    var result = false;
+    var flag = args;
+
+    if (flag)
+    {
+        if (PhotoFileUtil::getFavoriteCount() < PhotoFileUtil::getFavoriteMax())
+        {
+            setFavoriteImpl(context, photo, true, callback, item_w);
+            var result = true;
+        }
+
+        else
+        {
+            ERROR(context, ROOT, "ERROR_FAVORITE_IS_FULL");
+        }
+    }
+    else
+    {
+        setFavoriteImpl(context, photo, false, callback, item_w);
+        var result = true;
+    }
+
+    return result;
+}
+
+function setOnline(context, photo, args, callback, item_w)
+{
+    var flag = args;
+    if (flag)
+    {
+        if (PhotoFileUtil::getOnlineCount() < PhotoFileUtil::getOnlineMax())
+        {
+            if (QUERY(context, ROOT, "QUERY_SET_ONLINE_PHOTO"))
+            {
+                var uploader = ImageUploader(photo);
+
+                if (UIKitProject::ProgressRoot.open(context, [uploader]))
+                {
+                    setOnlineImpl(context, photo, true, callback, item_w);
+                    photo.grim_photo_id = Photo.decodeResultString(uploader.request);
+
+                    PhotoFileUtil::updateGrimPhotoId(photo.id, photo.grim_photo_id);
+
+                    PDINetwork.unlockTrophyAsync(gtengine::TrophyType::UPLOAD_PHOTO);
+                }
+            }
+        }
+        else
+        {
+            ERROR(context, ROOT, "ERROR_ONLINE_IS_FULL");
+        }
+    }
+    else
+    {
+        if (QUERY(context, ROOT, "QUERY_SET_OFFLINE"))
+        {
+            var request = GrimFacade::Photo::requestDeleteImage(context, photo.grim_photo_id, function (args) {});
+
+            if (Grim2Util::__deprecated__join__(context, request))
+            {
+                if (Photo.decodeResult(request))
+                {
+                    setOnlineImpl(context, photo, false, callback, item_w);
+                }
+            }
+
+            else
+            {
+                REQUEST_ERROR(context, ROOT, "MSG_UPLOAD_FAILED", request);
+            }
+        }
+    }
+}
+
+function showDetail(context, photo, args, callback, item_w)
+{
+    |var photo_list, var index, var delete_mode, var is_friend| = args;
+    var need_update = PhotoDetailPopup.open(context, photo_list, index, delete_mode, is_friend);
+
+    if (need_update)
+        callbackIf(context, callback, photo, item_w);
+
+    return need_update;
+}
+
+class Waiting : UIKitProject::ProgressRoot::ThreadData
+{
+    method __init__(exec_func, args)
+    {
+        __super__::__init__(exec_func, args);
+        self.auto_mode = true;
+    }   
+
+    method begin_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_EXPORTING");
+    }   
+
+    method success_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_EXPORT");
+    }   
+
+    method failed_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_FAILED");
+    }
+}
+
+function exportAll(context, photo_list, args, callback, item_w)
+{
+    var space = pdistd::GetDiskFreeSize("/APP_DATA");
+
+    var need_size = (500 * 0x400) * 0x400;
+
+    foreach (var photo in photo_list)
+        need_size += photo.filesize;
+
+    var need_size_mb = (((need_size + (0x400 * 0x400)) -1) / 0x400) / 0x400;
+    if (!QUERY1(context, ROOT, "QUERY_PHOTO_EXPORT", need_size_mb))
+        return;
+
+    if (space < need_size)
+    {
+        main::sound.play("disable");
+
+        var threshold = "%d%s".format(need_size_mb, context.translate(ROOT, "Unit", "MEGA_BYTE"));
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "SystemMessage", "DISKFULL").build(threshold));
+        return;
+    }
+
+    var needFinalizeExporter = false;
+    if (exporter == nil)
+    {
+        Function::initialize(context, false);
+        needFinalizeExporter = true;
+    }
+
+    var updater = Waiting(function (args, progress) 
+    {
+        var context = args;
+        var index = 0;
+
+        foreach (var photo in photo_list)
+        {
+            ++index;
+
+            if (!pdistd::Exist(photo.filename))
+                ;
+            else
+            {
+                var file_name = pdistd::ConvertSystemPath(photo.filename);
+                var last_slash = file_name.rfind("/", file_name.size - 1);
+                var dir = file_name.substr(0, last_slash + 1);
+                var file = file_name.substr(last_slash + 1);
+
+                do
+                {
+
+                } while (!exporter.isReady())
+
+                var res = exporter.export(dir, file, getTitle(context, photo), "");
+
+                do
+                {
+
+                } while (exporter.isWaitExport() > 0)
+
+                if (exporter.isWaitExport() != 0)
+                    ;
+                else
+                    progress.value = index.toFloat() / photo_list.size;
+            }
+        }
+
+        progress.value = 1.0;
+    }, context);
+
+    var result = UIKitProject::ProgressRoot.open(context, [updater]);
+
+    if (needFinalizeExporter)
+        Function::finalize(context);
+
+    callbackIf(context, callback, photo_list, item_w);
+}
+
+function export(context, photo, args, callback, item_w)
+{
+    exportAll(context, [photo], args, nil, item_w);
+    callbackIf(context, callback, photo, item_w);
+}
+
+function delete(context, photo, args, callback, item_w)
+{
+    if (!QUERY_D_NO(context, ROOT, "QUERY_DELETE"))
+        return;
+
+    PhotoFileUtil::remove(photo);
+    callbackIf(context, callback, photo, item_w);
+}
+
+function deleteAll(context, photo_list, args, callback, item_w)
+{
+    if (!QUERY_D_NO(context, ROOT, "QUERY_DELETE_ALL"))
+    {
+        callbackIf(context, callback, photo_list, item_w);
+        return;
+    }
+
+    PhotoFileUtil::removeByList(photo_list);
+    OK(context, ROOT, "MSG_DONE");
+    callbackIf(context, callback, photo_list, item_w);
+}
+
+function edit(context, photo, args, callback, item_w)
+{
+    if (photo.online != 0)
+    {
+        ERROR(context, ROOT, "ERROR_PHOTO_IS_ONLINE");
+        return;
+    }
+
+    var result = SettingCommentDialog.open(context, "PHOTOEDIT", "PHOTO", "", photo.description);
+    if (result != nil)
+    {
+        PhotoFileUtil::updateComment(photo.id, result["comment"]);
+
+        photo.description = result["comment"];
+        callbackIf(context, callback, photo, item_w);
+    }
+}
+
+function updateAvatarImage(context, photo)
+{
+    if (LoginUtil::isOnline())
+    {
+        var uploader = AvatarImageUploader(photo);
+        UIKitProject::ProgressRoot.open(context, [uploader]);
+        UserProfile2.clearMe();
+    }
+
+    saveNow(context);
+}
+
+function updateProfile(context, photo, args)
+{
+    if (!QUERY(context, ROOT, "QUERY_PHOTO_SET_PROFILE"))
+        return false;
+
+    GLOBAL_STATUS.user_profile.context.avatar_photo_id = photo.id;
+    updateAvatarImage(context, photo);
+
+    return true;
+}
+
+function getTitle(context, photo)
+{
+    if (photo.genre == PhotoFileUtil::GENRE::PHOTO_TRAVEL)
+        return context.translate(ROOT, "PhotoMode", photo.title);
+    else if (photo.genre == PhotoFileUtil::GENRE::PHOTO_RACE)
+        return context.translate(ROOT, "CourseName", photo.title);
+    else
+        return context.translate(ROOT, "PhotoMode", "PROFILE_PHOTO_TITLE");
+}
+
+function getPlace(context, photo)
+{
+    var place = photo["place"];
+
+    if (place != "")
+    {
+        if (place.beginWith("PHOTO_"))
+            return context.translate(ROOT, "PhotoMode", photo["place"]);
+        else
+            return context.translate(ROOT, "CourseName", photo["place"]);
+    }
+    else
+        return context.translate(ROOT, "PhotoMode", "PROFILE_PHOTO_TITLE");
+}
+
+function setFavoriteImpl(context, photo, value, callback, item_w)
+{
+    PhotoFileUtil::setFavorite(photo.id, value);
+    photo.favorite = value;
+
+    callbackIf(context, callback, photo, item_w);
+}
+
+function setOnlineImpl(context, photo, value, callback, item_w)
+{
+    PhotoFileUtil::setOnline(photo.id, value);
+    photo.online = value;
+
+    callbackIf(context, callback, photo, item_w);
+}
+
+function callbackIf(context, callback, photo, item_w)
+{
+    if (callback != nil)
+        callback(context, photo, item_w);    
+}

@@ -1,0 +1,588 @@
+module ROOT
+{
+    module Function
+    {
+        #include "PhotoFunction.ad"
+    }
+
+    module __BalloonTarget__
+    {
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+            var localized_text = context.translate(ROOT, "MyHome", w.name.upcase());
+
+            if (BalloonTip.visible)
+                BalloonTip.set_value(context, w, localized_text, 0);
+            else
+                BalloonTip.visible = true;
+
+            return EVENTRESULT_FILTER;
+        }    
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    attribute photo_list;
+    attribute index;
+    attribute delete_mode;
+    attribute is_friend;
+    attribute popup;
+    attribute closed;
+    attribute need_update;
+
+    attribute watcher;
+    attribute photo_tx;
+    attribute photo_ty;
+    attribute photo_scale;
+    attribute photo_scaleDst;
+    attribute mode_scale;
+
+    method open(context, photo_list, index, delete_mode, is_friend)
+    {
+        self.need_update = false;
+        self.photo_list = photo_list;
+        self.index = index;
+        self.delete_mode = delete_mode;
+        self.is_friend = is_friend;
+        self.closed = false;
+
+        self.photo_tx = 0.0;
+        self.photo_ty = 0.0;
+        self.photo_scale = 1.0;
+        self.photo_scaleDst = 1.0;
+        self.mode_scale = 0;
+        
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return self.need_update;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+        
+        self.closed = true;
+        ContextMain.event_mask = 5;
+        ContextMain.disableInput();
+
+        FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        }
+
+        GTModeRoot.visible = true;
+        FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        context.cursor_visible = false;
+
+        Menu::HBox::CommandA.visible = !self.is_friend;
+
+        Menu::HBox::CommandA::Online.visible = LoginUtil::isOnline();
+        Menu::HBox::CommandB::PhotoEdit.visible = !self.is_friend;
+        Menu::HBox::CommandB::SetAsProfile.visible = !self.is_friend;
+        Menu::HBox::CommandB::PhotoExport.visible = !self.is_friend;
+
+        Menu::HBox::CommandB::Delete.visible = self.delete_mode;
+
+        Menu::Info::Data::FileName.visible = !self.is_friend;
+        Menu::Info::Data::Aspect.visible = !self.is_friend;
+        Menu::Info::Data::FileSize.visible = !self.is_friend;
+        Menu::Info::Data::Photographer.visible = self.is_friend;
+
+        aliasImageFace.limit_width = 3840;
+        ROOT.SBox.scale_x = 1.0;
+        ROOT.SBox.scale_y = 1.0;
+
+        ROOT.SBox.x = 0.0;
+        ROOT.SBox.y = 0.0;
+
+        updateImage(context);
+
+        LeaveDetectUtil::begin(context, 5, self, self.onLeaveCallback, self.onActivateCallback, false);
+
+        GTModeRoot.visible = false;
+        BalloonTip.visible = false;
+
+        ROOT.setFocus(Menu::HBox::CommandB::Close);
+
+        ROOT.watcher = WatcherUtil::Create(context, onTick, 0);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onTick(context)
+    {
+        if (ROOT.watcher == nil)
+            return;
+
+        if (!ROOT.is_friend)
+        {
+            self.photo_scale = (self.photo_scale * 0.7) + (self.photo_scaleDst * 0.3);
+
+            ROOT.SBox.scale_x = self.photo_scale;
+            ROOT.SBox.scale_y = self.photo_scale;
+
+            var update_context = context.getUpdateContext();
+
+            var x = update_context.getPadAnalogChannel(0, 0);
+            var y = update_context.getPadAnalogChannel(0, 1);
+
+            x *= 1.2;
+            y *= 1.2;
+
+            var x = Math::clamp(x, -1.0, 1.0);
+            var y = Math::clamp(y, -1.0, 1.0);
+
+            var xmargin = 0.0;
+            var ymargin = 0.0;
+
+            x *= ((1920.0 * 0.5) * (self.photo_scaleDst - 1.0)) + xmargin;
+            y *= ((1080.0 * 0.5) * (self.photo_scaleDst - 1.0)) + ymargin;
+
+            var rate = 0.1;
+
+            self.photo_tx = (self.photo_tx * (1.0 - rate)) + (x * rate);
+            self.photo_ty = (self.photo_ty * (1.0 - rate)) + (y * rate);
+
+            ROOT.SBox.x = -self.photo_tx;
+            ROOT.SBox.y = -self.photo_ty;
+        }
+    }
+
+    method onFinalize(context)
+    {
+        LeaveDetectUtil::end(context);
+        aliasImageFace.image_path = "";
+        context.cursor_visible = true;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (!ROOT.is_friend && event.keysym == CELL_PAD_CTRL_TRIANGLE)
+        {
+            mode_scale ^= 1;
+
+            if (mode_scale)
+                self.photo_scaleDst = 2.0;
+            else
+            {
+                self.photo_tx = 0.0;
+                self.photo_ty = 0.0;
+                self.photo_scaleDst = 1.0;
+            }
+
+            return EVENTRESULT_FILTER;
+        }
+
+        if (event.keysym == CELL_PAD_CTRL_R2)
+        {
+            ROOT.doNext(context);
+            return EVENTRESULT_FILTER;
+        }
+        else if (event.keysym == CELL_PAD_CTRL_L2)
+        {
+            ROOT.doPrevious(context);
+            return EVENTRESULT_FILTER;
+        }
+
+        if (LeaveDetectUtil::activated(context, event))
+            return EVENTRESULT_FILTER;
+
+        return EVENTRESULT_CONTINUE;
+    }
+
+    method onLeaveCallback(context)
+    {
+        Menu.insensitive = true;
+        context.cursor_visible = false;
+
+        startActors(Menu, true);
+        BalloonTip.reset_value();
+    }
+
+    method onActivateCallback(context)
+    {
+        context.cursor_visible = true;
+        startActors(Menu, false);
+
+        Menu.insensitive = false;
+    }
+
+    function setupImage(context, imageface, image_path)
+    {
+        imageface.block = true;
+        imageface.opacity = 0.0;
+
+        context.sync(0.05);
+        imageface.image_path = "";
+
+        context.sync(0.1);
+        context.clearTrashDataAll();
+
+        imageface.image_path = image_path;
+        context.sync(0.05);
+        imageface.opacity = 1.0;
+    }
+
+    method updateImage(context)
+    {
+        var photo = getPhoto();
+
+        if (ROOT.is_friend)
+        {
+            var photo_id = photo["photo_id"];
+            var image_path = Photo.getImagePath(photo_id);
+
+            if (pdistd::Exist(image_path))
+                setupImage(context, aliasImageFace, image_path);
+            else
+            {
+                Photo.requestImage(photo_id, function (args)
+                {
+                    |var context, var request| = args;
+
+                    if (request.isDone())
+                        setupImage(context, aliasImageFace, image_path);
+                });
+            }
+
+            Menu::Info::Data::FileName::label.TransientReset();
+            Menu::Info::Data::FileName::label.text = image_path;
+
+            Menu::Info::Data::ShootingDate::value.TransientReset();
+            Menu::Info::Data::ShootingDate::value.text = photo["create_time"].toLocal();
+
+            Menu::Info::Data::ShootingPlace::value.TransientReset();
+            Menu::Info::Data::ShootingPlace::value.text = Function::getPlace(context, photo);
+
+            Menu::Info::Data::CarName::value.TransientReset();
+            Menu::Info::Data::CarName::value.text = photo["car_name"];
+
+            Menu::Info::Data::Aspect::value.TransientReset();
+            Menu::Info::Data::Aspect::value.text = "%d x %d".format(photo["width"], photo["height"]);
+
+            Menu::Info::Data::FileSize::value.TransientReset();
+            Menu::Info::Data::FileSize::value.text = "";
+
+            Menu::Info::Data::Photographer::value.TransientReset();
+            Menu::Info::Data::Photographer::value.text = photo["user_id"];
+
+            Menu::Info::Data::Exif.visible = false;
+            Menu::Info::Data::Exif::value.TransientReset();
+            Menu::Info::Data::Exif::value.text = "--";
+
+            Menu::Info::Data::Comment::value.TransientReset();
+            Menu::Info::Data::Comment::value.text = abbreviate(photo["comment"]);
+        }
+        else
+        {
+            if (!PhotoFileUtil::isExist(photo.id))
+            {
+                aliasImageFace.image_path = "";
+                Menu::Info::Data.visible = false;
+                ImageFaceD.visible = true;
+                TextFaceD.visible = true;
+
+                Menu::HBox::CommandA::Favorite::CheckBox.active = false;
+                Menu::HBox::CommandA::Online::CheckBox.active = false;
+            }
+            else
+            {
+                ImageFaceD.visible = false;
+                TextFaceD.visible = false;
+
+                setupImage(context, aliasImageFace, photo.filename);
+
+                Menu::Info::Data.visible = true;
+
+                var list = photo.filename.split("/");
+
+                Menu::Info::Data::FileName::label.TransientReset();
+                Menu::Info::Data::FileName::label.text = list[list.size - 1];
+
+                Menu::Info::Data::ShootingDate::value.TransientReset();
+                Menu::Info::Data::ShootingDate::value.text = getDateTime(context, ROOT, photo.datetime);
+
+                Menu::Info::Data::ShootingPlace::value.TransientReset();
+                Menu::Info::Data::ShootingPlace::value.text = Function::getTitle(context, photo);
+
+                Menu::Info::Data::CarName::value.TransientReset();
+                Menu::Info::Data::CarName::value.text = Function::getCarName(context, photo);
+
+                Menu::Info::Data::Aspect::value.TransientReset();
+                Menu::Info::Data::Aspect::value.text = "%d x %d".format(photo.width, photo.height);
+
+                Menu::Info::Data::FileSize::value.TransientReset();
+                Menu::Info::Data::FileSize::value.text = UnitUtil::getDiskSizeString(context, photo.filesize);
+
+                Menu::Info::Data::Photographer::value.TransientReset();
+                Menu::Info::Data::Photographer::value.text = photo.online_id;
+
+                Menu::Info::Data::Exif::value.TransientReset();
+                Menu::Info::Data::Exif::value.text = "--";
+
+                Menu::Info::Data::Comment::value.TransientReset();
+                Menu::Info::Data::Comment::value.text = abbreviate(photo.description);
+
+                Menu::HBox::CommandA::Favorite::CheckBox.active = photo.favorite == 1;
+                Menu::HBox::CommandA::Online::CheckBox.active = photo.online == 1;
+            }
+        }
+
+        Menu::HBox::Count::TextFace.text = "%d / %d".format(self.index + 1, self.photo_list.size);
+    }
+
+    method doPrevious(context)
+    {
+        main::sound.play("ok");
+
+        --ROOT.index;
+        if (ROOT.index < 0)
+            ROOT.index += ROOT.photo_list.size;
+
+        ROOT.updateImage(context);
+    }
+
+    method doNext(context)
+    {
+        main::sound.play("ok");
+
+        ++ROOT.index;
+        ROOT.index %= ROOT.photo_list.size;
+
+        ROOT.updateImage(context);
+    }
+
+    function abbreviate(text)
+    {
+        var threshold = 15;
+
+        var a = text.split("\n");
+        var size = a.size <= threshold ? a.size : threshold;
+
+        var b = a.slice(0, size);
+        if (threshold < a.size)
+            b.push("...");
+
+        return b.join("\n");
+    }
+
+    method getPhoto()
+    {
+        return self.photo_list[self.index];
+    }
+
+    module Menu::HBox
+    {
+        module CommandA
+        {
+            module Favorite::CheckBox
+            {
+                method onCallback(context, photo, item_w)
+                {
+                    CheckBox.active = !CheckBox.active;
+                    ROOT.need_update = true;
+                }
+
+                method onActivate(context)
+                {
+                    var photo = ROOT.getPhoto();
+
+                    if (PhotoFileUtil::isExist(photo.id))
+                    {
+                        main::sound.play("cursor");
+                        Function::setFavorite(context, photo, !self.active, onCallback);
+                    }
+                    else
+                        main::sound.play("disable");
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Online::CheckBox
+            {
+                method onCallback(context, photo, item_w)
+                {
+                    CheckBox.active = !CheckBox.active;
+                    ROOT.need_update = true;
+                }
+            
+                method onActivate(context)
+                {
+                    LeaveDetectUtil::suspend(context);
+                
+                    var photo = ROOT.getPhoto();
+                
+                    if (PhotoFileUtil::isExist(photo.id) && !photo.is_3d)
+                    {
+                        main::sound.play("cursor");
+                        Function::setOnline(context, photo, !photo.online, onCallback);
+                    }
+                    else
+                        main::sound.play("disable");
+                
+                    LeaveDetectUtil::resume(context);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+
+        module CommandB
+        {
+            import __BalloonTarget__::*;
+
+            module Previous
+            {
+                method onActivate(context)
+                {
+                    ROOT.doPrevious(context);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Next
+            {
+                method onActivate(context)
+                {
+                    ROOT.doNext(context);
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+
+            module SetAsProfile
+            {
+                method onActivate(context)
+                {
+                    LeaveDetectUtil::suspend(context);
+
+                    var photo = ROOT.getPhoto();
+                    if (PhotoFileUtil::isExist(photo.id))
+                    {
+                        main::sound.play("ok");
+                        Function::updateProfile(context, photo);
+                    }
+                    else
+                        main::sound.play("disable");
+
+                    LeaveDetectUtil::resume(context);
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+
+            module PhotoEdit
+            {
+                method onCallback(context, photo, item_w)
+                {
+                    Menu::Info::Data::Comment::value.TransientReset();
+                    Menu::Info::Data::Comment::value.text = abbreviate(photo.description);
+
+                    ROOT.need_update = true;
+                }
+
+                method onActivate(context)
+                {
+                    LeaveDetectUtil::suspend(context);
+
+                    var photo = ROOT.getPhoto();
+
+                    if (PhotoFileUtil::isExist(photo.id))
+                    {
+                        main::sound.play("ok");
+                        Function::edit(context, photo, nil, onCallback);
+                    }
+                    else
+                        main::sound.play("disable");
+
+                    LeaveDetectUtil::resume(context);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module PhotoExport
+            {
+                method onActivate(context)
+                {
+                    LeaveDetectUtil::suspend(context);
+
+                    var photo = ROOT.getPhoto();
+
+                    if (PhotoFileUtil::isExist(photo.id))
+                    {
+                        main::sound.play("ok");
+                        Function::export(context, photo);
+                    }
+                    else
+                        main::sound.play("disable");
+
+                    LeaveDetectUtil::resume(context);
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+
+            module Delete
+            {
+                method onCallback(context, photo, item_w)
+                {
+                    ROOT.need_update = true;
+                    ROOT.updateImage(context);
+                }   
+
+                method onActivate(context)
+                {
+                    LeaveDetectUtil::suspend(context);
+
+                    var photo = ROOT.getPhoto();
+
+                    if (PhotoFileUtil::isExist(photo.id))
+                    {
+                        main::sound.play("ok");
+                        Function::delete(context, photo, nil, onCallback);
+                    }
+                    else
+                        main::sound.play("disable");
+
+                    LeaveDetectUtil::resume(context);
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+
+            module Close
+            {
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    ROOT.close(context);
+
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+        }
+    }
+}

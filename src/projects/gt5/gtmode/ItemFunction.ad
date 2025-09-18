@@ -1,0 +1,359 @@
+function getCategoryName(item)
+{
+    return GameItemUtil::getCategoryName(item.category_id);
+}
+
+function showDetail(context, item, args, callback, item_w)
+{
+    var gt_friend_list = args;
+
+    if (ItemDetailPopup.open(context, item, gt_friend_list))
+    {
+        callbackIf(context, callback, item, item_w);
+    }
+}
+
+function delete(context, item, args, callback, item_w)
+{
+    if (!QUERY1_D_NO(context, ROOT, "QUERY_ITEM_DELETE", item["item_name"]))
+    {
+        return false;
+    }
+
+    if (!GameItemUtil::ItemBox::delete2(item))
+    {
+        ERROR(context, ROOT, "MSG_FAILED");
+        return false;
+    }
+
+    --item.count;
+    callbackIf(context, callback, item, item_w);
+
+    return true;
+}
+
+function deleteSelected(context, item_list, args, callback, item_w)
+{
+    if (!QUERY_D_NO(context, ROOT, "QUERY_DELETE_SELECTED"))
+    {
+        callbackIf(context, callback, item_list, item_w);
+        return false;
+    }
+
+    if (!GameItemUtil::ItemBox::deleteByList(item_list))
+    {
+        ERROR(context, ROOT, "MSG_FAILED");
+        return false;
+    }
+
+    foreach (var item in item_list)
+        --item.count;
+
+    callbackIf(context, callback, item_list, item_w);
+    return true;
+}
+
+function use(context, item, args, callback, item_w)
+{
+    if (!QUERY1(context, ROOT, "QUERY_ITEM_USE", item["item_name"]))
+        return false;
+
+    if (!useItem(context, item))
+        return false;
+
+    if (!GameItemUtil::ItemBox::delete2(item))
+    {
+        ERROR(context, ROOT, "MSG_FAILED");
+        return false;
+    }
+
+    saveNow(context);
+
+    --item.count;
+
+    callbackIf(context, callback, item, item_w);
+    return true;
+}
+
+function checkPresent(context, item, show_error)
+{
+    if (item.present_flag != nil && item.present_flag == 0)
+    {
+        if (show_error)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+            context.translate(ROOT, "MyHome", "QUERY_CANNOT_PRESENT"));
+        }
+
+        return false;
+    }
+
+    if (gtengine::GameItemType::SPECIAL == item.type_id && GameItemUtil::isCarTicket(item))
+    {
+        var car_label = item["code"];
+        var cp = gtengine::MCarParameter(car_label);
+
+        var is_voucher_car = gtengine::MSpecDB::checkGenericFlag("is_voucher_car", cp.getCarCode());
+        var is_dlc_car = gtengine::MSpecDB::checkGenericFlag("is_dlc_cat", cp.getCarCode());  // BUG: is_dlc_cat?
+
+        if (is_voucher_car || is_dlc_car)
+        {
+            if (!gtengine::MSpecDB::checkGenericFlag("can_present", cp.getCarCode()))
+            {
+                if (show_error)
+                    ERROR(context, ROOT, "QUERY_CANNOT_PRESENT")
+
+                return false;
+            }
+        }
+
+        var threshold_price = Grim2.getServerOptionToInt("gt5", "present.car.price_limit", 1000000);
+        var price = gtengine::MSpecDB::getCarPrice(cp.getCarCode());
+
+        if (price >= threshold_price)
+        {
+            if (show_error)
+                ERROR(context, ROOT, "QUERY_CANNOT_PRESENT");
+
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function present(context, item, args, callback, item_w)
+{
+    var friend = args;
+    var result = SettingPresentDialog.open(context, friend, item, nil, nil);
+
+    if (result == nil)
+        return false;
+
+    item.comment = result["comment"];
+
+    if (!LoginUtil::isOnline())
+    {
+        ERROR(context, ROOT, "MSG_UPLOAD_FAILED");
+        return false;
+    }
+
+    var blob = GameItemUtil::createBlobFromGameItem(item);
+
+    var request = GrimFacade::ItemBox::requestSendItem(
+        context, result["user_id"], item.type_id, blob, result["comment"],
+        pdistd::MNetworkInterface::getMacAddress(), 
+        function (args) {});
+
+    if (Grim2Util::__deprecated__join__(context, request))
+    {
+        var result = ItemBox.decodeResult(request);
+
+        if (result == 1)
+        {
+            GameItemUtil::ItemBox::delete2(item);
+            saveNow(context);
+
+            SoundUtil::PlayStreamSE("/sound_gt/se/gt5_present_send");
+            OK_AUTO_CLOSE(context, ROOT, "MSG_SEND_SUCCESS");
+            --item.count;
+        }
+
+        else
+        {
+            var error = "MSG_UPLOAD_FAILED";
+            if (result == -1)
+                error = "MSG_ITEMBOX_RECEIVE_LIMIT";
+            else if (result == -2)
+                error = "MSG_ITEMBOX_SEND_LIMIT";
+
+            ERROR(context, ROOT, error);
+        }
+
+        callbackIf(context, callback, item, item_w);
+    }
+
+    return true;
+}
+
+function getCarByCarTicket(item)
+{
+    var cp;
+    if (!GameItemUtil::isCarTicket(item))
+    {
+        var car_list = GameItemUtil::getPresentCarList(item.gameitem_id);
+        var present_index = main::pdistd::MRandom::GetValue(0, car_list.size);
+
+        var car_code = car_list[present_index][0];
+
+        var variation = main::gtengine::MSpecDB::getCarVariation(car_code);
+        var color = main::pdistd::MRandom::GetValue(0, variation);
+
+        cp = main::gtengine::MCarParameter(car_code);
+        cp.color = color;
+        cp.setNewCar();
+    }
+    else
+    {
+        var blob = GameItemUtil::ItemBox::getItemEntity(item["itembox_id"]);
+        var zero_blob = pdistd::MBlob("0");
+
+        if (zero_blob == blob || blob == "")
+        {
+            var car_code = item["code"];
+            var variation = main::gtengine::MSpecDB::getCarVariation(car_code);
+
+            var color;
+            if (item["argument1"] >= 0)
+                color = item["argument1"];
+            else
+                color = main::pdistd::MRandom::GetValue(0, variation);
+
+            cp = main::gtengine::MCarParameter(car_code);
+            cp.color = color;
+            cp.setNewCar();
+        }
+
+        else
+        {
+            cp = main::gtengine::MCarParameter();
+            cp.deserialize(blob);
+        }
+    }
+
+    return cp;
+}
+
+function usePresentCarTicket(context, item)
+{
+    var garage = main::GAME_STATUS.user_profile.garage;
+
+    if (garage.getCount() < garage.getMax())
+    {
+        var cp = getCarByCarTicket(item);
+        var garage_id = GAME_STATUS.user_profile.garage.addCar(cp);
+
+        var car_label = cp.getCarLabel();
+        var invalid_car = !DLCUtil::Car::isAvailable(car_label);
+
+        if (invalid_car)
+            GAME_STATUS.user_profile.garage.setInvalid([car_label], true);
+
+        CarDeliveryRoot.open(context, cp, garage_id, invalid_car);
+    }
+
+    else
+    {
+        main::sound.play("disable");
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+        context.translate(ROOT, "GTModeProject::CarDealerRoot", "DIALOG_GARAGE_FULL"));
+
+        return false;
+    }
+
+    return true;
+}
+
+function callbackIf(context, callback, item, item_w)
+{
+    if (callback != nil)
+    {
+        callback(context, item, item_w);
+    }
+
+}
+
+function useItem(context, item)
+{
+    var res = false;
+
+    switch (item.type_id)
+    {
+        case gtengine::GameItemType::TUNEPARTS:
+            res = useTuneParts(context, item);
+            break;
+
+        case gtengine::GameItemType::SPECIAL:
+            if (gtengine::GameItemCategory::SPECIAL_TICKET == item.category_id)
+                res = useSpecialTicket(context, item);
+            else
+                res = usePresentCarTicket(context, item);
+
+            break;
+
+        default:
+            break;    
+    }
+
+    return res;
+}
+
+function useTuneParts(context, item)
+{
+    var cp = GAME_STATUS.user_profile.garage.getRidingCar();
+
+    var res;
+    if (item["category_id"] != gtengine::GameItemCategory::HORN)
+        res = GameItemUtil::setParts(context, ROOT, cp, item.item_code);
+    else
+    {
+        if (cp.horn_sound_id == 0)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK,
+            context.translate(ROOT, "MyHome", "THIS_CAR_CANNOT_ATTACH").build(" "));
+
+            return false;
+        }
+
+        var horn_item_id = item["argument1"];
+        var horn_info = gtengine::MSpecDB::getHornItemInfo(horn_item_id);
+
+        cp.horn_sound_id = horn_info[0];
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::OK, context.translate(ROOT, "MyHome", "SET_SUCCESS").build(item["item_name"]));
+
+        res = true;
+    }
+
+    if (res)
+        GAME_STATUS.user_profile.garage.updateRidingCar();
+
+    return res;
+}
+
+function useSpecialTicket(context, item)
+{
+    var res = false;
+
+    if (GameItemUtil::isCanUseSpecialTicket(item.gameitem_id))
+    {
+        var cp = GAME_STATUS.user_profile.garage.getRidingCar();
+
+        var use_flag = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO,
+        context.translate(ROOT, "MyHome", "USE_CAR_REFRESH_TICKET").build(gtengine::MSpecDB::getCarShortName(cp.getCarLabel())));
+
+        if (!use_flag)
+            return res;
+
+        cp.beginSetting();
+        cp.setNewCar();
+
+        cp.odometer = 0;
+        cp.setReplaceOil();
+
+        cp.body_life = 0.0;
+        cp.rainX = 0.0;
+
+        cp.dirtiness = 0.0;
+        cp.endSetting();
+
+        GAME_STATUS.user_profile.garage.updateRidingCar();
+        
+        cp = nil;
+        GAME_STATUS.user_profile.context.need_save = SaveDataUtilGT5::STATUSCODE::NEED_SAVE;
+
+        res = true;
+    }
+
+    return res;
+}

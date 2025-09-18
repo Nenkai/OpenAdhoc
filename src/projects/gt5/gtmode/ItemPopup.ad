@@ -1,0 +1,1585 @@
+module ROOT
+{
+    attribute open_on_init = false;
+
+    module Function
+    {
+        #include "ItemFunction.ad"
+    }
+
+    module Mode
+    {
+        static ALL = 1;
+        static PRESENT = 2;
+        static USE_DRIVER_ITEM = 3;
+    }
+
+    hidden.visible = false;
+    SceneFaceForCapture.visible = false;
+
+    attribute popup;
+    attribute closed = false;
+    attribute strategy;
+    attribute ignore_update;
+    attribute texture_index;
+
+    attribute tuner_index;
+    attribute order;
+    attribute by;
+    attribute mode;
+    attribute mode_params;
+
+    attribute bonnet1_check_flag = false;
+    attribute bonnet2_check_flag = false;
+
+    attribute button_help_folder;
+    attribute button_help_item;
+    attribute button_help_item_l1;
+    attribute button_help_driver_item;
+
+    attribute result;
+
+    static ALL;
+
+    class Strategy
+    {
+        attribute status;
+
+        method getLocalizeKey(name)
+        {
+            switch (name)
+            {
+                case "SearchSort":
+                    return "SORT";
+            }
+
+            return name.upcase();
+        }
+
+        method getHeaderText(context, count)
+        {
+            var text = "";
+            var type = ROOT.getSelectedType(context);
+
+            if (type != nil)
+                text += type[1];
+
+            var category = ROOT.getSelectedCategory(context);
+            if (category != nil)
+            {
+                if (text != "")
+                    text += " / ";
+
+                text += category[1];
+            }
+
+            if (text == "")
+                text = ALL;
+
+            return [text, count.toString(), false];
+        }
+
+        method isFolder()
+        {
+            return false;
+        }
+
+        method isDriverItem()
+        {
+            return false;
+        }
+
+        attribute focus_index = 0;
+    }
+
+    class FolderItemStrategy : Strategy
+    {
+        method getList(order, by, where)
+        {
+            if (ROOT.mode == Mode::USE_DRIVER_ITEM)
+                return GameItemUtil::ItemBox::GameItem::getCategoryList(nil, main::gtengine::GameItemType::DRIVER_ITEM);
+            else
+                return GameItemUtil::ItemBox::GameItem::getCategoryList();
+        }
+
+        method getHeaderText(context, count)
+        {
+            return [context.translate(ROOT, "MyHome", "CATEGORY"), count.toString(), false];
+        }
+
+        method getViewMode()
+        {
+            return EVENTRESULT_STOP;
+        }
+
+        method isFolder()
+        {
+            return true;
+        }
+    }
+
+    class ItemStrategy : Strategy
+    {
+        attribute category;
+
+        method __init__(category)
+        {
+            self.category = category;
+        }
+
+        method getList(order, by, where)
+        {
+            if (self.isDriverItem())
+                return GameItemUtil::ItemBox::GameItem::getList(false, nil, self.category[0], order, by, true, where);
+            else
+                return GameItemUtil::ItemBox::GameItem::getList(true, nil, self.category[0], order, by, true, where);
+        }
+
+        method getHeaderText(context, count)
+        {
+            return [self.category[1], count.toString(), false];
+        }
+
+        method isDriverItem()
+        {
+            var category_id = self.category[0];
+
+            return category_id == gtengine::GameItemCategory::DRIVER_HEAD || 
+                category_id == gtengine::GameItemCategory::DRIVER_BODY || 
+                category_id == gtengine::GameItemCategory::DRIVER_SET;
+        }
+
+        method getViewMode()
+        {
+            var category_id = self.category[0];
+
+            if (self.category[0] == gtengine::GameItemCategory::PAINT_ITEM)
+                return EVENTRESULT_CONTINUE;
+            else
+            {
+                if (isDriverItem())
+                    return EVENTRESULT_FILTER;
+                else
+                    return EVENTRESULT_STOP;
+            }
+        }
+    }
+
+    function getItemKey(item)
+    {
+        if (item.category_id == gtengine::GameItemCategory::PRESENTCAR_TICKET)
+            return "%d".format(item.itembox_id);
+        else
+            return "%d_%d".format(item.gameitem_id, item.argument1);
+    }
+
+    attribute strategy_stack;
+
+    method open(context, mode, mode_params)
+    {
+        capture_check();
+
+        self.strategy_stack = [];
+        self.mode = mode;
+        self.mode_params = mode_params;
+
+        self.closed = false;
+        self.result = nil;
+
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        if (ROOT.mode == Mode::USE_DRIVER_ITEM)
+        {
+            var res = self.result;
+            self.result = nil;
+
+            return res;
+        }
+
+        return true;
+    }
+
+    method close(context)
+    {
+        capture(context);
+
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        ContextMain.event_mask = 0x05;
+        ContextMain.disableInput();
+
+        Popup::FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        };
+
+        Popup::FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        self.order = "create_date";
+        self.by = "ASC";
+
+        if (PROJECT.history['ItemPopup::keep_order'])
+        {
+            self.order = PROJECT.history['ItemPopup::order'];
+            self.by = PROJECT.history['ItemPopup::by'];
+        }
+
+        initializeCommon(context);
+
+        ALL = context.translate(ROOT, "MyHome", "ALL");
+
+        self.strategy = FolderItemStrategy();
+        self.ignore_update = true;
+
+        initializeTextureList(context);
+        initializeTunerList(context);
+
+        self.ignore_update = false;
+
+        warpActors(Popup::Pane::Body::bg, self.open_on_init);
+        context.pushEvent(main::menu::MFunctionEvent(initialize, context));
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method initializeCommon(context)
+    {
+        self.button_help_folder = 
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_OPEN")],
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_CANCEL")]
+        ];
+
+        self.button_help_item = 
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_SHOW")],
+            ["Triangle", context.translate(ROOT, "MyHome", "BUTTON_HELP_MENU")],
+
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_BACK")],
+            ["L1", context.translate(ROOT, "MyHome", "BUTTON_HELP_MULTI_SELECT")]
+        ];
+
+        self.button_help_item_l1 = 
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_SELECT")],
+            ["Triangle", context.translate(ROOT, "MyHome", "BUTTON_HELP_MENU")],
+
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_BACK")],
+            ["Square", context.translate(ROOT, "MyHome", "BUTTON_HELP_SELECT_UNSELECT_ALL")]
+        ];
+
+        self.button_help_driver_item = 
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_SHOW")],
+            ["Triangle", context.translate(ROOT, "MyHome", "BUTTON_HELP_MENU")],
+
+            ["Square", context.translate(ROOT, "MyHome", "BUTTON_HELP_CHANGE_VIEW")],
+
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_BACK")],
+            ["L1", context.translate(ROOT, "MyHome", "BUTTON_HELP_MULTI_SELECT")]
+        ];
+
+        ButtonHelpGT5.set(context, self.button_help_folder);
+        ButtonHelpGT5.hide();
+
+        var default_order_index =
+         [
+            "create_date" : 0,
+            "gameitem_id" : 1,
+            "item_name" : 2,
+            "count" : 3,
+            "argument3" : 4,
+        ][self.order];
+
+        var radiobox_list = [
+            [Popup::Pane::Body::Filter::VBox::Order::RadioBox, default_order_index],
+            [Popup::Pane::Body::Filter::VBox::By::RadioBox, (self.by == "ASC") ? 0 : 1]
+        ];
+
+        foreach (var info in radiobox_list)
+        {
+            var radiobox = info[0];
+            var default_index = info[1];
+            var radiobutton_list = [];
+
+            for (var it = radiobox.VBox.first; it != nil; it = it.next)
+                radiobutton_list.push([it.RadioButton, 0]);
+
+            radiobox.setup(radiobutton_list, default_index);
+        }
+
+        Popup::Pane::Title::HBox::SearchSort.active = self.open_on_init;
+        warpActors(Popup::Pane::Body::Filter, self.open_on_init);
+
+        Popup::Pane::Body::Filter.insensitive = !self.open_on_init;
+        ROOT.setFocus(Popup::Pane::Title::HBox::Close);
+    }
+
+    method initializeTextureList(context)
+    {
+        var option_menu = Popup::Pane::Body::Filter::VBox::Search::Texture::OptionMenu;
+
+        OptionMenuUtil::finalize(context, option_menu);
+        var texture_list = Array(6);
+
+        for (var i = 0; i < texture_list.size; ++i)
+            texture_list[i] = "TEXTURE_TYPE_%02d".format(i);
+
+        texture_list.unshift(context.translate(ROOT, "MyHome", "ALL"));
+
+        OptionMenuUtil::initialize(context, ROOT, option_menu, hidden::OptionMenuItem, texture_list, "Color");
+
+        self.texture_index = 0;
+        option_menu.setIndex(context, self.texture_index);
+    }
+
+    method initializeTunerList(context)
+    {
+        var option_menu = Popup::Pane::Body::Filter::VBox::Search::Tuner::OptionMenu;
+        OptionMenuUtil::finalize(context, option_menu);
+
+        var tuner_list = GameItemUtil::ItemBox::getColorTunerList();
+        Garage2Util::sortByLocalizedName(context, ROOT, tuner_list);
+        tuner_list.unshift(context.translate(ROOT, "MyHome", "ALL"));
+
+        OptionMenuUtil::initialize(context, ROOT, option_menu, hidden::OptionMenuItem, tuner_list, "TunerName");
+
+        self.tuner_index = 0;
+        option_menu.setIndex(context, self.tuner_index);
+    }
+
+    method initialize(context, _view_mode)
+    {
+        if (self.ignore_update)
+            return;
+
+        ignorePadEvent(true);
+
+        Popup::Pane::Body::List.finalizeFinder(context);
+        Popup::Pane::Body::List.initializeFinder(context, _view_mode);
+
+        ignorePadEvent(false);
+    }
+
+    method onFinalize(context)
+    {
+        if (PROJECT.history['ItemPopup::keep_order'])
+        {
+            PROJECT.history['ItemPopup::order'] = self.order;
+            PROJECT.history['ItemPopup::by'] = self.by;
+        }
+
+        self.button_help_folder = nil;
+        self.button_help_item = nil;
+        self.button_help_item_l1 = nil;
+        self.button_help_driver_item = nil;
+
+        Popup::Pane::Body::List.finalizeFinder(context);
+
+        OptionMenuUtil::finalize(context, Popup::Pane::Body::Filter::VBox::Search::Texture::OptionMenu);
+        OptionMenuUtil::finalize(context, Popup::Pane::Body::Filter::VBox::Search::Tuner::OptionMenu);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        ButtonHelpGT5.hideIf();
+
+        ROOT.setFocus(Popup::Pane::Title::HBox::Close);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method capture_check()
+    {
+        bonnet1_check_flag = false;
+        bonnet2_check_flag = false;
+
+        var cp = GAME_STATUS.user_profile.garage.getRidingCar();
+
+        if (!GameItemUtil::isHavingParts(cp, GameItemUtil::getItemByID(7)))
+            bonnet1_check_flag = true;
+
+        if (!GameItemUtil::isHavingParts(cp, GameItemUtil::getItemByID(8)))
+            bonnet2_check_flag = true;
+    }
+
+    method capture(context)
+    {
+        if (bonnet1_check_flag)
+        {
+            var cp = GAME_STATUS.user_profile.garage.getRidingCar();
+
+            if (GameItemUtil::isHavingParts(cp, GameItemUtil::getItemByID(7)))
+                captureImpl(context, cp);
+        }
+
+        if (bonnet2_check_flag)
+        {
+            var cp = GAME_STATUS.user_profile.garage.getRidingCar();
+
+            if (GameItemUtil::isHavingParts(cp, GameItemUtil::getItemByID(8)))
+                captureImpl(context, cp);
+        }
+    }
+
+    method captureImpl(context, cp)
+    {
+        ignorePadEvent(true);
+        SceneFaceForCapture.visible = true;
+
+        ThumbnailUtil::captureIconForGarage(context, SceneFaceForCapture, GAME_STATUS.user_profile.garage.riding_id, cp, ["M", "L"]);
+
+        SceneFaceForCapture.visible = false;
+        ignorePadEvent(false);
+
+    }
+
+    module Popup::Pane
+    {
+        module Title::HBox
+        {
+            method onFocusEnter(context, event)
+            {
+                var w = event.widget;
+
+                var localized_text = context.translate(ROOT, "MyHome", ROOT.strategy.getLocalizeKey(w.name));
+                BalloonTip.set_value(context, w, localized_text, 0);
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onFocusLeave(context)
+            {
+                BalloonTip.reset_value();
+
+                return EVENTRESULT_FILTER;
+            }
+
+            module Close
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    ROOT.close(context);
+
+                    return EVENTRESULT_FILTER;
+                } 
+
+                method onCancel(context)
+                {
+                    main::sound.play("cancel");
+                    ROOT.close(context);
+
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+
+            module SearchSort
+            {
+                attribute flag = false;
+
+                method action(context, close)
+                {
+                    if (!close)
+                    {
+                        Popup::Pane::Body::Filter::VBox::Order::RadioBox::VBox::Type::TextFace.text = 
+                            context.translate(ROOT, "MyHome", ROOT.strategy.isDriverItem() ? "DESIGN" : "TYPE");
+                    }
+
+                    startActors(Popup::Pane::Body::Filter, close);
+
+                    Popup::Pane::Body::bg::ScalarInterpolator.reverse = close;
+                    Popup::Pane::Body::bg::ScalarInterpolator.start();
+
+                    if (ROOT.strategy.isDriverItem())
+                    {
+                        Popup::Pane::Body::bg::ScalarInterpolator0.reverse = false;
+                        Popup::Pane::Body::List::ScalarInterpolator.reverse = false;
+                    }
+                    else
+                    {
+                        Popup::Pane::Body::bg::ScalarInterpolator0.reverse = true;
+                        Popup::Pane::Body::List::ScalarInterpolator.reverse = true;
+                    }
+
+                    Popup::Pane::Body::bg::ScalarInterpolator0.start();
+                    Popup::Pane::Body::List::ScalarInterpolator.start();
+
+                    Popup::Pane::Body::Filter.insensitive = close;
+
+                    self.flag = !close;
+                    self.active = !close;
+                }
+
+                method onActivate(context)
+                {
+                    if (ROOT.strategy.isFolder())
+                        main::sound.play("disable");
+                    else
+                    {
+                        main::sound.play("ok");
+                        action(context, self.flag);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+
+        module Body
+        {
+            module Filter::VBox
+            {
+                module Search
+                {
+                    module Texture::OptionMenu
+                    {
+                        method onValueChanged(context)
+                        {
+                            self.pulldownValueChanged(context);
+                        
+                            if (self.index != ROOT.texture_index)
+                            {
+                                ROOT.texture_index = self.index;
+                                ROOT.initialize(context);
+                            }
+                        
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    module Tuner::OptionMenu
+                    {
+                        method onValueChanged(context)
+                        {
+                            self.pulldownValueChanged(context);
+
+                            if (self.index != ROOT.tuner_index)
+                            {
+                                ROOT.tuner_index = self.index;
+                                ROOT.initialize(context);
+                            }
+
+                            return EVENTRESULT_FILTER;
+                        }    
+                    }
+                }
+
+                module Order::RadioBox
+                {
+                    static TABLE = 
+                    [
+                        "DateTime" : "create_date",
+                        "Type" : "gameitem_id",
+                        "ItemName" : "item_name",
+                        "Count" : "count",
+                        "Hue" : "argument3"
+                    ];
+
+                    method onActivate(context, event)
+                    {
+                        var name = event.widget.parent.name;
+                        var order = TABLE[name];
+
+                        if (order != ROOT.order)
+                        {
+                            ROOT.order = order;
+
+                            ROOT.initialize(context, Popup::Pane::Body::List.view_mode);
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module By::RadioBox
+                {
+                    method onActivate(context, event)
+                    {
+                        var by = event.widget.parent.name.upcase()
+                    
+                        if (by != ROOT.by)
+                        {
+                            ROOT.by = by;
+                        
+                            ROOT.initialize(context, Popup::Pane::Body::List.view_mode);
+                        }
+                    
+                        return EVENTRESULT_FILTER;
+                    }    
+                }
+            }
+
+            module List
+            {
+                attribute finder;
+                attribute view_mode = 1;
+                attribute gt_friend_list;
+                attribute multi_select = false;
+                attribute select_map;
+                attribute select_all;
+
+                function updateStatus(context, item, item_w)
+                {
+                    if (ROOT.strategy.isFolder())
+                        item_w.initializeAsFolder(context, item);
+                    else
+                        item_w.initialize(context, item);
+                }
+
+                function onInitItem(context, candidate_data, item_w, arg)
+                {
+                    var item = candidate_data.value_;
+                    item_w.invalid = false;
+                    updateStatus(context, item, item_w);
+                }
+
+                function updateStatusAll2(context)
+                {
+                    if (List.multi_select)
+                    {
+                        List.multi_select = false;
+
+                        ButtonHelpGT5.set(context, ROOT.strategy.isDriverItem() ? ROOT.button_help_driver_item : ROOT.button_help_item);
+                    }
+
+                    updateStatusAll(context);
+                }
+
+                function updateStatusAll2If(context)
+                {
+                    var state = context.getUpdateContext().getPadButtonState(0);
+                    if ((state & 0x100) != 0x100)
+                        updateStatusAll2(context);
+                }
+
+                function updateStatusAll(context)
+                {
+                    var count = List.finder.getItemCount(context);
+                    for (var i = 0; i < count; ++i)
+                    {
+                        var item_w = List.finder.getItemWidget(i);
+                        if (item_w == nil)
+                            continue;
+
+                        var candidate_data = List.finder.getItemData(context, i);
+                        if (candidate_data == nil)
+                                continue;
+
+                        var item = candidate_data.value_;
+                        updateStatus(context, item, item_w);
+                    }
+                }
+
+                function onActivateItem(context, folder_data, func_close, arg)
+                {
+                    if (ROOT.closed)
+                        return;
+
+                    var candidate_data = folder_data.getItemData();
+                    var item = candidate_data.value_;
+
+                    var focus_index = List.finder.getFocusIndex(context);
+                    var item_w = List.finder.getItemWidget(focus_index);
+
+                    if (ROOT.strategy.isFolder())
+                    {
+                        var category = item;
+                        ROOT.strategy.focus_index = focus_index;
+
+                        ROOT.strategy_stack.push(ROOT.strategy);
+
+                        ROOT.strategy = ItemStrategy(category);
+                        Popup::Pane::Title::HBox::SearchSort.action(context, false);
+
+                        List.reload(context);
+                    }
+                    else
+                    {
+                        if (item_w == nil || item_w.invalid)
+                            return;
+
+                        if (ROOT.mode == Mode::ALL)
+                        {
+                            if (List.multi_select)
+                            {
+                                var key = getItemKey(item);
+                                if (List.select_map[key] == nil)
+                                    List.select_map[key] = item;
+                                else
+                                    List.select_map[key] = nil;
+                            }
+                            else
+                            {
+                                if (List.gt_friend_list == nil)
+                                    List.gt_friend_list = getFriendList(context);
+
+                                Function::showDetail(context, item, List.gt_friend_list, List::updateStatus, item_w);
+                            }
+
+                            updateStatus(context, item, item_w);
+                        }
+                        else if (ROOT.mode == Mode::PRESENT)
+                        {
+                            if (Function::checkPresent(context, item, true))
+                                Function::present(context, item, ROOT.mode_params["present_to"], List::updateStatus, item_w);
+                        }
+                        else if (ROOT.mode == Mode::USE_DRIVER_ITEM)
+                        {
+                            var code = item["value"];
+                            var color_code = item["argument1"];
+
+                            ROOT.result = [item.category_id, code, color_code];
+                            ROOT.close(context);
+                        }
+                    }
+                }
+
+                function updateStatusAllIf(context)
+                {
+                    var state = context.getUpdateContext().getPadButtonState(0);
+                    if ((state & 0x100) != 0x100)
+                    {
+                        ButtonHelpGT5.set(context, ROOT.strategy.isDriverItem() ? ROOT.button_help_driver_item : ROOT.button_help_item);
+                        return;
+                    }
+
+                    ButtonHelpGT5.set(context, ROOT.button_help_item_l1);
+                    List.multi_select = true;
+
+                    var selected = false;
+                    foreach (|var key, var value| in List.select_map)
+                    {
+                        if (value != nil)
+                        {
+                            selected = true;
+                            break;
+                        }
+                    }
+
+                    if (!selected)
+                        return;
+
+                    updateStatusAll(context);
+                }
+
+                function _onFocusEnter(context, candidate_data, item_w, arg)
+                {
+                    var result = ButtonHelpGT5.appearIf();
+
+                    if (result && !ROOT.strategy.isFolder() && ROOT.mode == Mode::ALL)
+                        updateStatusAllIf(context);
+
+                    if (List.view_mode == 2)
+                    {
+                        var item = candidate_data.value_;
+                        var text = item_w.invalid ? context.translate(ROOT, "MyHome", "NO_DATA") : item.item_name;
+                        BalloonTip.set_value(context, item_w, text, 16);
+                    }
+                }
+
+                function _onFocusLeave(context, candidate_data, item_w, arg)
+                {
+                    BalloonTip.reset_value(0);
+                }
+
+                method getOptionMenuItem(option_menu, index)
+                {
+                    return option_menu["popup"]["vbox"].getChild(index);
+                }
+
+                method getSelectedTunerName()
+                {
+                    if (ROOT.tuner_index != 0)
+                    {
+                        var item = getOptionMenuItem(Popup::Pane::Body::Filter::VBox::Search::Tuner::OptionMenu, ROOT.tuner_index);
+                        return item.name;
+                    }
+                    
+                    return nil;
+                }
+
+                method createWhere(context)
+                {
+                    var where = [];
+                    if (ROOT.texture_index != 0)
+                        where.push("argument2 = %d".format(ROOT.texture_index - 1));
+
+                    var tuner_name = getSelectedTunerName();
+                    if (tuner_name != nil)
+                        where.push("code = '%{tuner_name}'");
+
+                    return where.size == 0 ? nil : where.join(" AND ");
+                }
+
+                method createOrderBy(order, by)
+                {
+                    var by2 = by;
+                    if (order == "create_date" || order == "count")
+                    {
+                        if (by == "ASC")
+                            by2 = "DESC";
+                        else if (by == "DESC")
+                            by2 = "ASC";
+                    }
+
+                    if (order == "create_date")
+                        order = "itembox_id";
+
+                    return [order, by2];
+                }
+
+                method initializeFinder(context, _view_mode)
+                {
+                    self.multi_select = false;
+                    self.select_map = Map();
+                    self.select_all = false;
+
+                    if (_view_mode == nil)
+                        self.view_mode = ROOT.strategy.getViewMode();
+
+                    var initial_data = makeInitialData(context);
+
+                    self.finder = UIKitProject::FinderRoot.setCopy(context, self, initial_data, false);
+
+                    if ((self.view_mode == 0 && ROOT.order == "type_id") || (self.view_mode == 1 && ROOT.order == "argument3"))
+                    {
+                        ROOT.order = "create_date";
+                        Popup::Pane::Body::Filter::VBox::Order::RadioBox.setSelectButton(
+                            Popup::Pane::Body::Filter::VBox::Order::RadioBox::VBox::DateTime::RadioButton);
+                    }
+
+                    var where = nil;
+                    if (self.view_mode == 0)
+                        where = createWhere(context);
+
+                    |var order2, var by2| = createOrderBy(ROOT.order, ROOT.by);
+
+                    var item_list = ROOT.strategy.getList(order2, by2, where);
+                    Popup::Pane::Header.setText(context, ROOT.strategy.getHeaderText(context, item_list.size));
+                    Popup::Pane::Body::List::ImageFaceD.visible = item_list.size == 0;
+                    Popup::Pane::Body::List::TextFaceD.visible = item_list.size == 0;
+
+                    var candidates = UIKitProject::FinderRoot.makeCandidates(item_list);
+
+                    self.finder.replaceCurrentFolderCandidates(context, candidates, ROOT.strategy.focus_index);
+
+                    if (item_list.size > 0)
+                        self.finder.onFocus(context);
+                    else
+                        ROOT.setFocus(Popup::Pane::Title::HBox::Close);
+
+                    Popup::Pane::Body::Filter::VBox::Search.visible = self.view_mode == 0;
+                    Pane::Body::Filter::VBox::Order::RadioBox::VBox::Type.visible = self.view_mode != 0;
+                    Pane::Body::Filter::VBox::Order::RadioBox::VBox::Hue.visible = self.view_mode == 0;
+
+                }
+
+                method makeInitialData(context)
+                {
+                    var Finder = UIKitProject::FinderRoot;
+
+                    var candidates = Finder.makeCandidates(Array(0));
+                    var initial_data = Finder.InitialData(candidates);
+
+                    initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+                    initial_data.cb_init_item_ = onInitItem;
+                    initial_data.cb_on_activate_ = onActivateItem;
+                    initial_data.v_scrollbar_ = Scrollbar::VScrollbar;
+                    initial_data.item_cache_ = false;
+
+                    if (self.view_mode == 1)
+                    {
+                        initial_data.extended_item_ = hidden::ItemList;
+                        initial_data.h_item_count_ = 1;
+                    }
+                    else if (self.view_mode == 3)
+                    {
+                        initial_data.extended_item_ = hidden::ItemListShort;
+                        initial_data.h_item_count_ = 2;
+                    }
+                    else if (self.view_mode == 2)
+                    {
+                        initial_data.extended_item_ = hidden::ItemIcon;
+                        initial_data.h_item_count_ = 4;
+                    }
+                    else if (self.view_mode == 0)
+                    {
+                        initial_data.extended_item_ = hidden::Detail;
+                        initial_data.h_item_count_ = 1;
+                    }
+
+                    initial_data.cb_focus_enter_ = _onFocusEnter;
+                    initial_data.cb_focus_leave_ = _onFocusLeave;
+                    initial_data.import_iconbox_parameter_ = hidden::IconBox;
+
+                    return initial_data;
+                }
+
+                method finalizeFinder(context)
+                {
+                    if (self.finder != nil)
+                    {
+                        self.removeChild(context, self.finder);
+                        self.finder = nil;
+                    }
+
+                    BalloonTip.reset_value();
+                }
+
+                method changeViewMode(context, _view_mode)
+                {
+                    if (_view_mode != 2 && _view_mode != 3)
+                        return;
+
+                    if (self.view_mode == _view_mode)
+                        return;
+
+                    finalizeFinder(context);
+                    self.view_mode = _view_mode;
+                    initializeFinder(context, _view_mode);
+
+                    self.finder.onFocus(context);
+                }
+
+                method reload(context)
+                {
+                    CursorUtil::setCursor(context, "wait");
+                    finalizeFinder(context);
+                    initializeFinder(context);
+
+                    CursorUtil::setCursor(context, "cursor_chrome");
+
+                    if (ROOT.strategy_stack.size > 0)
+                    {
+                        if (ROOT.mode == Mode::ALL)
+                        {
+                            ButtonHelpGT5.set(context, 
+                            (ROOT.strategy.isDriverItem()) ? ROOT.button_help_driver_item : ROOT.button_help_item);
+                        }
+
+                        else if (ROOT.mode == Mode::USE_DRIVER_ITEM)
+                        {
+                            ButtonHelpGT5.set(context, [
+                                [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_ENTER")],
+                                ["Square", context.translate(ROOT, "MyHome", "BUTTON_HELP_CHANGE_VIEW")],
+                                [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_BACK")]
+                            ]);
+                        }
+
+                        else
+                        {
+                            ButtonHelpGT5.set(context, [
+                                [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_ENTER")],
+                                [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_BACK")]
+                            ]);    
+                        }
+                    }
+                    else
+                    {
+                        ButtonHelpGT5.set(context, ROOT.button_help_folder);
+                    }
+                }
+
+                function onFunctionCallback(context, data)
+                {
+                    |var func, var item, var args, var callback, var item_w| = data;
+                    Function[func](context, item, args, callback, item_w);
+                }
+
+                function onPresentCallback(context, data)
+                {
+                    |var item, var item_w| = data;
+                    if (!Function::checkPresent(context, item, true))
+                        return;
+
+                    var friend = UserProfileProject::FriendListPopup.open(context, List.gt_friend_list);
+
+                    if (friend != nil)
+                        Function::present(context, item, friend, List::updateStatus, item_w);
+                }
+
+                method showContextMenu(context)
+                {
+                    var focus_index = self.finder.getFocusIndex(context);
+                    var item_w = self.finder.getItemWidget(focus_index);
+
+                    if (item_w == nil || item_w.invalid)
+                        return;
+
+                    var candidate_data = self.finder.getItemData(context, focus_index);
+                    var item = candidate_data.value_;
+
+                    var data_list = [
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "BUTTON_HELP_SHOW"), true, onFunctionCallback, ["showDetail", item, self.gt_friend_list, List::updateStatus, item_w]),
+                        nil, // Separator
+                    ];
+
+                    var can_use = (item.category_id != gtengine::GameItemCategory::PAINT_ITEM && 
+                        item.category_id != gtengine::GameItemCategory::PRESENTCAR_TICKET && 
+                        item.category_id != gtengine::GameItemCategory::DRIVER_HEAD && 
+                        item.category_id != gtengine::GameItemCategory::DRIVER_BODY && 
+                        item.category_id != gtengine::GameItemCategory::DRIVER_SET && 
+                        item.category_id != gtengine::GameItemCategory::SPECIAL_TICKET) || 
+                        GameItemUtil::isCanUseSpecialTicket(item.gameitem_id);
+
+                    if (item.category_id == gtengine::GameItemCategory::HORN)
+                    {
+                        var cp = GAME_STATUS.user_profile.garage.getRidingCar();
+                        can_use = cp.horn_sound_id != 0;
+                    }
+
+                    if (GAME_STATUS.user_profile.garage.isRidingFriendCar())
+                        can_use = false;
+
+                    var use_text = context.translate(ROOT, "MyHome", "USE");
+                    if (item.type_id == gtengine::GameItemType::SPECIAL && GameItemUtil::isCarRefreshTicket(item))
+                        use_text = context.translate(ROOT, "MyHome", "USE2");
+
+                    data_list.push(UIKitProject::ContextMenuPopup::Data(use_text, can_use, onFunctionCallback, ["use", item, nil, List::updateStatus, item_w]));
+
+                    var can_present = LoginUtil::isOnline() && self.gt_friend_list.size > 0;
+                    data_list += [
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "PRESENT"), can_present, onPresentCallback, [item, item_w]),
+                        nil, // Separator
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "DELETE"), true, onFunctionCallback, ["delete", item, nil, List::updateStatus, item_w]),
+                        nil, // Separator
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "CANCEL"), true, function (context) {}, nil)
+                    ];
+
+                    var title = nil;
+                    var x = item_w.sx + (item_w.w * item_w.cursor_align_x);
+                    var y = item_w.sy + (item_w.h * item_w.cursor_align_y);
+
+                    UIKitProject::ContextMenuPopup.open(context, x, y, title, data_list);
+                }
+
+                method showContextMenuMultiSelect(context)
+                {
+                    var focus_index = self.finder.getFocusIndex(context);
+                    var item_w = self.finder.getItemWidget(focus_index);
+
+                    if (item_w == nil)
+                        return;
+
+                    if (self.select_map == nil || self.select_map.size == 0)
+                        return;
+
+                    var item_list = Array();
+
+                    foreach (|var key, var item| in self.select_map)
+                    {
+                        if (item == nil)
+                            continue;
+                        
+                        item_list.push(item);
+                    }
+
+                    var data_list = [
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "DELETE_SELECTED"), true, onFunctionCallback, ["deleteSelected", item_list, nil, List::updateStatusAll2]),
+                        nil, // Separator
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "CANCEL"), true, List::updateStatusAll2If, nil)
+                    ];
+
+                    var title = nil;
+                    var x = item_w.sx + (item_w.w * item_w.cursor_align_x);
+                    var y = item_w.sy + (item_w.h * item_w.cursor_align_y);
+
+                    var result = UIKitProject::ContextMenuPopup.open(context, x, y, title, data_list);
+                    if (!result)
+                        List::updateStatusAll2If(context);
+                }
+
+                method toggleSelect(context)
+                {
+                    if (self.select_all)
+                        self.select_map = Map();
+                    else
+                    {
+                        var count = self.finder.getItemCount(context);
+                        foreach (var i = 0; i < count; ++i)
+                        {
+                            var candidate_data = self.finder.getItemData(context, i);
+                            if (candidate_data == nil)
+                                continue;
+                            
+                            var item = candidate_data.value_;
+                            var key = getItemKey(item);
+                            self.select_map[key] = item;
+                        }
+                    }
+
+                    self.select_all = !self.select_all;
+                    updateStatusAll(context);
+                }
+
+                method onKeyPress(context, event)
+                {
+                    if (ROOT.closed)
+                        return EVENTRESULT_CONTINUE;
+                    else if (event.keysym == CELL_PAD_CTRL_L1)
+                    {
+                        if (!ROOT.strategy.isFolder() && ROOT.mode == Mode::ALL)
+                        {
+                            self.multi_select = true;
+                            ButtonHelpGT5.set(context, ROOT.button_help_item_l1);
+                            updateStatusAll(context);
+                        }
+                    }
+                    else if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+                    {
+                        ButtonHelpGT5.hide();
+
+                        if (!ROOT.strategy.isFolder())
+                        {
+                            self.multi_select = false;
+                            updateStatusAll(context);
+                        }
+
+                        return EVENTRESULT_CONTINUE;
+                    }
+                    else if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
+                    {
+                        if (!ROOT.strategy.isFolder())
+                        {
+                            if (ROOT.mode == Mode::ALL)
+                            {
+                                if (self.gt_friend_list == nil)
+                                    self.gt_friend_list = getFriendList(context);
+                                
+                                main::sound.play("context_menu_op");
+
+                                if (self.multi_select)
+                                    showContextMenuMultiSelect(context);
+                                else
+                                    showContextMenu(context);
+
+                                return EVENTRESULT_FILTER;
+                            }
+                        }
+                    }
+                    else if (event.keysym == CELL_PAD_CTRL_SQUARE)
+                    {
+                        if (self.multi_select)
+                            toggleSelect(context);
+                        else if (self.view_mode == 2)
+                            changeViewMode(context, 3);
+                        else if (self.view_mode == 3)
+                            changeViewMode(context, 2);
+                    }
+
+                    return EVENTRESULT_CONTINUE;
+                }
+
+                method onKeyRelease(context, event)
+                {
+                    if (event.keysym == CELL_PAD_CTRL_L1)
+                    {
+                        if (ROOT.mode == Mode::ALL)
+                            updateStatusAll2(context);
+                    }
+
+                    return EVENTRESULT_CONTINUE;
+                }
+
+                method onCancel(context)
+                {
+                    if (ROOT.strategy_stack.size == 0)
+                        return EVENTRESULT_CONTINUE;
+
+                    main::sound.play("cancel");
+
+                    ROOT.strategy = ROOT.strategy_stack.pop();
+
+                    Popup::Pane::Title::HBox::SearchSort.action(context, true);
+                    reload(context);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+    }
+
+    module hidden
+    {
+        function getTypeName(type_id)
+        {
+            var map = [
+                gtengine::GameItemType::TUNEPARTS : "TUNEPARTS",
+                gtengine::GameItemType::OTHERPARTS : "OTHERPARTS",
+                gtengine::GameItemType::SPECIAL : "SPECIAL",
+                gtengine::GameItemType::DRIVER_ITEM : "DRIVER_ITEM"
+            ];
+
+            var name = map[type_id];
+            return (name != nil) ? name : "";
+        }
+
+        function getCategoryName(category_id)
+        {
+            var map = [
+                gtengine::GameItemCategory::BODY_CHASSIS : "body_chassis",
+                gtengine::GameItemCategory::ENGINE : "engine",
+                gtengine::GameItemCategory::ADMISSION : "admission",
+                gtengine::GameItemCategory::EMISSION : "emission",
+                gtengine::GameItemCategory::BOOSTER : "booster",
+                gtengine::GameItemCategory::TRANSMISSION : "transmission",
+                gtengine::GameItemCategory::DRIVETRAIN : "drivetrain",
+                gtengine::GameItemCategory::SUSPENSION : "suspension",
+                gtengine::GameItemCategory::BRAKE : "brake",
+                gtengine::GameItemCategory::BTIRE : "conforttire",
+                gtengine::GameItemCategory::CTIRE : "sporttire",
+                gtengine::GameItemCategory::VTIRE : "racingtire",
+                gtengine::GameItemCategory::STIRE : "specialtire",
+                gtengine::GameItemCategory::OTHERS : "others",
+                gtengine::GameItemCategory::HORN : "horn",
+                gtengine::GameItemCategory::PAINT_ITEM : "color_paint",
+                gtengine::GameItemCategory::PRESENTCAR_TICKET : "present_car_ticket",
+                gtengine::GameItemCategory::SPECIAL_TICKET : "coupon",
+                gtengine::GameItemCategory::DRIVER_HEAD : "racing_helmet",
+                gtengine::GameItemCategory::DRIVER_BODY : "racing_suit",
+                gtengine::GameItemCategory::DRIVER_SET : "special_wear_set",
+            ];
+
+            var name = map[category_id];
+            return (name != nil) ? name : "";
+        }
+
+        function setAvatar(context, item, imageFace)
+        {
+            if (item.category_id == gtengine::GameItemCategory::DRIVER_HEAD)
+            {
+                var head_code = item["value"];
+                var head_color_code = item["argument1"];
+
+                imageFace.image_path = ThumbnailUtil::Avatar::getImagePath(ThumbnailUtil::Avatar::Genre::SIMPLE,
+                    ThumbnailUtil::Avatar::Type::MET, 
+                    "M", 
+                    head_code, head_color_code, 
+                    0, 0);
+            }
+
+            else if (item.category_id == gtengine::GameItemCategory::DRIVER_BODY)
+            {
+                var body_code = item["value"];
+                var body_color_code = item["argument1"];
+
+                imageFace.image_path = ThumbnailUtil::Avatar::getImagePath(
+                    ThumbnailUtil::Avatar::Genre::SIMPLE, 
+                    ThumbnailUtil::Avatar::Type::SUITS, 
+                    "M", 
+                    0, 0, 
+                    body_code, body_color_code);
+            }
+            else if (item.category_id == gtengine::GameItemCategory::DRIVER_SET)
+            {
+                var head_code = item["value"];
+                var head_color_code = item["argument1"];
+
+                var body_code = item["value"];
+                var body_color_code = item["argument1"];
+
+                imageFace.image_path = ThumbnailUtil::Avatar::getImagePath(
+                    ThumbnailUtil::Avatar::Genre::SETUP, 
+                    ThumbnailUtil::Avatar::Type::MET_SUITS, 
+                    "M", 
+                    head_code, head_color_code, 
+                    body_code, body_color_code);
+            }
+        }
+
+        module ItemList
+        {
+            method initialize(context, item)
+            {
+                var exist = GameItemUtil::ItemBox::isExist2(item);
+
+                if (!exist)
+                {
+                    self.invalid = true;
+                    self.ImageFaceD.visible = true;
+
+                    foreach (var label in ["header", "body", "keyword", "ImageFace", "ColorTip", "type", "check"])
+                    {
+                        if (self[label] != nil)
+                            self[label].visible = false;
+                    }
+
+                    self.title.text = context.translate(ROOT, "MyHome", "NO_ITEM");
+                }
+                else
+                {
+                    var key = getItemKey(item);
+                    self.title.text = item.item_name;
+                    self.header.text = Function::getCategoryName(item);
+                    self.body.text = item.item_description;
+                    self.keyword.text = "%s %d".format(context.translate(ROOT, "MyHome", "HAVE_ITEM_COUNT"), item.count);
+
+                    self.check.visible = Popup::Pane::Body::List.multi_select && Popup::Pane::Body::List.select_map[key] != nil;
+
+                    switch (item.type_id)
+                    {
+                        case gtengine::GameItemType::CAR:
+                            var car_label = item.code;
+                            self.ImageFace.image_path = "car/thumbnail_M/%{car_label}";
+                            break;
+
+                        case gtengine::GameItemType::TUNEPARTS:
+                            self.ImageFace.image_path = "piece/tuningitem_M/%{item.item_code}.img";
+                            break;
+
+                        case gtengine::GameItemType::OTHERPARTS:
+                            break;
+
+                        case gtengine::GameItemType::MUSEUMCARD:
+                            break;
+
+                        case gtengine::GameItemType::SPECIAL:
+                            if (item.category_id == gtengine::GameItemCategory::PRESENTCAR_TICKET)
+                            {
+                                var item_code = item.item_code;
+                                var blob = GameItemUtil::ItemBox::getItemEntity(item["itembox_id"]);
+
+                                var zero_blob = pdistd::MBlob("0");
+
+                                var bg = "";
+                                var _class = "";
+
+                                if (blob != zero_blob && item.sender != "" && GameItemUtil::isCarTicket(item))
+                                    bg = "thumb_white";
+                                else if (item_code == "presentcar_ticket_00")
+                                    bg = "thumb_green";
+                                else if (item_code == "concept_presentcar_ticket_13" || item_code.beginWith("year_presentcar_ticket_"))
+                                {
+                                    bg = "thumb_black";
+                                    _class = "dummy";
+                                }
+                                else
+                                {
+                                    if (item_code.beginWith("presentcar_ticket"))
+                                    {
+                                        _class = item_code.substr("presentcar_ticket_".size);
+                                        if (_class == "lv0")
+                                            _class = "00";
+                                    }
+                                    else if (item_code.beginWith("concept_presentcar_ticket_"))
+                                    {
+                                        var id = item_code.substr("concept_presentcar_ticket_".size);
+                                        if (id == "05")
+                                            _class = "N";
+                                        else if (id == "11" || id == "12")
+                                            _class = "M";
+                                        else if (id == "07" || id == "08" || id == "09")
+                                            _class = "R";
+                                    }
+
+                                    bg = "thumb_blue_%{_class}";
+                                }
+
+                                self.ImageFace.image_path = "piece/ticket/%{bg}.img";
+
+                                if (_class == "")
+                                {
+                                    var color = item.argument1;
+                                    var car_label = item.code;
+
+                                    var car_code = gtengine::MSpecDB::getCarCode(car_label);
+
+                                    if (item["sender"] != "")
+                                    {
+                                        var cp;
+                                        if (item["itembox_id"] != 0)
+                                        {
+                                            if (blob == zero_blob)
+                                            {
+                                                cp = gtengine::MCarParameter(car_code);
+                                                cp.color = color;
+                                            }
+                                            else
+                                            {
+                                                cp = main::gtengine::MCarParameter();
+                                                cp.deserialize(blob);
+                                            }
+                                        }
+                                        else
+                                            cp = gtengine::MCarParameter(car_code);
+
+                                        self.ColorTip::ColorFace.setCarParameter(cp);
+                                    }
+                                    else
+                                        self.ColorTip::ColorFace.setCarColor(car_code, color);
+
+                                    self.ColorTip.visible = true;
+                                    var is_premium = gtengine::MSpecDB::checkGenericFlag("has_premium_model", car_code);
+
+                                    self.type.TextFace.text = context.translate(ROOT, "SpecFormat", is_premium ? "car_premium_short" : "car_standard_short");
+                                    self.type.visible = true;
+                                }
+                            }
+                            else
+                            {
+                                if (GameItemUtil::isCarRefreshTicket(item))
+                                    self.ImageFace.image_path = "piece/tuningitem_M/coupon_rebirth.img";
+                                else if (GameItemUtil::isBodyRefreshTicket(item))
+                                    self.ImageFace.image_path = "piece/tuningitem_M/coupon_chassis.img";
+                                else if (GameItemUtil::isOilChangeTicket(item))
+                                    self.ImageFace.image_path = "piece/tuningitem_M/coupon_oil.img";
+                                else if (GameItemUtil::isCarWashTicket(item))
+                                    self.ImageFace.image_path = "piece/tuningitem_M/coupon_wash.img";
+                                else if (GameItemUtil::isOverHaulicket(item))
+                                    self.ImageFace.image_path = "piece/tuningitem_M/coupon_engine.img";
+                                else
+                                    self.ImageFace.image_path = "piece/ticket/thumb_blue_N.img";
+                            }
+
+                            break;
+
+                        default:
+                            break;    
+                    }
+                }
+
+            }
+
+            method initializeAsFolder(context, category)
+            {
+                var category_id = category[0];
+                var type_id = category_id / 100;
+
+                var type_name = getTypeName(type_id);
+                var category_name = getCategoryName(category_id);
+
+                self.header.text = context.translate(ROOT, "GameItemType", type_name);
+
+                self.title.text = category[1];
+                self.ImageFace.from_disk = false;
+
+                self.ImageFace.image_path = "image/common/finder_folder_m.dds";
+                self.icon.visible = true;
+                self.icon.from_disk = true;
+
+                self.icon.image_path = "piece/itemcategory/%{category_name}.img";
+            }
+        }
+
+        module ItemListShort
+        {
+            method initialize(context, item)
+            {
+                var exist = GameItemUtil::ItemBox::isExist2(item);
+
+                if (!exist)
+                {
+                    self.invalid = true;
+                    self.ImageFaceD.visible = true;
+
+                    foreach (var label in ["header", "body", "keyword1", "ImageFace", "check"])
+                    {
+                        if (self[label] != nil)
+                            self[label].visible = false;
+                    }
+
+                    self.title.text = context.translate(ROOT, "MyHome", "NO_ITEM");
+                }
+
+                else
+                {
+                    var key = getItemKey(item);
+                    self.title.text = item.item_name;
+
+                    self.header.text = Function::getCategoryName(item);
+                    self.body.text = item.item_description;
+
+                    self.keyword1.TextFace.text = item.count;
+
+                    self.check.visible = Popup::Pane::Body::List.multi_select && Popup::Pane::Body::List.select_map[key] != nil;
+
+                    setAvatar(context, item, self.ImageFace);
+                }
+
+            }  
+        }
+
+        module ItemIcon
+        {
+
+            method initialize(context, item)
+            {
+                var exist = GameItemUtil::ItemBox::isExist2(item);
+
+                if (!exist)
+                {
+                    self.invalid = true;
+                    self.ImageFaceD.visible = true;
+
+                    foreach (var label in ["keyword1", "ImageFace", "check"])
+                    {
+                        if (self[label] != nil)
+                            self[label].visible = false;
+                    }
+                }
+
+                else
+                {
+                    var key = getItemKey(item);
+                    self.keyword1.TextFace.text = item.count;
+
+                    self.check.visible = Popup::Pane::Body::List.multi_select && Popup::Pane::Body::List.select_map[key] != nil;
+
+                    setAvatar(context, item, self.ImageFace);
+                }
+            }
+        }
+
+        module Detail
+        {
+            attribute invalid;
+
+            method initialize(context, item)
+            {
+                var exist = GameItemUtil::ItemBox::isExist2(item);
+                
+                if (!exist)
+                {
+                    self.invalid = true;
+                    self.ImageFaceD.visible = true;
+                
+                    foreach (var label in ["keyword", "ColorTip", "check"])
+                    {
+                        if (self[label] != nil)
+                            self[label].visible = false;
+                    }
+                
+                    self.header.text = context.translate(ROOT, "MyHome", "NO_ITEM");
+                }
+                else
+                {
+                    var key = getItemKey(item);
+                    var color = item.argument1;
+                
+                    self.header.text = item.item_name;
+                
+                    self.keyword.text = "%s %d".format(context.translate(ROOT, "MyHome", "HAVE_ITEM_COUNT"), item.count);
+                
+                    self.check.visible = Popup::Pane::Body::List.multi_select && Popup::Pane::Body::List.select_map[key] != nil;
+                
+                    self.ColorTip.ColorFace.setPaintColor(color);
+                    self.ColorTip.ColorFace.visible = true;
+                }
+            }
+        }
+    }
+}

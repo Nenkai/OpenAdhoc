@@ -1,0 +1,239 @@
+module ROOT
+{
+    hidden.visible = false;
+
+    method open(context)
+    {
+        SequenceUtil::startPage(context, ROOT);
+    }
+
+    method close(context)
+    {
+        SequenceUtil::startPage(context, GTModeRoot);
+    }
+
+    function checkRemove(context)
+    {
+        if (!LoginUtil::isOnline())
+            return;
+
+        Museum2.requestMuseumRemoveList(function (args)
+        {
+            |var context, var request| = args;
+
+            if (request.isDone())
+            {
+                var museum_remove_list = Museum2.decodeMuseumRemoveList(request);
+
+                var museum_id_list = [];
+                foreach (var museum_remove in museum_remove_list)
+                {
+                    var museum_id = museum_remove["museum_id"];
+                    var img_path = Museum2.getImagePath(museum_id);
+
+                    if (pdistd::Exist(img_path))
+                        pdistd::RemoveFile(img_path);
+
+                    museum_id_list.push(museum_id);
+                }
+
+                if (museum_id_list.size > 0)
+                    MuseumFileUtil::removeIf(museum_id_list);
+            }
+        });
+    }
+
+    method onInitialize(context)
+    {
+        checkRemove(context);
+
+        Toc.visible = false;
+        Cover.visible = true;
+        Cover::ScalarInterpolator.restart();
+
+        var me = self;
+        Cover::ScalarInterpolator.on_effect_end = function (context)
+        {
+            Cover::ScalarInterpolator.on_effect_end = nil;
+            Cover.visible = false;
+
+            me.initialize(context);
+        }
+
+        Cover::TextFaceU1::ChaseActor.setTarget(Cover::TextFaceM1);
+        Cover::TextFaceS1::ChaseActor.setTarget(Cover::TextFaceU1);
+        Cover::TextFaceE1::ChaseActor.setTarget(Cover::TextFaceS1);
+        Cover::TextFaceU2::ChaseActor.setTarget(Cover::TextFaceE1);
+        Cover::TextFaceM2::ChaseActor.setTarget(Cover::TextFaceU2);
+
+        foreach (var name in ["spotA", "spotB", "spotC", "spotD", "ColorFaceL", "ColorFaceR"])
+            Toc[name].opacity = 0.0;
+
+        Toc::ButtonHelpGT5.set(context, 
+        [
+            [Toc::ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_OPEN")],
+            [Toc::ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_CANCEL")]
+        ]);
+
+        Toc::ButtonHelpGT5.hide();
+        self.setFocus(Toc::MyHome);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+
+    }
+
+    method onCancel(context)
+    {
+        PROJECT::playBackHomeSound();
+        ROOT.close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method initialize(context)
+    {
+        var me = self;
+
+        Museum2.requestMuseumIdList(1, function (args)
+        {
+            |var context, var request| = args;
+
+            if (request.isDone())
+            {
+                var list = Museum2.decodeMuseumIdList(request);
+
+                if (request.isUpdated() || list.size != MuseumFileUtil::getMuseumIdListCount())
+                    var res = MuseumFileUtil::updateMuseumIdList(list);
+
+                me.Toc::List.initialize(context);
+            }
+        });
+
+    }
+
+    module Toc
+    {
+        module List
+        {
+            attribute finder;
+
+            function onInitItem(context, candidate_data, item_w, arg)
+            {
+                var dealer = candidate_data.value_;
+
+                item_w.TextFace.text = context.translate(ROOT, "TunerNameI18n", dealer);
+                var count = MuseumFileUtil::getMuseumCountIhave(dealer);
+
+                item_w.TextFaceCount.text = count;
+            }
+
+            function onActivateItem(context, folder_data, func_close, arg)
+            {
+                var candidate_data = folder_data.getItemData();
+                var dealer = candidate_data.value_;
+
+                var res = MuseumPopup.open(context, dealer);
+
+                if (res)
+                {
+                    var size = List.finder.getItemCount(context);
+
+                    for (var index = 0; index < size; ++index)
+                    {
+                        var item_w = List.finder.getItemWidget(index);
+
+                        if (item_w == nil)
+                            ;
+                        else
+                        {
+                            var candidate_data = List.finder.getItemData(context, index);
+                            var dealer = candidate_data.value_;
+
+                            item_w.TextFaceCount.text = MuseumFileUtil::getMuseumCountIhave(dealer);
+                        }
+                    }
+                }
+
+            }
+
+            method initialize(context)
+            {
+                Toc.visible = true;
+                var dealer_list = MuseumFileUtil::getDealerList();
+
+                var initial_data = makeInitialData(context);
+
+                self.finder = UIKitProject::FinderRoot.setCopy(context, self, initial_data, false);
+
+                var candidates = UIKitProject::FinderRoot.makeCandidates(dealer_list);
+                self.finder.replaceCurrentFolderCandidates(context, candidates, 0);
+            }
+
+            method makeInitialData(context)
+            {
+                var Finder = UIKitProject::FinderRoot;
+
+                var candidates = Finder.makeCandidates(Array(0));
+
+                var initial_data = Finder.InitialData(candidates);
+                initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+                initial_data.cb_init_item_ = onInitItem;
+                initial_data.cb_on_activate_ = onActivateItem;
+                initial_data.extended_item_ = hidden::Item;
+
+                return initial_data;
+            }
+
+            method onFinalize(context)
+            {
+                if (self.finder != nil)
+                {
+                    self.removeChild(context, self.finder);
+                    self.finder = nil;
+                }
+            }
+        }
+
+        module MyHome
+        {
+            method onFocusEnter(context, event)
+            {
+                var w = event.widget;
+                var localized_text = context.translate(ROOT, "MyHome", "MYHOME_BACK_BUTTON");
+                BalloonTip.set_value(context, w, localized_text, 0);
+
+                Toc::ButtonHelpGT5.hideIf();
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onFocusLeave(context)
+            {
+                BalloonTip.reset_value();
+                Toc::ButtonHelpGT5.appearIf();
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onActivate(context)
+            {
+                PROJECT::playBackHomeSound();
+                ROOT.close(context);
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onCancel(context)
+            {
+                PROJECT::playBackHomeSound();
+                ROOT.close(context);
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+}

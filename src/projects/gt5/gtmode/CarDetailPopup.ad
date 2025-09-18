@@ -1,0 +1,1183 @@
+module ROOT
+{
+    hidden.visible = false;
+
+    static sEnableBorrowFriendCar = true;
+
+    module Function
+    {
+        #include "GarageFunction.ad"
+    }
+
+    module __BalloonTarget__
+    {
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+
+            var localized_text = context.translate(ROOT, "MyHome", w.name.upcase());
+
+            BalloonTip.set_value(context, w, localized_text, 0);
+
+            return EVENTRESULT_FILTER;
+        }  
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    attribute popup;
+    attribute cpp;
+    attribute garage_id;
+    attribute online_mode;
+    attribute no_demo;
+
+    attribute need_update;
+    attribute need_friend_car_capture;
+    attribute invisible_pages;
+    attribute capture_mode = false;
+    attribute active_friend;
+
+    method open(context, cpp, garage_id, online_mode, no_demo, active_friend)
+    {
+        self.need_update = false;
+        self.need_friend_car_capture = false;
+
+        self.garage_id = garage_id;
+        self.cpp = cpp;
+        self.online_mode = online_mode;
+
+        self.no_demo = no_demo;
+        self.active_friend = active_friend;
+
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return self.need_update;
+    }
+
+    method close(context)
+    {
+        context.event_mask &= ~0x05;
+        context.filterKeyEvent();
+
+        if (self.invisible_pages != nil)
+        {
+            foreach (var page in self.invisible_pages)
+            {
+                page.visible = true;
+            }
+
+            self.invisible_pages = nil;
+        }
+
+        resetActors(Info, true, false);
+        startActors(DetailBox, true, false);
+
+        Description.visible = false;
+        Cover.visible = true;
+
+        Cover::FadeActor.on_effect_end = function (context)
+        {
+            SceneFace.clearCar();
+            SceneFace.visible = false;
+            Info.visible = false;
+            DetailBox.visible = false;
+
+            if (ROOT.need_friend_car_capture)
+            {
+                var friend_car_id = GAME_STATUS.user_profile.garage.friend_car_id;
+                var cp = GAME_STATUS.user_profile.garage.getCar(friend_car_id);
+
+                var capturing_car = function ()
+                {
+                    SceneFaceForCapture.visible = true;
+
+                    ThumbnailUtil::captureIconForGarage(context, SceneFaceForCapture, 
+                    friend_car_id, cp, ["M", "L"]);
+
+                    saveNow(context);
+                    SceneFaceForCapture.visible = false;
+
+                    return true;
+                };
+
+                DialogUtil::openConfirmExecDialog(context, nil, 
+                context.translate(ROOT, "MyHome", "UPDATA_CAR_DATA"), nil, nil, 
+                capturing_car, nil);
+
+                ROOT.need_friend_car_capture = false;
+            }
+
+            ROOT::FadeActor.on_effect_end = function (context)
+            {
+                if (ROOT.popup != nil)
+                {
+                    ROOT.popup.close();
+                    ROOT.popup = nil;
+                }
+
+                context.cursor_visible = true;
+                context.event_mask |= 0x05;
+            };
+
+            ROOT::Cover::FadeActor.on_effect_end = nil;
+            ROOT::FadeActor.reverse = true;
+            ROOT::FadeActor.start();
+        }
+
+        Cover::FadeActor.start();
+    }
+
+    method onInitialize(context)
+    {
+        context.event_mask &= ~0x05;
+
+        warpActors(Info, true);
+        warpActors(DetailBox, true);
+
+        Info::official_name.text = "";
+        Info.reset();
+
+        Info.visible = true;
+        DetailBox.reset();
+        DetailBox.visible = true;
+
+        SpecialLogo.reset();
+
+        var is_riding_car = self.garage_id == GAME_STATUS.user_profile.garage.riding_id;
+
+        Info::Ride.active = is_riding_car;
+        self.caution.visible = false;
+
+        var cp;
+        if (self.garage_id > -1)
+        {
+            if (ROOT.cpp.isInstanceOf(Garage2::CarParameterProxy))
+            {
+                cp = ROOT.cpp.getCP();
+                self.caution.visible = ROOT.cpp.invalid != 0;
+
+                if (self.caution.visible)
+                {
+                    var car_label = gtengine::MSpecDB::getCarLabel(ROOT.cpp.car_code);
+                    var dlc_type = DLCUtil::Car::getType(car_label);
+
+                    if (dlc_type != "")
+                    {
+                        var dlc_name = context.translate(ROOT, "DLC", "ENTITLEMENT_TITLE_%s".format(dlc_type));
+                        self.caution.text = context.translate(ROOT, "MyHome", "ERROR_INVALID_DLC_CAR_DETAIL").build(dlc_name);
+                    }
+                    else
+                        self.caution.text = context.translate(ROOT, "MyHome", "ERROR_INVALID_VOUCHER_CAR_DETAIL").build(cpp.short_name);
+                }
+            }
+            else
+                cp = ROOT.cpp;
+
+            var car_code = cp.getCarCode();
+            var has_decken = gtengine::MSpecDB::checkGenericFlag("can_change_decken", car_code);
+
+            Menu.visible = true;
+            Menu2.visible = false;
+            Menu.reset(context, has_decken);
+
+            Menu::CommandC::RideCar.active = !is_riding_car;
+
+            if (Menu::CommandC::RideCar.visible)
+                ROOT.setFocus(Menu::CommandC::RideCar);
+            else
+                ROOT.setFocus(Menu::CommandC::Close);
+
+            ButtonHelpGT5.visible = false;
+            DetailBox::Obtain.visible = true;
+        }
+        else
+        {
+            Menu.visible = false;
+
+            if (sEnableBorrowFriendCar)
+            {
+                var cp;
+                if (ROOT.cpp.isInstanceOf(Garage2::CarParameterProxy))
+                    cp = ROOT.cpp.getCP();
+                else
+                    cp = ROOT.cpp;
+
+                var car_code = cp.getCarCode();
+                var is_voucher_car = gtengine::MSpecDB::checkGenericFlag("is_voucher_car", car_code);
+                var is_dlc_car = gtengine::MSpecDB::checkGenericFlag("is_dlc_cat", car_code);
+
+                Menu2.visible = true;
+
+                Menu2::CommandA::BorrowCar.active = !is_voucher_car && !is_dlc_car;
+
+                ButtonHelpGT5.visible = false;
+                ROOT.setFocus(Menu2::CommandA::BorrowCar);
+            }
+
+            else
+            {
+                Menu2.visible = false;
+                ButtonHelpGT5.visible = true;
+
+                ButtonHelpGT5.set(context, 
+                [
+                    [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_CLOSE")]
+                ]);
+
+                context.cursor_visible = false;
+            }
+
+            DetailBox::Obtain.visible = false;
+        }
+
+        SceneFace.visible = false;
+        Cover::FadeActor.reverse = false;
+        Cover::FadeActor.reset();
+
+        self.FadeActor.reverse = false;
+        self.FadeActor.reset();
+
+        Description::ScrolledWindow::clip.scroll_mode = 2;
+
+        var adj = main::menu::MAdjustment();
+        Description::Scrollbar::VScrollbar.adjustment = adj;
+        Description::ScrolledWindow::clip.v_adjustment = adj;
+
+        Description::ScrolledWindow::clip.space.y = 0.0;
+        Description::ScrolledWindow::clip.manual_target_y = 0.0;
+        Description.visible = true;
+
+        context.pushEvent(main::menu::MFunctionEvent(postInitialize, context));
+
+        main::menu::FrameInterval = 2;
+    }
+
+    method postInitialize(context)
+    {
+        if (checkDebugCommand(context) == 1) // Why is this 1? Just check for true PDI...
+            self.capture_mode = true;
+
+        var end_fade = method (context)
+        {
+            self.invisible_pages = [];
+            var page_list = context.getPageList();
+
+            foreach (var page in page_list)
+            {
+                if (self != page && page.visible)
+                {
+                    page.visible = false;
+                    self.invisible_pages.push(page);
+                }
+            }
+
+            var cp;
+            if (ROOT.cpp.isInstanceOf(Garage2::CarParameterProxy))
+                cp = GAME_STATUS.user_profile.garage.getCar(ROOT.cpp.garage_id);
+            else
+                cp = ROOT.cpp;
+
+            var car_code = cp.getCarCode();
+            self.SceneFace.visible = true;
+            self.SceneFace.setCar(cp);
+            self.SceneFace.loadCar();
+
+            self.Info::official_name.text = main::gtengine::MSpecDB::getCarShortName_A(car_code).upcase();
+            self.Info::official_name.TransientReset();
+
+            self.DetailBox.set(context, cp);
+            self.Info.set(context, cp);
+
+            self.SpecialLogo.set(car_code);
+
+            context.event_mask |= 0x05;
+
+            self.FadeActor.on_effect_end = nil;
+        }
+
+        self.FadeActor.on_effect_end = self.*end_fade;
+        self.FadeActor.start();
+    }
+
+    method onFinalize(context)
+    {
+        self.capture_mode = false;
+        self.cpp = nil;
+
+        self.active_friend = nil;
+
+        if (self.invisible_pages != nil)
+        {
+            foreach (var page in self.invisible_pages)
+                page.visible = true;
+
+            self.invisible_pages = nil;
+        }
+
+        main::menu::FrameInterval = 1;
+    }
+
+    method onCancel(context)
+    {
+        sound.play("cancel");
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onKeyPress(context, event)
+    {
+        var scrollclip = Description::ScrolledWindow::clip;
+        var space = scrollclip.space;
+
+        var textface = space.TextFace;
+        var line_height = textface.line_height;
+
+        var status = EVENTRESULT_CONTINUE;
+        if (event.keysym == CELL_PAD_CTRL_L3_UP)
+        {
+            if (scrollclip.manualTargetIncY(line_height))
+                status = EVENTRESULT_STOP;
+        }
+
+        if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+        {
+            if (scrollclip.manualTargetIncY(-line_height))
+                status = EVENTRESULT_STOP;
+        }
+
+        return status;
+    }
+
+    function checkDebugCommand(context)
+    {
+        if (pdiext::isQABuild())
+        {
+            var state = context.getUpdateContext().getPadButtonState(0);
+            if (state & 0x800)
+                return 1;
+        }
+
+        return -1;
+    }
+
+    module Info
+    {
+        method set(context, cp)
+        {
+            var car_code = cp.getCarCode();
+            var color = cp.color;
+
+            var country_code = main::gtengine::MSpecDB::getCarCountry(car_code);
+            var tuner_label = main::gtengine::MSpecDB::getTunerLabel(car_code);
+
+            Info::tuner_logo.image_path = "piece/tunner_logo_L/%{tuner_label}.img";
+            Info::flag.image_path = "piece/flag_menu/%{country_code}.img";
+
+            Info::tuner_name.text = context.translate(ROOT, "TunerNameI18n", tuner_label);
+
+            var is_ps3 = main::gtengine::MSpecDB::checkGenericFlag("has_premium_model", car_code);
+            Info::premium.visible = is_ps3;
+
+            Info::standard.visible = !is_ps3;
+
+            ColorTip::ColorFace.setCarParameter(cp);
+            color_name.text = Garage2Util::getColorName(cp);
+
+            Info::FadeActor.restart();
+        }
+
+        method reset()
+        {
+            Info::tuner_logo.image_path = "";
+            Info::flag.image_path = "";
+            Info::tuner_name.text = "";
+
+            Info::premium.visible = false;
+            Info::standard.visible = false;
+            Info::FadeActor.reset();
+        }
+    }
+
+    module DetailBox
+    {
+        function getCapText(context, count, cap_count)
+        {
+            if (count < cap_count)
+                return count;
+            else
+                return context.translate(ROOT, "CarSpec", "MORE_THAN_N").build(cap_count);
+        }
+
+        function getDate(context, mtime)
+        {
+            var local_time = mtime.toLocal();
+
+            return context.translate(ROOT, "DateTime", "FORMAT_DATE")
+                .build(local_time.year,local_time.month, local_time.day);
+        }
+
+        function getPowerString(cp)
+        {
+            |var power_f, var power_rpm| = cp.getPower();
+            var power = power_f.toInt();
+
+            if (power == 0 || power_rpm == "---")
+                return "---";
+
+            var unit_power = pdiext::MUnit::GetUnitOfPower();
+
+            var power_str = "%s%{unit_power}".format(pdiext::MUnit::GetPowerForDisplay(power));
+            var unit_rpm = pdiext::MUnit::GetUnitOfRpm();
+
+            var power_rpm_str = "%{power_rpm}%{unit_rpm}";
+
+            return "%{power_str}/%{power_rpm_str}";
+        }
+
+        method set(context, cp)
+        {
+            DetailBox::FadeActor.on_effect_end = nil;
+            DetailBox::FadeActor.restart();
+
+            DetailBox::FadeActor.on_effect_end = function()
+            {
+                DetailBox::FadeActor.on_effect_end = nil;
+                cp.beginInfo();
+
+                var car_code = cp.getCarCode();
+                DetailBox::Displacement::value.TransientReset();
+
+                DetailBox::Displacement::value.text = SpecDatabaseUtil::getCarDisplacementText(context, car_code);
+                DetailBox::MaxPower::value.TransientReset();
+
+                DetailBox::MaxPower::value.text = getPowerString(cp);
+
+                DetailBox::MaxTorque::value.TransientReset();
+                DetailBox::MaxTorque::value.text = cp.getTorqueString(true);
+
+                DetailBox::Drivetrain::value.TransientReset();
+                DetailBox::Drivetrain::value.text = SpecDatabaseUtil::getCarDrivetrainText(context, car_code);
+
+                DetailBox::Length::value.TransientReset();
+                DetailBox::Length::value.text = SpecDatabaseUtil::getCarLengthText(context, car_code);
+
+                DetailBox::Width::value.TransientReset();
+                DetailBox::Width::value.text = SpecDatabaseUtil::getCarWidthText(context, car_code);
+
+                DetailBox::Height::value.TransientReset();
+                DetailBox::Height::value.text = SpecDatabaseUtil::getCarHeightText(context, car_code);
+
+                DetailBox::Weight::value.TransientReset();
+                DetailBox::Weight::value.text = cp.getWeightString();
+
+                if (ROOT.garage_id > -1)
+                {
+                    DetailBox::Obtain::value.TransientReset();
+                    DetailBox::Obtain::value.text = getDate(context, GAME_STATUS.user_profile.garage.getObtainedDate(ROOT.garage_id));
+                }
+
+                DetailBox::RideCount::value.TransientReset();
+                DetailBox::RideCount::value.text = getCapText(context, cp.ride_count, 250);
+
+                DetailBox::Distance::value.TransientReset();
+                DetailBox::Distance::value.text = getDistanceText(context, cp.odometer * 0.001);
+
+                DetailBox::WinCount::value.TransientReset();
+                DetailBox::WinCount::value.text = getCapText(context, cp.win_count, 60000);
+
+                DetailBox::Performance::value.TransientReset();
+                DetailBox::Performance::value.text = cp.getPP1000();
+
+                cp.endInfo();
+            };
+        }
+
+        method reset()
+        {
+            foreach (var name in ["Displacement", "MaxPower", "MaxTorque", "Drivetrain", "Length", "Width", "Height", "Obtain", "RideCount", "Distance", "WinCount"])
+                DetailBox[name].value.text = "";
+
+            DetailBox::FadeActor.on_effect_end = nil;
+            DetailBox::FadeActor.reset();
+        }
+    }
+
+    module SpecialLogo
+    {
+        method set(car_code)
+        {
+            var sp_logo_path = getSpecialLogoPath(car_code);
+
+            if (sp_logo_path != "")
+            {
+                self.image_path = sp_logo_path;
+                self.FadeActor.restart();
+
+                self.visible = true;
+            }
+            else
+                self.reset();
+        }
+
+        method reset(context)
+        {
+            self.image_path = "";
+            self.FadeActor.reset();
+
+            self.visible = false;
+        }
+    }
+
+    module Menu
+    {
+        method reset(context, has_decken)
+        {
+            var is_riding_car = GAME_STATUS.user_profile.garage.isRidingCar(ROOT.garage_id);
+            var is_friend_car = GAME_STATUS.user_profile.garage.isFriendCar(ROOT.garage_id);
+            var is_online = LoginUtil::isOnline();
+
+            var is_invalid = ROOT.caution.visible;
+
+            if (is_invalid)
+            {
+                CommandA::Online.visible = is_online && !is_riding_car && !is_friend_car;
+
+                CommandB::Present.visible = false;
+                CommandB::Sell.visible = false;
+
+                CommandB::Delete.visible = !ROOT.online_mode && !is_friend_car;
+
+                CommandB::Decken.visible = false;
+                CommandB::Demo.visible = false;
+                CommandB::Description.visible = false;
+
+                CommandC::RideCar.visible = false;
+                CommandC::Tuning.visible = false;
+            }
+            else
+            {
+                CommandA::Online.visible = is_online && !is_riding_car && !is_friend_car;
+
+                CommandB::Present.visible = is_online && !ROOT.online_mode && !is_friend_car;
+                CommandB::Sell.visible = !ROOT.online_mode && !is_friend_car;
+
+                CommandB::Delete.visible = false;
+                CommandB::Decken.visible = !ROOT.online_mode;
+
+                CommandB::Decken.visible = has_decken != nil && has_decken;
+                CommandB::Demo.visible = !ROOT.no_demo;
+
+                CommandB::Description.visible = true;
+
+                CommandC::RideCar.visible = !ROOT.online_mode;
+                CommandC::Tuning.visible = !ROOT.online_mode;
+
+                if (CommandB::Present.visible)
+                {
+                    var can_present = Function::checkPresent(context, ROOT.cpp, ROOT.garage_id, false);
+
+                    CommandB::Present::Image.visible = can_present;
+                    CommandB::Present::ImageI.visible = !can_present;
+                }
+
+                if (CommandB::Sell.visible)
+                {
+                    var can_sell = Function::checkSell(context, ROOT.cpp, ROOT.garage_id, false);
+                    CommandB::Sell::Image.visible = can_sell;
+                    CommandB::Sell::ImageI.visible = !can_sell;
+                }
+
+                var has_description = CommandB::Description.loadDescription(context);
+                CommandB::Description::Image.visible = has_description;
+                CommandB::Description::ImageI.visible = !has_description;
+            }
+
+            var status = Garage2Util::getStatus(ROOT.garage_id);
+            if (status != nil)
+            {
+                |var online, var favorite| = status;
+
+                CommandA::Online::CheckBox.active = online > 0;
+                CommandA::Favorite::CheckBox.active = favorite > 0;
+            }
+
+        }
+
+        module CommandA
+        {
+            module Favorite::CheckBox
+            {
+                method onCallback(context, cpp, garage_id, item_w)
+                {
+                    CheckBox.active = !CheckBox.active;
+                    ROOT.need_update = true;
+                }
+
+                method onActivate(context)
+                {
+                    main::sound.play("cursor");
+                    Function::setFavorite(context, ROOT.cpp, ROOT.garage_id, !self.active, onCallback);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Online::CheckBox
+            {
+                method onCallback(context, cpp, garage_id, item_w)
+                {
+                    CheckBox.active = !CheckBox.active;
+                    ROOT.need_update = true;
+                }
+            
+                method onActivate(context)
+                {
+                    if (!LoginUtil::isOnline())
+                    {
+                        main::sound.play("disable");
+                        return EVENTRESULT_FILTER;
+                    }
+                
+                    if (GAME_STATUS.user_profile.garage.isRidingCar(ROOT.garage_id))
+                    {
+                        main::sound.play("disable");
+                    
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MyHome", "ERROR_RIDING_CAR_ONLINE"));
+                    
+                        return EVENTRESULT_FILTER;
+                    }
+                
+                    main::sound.play("cursor");
+                    Function::setOnline(context, ROOT.cpp, ROOT.garage_id, !self.active, onCallback);
+                
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+
+        module CommandB
+        {
+            import __BalloonTarget__::*;
+
+            module Demo
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                
+                    Function::playDemo(context, ROOT.cpp, nil, nil, nil, nil, ROOT);
+                
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Description
+            {
+                attribute initialized = false;
+
+                method loadDescription(context)
+                {
+                    var rtext = main::pdistd::MRText();
+
+                    rtext.load("/description/gt5/%s.rt2".format(pdistd::MLocale::getLanguage()));
+
+                    var car_label = ROOT.cpp.getCP().getCarLabel();
+                    var car_description = rtext.get("CarDescription", car_label);
+
+                    rtext.unload();
+                    ROOT::Description::ScrolledWindow::clip::space::TextFace.text = pdistd::TextConv(car_description);
+
+                    return car_label != car_description;
+                }
+
+                method onActivate(context)
+                {
+                    if (self.ImageI.visible)
+                    {
+                        main::sound.play("disable");
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    main::sound.play("ok");
+
+                    if (!self.active)
+                    {
+                        ROOT::Description::ParallelActor.reverse = false;
+                        ROOT::Description::ParallelActor.start();
+
+                        ROOT::DetailBox::FadeActor.reverse = true;
+                        ROOT::DetailBox::FadeActor.restart();
+
+                        ROOT::SpecialLogo::FadeActor.reverse = true;
+                        ROOT::SpecialLogo::FadeActor.restart();
+                    }
+
+                    else
+                    {
+                        ROOT::Description::ParallelActor.reverse = true;
+                        ROOT::Description::ParallelActor.start();
+
+                        ROOT::DetailBox::FadeActor.reverse = false;
+                        ROOT::DetailBox::FadeActor.restart();
+
+                        ROOT::SpecialLogo::FadeActor.reverse = false;
+                        ROOT::SpecialLogo::FadeActor.restart();
+                    }
+
+                    self.active = !self.active;
+                    return EVENTRESULT_FILTER;
+                }
+
+                method onInitialize(context)
+                {
+                    self.active = false;
+                }
+            }
+
+            SCALE_WIDGET_SDTV(ROOT::Description::ScrolledWindow::clip::space::TextFace, 2.6);
+
+            module Present
+            {
+                method onCallback(context, cpp, garage_id, item_w)
+                {
+                    ROOT.need_update = true;
+                    ROOT.close(context);
+                }    
+
+                method onFunctionCallback(context, args)
+                {
+                    |var cpp, var garage_id, var friend_name| = args;
+                    Function::present(context, cpp, garage_id, friend_name, onCallback);
+                }
+
+                method onActivate(context)
+                {
+                    if (!LoginUtil::isOnline())
+                    {
+                        main::sound.play("disable");
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "Network", "ERROR_ONLINE_FUNCTION"));
+
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    var status = Garage2Util::getStatus(ROOT.garage_id);
+
+                    if (status != nil)
+                    {
+                        |var online| = status;
+
+                        if (online > 0)
+                        {
+                            main::sound.play("disable")
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MyHome", "ERROR_CAR_IS_ONLINE"));
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    main::sound.play("ok");
+
+                    if (Function::checkPresent(context, ROOT.cpp, ROOT.garage_id, true))
+                    {
+                        var gt_friend_list = getFriendList(context);
+                        var friend = UserProfileProject::FriendListPopup.open(context, gt_friend_list);
+
+                        if (friend != nil)
+                        {
+                            Function::present(context, ROOT.cpp, ROOT.garage_id, friend, onCallback);
+                        }
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Sell
+            {
+                method onCallback(context, cpp, garage_id, item_w)
+                {
+                    ROOT.need_update = true;
+                    ROOT.close(context);
+                }
+
+                method onActivate(context)
+                {
+                    var status = Garage2Util::getStatus(ROOT.garage_id);
+
+                    if (status != nil)
+                    {
+                        |var online| = status;
+                        if (online > 0)
+                        {
+                            main::sound.play("disable")
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MyHome", "ERROR_CAR_IS_ONLINE"));
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    main::sound.play("ok");
+                    Function::sell(context, ROOT.cpp, ROOT.garage_id, nil, onCallback);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Delete
+            {
+                method onCallback(context, cpp, garage_id, item_w)
+                {
+                    ROOT.need_update = true;
+                    ROOT.close(context);
+                }
+
+                method onActivate(context)
+                {
+                    var status = Garage2Util::getStatus(ROOT.garage_id);
+
+                    if (status != nil)
+                    {
+                        |var online| = status;
+                        if (online > 0)
+                        {
+                            main::sound.play("disable")
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MyHome", "ERROR_CAR_IS_ONLINE"));
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    main::sound.play("ok");
+                    Function::delete(context, ROOT.cpp, ROOT.garage_id, nil, onCallback);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Decken
+            {
+
+                method onActivate(context)
+                {
+                    var status = Garage2Util::getStatus(ROOT.garage_id);
+
+                    if (status != nil)
+                    {
+                        |var online| = status;
+                        if (online > 0)
+                        {
+                            main::sound.play("disable")
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MyHome", "ERROR_CAR_IS_ONLINE"));
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    main::sound.play("ok");
+
+                    var cp = GAME_STATUS.user_profile.garage.getCar(ROOT.garage_id);
+                    var changed = DeckenPopup.open(context, cp, ROOT::SceneFace);
+
+                    if (changed)
+                        GAME_STATUS.user_profile.garage.updateCar(cp);
+
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+        }
+
+        module CommandC
+        {
+            module RideCar
+            {
+                method onCallback(context, cpp, garage_id, item_w)
+                {
+                    ROOT.need_update = true;
+
+                    ROOT::Info::Ride.active = true;
+                    ROOT::Menu::CommandC::RideCar.active = false;
+
+                    SoundUtil::PlayCarStartSound(ROOT.cpp.getCP());
+                }
+
+                method onActivate(context)
+                {
+                    var status = Garage2Util::getStatus(ROOT.garage_id);
+
+                    if (status != nil)
+                    {
+                        |var online| = status;
+                        if (online > 0)
+                        {
+                            main::sound.play("disable")
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MyHome", "ERROR_CAR_IS_ONLINE"));
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    main::sound.play("ok");
+                    Function::rideCar(context, ROOT.cpp, ROOT.garage_id, nil, onCallback);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Tuning
+            {
+
+                method onActivate(context)
+                {
+                    var status = Garage2Util::getStatus(ROOT.garage_id);
+
+                    if (status != nil)
+                    {
+                        |var online| = status;
+
+                        if (online > 0)
+                        {
+                            main::sound.play("disable")
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MyHome", "ERROR_CAR_IS_ONLINE"));
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    main::sound.play("ok");
+
+                    tint::FadeEffect.out = true;
+                    SceneFace.clearCar();
+
+                    Function::tuning(context, nil, ROOT.garage_id);
+
+                    tint::FadeEffect.out = false;
+
+                    var cp;
+                    if (ROOT.cpp.isInstanceOf(Garage2::CarParameterProxy))
+                        cp = GAME_STATUS.user_profile.garage.getCar(ROOT.cpp.garage_id);
+                    else
+                        cp = ROOT.cpp;
+
+                    SceneFace.setCar(cp);
+
+                    SceneFace.loadCar();
+                    cp.beginInfo();
+
+                    var power = cp.getPowerString(true);
+
+                    if (power != DetailBox::MaxPower::value.text)
+                    {
+                        DetailBox::MaxPower::value.TransientReset();
+                        DetailBox::MaxPower::value.text = power;
+
+                        DetailBox::MaxTorque::value.TransientReset();
+                        DetailBox::MaxTorque::value.text = cp.getTorqueString(true);
+
+                        DetailBox::Performance::value.TransientReset();
+                        DetailBox::Performance::value.text = cp.getPP1000();
+                    }
+
+                    cp.endInfo();
+                    ROOT.need_update = true;
+
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+
+            module Close
+            {
+                import __BalloonTarget__::*;
+
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                ROOT.close(context);
+
+                return EVENTRESULT_FILTER;
+            }    
+            }
+        }
+    }
+
+    module Menu2
+    {
+        module CommandA
+        {
+            module BorrowCar
+            {
+                method onCallback(context, cpp, garage_id, item_w)
+                {
+                    ROOT.need_update = true;
+                    ROOT.need_friend_car_capture = true;
+
+                    var cp = (cpp.isInstanceOf(Garage2::CarParameterProxy)) ? cpp.getCP() : cpp;
+
+                    SoundUtil::PlayCarStartSound(cp);
+                }
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+
+                    Function::borrowCar(context, ROOT.cpp, ROOT.garage_id, [ROOT.active_friend], onCallback);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Close
+            {
+                import __BalloonTarget__::*;
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    ROOT.close(context);
+
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+        }
+
+        module Manual
+        {
+            import __BalloonTarget__::*;
+
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                var project = main::manager.loadProject("%{main::PROJECT_ROOT_DIR}/manual/manual");
+
+                self finally
+                {
+                    main::manager.unloadProject(project);
+                }
+
+                ManualProject::ManualDetailPopup.open(context, ["Howtoplay_17"], 0);
+
+                return EVENTRESULT_FILTER;
+            }    
+        }
+    }
+
+    module SceneFace
+    {
+        attribute request_cp_;
+        attribute current_cp_;
+        attribute scene_fade_thread_;
+
+        method setCar(cp)
+        {
+            self.request_cp_ = nil;
+            self.request_cp_ = cp;
+        }
+
+        method clearCar()
+        {
+            if (self.current_cp_ != nil)
+            {
+                self.execCommandImmidiate("clearEntity car1");
+                self.current_cp_ = nil;
+            }
+
+            self._terminate_thread(self.scene_fade_thread_);
+
+            SceneActor::CarFadeActor.reverse = false;
+            SceneActor::CarFadeActor.reset();
+
+            SceneActor.opacity = 0.0;
+            self.scene_fade = 0.0;
+        }
+
+        method loadCar()
+        {
+            if (self.request_cp_ == nil)
+                return;
+
+            if (self.request_cp_.getCarCode() == main::gtengine::MSpecDB::NO_CODE64)
+                return;
+
+            clearCar();
+
+            var car_code = self.request_cp_.getCarCode();
+            var car_color = self.request_cp_.color;
+
+            self.resetCommandQueue();
+
+            self.setDefaultCarParameter(self.request_cp_);
+            self.execCommand("changeCar _default car1 true false mirror");
+            self.execCommand("resetGlobalMotionFrame");
+
+            var is_racing_kart = gtengine::MSpecDB::checkGenericFlag("is_racing_kart", car_code);
+
+            self.zoom_factor = (is_racing_kart) ? 1.2 : 1.0;
+
+            self.current_cp_ = self.request_cp_;
+            self.request_cp_ = nil;
+
+            self._terminate_thread(self.scene_fade_thread_);
+            self.scene_fade_thread_ = self._start_thread(self._scene_fade);
+        }
+
+        method _scene_fade(context)
+        {
+            for (;;)
+            {
+                if (self.current_cp_ == nil)
+                    return;
+
+                if (!self.isUnderSetup())
+                {
+                    SceneActor::CarFadeActor.start();
+
+                    if (!ROOT.capture_mode)
+                        self.setEntityRotateVelocityY("CAR", "car1", SceneActor.rotate);
+                    else
+                        self.setEntityRotateY("CAR", "car1", ROOT::hidden::CaptureCarAngleValue.text.toInt());
+
+                    self.setEntityRotateVelocityY("CAR", "car1", SceneActor.rotate);
+                }
+
+                self.scene_fade = SceneActor.opacity;
+
+                Thread::Sleep(0.01);
+            }
+        }
+
+        method _start_thread(exec_function)
+        {
+            var thread = Thread(exec_function);
+            thread.start();
+
+            return thread;
+        }
+
+        method _terminate_thread(thread)
+        {
+            if (thread != nil)
+            {
+                thread.terminate();
+                thread = nil;
+            }
+        }
+
+        method onInitialize(context)
+        {
+            self.setClearColorBuffer(false);
+
+            SceneFaceUtil::loadScene(self, "garage", nil, nil, false);
+            self.saveCommandQueue();
+            self.clearCar();
+        }
+
+        method onFinalize(context)
+        {
+            self._terminate_thread(self.scene_fade_thread_);
+
+            self.request_cp_ = nil;
+            self.current_cp_ = nil;
+        }
+    }
+}

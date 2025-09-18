@@ -1,0 +1,403 @@
+module ROOT
+{
+    hidden.visible = false;
+
+    attribute popup;
+    attribute closed = false;
+    attribute menu_color_list;
+    attribute wallpaper_list;
+    attribute callback;
+
+    attribute result;
+    attribute color_id;
+    attribute wallpaper_id;
+    attribute user_profile;
+
+    method open(context, menu_color_list, wallpaper_list, callback)
+    {
+        self.user_profile = nil;
+        self.result = nil;
+        self.menu_color_list = menu_color_list;
+        self.wallpaper_list = wallpaper_list;
+        self.callback = callback;
+
+        self.closed = false;
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return result;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        ContextMain.event_mask = 0x05;
+        ContextMain.disableInput();
+
+        FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        }
+
+        FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        Theme.visible = false;
+        ButtonHelpGT5.visible = false;
+
+        ButtonHelpGT5.set(context, [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")],
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+        ]);
+
+        self.color_id = GLOBAL_STATUS.user_profile.context.myhome_color_id;
+        self.wallpaper_id = GLOBAL_STATUS.user_profile.context.myhome_wallpaper_id;
+
+        var format = context.translate(ROOT, "MyHome", "WITHIN_N_LETTERS");
+
+        Popup::Pane::Body::MyHome::TextFace0.text = "%s %s".format(
+            context.translate(ROOT, "GTModeProject::SettingAutoMessageDialog", "MYHOME"),
+            format.build(30)
+        );
+
+        if (LoginUtil::isOnline())
+        {
+            Popup::Pane::Body::MyHome::InputText::DummyTextFace.visible = false;
+            Popup::Pane::FootRow::CancelOK::OK.insensitive = true;
+
+            var user_id = Grim2.getLoginUserId();
+            UserProfile2.requestUserProfile(user_id, function (args)
+            {
+                |var context, var request| = args;
+                if (request.isDone())
+                {
+                    ROOT.user_profile = UserProfile2.decodeUserProfile(request);
+
+                    Popup::Pane::Body::MyHome::InputText::InputTextFace.value = ROOT.user_profile["welcomemessage"];
+                    Popup::Pane::Body::MyHome::InputText::InputTextFace.insensitive = false;
+                }
+
+                Popup::Pane::FootRow::CancelOK::OK.insensitive = false;
+            })
+        }
+        else
+        {
+            Popup::Pane::Body::MyHome::InputText::InputTextFace.value = "";
+            Popup::Pane::Body::MyHome::InputText::InputTextFace.insensitive = true;
+
+            Popup::Pane::Body::MyHome::InputText::DummyTextFace.visible = true;
+            Popup::Pane::FootRow::CancelOK::OK.insensitive = false;
+        }
+
+        Popup::Pane::Body::Color::ListBox.initialize(context);
+        Popup::Pane::FootRow::CancelOK::Cancel.visible = isCancelable(context);
+
+        ROOT.setFocus(Popup::Pane::FootRow::CancelOK::OK);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        Popup::Pane::Body::Color::ListBox.finalize(context);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+
+        if (isCancelable(context))
+            ROOT.setFocus(Popup::Pane::FootRow::CancelOK::Cancel);
+        else
+            ROOT.setFocus(Popup::Pane::FootRow::CancelOK::OK);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method isCancelable(context)
+    {
+        return GLOBAL_STATUS.user_profile.context.myhome_setting_level >= 3;
+    }
+
+    module Popup::Pane
+    {
+        module Body
+        {
+            module Color::ListBox
+            {
+                method initialize(context)
+                {
+                    self.setItemCount(0);
+                    self.setItemTemplate(context, ROOT::hidden::Item);
+
+                    self.setItemCount(ROOT.menu_color_list.size);
+
+                    for (var i = 0; i < ROOT.menu_color_list.size; ++i)
+                    {
+                        var item = self.getItemWidget(i, context);
+                        item.initialize(context, i, ROOT.menu_color_list[i]);
+                    }
+
+                    self.focus_index = ROOT.color_id;
+                }
+
+                method finalize(context)
+                {
+                    self.setItemCount(0);
+                }
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+
+                    var focus_item = self.getItemWidget(self.focus_index);
+                    ROOT.color_id = focus_item.color_id;
+
+                    self.setItemCount(ROOT.menu_color_list.size);
+
+                    for (var i = 0; i < ROOT.menu_color_list.size; ++i)
+                    {
+                        var item = self.getItemWidget(i, context);
+                        item.ColorFaceA.visible = i == ROOT.color_id;
+                    }
+
+                    ROOT.callback(context, "color", ROOT.color_id);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Photo
+            {
+                method onActivate(context)
+                {
+                    var photo_list = PhotoFileUtil::getList();
+                    if (photo_list.size == 0)
+                    {
+                        main::sound.play("disable");
+                        OK(context, ROOT, "PHOTO_MODE_FIRST");
+                    }
+                    else
+                    {
+                        main::sound.play("ok");
+                        PhotoPopup.open(context, pdistd::getPlayerName(), PhotoPopup::Mode::PROFILE);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+
+            module WallPaper
+            {
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    ROOT.Theme::ListBox.initialize(context);
+
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+        }
+
+        module FootRow::CancelOK
+        {
+            module Cancel
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    ROOT.close(context);
+
+                    return EVENTRESULT_FILTER;
+                }
+
+                method onCancel(context)
+                {
+                    main::sound.play("cancel");
+                    ROOT.close(context);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module OK
+            {
+
+                method updateAutoMessage(context)
+                {
+                    var need_update = false;
+                    if (ROOT.user_profile == nil)
+                        return [true, need_update];
+
+                    var welcomemessage = Popup::Pane::Body::MyHome::InputText::InputTextFace.value;
+                    if (welcomemessage == ROOT.user_profile["welcomemessage"])
+                        return [true, need_update];
+
+                    VulgarityFilterUtil::begin();
+                    |var res, var sanitized_text| = VulgarityFilterUtil::check(welcomemessage);
+                    VulgarityFilterUtil::end();
+
+                    if (!res)
+                        return [false, need_update];
+
+                    var request = GrimFacade::UserProfile::requestUpdateAutoMessage(context, sanitized_text, function (args) {});
+                    if (Grim2Util::__deprecated__join__(context, request))
+                    {
+                        if (request.isDone() && UserProfile2.decodeResult(request))
+                        {
+                            var need_update = true;
+                            return [true, need_update];
+                        }
+                    }
+
+                    return [false, need_update];
+                }
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+
+                    |var res, var need_update| = updateAutoMessage(context);
+                    if (res)
+                    {
+                        ROOT.result = [
+                            "color" : ROOT.color_id,
+                            "wallpaper" : ROOT.wallpaper_id,
+                            "need_update" : need_update
+                        ];
+
+                        ROOT.close(context);
+                    }
+                    else
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                        context.translate(ROOT, "Network", "ERROR_ONLINE_FUNCTION"));
+
+                        ROOT.result = nil;
+                        ROOT.close(context);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+    }
+
+    module Theme::ListBox
+    {
+
+        method onInitialize(context)
+        {
+            self.v_adjustment = VScrollbar.adjustment = menu::MAdjustment();
+        }
+
+        method initialize(context)
+        {
+            self.setItemTemplate(context, ROOT::hidden::ItemWallpaper);
+            self.setItemCount(ROOT.wallpaper_list.size);
+
+            for (var i = 0; i < ROOT.wallpaper_list.size; ++i)
+            {
+                var item = self.getItemWidget(i, context);
+                item.initialize(context, i, ROOT.wallpaper_list[i]);
+            }
+
+            self.focus_index = ROOT.wallpaper_id;
+            ROOT.setFocus(self);
+            Theme::FadeActor.on_effect_end = nil;
+
+            Theme::FadeActor.reverse = true;
+            Theme::FadeActor.start();
+
+            Theme.visible = true;
+            ROOT::Popup.insensitive = true;
+            ButtonHelpGT5.visible = true;
+        }
+
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+            var item = self.getItemWidget(self.focus_index);
+
+            ROOT.wallpaper_id = item.wallpaper_id;
+
+            ROOT.callback(context, "wallpaper", ROOT.wallpaper_id);
+
+            close(context);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onCancel(context)
+        {
+            main::sound.play("cancel");
+            close(context);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method close(context)
+        {
+            var me = self;
+            Theme::FadeActor.on_effect_end = function (context)
+            {
+                Theme::FadeActor.on_effect_end = nil;
+                Theme.visible = false;
+                Theme::ListBox.setItemCount(0);
+
+                ROOT::Popup.insensitive = false;
+                ROOT.setFocus(Popup::Pane::Body::WallPaper::HBox::Circle);
+            }
+
+            Theme::FadeActor.reverse = false;
+            Theme::FadeActor.start();
+            ButtonHelpGT5.visible = false;
+        }
+    }
+
+    module hidden
+    {
+        module Item
+        {
+            attribute color_id;
+
+            method initialize(context, color_id, menu_color)
+            {
+                self.color_id = color_id;
+            
+                self.ColorFace.setColor(main::menu::MColorObject(
+                    menu_color[0] / 255.0,
+                    menu_color[1] / 255.0,
+                    menu_color[2] / 255.0
+                ));
+                
+                self.ColorFaceA.visible = color_id == ROOT.color_id;
+            }
+        }
+
+        module ItemWallpaper
+        {
+            attribute wallpaper_id;
+
+            method initialize(context, wallpaper_id, wallpaper)
+            {
+                self.wallpaper_id = wallpaper_id;
+                self.ImageFace.image_path = wallpaper;
+
+                self.ColorFaceA.visible = wallpaper_id == ROOT.wallpaper_id;
+            }
+        }
+    }
+}

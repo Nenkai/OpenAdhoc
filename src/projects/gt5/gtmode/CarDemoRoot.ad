@@ -1,0 +1,284 @@
+module ROOT
+{
+    attribute sCP;
+    attribute sReturnPage;  
+
+    method open(context, cp, return_page)
+    {
+        ORG.window_max = 1; 
+
+        PaceUtil::deactivate(); 
+
+        SequenceUtil::setupTransition(context, context.getCursorProject().GTLogoTransition);    
+
+        context.pageOutRootTransition();
+        context.syncOutRootTransition();    
+
+        SpecialEventRoot.visible = false;
+        ABspecEventRoot.visible = false;
+        GTModeRoot.visible = false;
+        return_page.visible = false;    
+
+        self.sCP = cp;
+        self.sReturnPage = return_page;
+        SequenceUtil::pushPage(context, self);  
+
+        return_page.visible = true;
+        GTModeRoot.visible = true;
+        ABspecEventRoot.visible = true;
+        SpecialEventRoot.visible = true;    
+
+        PaceUtil::activate();
+        context.pageInRootTransition();
+    }   
+
+    method close(context)
+    {
+        SoundUtil::StopStream(context); 
+
+        SequenceUtil::setupTransition(context, getCursorProject().GTLogoTransition);   
+
+        context.pageOutRootTransition();
+        context.syncOutRootTransition();    
+
+        SequenceUtil::popPage(context, self);
+    }   
+
+    method doCruise(context)
+    {
+        ORG.toCruiseMode(0, false, 150);
+    }   
+
+    method onInitialize(context)
+    {
+        RenderControl.begin(ORG);   
+
+        context.event_mask = 0x05;
+        context.disableInput();
+        context.filterKeyEvent();   
+
+        context.pushEvent(menu::MScriptEvent(context, self, "on_initialize"));
+    }   
+
+    method on_initialize(context)
+    {
+        var car_code = self.sCP.getCarCode();   
+
+        var car_description = "";
+        var language = pdistd::MLocale::getLanguage();  
+
+        if (language != "JP")
+        {
+            var rtext = main::pdistd::MRText();
+            rtext.load("/description/gt5/%s.rt2".format(language)); 
+
+            var car_label = self.sCP.getCarLabel();
+            var car_description = rtext.get("CarDescription", car_label);   
+
+            var car_description = pdistd::TextConv(car_description);    
+            if (language != "TW")
+                car_description = car_description.split("\n").join(" ");
+
+            rtext.unload();
+        }   
+
+        ORG.beginReducedMem();
+        RaceOperator.clear();   
+
+        var dp = GAME_STATUS.user_profile.residence.getPlayer();
+        dp.type = gtengine::DriverType::AI; 
+
+        RaceOperator.makeReservation(self.sCP, true, [dp]); 
+
+        var course_tbl = ["template05", "template06", "template07"];    
+
+        var course_code = gtengine::MSpecDB::getCourseCode(course_tbl[pdistd::MRandom::GetValue(0, course_tbl.size)]);  
+
+        var gp = GameParameterUtil::createSingleRace(course_code, 1, 0);
+        var rp = gp.event.race_parameter;
+        rp.setDefault();    
+
+        rp.disable_recording_replay = true;
+        rp.course_code = course_code;
+        rp.race_type = gtengine::RaceType::DEMO;
+        rp.start_type = gtengine::StartType::DISPERSED; 
+
+        rp.racers_max = 1;
+        rp.entry_max = 1;
+        rp.enable_damage = false;   
+
+        RaceOperator.game_parameter = gp;
+        RaceOperator.buildRace();
+        RaceOperator.allocateResource();
+        ORG.disableRenderingRace();
+        ORG.disableSoundingRace();
+        ORG.exitCourse();   
+
+        RaceOperator.checkIn();
+        context.sync(1.0);  
+
+        while (!ORG.hasLoadingCarDone())
+            context.sync();
+
+        ORG.requestLoadingCourse();
+        context.sync(1.0);  
+
+        while (!ORG.canEnterCourse())
+            context.sync();
+
+        var course_pathway = nil;   
+
+        if (gtengine::MSpecDB::getCourseLabel(rp.course_code).beginsWith("template"))
+        {
+            var course_generator_param = gtengine::CourseGenerateParam();
+            var course_generator = gtengine::MCourseGenerator();    
+
+            course_generator_param.useRandomSeed = false;
+            course_generator_param.seed = 1;
+            course_generator_param.kind = gtengine::CourseGeneratorKind::GENERATOR_CIRCUIT;
+            course_generator_param.lengthType = gtengine::CourseGeneratorLengthType::LENGTH;    
+
+            course_generator_param.lengthy = 0.5;
+            var num = 2;
+            course_generator_param.sections.resize(num);    
+
+            for (var i = 0; i < num; i++)
+            {
+                course_generator_param.sections[i].width = 0.5;
+                course_generator_param.sections[i].curvy = 0.5;
+                course_generator_param.sections[i].sharpness = 0.5;
+                course_generator_param.sections[i].bank_angularity = 0.5;
+            }   
+
+            course_pathway = course_generator.generate(ORG, course_generator_param);
+        }   
+
+        if (course_pathway != nil)
+        {
+            var course_builder = gtengine::MCourseBuilder();
+            var res = course_builder.build(ORG, course_pathway);
+        }   
+
+        ORG.enterCourse();  
+
+        while (!ORG.inCourse())
+            context.sync();
+
+        ORG.startSession(gp.event.race_parameter, false, gtengine::StartSessionCameraType::DISABLE_INPUT_WITHOUT_ZOOM, false); 
+
+        while(!ORG.inSession())
+            context.sync();
+
+        ORG.pauseHandleAvailable = false;
+        ORG.pauseAvailable = false; 
+
+        ORG.setCameraTarget(0, 0);
+        ORG.setRaceDisplayTarget(0, 0); 
+
+        ORG.enableRenderingRace();
+        ORG.enableSoundingRace();   
+
+        var car_code = self.sCP.getCarCode();
+        var car_color = self.sCP.color; 
+
+        var country_code = gtengine::MSpecDB::getCarCountry(car_code);
+        var tuner_label = main::gtengine::MSpecDB::getTunerLabel(car_code); 
+
+        var info = self.InfoMain;   
+
+        info.official_name.text = gtengine::MSpecDB::getCarShortName(car_code);
+        info.official_name.TransientReset();    
+
+        info.flag.image_path = "piece/flag_menu/%{country_code}.img";
+        info.tuner_name.text = context.translate(ROOT, "TunerNameI18n", tuner_label);   
+
+        info.ColorTip::ColorFace.setCarParameter(self.sCP); 
+
+        info.color_name.text = Garage2Util::getColorName(self.sCP); 
+
+        var sound_scene = pdistd::MLocale::getLanguage() == "JP" ? 
+        SoundUtil::SCENE_REPLAY_WITH_NA : SoundUtil::SCENE_REPLAY;  
+
+        SoundUtil::SetupSound(sound_scene); 
+
+        SoundUtil::BGMPlayGroup(sound_scene, "racing", nil, 0.0, 3.0);  
+
+        if (car_description != "" && car_description != self.sCP.getCarLabel())
+        {
+            News.tip.value = car_description;
+            News.visible = true;
+        }   
+        else
+        {
+            News.visible = false;
+        }   
+
+        while (!ORG.isRenderReady())
+            pdistd::DelayThread(1000 * 100);
+
+        if (pdistd::MLocale::getLanguage() == "JP")
+        {
+            var rtext = pdistd::MRText();
+            rtext.load("/description/gt5/DID_%s.rt2".format(pdistd::MLocale::getLanguage()));   
+
+            var car_description_id = rtext.get("CarDescription", self.sCP.getCarLabel());
+            var path = "/sound_gt/narration/jp/%05d".format(car_description_id);    
+
+            SoundUtil::PlayStreamWithDelay(context, path, SoundUtil::GetNarrationVolume(), 3.0);
+        }   
+
+        context.addTimeOut("cruise", doCruise, context);
+        context.setTimeOut("cruise", 8.0);    
+
+        context.enableInput();
+        context.pageInRootTransition();
+    }   
+
+    method onFinalize(context)
+    {
+        context.removeTimeOut("cruise");  
+
+        ORG.disableRenderingRace();
+        ORG.disableSoundingRace();
+        ORG.endSession();   
+
+        RaceOperator.checkOut();    
+
+        ORG.exitCourse();   
+
+        RaceOperator.destroyRace();
+        RaceOperator.clearResource();
+        RaceOperator.clear();
+        RenderControl.end(ORG); 
+
+        ORG.endReducedMem();    
+
+        context.cursor_visible = true;  
+
+        SoundUtil::SetupSound(SoundUtil::SCENE_MENU);
+        SoundUtil::MenuBGMCrossfadeGroup("menu", 3.0, 3.0, true);
+    }   
+
+    method onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_CIRCLE:
+                main::sound.play("cancel");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;  
+
+            case CELL_PAD_CTRL_CROSS:
+                main::sound.play("ok");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;
+
+            case CELL_PAD_CTRL_START:
+                main::sound.play("ok");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;    
+        }   
+
+        return EVENTRESULT_CONTINUE;
+    }
+}

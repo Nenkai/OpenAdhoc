@@ -1,0 +1,1882 @@
+module ROOT
+{
+    hidden.visible = false;
+
+    static sDealerList
+    static sCaptureMode
+
+    method open(context)
+    {
+        SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+        context.pageOutRootTransition();
+        context.syncOutRootTransition();
+
+        SequenceUtil::startPageDirect(context, ROOT);
+    }
+
+    method close(context)
+    {
+        SequenceUtil::startPage(context, GTModeRoot);
+    }
+
+    method onInitialize(context)
+    {
+        sCaptureMode = false;
+
+        self.ButtonHelpGT5.set(context, 
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")],
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+        ]);
+
+        self.ButtonHelpGT5.hide();
+
+        self.CarSelectBG.visible = false;
+
+        self.HDToolTip::tip.value = "";
+        self.HDToolTip::tip.action_type = 3;
+        self.HDToolTip::FadeActor.reverse = false;
+
+        self.HDToolTip::FadeActor.reset();
+
+        self.veil::FadeActor.reset();
+
+        self.DealerSelect.hide(context, true);
+        self.CarSelect.hide(context, true);
+        self.ColorSelect.hide(context, true);
+
+        SoundUtil::MenuBGMCrossfadeGroup("dealer", 0.0, 3.0);
+
+        context.pushEvent(main::menu::MFunctionEvent(postInitialize, context));
+    }
+
+    method postInitialize(context)
+    {
+        self.DealerSelect.appear(context, false, true);
+        self.ButtonHelpGT5.appear();
+    }
+
+    method openModeIntroduction(context)
+    {
+        if (!GAME_STATUS.user_profile.game_flags.getFlag("INTRODUCTION", "CAR_DEALER"))
+        {
+            DialogUtil::openInformationDialog(context, context.translate(ROOT, "IntroductionGT5", "CAR_DEALER"));
+
+            GAME_STATUS.user_profile.game_flags.setFlag("INTRODUCTION", "CAR_DEALER", true);
+        }
+    }
+
+    method onFinalize(context)
+    {
+        ROOT::sDealerList = nil;
+    }
+
+    function buyNewCar(context, car_code, car_color, if_debug)
+    {
+        var garage = main::GAME_STATUS.user_profile.garage;
+        var car_label = main::gtengine::MSpecDB::getCarLabel(car_code);
+        var color_name = main::gtengine::MSpecDB::getCarColorName(car_code, car_color);
+
+        var price = main::gtengine::MSpecDB::getCarPrice(car_code);
+        var price_str = main::pdiext::MMisc::GetMoneyString(price);
+        var mycash = &main::GAME_STATUS.user_profile.cash;
+
+        if (if_debug == nil)
+            if_debug = false;
+
+        var dlc_type = DLCUtil::Car::getType(car_label);
+        if (dlc_type != "")
+        {
+            var dlc_name = context.translate(ROOT, "DLC", "ENTITLEMENT_TITLE_%s".format(dlc_type));
+
+            if (DLCUtil::Car::isInstalled(car_label))
+            {
+                if (DLCUtil::Car::isBought(car_label))
+                {
+
+                }
+                else
+                {
+                    DialogUtil::openInformationDialog(context, 
+                        context.translate(ROOT, "DIALOG_DLC_ISNOT_AVAILABLE").build(dlc_name),
+                        nil, 
+                        "piece/itemcategory/info_dlc.img"
+                    );
+                    
+                    return false;
+                }
+            }
+
+            else
+            {
+                if (DLCUtil::Car::isBought(car_label))
+                {
+                    DialogUtil::openInformationDialog(context, 
+                        context.translate(ROOT, "DIALOG_YOU_NEED_INSTALL_DLC").build(dlc_name),
+                        nil, 
+                        "piece/itemcategory/info_dlc.img"
+                    );
+
+                    return false;
+                }
+
+                else
+                {
+                    DialogUtil::openInformationDialog(context, 
+                        context.translate(ROOT, "DIALOG_DIALOG_YOU_DONOT_HAVE_DLC").build(dlc_name), 
+                        nil, 
+                        "piece/itemcategory/info_dlc.img"
+                    );  
+                    
+                    return false;
+                }
+            }
+        }
+
+        var purchase_level = gtengine::MSpecDB::getCarPurchaseLevel(car_code);
+
+        if (GAME_STATUS.user_profile.getAspecLevel() < purchase_level && 
+            GAME_STATUS.user_profile.getBspecLevel() < purchase_level && 
+            !if_debug)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "DIALOG_NEED_MORE_AB_LEVEL").build(purchase_level));
+            return false;
+        }
+
+        if (price == 0 && !if_debug)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, context.translate(ROOT, "DIALOG_NOT_FOR_SALE"));
+            return false;
+        }
+
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, context.translate(ROOT, "DIALOG_DO_YOU_BUY_CAR"));
+        if (res)
+        {
+            if (garage.getCount() < garage.getMax() || if_debug)
+            {
+                if (*mycash >= price || if_debug)
+                {
+                    if (!if_debug)
+                        *mycash -= price;
+
+                    var cp = main::gtengine::MCarParameter(car_code);
+                    cp.color = car_color;
+                    cp.setNewCar();
+
+                    var garage_id = garage.addCar(cp);
+
+                    ROOT::HeaderGT5::HBox::Credits.refresh();
+
+                    if (price >= 10000000 / 100)
+                        PDINetwork.unlockTrophyAsync(gtengine::TrophyType::OBTAIN_EXPENSIVE_CAR);
+
+                    if (price >= 100000000 / 100)
+                        PDINetwork.unlockTrophyAsync(gtengine::TrophyType::OBTAIN_SUPER_EXPENSIVE_CAR);
+
+                    ROOT::BalloonTip.reset_value();
+
+                    SceneFace.endWaitSetupEnd();
+
+                    ROOT::veil::FadeActor.reverse = false;
+                    ROOT::veil::FadeActor.start();
+
+                    for (;;)
+                    {
+                        if (ROOT::veil.opacity < 1.0)
+                            yield;
+                    }
+
+                    SceneFace.endSceneScript();
+
+                    CarDeliveryRoot.open(context, cp, garage_id, false);
+
+                    ActionLogUtil::buyCar(cp.getCarLabel());
+
+                    return true;
+                }
+                else
+                {
+                    main::sound.play("disable");
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "DIALOG_NOT_ENOUGH_CREDITS"));
+
+                    return false;
+                }
+            }
+            else
+            {
+                main::sound.play("disable");
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "DIALOG_GARAGE_FULL"));
+
+                return false;
+            }
+        }
+    }
+
+    function checkUnlockCar(tuner_label, car_code)
+    {
+        if (tuner_label == "polyphony")
+        {
+            var car_label = gtengine::MSpecDB::getCarLabel(car_code);
+            if (GAME_STATUS.user_profile.game_flags.getFlag("CAR_AVAILABLE", car_label) == false)
+                return false;
+        }
+
+        return true;
+    }
+}
+
+module ROOT::DealerSelect
+{
+    attribute finder_ = nil;
+    attribute thread_ = nil;
+    attribute chase_actor_target_ = nil;
+
+    method appear(context, warp, no_fade_out = false)
+    {
+        self.insensitive = false;
+        PROJECT::ignorePadEvent(true);
+
+        if (!warp && !no_fade_out)
+        {
+            SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+            context.pageOutRootTransition();
+            context.syncOutRootTransition();
+        }
+
+        ROOT.ButtonHelpGT5.set(context, 
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")],
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+        ]);
+
+        ROOT::veil::FadeActor.reverse = false;
+        ROOT::veil::FadeActor.reset();
+
+        main::menu::FrameInterval = 1;
+        SceneFace.beginSceneScript(context, "menu_dealer_top", nil, appear2, warp);
+
+        SceneFace.image_path = "";
+    }
+
+    method appear2(context, warp)
+    {
+        if (!warp)
+        {
+            context.pageInRootTransition();
+            context.syncInRootTransition();
+        }
+
+        var effect_end = method (context)
+        {
+            self.createChaseActorThread();
+            context.pushEvent(main::menu::MFunctionEvent(self.finder_.onFocus, context, ROOT));
+
+            context.pushEvent(main::menu::MFunctionEvent(ROOT.openModeIntroduction, context));
+
+            PROJECT::ignorePadEvent(false);
+            self.FadeActor.on_effect_end = nil;
+        }
+
+        self.FadeActor.reverse = false;
+        self.FadeActor.on_effect_end = self.*effect_end;
+        self.FadeActor.start();
+
+        if (warp)
+            self.FadeActor.warp();
+    }
+
+    method hide(context, warp)
+    {
+        self.insensitive = true;
+        ROOT.setFocus(nil);
+
+        self.terminateChaseActorThread();
+
+        ROOT::BalloonTip.reset_value();
+
+        self.FadeActor.reverse = true;
+        self.FadeActor.start();
+
+        if (warp)
+            self.FadeActor.warp();
+    }
+
+    method onInitialize(context)
+    {
+        var initial_data = makeInitialData(context);
+
+        self.finder_ = UIKitProject::FinderRoot::setCopy(context, 
+            self.Composite, 
+            initial_data, 
+            false
+        );
+
+        self.MovingPanel::FadeActor.reverse = false;
+        self.MovingPanel::FadeActor.reset();
+        self.MovingPanel::FadeActor.reverse = true;
+        self.hide(context, true);
+    }
+
+    method onFinalize(context)
+    {
+        self.terminateChaseActorThread();
+
+        if (self.finder_ != nil)
+        {
+            var parent = self.finder_.parent;
+            parent.removeChild(context, self.finder_);
+        }
+    }
+
+    method cb_init_dealer(context, candidate_data, item_w, arg)
+    {
+        var tuner_label = candidate_data.value_;
+        item_w.manufacturer_logo.from_disk = true;
+        item_w.manufacturer_logo.block = false;
+
+        item_w.manufacturer_logo.image_path = "piece/tunner_logo_M/%{tuner_label}.img";
+    }
+
+    method cb_focused_dealer(context, candidate_data, item_w, arg)
+    {
+        var tuner_label = candidate_data.value_;
+        var tuner_name = context.translate(ROOT, "TunerName", tuner_label);
+
+        ROOT::BalloonTip.set_value(context, item_w, tuner_name, 68);
+
+        var a_level = GAME_STATUS.user_profile.getAspecLevel();
+        var b_level = GAME_STATUS.user_profile.getBspecLevel();
+
+        var search_level = (a_level > b_level) ? a_level : b_level;
+
+        var ignore_carlist = [];
+        var tuner_cars = CarData::CarDealerGT5::getCarList(tuner_label);
+
+        foreach (var car in tuner_cars)
+        {
+            if (!ROOT::checkUnlockCar(tuner_label, car.car_code))
+                ignore_carlist.push(car.car_code);
+        }
+
+        var car_count = CarData::CarDealerGT5::getCarCount(tuner_label, search_level, ignore_carlist);
+        self.HBox::car_count.text = car_count;
+
+        self.chase_actor_target_ = item_w;
+    }
+
+    method cb_selected_dealer(context, folder_data, close, arg)
+    {
+        var candidate_data = folder_data.getItemData();
+        var dealer = candidate_data.value_;
+
+        self.hide(context, false);
+
+        ROOT::CarSelect.setDealer(context, dealer);
+        ROOT::CarSelect.appear(context, false);
+    }
+
+    method cb_canceled_dealer(context, folder_data, func_popup_close)
+    {
+        PROJECT::playBackHomeSound();
+        close(context);
+    }
+
+    method makeInitialData(context)
+    {
+        if (ROOT::sDealerList == nil)
+            ROOT::sDealerList = main::pdiapp::XmlUtil::load_array("/textdata/gt5/dealerlist.xml", "DealerData", "dealer", "code");
+
+        var car_dealers = ROOT::sDealerList;
+        var candidates = Array();
+
+        foreach (var car_dealer in car_dealers)
+        {
+            var candidate_data = UIKitProject::FinderRoot.CandidateData();
+            candidate_data.value_ = car_dealer;
+            candidate_data.label_ = context.translate(ROOT, "TunerName", car_dealer);
+            candidate_data.image_path_ = "piece/tunner_logo_S/" + car_dealer + ".img";
+            candidates.push(candidate_data);
+        }
+
+        hidden.CarDealerItem::manufacturer_logo.image_path = "";
+
+        var initial_data = UIKitProject::FinderRoot.InitialData();
+
+        initial_data.view_type_ = UIKitProject::FinderRoot.ViewType::SCROLL_H;
+        initial_data.v_item_count_ = 3;
+        initial_data.candidates_ = candidates;
+        initial_data.h_scrollbar_ = self.HScrollbar;
+        initial_data.cb_init_item_ = self.cb_init_dealer;
+        initial_data.cb_on_activate_ = self.cb_selected_dealer;
+        initial_data.cb_focus_enter_ = self.cb_focused_dealer;
+        initial_data.cb_on_cancel_ = self.cb_canceled_dealer;
+        initial_data.extended_item_ = hidden.CarDealerItem;
+        initial_data.import_iconbox_parameter_ = self.Composite::IconBox;
+
+        return initial_data;    
+    }
+
+    method createChaseActorThread()
+    {
+        self.thread_ = Thread(self.setChaseActorTarget);
+        self.thread_.start();
+    }
+
+    method terminateChaseActorThread()
+    {
+        if (self.thread_ != nil)
+        {
+            self.thread_.terminate();
+            self.thread_ = nil;
+        }
+
+        self.chase_actor_target_ = nil;
+
+        self.MovingPanel::FadeActor.reverse = true;
+        self.MovingPanel::FadeActor.start();
+    }
+
+    method setChaseActorTarget(context)
+    {
+        for (;;)
+        {
+            if (chase_actor_target_ != nil)
+            {
+                if (self.MovingPanel::FadeActor.reverse)
+                {
+                    self.MovingPanel::ChaseActor.freeze();
+                    self.MovingPanel::ChaseActor.target_x = self.chase_actor_target_.sx;
+
+                    self.MovingPanel::ChaseActor.target_y = self.chase_actor_target_.sy;
+                    self.MovingPanel::ChaseActor.reset();
+
+                    self.MovingPanel::FadeActor.reverse = false;
+                    self.MovingPanel::FadeActor.start();
+                }
+                else
+                {
+                    self.MovingPanel::ChaseActor.target_x = self.chase_actor_target_.sx;
+                    self.MovingPanel::ChaseActor.target_y = self.chase_actor_target_.sy;
+                }
+            }
+
+            Thread::Sleep(0.05);
+        }
+    }
+
+    module MyHome
+    {
+
+        method onActivate(context)
+        {
+            PROJECT::playBackHomeSound();
+            close(context);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onCancel(context)
+        {
+            PROJECT::playBackHomeSound();
+            close(context);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusEnter(context, event)
+        {
+            BalloonTip.set_value(context, event.widget, context.translate(ROOT, "MyHome", "MYHOME_BACK_BUTTON"), 20);
+            return EVENTRESULT_STOP;
+        }
+
+        method onFocusLeave(context, event)
+        {
+            BalloonTip.reset_value();
+
+            return EVENTRESULT_STOP;
+        }
+    }
+ }
+
+module ROOT::CarSelect
+{
+    attribute tuner_label_;
+    attribute finder_;
+    attribute read_description_mode_;
+
+    method setDealer(context, tuner_label)
+    {
+        self.tuner_label_ = tuner_label;
+        var initial_data = makeInitialData(context, tuner_label);
+
+        if (initial_data != nil)
+            self.finder_.replaceFolder(context, initial_data);
+
+        self.tuner_logo.image_path = "piece/tunner_logo_L/%{tuner_label}.img";
+    }
+
+    method appear(context, warp)
+    {
+        self.insensitive = false;
+        PROJECT::ignorePadEvent(true);
+
+        if (!warp)
+        {
+            SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+            context.pageOutRootTransition();
+            context.syncOutRootTransition();
+        }
+
+        self.CarSelectBG.visible = true;
+
+        ROOT.ButtonHelpGT5.set(context, 
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")], 
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")], 
+            ["Triangle", context.translate(ROOT, "MyHome", "DESCRIPTION")]
+        ]);
+
+        ROOT::veil::FadeActor.reverse = true;
+        ROOT::veil::FadeActor.reset();
+
+        main::menu::FrameInterval = 2;
+        SceneFace.beginSceneScript(context, "car_dealer_camera", nil, appear2, warp, true);
+
+        SceneFace.image_path = "image/gt5/bg/dealer_scene.dds";
+
+        self.Info::Spec.reset();
+        self.Info::CarNameCountryFlag.reset();
+        self.Info::SpecialLogo.reset();
+        self.Info::Price.set(0, true);
+        self.Info::PP.reset();
+
+        if (!warp)
+        {
+            context.pageInRootTransition();
+            context.syncInRootTransition();
+        }
+
+        var effect_end = method(context)
+        {
+            context.pushEvent(main::menu::MFunctionEvent(self.finder_.onFocus, context, ROOT));
+
+            PROJECT::ignorePadEvent(false);
+            self.Composite::MoveActor.on_effect_end = nil;
+        }
+
+        self.FadeActor.reverse = false;
+        self.FadeActor.start();
+
+        self.Composite::MoveActor.reverse = false;
+        self.Composite::MoveActor.on_effect_end = self.*effect_end;
+        self.Composite::MoveActor.start()
+
+        if (warp)
+        {
+            self.FadeActor.warp();
+            self.Composite::MoveActor.warp()
+        }
+    }
+
+    method appear2(context, warp)
+    {
+        ROOT::veil::FadeActor.reverse = true;
+        ROOT::veil::FadeActor.start();
+    }
+
+    method hide(context, warp)
+    {
+        self.insensitive = true;
+        ROOT.setFocus(nil);
+
+        ROOT::BalloonTip.reset_value();
+
+        var effect_end = method (context)
+        {
+            self.CarSelectBG.visible = false;
+
+            self.FadeActor.on_effect_end = nil;
+        }
+
+        self.FadeActor.reverse = true;
+        self.FadeActor.on_effect_end = self.*effect_end;
+        self.FadeActor.start();
+
+        self.Composite::MoveActor.reverse = true;
+        self.Composite::MoveActor.start();
+
+        if (warp)
+        {
+            self.FadeActor.warp();
+            self.Composite::MoveActor.warp();
+        }
+
+        main::menu::FrameInterval = 1;
+    }
+
+    method onInitialize(context)
+    {
+        var dummy_initial_data = UIKitProject::FinderRoot.InitialData(UIKitProject::FinderRoot.makeCandidates([]));
+
+        self.finder_ = UIKitProject::FinderRoot::setCopy(context, 
+            self.Composite, 
+            dummy_initial_data, 
+            false
+        );
+        
+        self.read_description_mode_ = false;
+
+        self.Info::FadeActor.reverse = false;
+        self.Info::FadeActor.reset();
+        self.Info::Spec.reset();
+        self.Info::CarNameCountryFlag.reset();
+        self.Info::SpecialLogo.reset();
+        self.Info::Price.set(0, true);
+        self.Info::PP.reset();
+        self.Description.hide(true);
+        self.hide(context, true);
+    }
+
+    method onLoad()
+    {
+        tuner_logo.image_path = "";
+        Info::CarNameCountryFlag::country.image_path = "";
+    }
+
+    method onFinalize(context)
+    {
+        context.removeTimeOut("change_car");
+
+        self.tuner_label_ = nil;
+
+        if (self.finder_ != nil)
+        {
+            var parent = self.finder_.parent;
+            parent.removeChild(context, self.finder_);
+        }
+    }
+
+    method cb_init_car(context, candidate_data, item_w, arg)
+    {
+        var cpp = candidate_data.value_;
+        var car_label = main::gtengine::MSpecDB::getCarLabel(cpp.car_code);
+        var car_color = main::gtengine::MSpecDB::getCarVariationFlag(cpp.car_code, 1);
+        var owned = GAME_STATUS.user_profile.garage.hasCar(car_label);
+        var car_type = DLCUtil::Car::getType(car_label);
+
+        var is_dlc_car = ""!=car_type;
+
+        item_w.car.cache = false;
+        item_w.car.from_disk = true;
+        item_w.car.block = false;
+
+        item_w.car.image_path = "car/thumbnail_M/%s_%02d".format(car_label, car_color);
+
+        item_w.triangle_dlc.visible = is_dlc_car;
+        item_w.triangle_black.visible = !is_dlc_car;
+
+        item_w.Level::value.text = gtengine::MSpecDB::getCarPurchaseLevel(cpp.car_code);
+        item_w.Level::FadeActor.start();
+
+        item_w.owned.visible = owned;
+
+        if (is_dlc_car && !owned)
+        {
+            var dlc_installed = DLCUtil::Car::isInstalled(car_label);
+            var dlc_bought = DLCUtil::Car::isBought(car_label);
+
+            item_w.dlc.visible = !dlc_installed || !dlc_bought;
+        }
+        else
+            item_w.dlc.visible = false;
+    }
+
+    method cb_focused_car(context, candidate_data, item_w, arg)
+    {
+        if (self.tuner_label_ == nil)
+            return;
+
+        var cpp = candidate_data.value_;
+        var ct = cpp.getCT();
+
+        var price = main::gtengine::MSpecDB::getCarPrice(cpp.car_code);
+
+        var car_name = gtengine::MSpecDB::getCarShortName(cpp.car_code);
+        ROOT::BalloonTip.set_value(context, item_w, car_name, 20);
+
+        SceneFace.clearCar();
+
+        context.addTimeOut("change_car", self.onChangeCar, context, ct);
+        context.setTimeOut("change_car", 0.5);
+
+        self.Info::CarNameCountryFlag.set(context, cpp.car_code);
+        self.Info::Price.set(price, true);
+        self.Info::SpecialLogo.set(cpp.car_code);
+        self.Info::PP.set(cpp.getCP());
+    }
+
+    method onChangeCar(context, ct)
+    {
+        var car_code = ct.getCarCode();
+        self.Info::Spec.set(context, car_code);
+
+        SceneFace.changeCar(context, ct);
+    }
+
+    method cb_focus_leaved_car(context, candidate_data, item_w, arg)
+    {
+        self.Info::Spec.reset();
+        self.Info::CarNameCountryFlag::car_name.text = "";
+    }
+
+    method cb_selected_car(context, folder_data, close, arg)
+    {
+        if (self.tuner_label_ == nil)
+            return;
+
+        context.setTimeOut("change_car", 0.0);
+
+        var candidate_data = folder_data.getItemData();
+        var cpp = candidate_data.value_;
+
+        self.hide(context, false);
+
+        ROOT::ColorSelect.setCar(context, cpp);
+        ROOT::ColorSelect.appear(context, false);
+    }
+
+    method cb_canceled_car(context, folder_data, func_popup_close)
+    {
+        sound.play("cancel");
+
+        context.setTimeOut("change_car", 0.0);
+
+        self.hide(context, false);
+
+        ROOT::DealerSelect.appear(context, false);
+
+        self.tuner_label_ = nil;
+    }
+
+    method cb_on_key_press_car(context, event, item_w, candidate_data)
+    {
+        if (!self.read_description_mode_)
+        {
+            if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
+            {
+                main::sound.play("ok");
+                ROOT::BalloonTip.reset_value();
+
+                self.Info::FadeActor.reverse = false;
+                self.Info::FadeActor.start();
+
+                self.Composite::MoveActor.reverse = true;
+                self.Composite::MoveActor.start();
+                var cpp = candidate_data.value_;
+
+                self.Description.appear(cpp.car_code, false);
+
+                ROOT.ButtonHelpGT5.set(context, 
+                [
+                    ["Triangle", context.translate(ROOT, "MyHome", "BUTTON_HELP_BACK")]
+                ]);
+
+                self.read_description_mode_ = true;
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+        else
+        {
+            if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
+            {
+                main::sound.play("ok");
+
+                self.Info::FadeActor.reverse = true;
+                self.Info::FadeActor.start();
+
+                self.Composite::MoveActor.reverse = false;
+                self.Composite::MoveActor.start();
+                self.Description.hide(false);
+
+                ROOT.ButtonHelpGT5.set(context, 
+                [
+                    [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")], 
+                    [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")], 
+                    ["Triangle", context.translate(ROOT, "MyHome", "DESCRIPTION")]
+                ]);
+
+                self.read_description_mode_ = false;
+            }
+
+            var scrollclip = self.Description::ScrolledWindow::clip;
+            var space = scrollclip.space;
+            var textface = space.TextFace;
+            var line_height = textface.line_height;
+
+            var status = EVENTRESULT_CONTINUE;
+
+            if (event.keysym == CELL_PAD_CTRL_L3_UP)
+            {
+                if (scrollclip.manualTargetIncY(line_height))
+                    status = EVENTRESULT_STOP;
+            }
+
+            if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+            {
+                if (scrollclip.manualTargetIncY(-line_height))
+                    status = EVENTRESULT_STOP;
+            }
+
+            return EVENTRESULT_FILTER;
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+
+    method makeInitialData(context, tuner_label)
+    {
+        var cpp_list = CarData::CarDealerGT5::getCarList(tuner_label);
+        var candidates = [];
+
+        foreach (var cpp in cpp_list)
+        {
+            if (ROOT::checkUnlockCar(tuner_label, cpp.car_code))
+            {
+                var candidate_data = UIKitProject::FinderRoot.CandidateData(cpp);
+                candidates.push(candidate_data);
+            }
+        }
+
+        if (candidates.size == 0)
+            return nil;
+
+        var initial_data = UIKitProject::FinderRoot.InitialData();
+
+        initial_data.view_type_ = UIKitProject::FinderRoot.ViewType::SCROLL_H;
+        initial_data.candidates_ = candidates;
+
+        initial_data.cb_init_item_ = self.cb_init_car;
+        initial_data.cb_focus_enter_ = self.cb_focused_car;
+        initial_data.cb_focus_leave_ = self.cb_focus_leaved_car;
+        initial_data.cb_on_activate_ = self.cb_selected_car;
+
+        initial_data.cb_on_cancel_ = self.cb_canceled_car;
+        initial_data.cb_on_key_press_ = self.cb_on_key_press_car;
+
+        initial_data.h_scrollbar_ = Info::HScrollbar;
+        initial_data.extended_item_ = hidden::CarThumb;
+
+        initial_data.import_iconbox_parameter_ = self.Composite::IconBox;
+
+        return initial_data;
+    }
+
+    module Info::CarNameCountryFlag
+    {
+        method set(context, car_code)
+        {
+            var country_code = main::gtengine::MSpecDB::getCarCountry(car_code);
+
+            self.country.image_path = "piece/flag_menu/%{country_code}.img";
+
+            self.car_name.text = gtengine::MSpecDB::getCarShortName_A(car_code).upcase();
+            self.car_name.TransientReset();
+        }
+
+        method reset()
+        {
+            self.country.image_path = "";
+            self.car_name.text = "";
+        }
+    }
+
+    module Info::Spec
+    {
+        method set(context, car_code)
+        {
+            var effect_end = method()
+            {
+                self.Displacement::value.TransientReset();
+                self.Displacement::value.text = SpecDatabaseUtil::getCarDisplacementText(context, car_code);
+
+                self.MaxPower::value.TransientReset();
+                self.MaxPower::value.text = SpecDatabaseUtil::getCarMaxPowerText(context, car_code);
+
+                self.MaxTorque::value.TransientReset();
+                self.MaxTorque::value.text = SpecDatabaseUtil::getCarMaxTorqueText(context, car_code);
+
+                self.Drivetrain::value.TransientReset();
+                self.Drivetrain::value.text = SpecDatabaseUtil::getCarDrivetrainText(context, car_code);
+
+                self.Length::value.TransientReset();
+                self.Length::value.text = SpecDatabaseUtil::getCarLengthText(context, car_code);
+
+                self.Width::value.TransientReset();
+                self.Width::value.text = SpecDatabaseUtil::getCarWidthText(context, car_code);
+
+                self.Height::value.TransientReset();
+                self.Height::value.text = SpecDatabaseUtil::getCarHeightText(context, car_code);
+
+                self.Weight::value.TransientReset();
+                self.Weight::value.text = SpecDatabaseUtil::getCarWeightText(context, car_code);
+
+                self.FadeActor.on_effect_end = nil;
+            }
+
+            self.FadeActor.reset();
+            self.FadeActor.on_effect_end = self.*effect_end;
+
+            self.FadeActor.start();
+        }
+
+        method reset()
+        {
+            self.Displacement::value.text = "";
+            self.MaxPower::value.text = "";
+            self.MaxTorque::value.text = "";
+            self.Drivetrain::value.text = "";
+
+            self.Length::value.text = "";
+            self.Width::value.text = "";
+            self.Height::value.text = "";
+            self.Weight::value.text = "";
+
+            self.FadeActor.on_effect_end = nil;
+            self.FadeActor.reset();
+        }
+    }
+
+    module Info::Price
+    {
+        method set(value, zero_to_hyphen = false)
+        {
+            var price_str;
+            if (!zero_to_hyphen && value == 0)
+                price_str = "--";
+            else
+                price_str = main::pdiext::MMisc::GetMoneyString(value);
+
+            self.price.text = price_str;
+        }    
+    }
+
+    module Info::PP
+    {
+        method set(cp)
+        {
+            cp.beginInfo();
+            self.value.text = cp.getPP1000();
+            cp.endInfo();
+        }
+
+        method reset()
+        {
+            self.value.text = "";
+        }
+    }
+
+    module Info::SpecialLogo
+    {
+        method set(car_code)
+        {
+            var sp_logo_path = PROJECT::getSpecialLogoPath(car_code);
+            if (sp_logo_path != "")
+            {
+                self.visible = true;
+                self.image_path = "";
+
+                self.image_path = sp_logo_path;
+                self.FadeActor.reverse = false;
+                self.FadeActor.start();
+            }
+            else
+            {
+                self.FadeActor.reverse = true;
+                self.FadeActor.start();
+            }
+        }
+
+        method reset(context)
+        {
+            self.image_path = "";
+
+            self.FadeActor.reverse = false;
+            self.FadeActor.reset();
+
+            self.visible = false;
+        }
+    }
+
+    module Description
+    {
+        method onInitialize(context)
+        {
+            self.ScrolledWindow::clip.scroll_mode = 2;
+            var adj = main::menu::MAdjustment();
+
+            self.Scrollbar::VScrollbar.adjustment = adj;
+            self.ScrolledWindow::clip.v_adjustment = adj;
+
+            self.ScrolledWindow::clip.space.y = 0.0;
+
+            self.ScrolledWindow::clip.manual_target_y = 0.0;
+        }
+
+        method appear(car_code, warp)
+        {
+            var rtext = main::pdistd::MRText();
+
+            rtext.load("/description/gt5/%s.rt2".format(pdistd::MLocale::getLanguage()));
+            var car_label = gtengine::MSpecDB::getCarLabel(car_code);
+
+            var car_description = rtext.get("CarDescription", car_label);
+            rtext.unload();
+
+            self.ScrolledWindow::clip::space::TextFace.text = pdistd::TextConv(car_description);
+
+            self.ScrolledWindow::clip.manual_target_y = 0.0;
+
+            self.ParallelActor.reverse = false;
+            self.ParallelActor.start();
+
+            if (warp)
+                self.ParallelActor.warp();
+        }
+
+        method hide(warp)
+        {
+            self.ParallelActor.reverse = true;
+            self.ParallelActor.start();
+
+            if (warp)
+            {
+                self.ParallelActor.warp();
+            }
+        }
+
+        SCALE_WIDGET_SDTV(ScrolledWindow::clip::space::TextFace, 2.6);
+    }
+}
+
+module ROOT::ColorSelect
+{
+    attribute car_code_;
+    attribute finder_;
+
+    static SceneList = [
+        ["color_select_white", "black"], 
+        ["color_select_day", "white"], 
+        ["color_select_morning", "white"], 
+        ["color_select_night", "white"]
+    ];
+
+    attribute scene_index_ = 0;
+
+    method setCar(context, cpp)
+    {
+        self.car_code_ = cpp.car_code;
+
+        var initial_data = makeInitialData(context, cpp.car_code);
+        self.finder_.replaceFolder(context, initial_data);
+
+        self.Info.setCar(context, cpp);
+
+        var price = main::gtengine::MSpecDB::getCarPrice(cpp.car_code);
+
+        self.Info.setPrice(price, true);
+    }
+
+    method appear(context, warp)
+    {
+        self.insensitive = false;
+        PROJECT::ignorePadEvent(true);
+
+        self.Info.color_shift("white");
+
+        self.SceneNames.setScene("color_select_white", "white", true);
+        self.Info::FadeActor.reverse = false;
+        self.Info::FadeActor.start();
+        self.Info::FadeActor.warp();
+
+        self.Info::Black::Price::FadeActor.reverse = true;
+        self.Info::Black::Price::FadeActor.reset();
+
+        self.Info::White::Price::FadeActor.reverse = true;
+        self.Info::White::Price::FadeActor.reset();
+
+        self.Info::Maziora::FadeActor.reverse = true;
+        self.Info::Maziora::FadeActor.reset();
+        self.Info::GT5logo::FadeActor.reverse = false;
+        self.Info::GT5logo::FadeActor.reset();
+
+        if (!warp)
+        {
+            SequenceUtil::setupTransition(context, CursorProject::ColorTransition);
+            context.pageOutRootTransition();
+            context.syncOutRootTransition();
+        }
+
+        ROOT.ButtonHelpGT5.set(context,
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")], 
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")], 
+            ["UpDown", context.translate(ROOT, "SCENE_SHIFT")], 
+            ["Start", context.translate(ROOT, "MyHome", "DEMO")]
+        ]);
+
+        var cp;
+        if (self.car_code_ != nil)
+        {
+            cp = gtengine::MCarParameter(self.car_code_);
+            cp.color = main::gtengine::MSpecDB::getCarVariationFlag(self.car_code_, 1);
+        }
+
+        ROOT::veil::FadeActor.reverse = true;
+        ROOT::veil::FadeActor.reset();
+
+        main::menu::FrameInterval = 2;
+        SceneFace.beginSceneScript(context, "color_select", cp, appear2, warp);
+        SceneFace.image_path = "";
+
+        if (!warp)
+        {
+            context.pageInRootTransition();
+            context.syncInRootTransition();
+        }
+
+        var effect_end = method (context)
+        {
+            self.onAppearEnd(context);
+
+            context.pushEvent(main::menu::MFunctionEvent(self.finder_.onFocus, context, ROOT));
+
+            PROJECT::ignorePadEvent(false);
+
+            self.Composite::MoveActor.on_effect_end = nil;
+        }
+
+        self.FadeActor.reverse = false;
+        self.FadeActor.start();
+        self.Composite::MoveActor.reverse = false;
+
+        self.Composite::MoveActor.on_effect_end = self.*effect_end;
+        self.Composite::MoveActor.start();
+
+        if (warp)
+        {
+            self.FadeActor.warp();
+            self.Composite::MoveActor.warp();
+        }
+
+        return;
+    }
+
+    method appear2(context, warp)
+    {
+        ROOT::veil::FadeActor.reverse = true;
+        ROOT::veil::FadeActor.start();
+
+        self.Info.color_shift("black");
+    }
+
+    method onAppearEnd(context)
+    {
+        self.scene_index_ = 0;
+
+        LeaveDetectUtil::begin(context, 
+            12.0, 
+            self, 
+            self.onLeaveDetect, 
+            self.onActivateDetect
+        );    
+    }
+
+    method hide(context, warp)
+    {
+        self.insensitive = true;
+        ROOT.setFocus(nil);
+
+        LeaveDetectUtil::end(context);
+
+        ROOT::BalloonTip.reset_value();
+
+        self.FadeActor.reverse = true;
+        self.FadeActor.start();
+        self.Composite::MoveActor.reverse = true;
+        self.Composite::MoveActor.start();
+
+        if (warp)
+        {
+            self.FadeActor.warp();
+            self.Composite::MoveActor.warp();
+        }
+
+        main::menu::FrameInterval = 1;
+    }
+
+    method onInitialize(context)
+    {
+        var dummy_initial_data = UIKitProject::FinderRoot.InitialData(UIKitProject::FinderRoot.makeCandidates([]));
+
+        self.finder_ = UIKitProject::FinderRoot::setCopy(context, self.Composite, dummy_initial_data, false);
+
+        context.addTimeOut("start_timer", self.startSceneShift, context, 20.0, true);
+        context.setTimeOut("start_timer", 0.0);
+
+        hide(context, true);
+    }
+
+    method onFinalize(context)
+    {
+        context.removeTimeOut("start_timer");
+        LeaveDetectUtil::end(context);
+
+        self.car_code_ = nil;
+
+        if (self.finder_ != nil)
+        {
+            var parent = self.finder_.parent;
+            parent.removeChild(context, self.finder_);
+        }
+    }
+
+    method cb_init_item_color(context, candidate_data, item_w, arg)
+    {
+        item_w.ColorFace.setCarColor(self.car_code_, candidate_data.value_);
+    }
+
+    method cb_focused_color(context, candidate_data, item_w, arg)
+    {
+        if (self.car_code_ == nil)
+            return;
+
+        var car_color = candidate_data.value_;
+        var color_name = main::gtengine::MSpecDB::getCarColorName(self.car_code_, car_color);
+        var color_name = color_name.trim();
+
+        if (color_name != "")
+            ROOT::BalloonTip.set_value(context, item_w, color_name, 20);
+        else
+            ROOT::BalloonTip.reset_value();
+
+        self.Info.setCarColor(self.car_code_, car_color);
+
+        ROOT::SceneFace.execCommand("setCarVariation %{car_color} car1");
+    }
+
+    method cb_selected_color(context, folder_data, close, arg)
+    {
+        if (self.car_code_ == nil)
+            return;
+
+        var candidate_data = folder_data.getItemData();
+        var color = candidate_data.value_;
+
+        LeaveDetectUtil::suspend(context);
+
+        ROOT::BalloonTip.reset_value();
+        ROOT::BalloonTip.visible = false;
+
+        ROOT.buyNewCar(context, self.car_code_, color);
+
+        ROOT::BalloonTip.visible = true;
+
+        LeaveDetectUtil::resume(context);
+    }
+
+    method cb_canceled_color(context, folder_data, func_popup_close)
+    {
+        sound.play("cancel");
+
+        self.hide(context, false);
+
+        ROOT::CarSelect.appear(context, false);
+
+        self.car_code_ = nil;
+        self.Info.reset(context);
+    }
+
+    method cb_on_key_press_color(context, event, item_w, candidate_data)
+    {
+        if (LeaveDetectUtil::activated(context, event))
+            return EVENTRESULT_FILTER;
+
+        if (event.keysym == CELL_PAD_CTRL_L3_UP)
+        {
+            if (SceneFace.isUnderSetup())
+                return EVENTRESULT_FILTER;
+
+            startSceneShift(context, 0.0, false);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+        {
+            if (SceneFace.isUnderSetup())
+                return EVENTRESULT_FILTER;
+
+            startSceneShift(context, 0.0, true);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        if (CELL_PAD_CTRL_START == event.keysym)
+        {
+            if (self.car_code_ != nil)
+            {
+                main::sound.play("ok");
+
+                LeaveDetectUtil::suspend(context);
+
+                var color = candidate_data.value_;
+                var cp = gtengine::MCarParameter();
+                cp.setCarCode(self.car_code_);
+
+                cp.color = color;
+
+                CarDemoRoot.open(context, cp, ROOT);
+                main::menu::FrameInterval = 2;
+
+                LeaveDetectUtil::resume(context);
+            }
+
+            return EVENTRESULT_FILTER;
+        }
+
+        if (pdiext::isQABuild() && event.keysym == CELL_PAD_CTRL_TRIANGLE)
+        {
+            if (self.car_code_ == nil)
+                return EVENTRESULT_CONTINUE;
+
+            var color = candidate_data.value_;
+
+            LeaveDetectUtil::suspend(context);
+
+            ROOT::BalloonTip.reset_value();
+            ROOT::BalloonTip.visible = false;
+
+            ROOT.buyNewCar(context, self.car_code_, color, true);
+
+            ROOT::BalloonTip.visible = true;
+
+            LeaveDetectUtil::resume(context);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+
+    method makeInitialData(context, car_code)
+    {
+        main::gtengine::MSpecDB::getCarVariation(car_code); // NOTE: ?
+        var variation = main::gtengine::MSpecDB::getCarVariation(car_code);
+        var list = Array(variation);
+
+        for (var i = 0; i < variation; i++)
+            list[i] = i;
+
+        var candidates = UIKitProject::FinderRoot.makeCandidates(list);
+        if (candidates.size == 0)
+            return nil;
+
+        var initial_data = UIKitProject::FinderRoot.InitialData();
+        initial_data.view_type_ = UIKitProject::FinderRoot.ViewType::SCROLL_H;
+        initial_data.extended_item_ = hidden::ColorTip;
+        initial_data.candidates_ = candidates;
+        initial_data.cb_init_item_ = self.cb_init_item_color;
+        initial_data.cb_focus_enter_ = self.cb_focused_color;
+        initial_data.cb_on_activate_ = self.cb_selected_color;
+        initial_data.cb_on_cancel_ = self.cb_canceled_color;
+        initial_data.cb_on_key_press_ = self.cb_on_key_press_color;
+        initial_data.focus_index_ = main::gtengine::MSpecDB::getCarVariationFlag(car_code, 1);
+        initial_data.import_iconbox_parameter_ = self.Composite::IconBox;
+
+        return initial_data;
+    }
+
+    method onLeaveDetect(context)
+    {
+        ROOT::BalloonTip.reset_value();
+
+        ROOT::HeaderGT5::FadeActor.reverse = true;
+        ROOT::HeaderGT5::FadeActor.start();
+
+        ROOT::ButtonHelpGT5.hide();
+
+        var language = pdistd::MLocale::getLanguage();
+        var rtext = main::pdistd::MRText();
+
+        rtext.load("/description/gt5/%s.rt2".format(language));
+
+        var car_label = gtengine::MSpecDB::getCarLabel(self.car_code_);
+        var car_description = rtext.get("CarDescription", car_label);
+        car_description = pdistd::TextConv(car_description);
+
+        if (language != "JP" && language != "TW")
+            car_description = car_description.split("\n").join(" ");
+
+        rtext.unload();
+
+        ROOT::HDToolTip::tip.value = car_description;
+        ROOT::HDToolTip::FadeActor.reverse = false;
+        ROOT::HDToolTip::FadeActor.start();
+
+        self.Info::Black::Price::FadeActor.reverse = true;
+        self.Info::Black::Price::FadeActor.start();
+
+        self.Info::White::Price::FadeActor.reverse = true;
+        self.Info::White::Price::FadeActor.start();
+
+        self.Info::Maziora::FadeActor.reverse = true;
+        self.Info::Maziora::FadeActor.start()
+
+        self.Info::GT5logo::FadeActor.reverse = false;
+        self.Info::GT5logo::FadeActor.start();
+
+        self.Composite::MoveActor.reverse = true;
+        self.Composite::MoveActor.start();
+
+        context.setTimeOut("start_timer", 10.0);
+    }
+
+    method onActivateDetect(context)
+    {
+        context.setTimeOut("start_timer", 0.0);
+
+        ROOT::ButtonHelpGT5.appear();
+
+        ROOT::HeaderGT5::FadeActor.reverse = false;
+        ROOT::HeaderGT5::FadeActor.start();
+
+        ROOT::HDToolTip::tip.value = "";
+        ROOT::HDToolTip::FadeActor.reverse = true;
+        ROOT::HDToolTip::FadeActor.start();
+
+        self.Info::Black::Price::FadeActor.reverse = false;
+        self.Info::Black::Price::FadeActor.start();
+
+        self.Info::White::Price::FadeActor.reverse = false;
+        self.Info::White::Price::FadeActor.start();
+
+        self.Info::Maziora::FadeActor.reverse = false;
+        self.Info::Maziora::FadeActor.start()
+
+        self.Info::GT5logo::FadeActor.reverse = true;
+        self.Info::GT5logo::FadeActor.start();
+
+        self.Composite::MoveActor.reverse = false;
+        self.Composite::MoveActor.start();
+    }
+
+    method setSceneIndex(index)
+    {
+        var scene = SceneList[scene_index_][0];
+
+        SceneFaceUtil::loadScene(SceneFace, scene, 
+            nil, 
+            nil, 
+            false
+        );
+        
+        var shift_color = SceneList[scene_index_][1];
+        self.Info.color_shift(shift_color);
+
+        self.SceneNames.setScene(scene, shift_color);
+    }
+
+    method incSceneIndex()
+    {
+        self.scene_index_++;
+        if (SceneList.size <= self.scene_index_)
+            self.scene_index_ = 0;
+
+        setSceneIndex();
+    }
+
+    method decSceneIndex()
+    {
+        self.scene_index_--;
+
+        if (self.scene_index_ < 0)
+            self.scene_index_ = SceneList.size - 1;
+
+        setSceneIndex();
+    }
+
+    method startSceneShift(context, next_time, inc_index)
+    {
+        ROOT::veil::FadeActor.reverse = false;
+        ROOT::veil::FadeActor.start();
+
+        context.wait(ROOT::veil::FadeActor.total_time);
+
+        if (inc_index)
+            self.incSceneIndex(context);
+        else
+            self.decSceneIndex(context);
+
+        context.wait(ROOT::veil::FadeActor.total_time);
+
+        ROOT::veil::FadeActor.reverse = true;
+        ROOT::veil::FadeActor.start();
+
+        if (next_time != nil)
+        {
+            context.setTimeOut("start_timer", next_time);
+        }
+    }
+
+    module Info
+    {
+        method onInitialize(context)
+        {
+            reset(context);
+        }
+
+        method reset(context)
+        {
+            self.White::Car::color_name.text = "";
+            self.Black::Car::color_name.text = "";
+        }
+
+        method color_shift(black_or_white)
+        {
+            if (black_or_white == "black")
+            {
+                self.Black.visible = true;
+                self.White.visible = false;
+            }
+            else if (black_or_white == "white")
+            {
+                self.White.visible = true;
+                self.Black.visible = false;
+            }
+        }
+
+        method setPrice(value, zero_to_hyphen = false)
+        {
+            var price_str = main::pdiext::MMisc::GetMoneyString(value);
+            self.White::Price::value.text = price_str;
+            self.Black::Price::value.text = price_str;
+        }
+
+        method setCarColor(car_code, car_color)
+        {
+            var color_name = main::gtengine::MSpecDB::getCarColorName(car_code, car_color);
+
+            self.White::Car::color_name.text = color_name;
+            self.Black::Car::color_name.text = color_name;
+        }
+
+        method setCar(context, cpp)
+        {
+            var award_logo = PROJECT::getSpecialLogoPath(cpp.car_code, true, false);
+
+            if (award_logo != "")
+            {
+                self.Award.image_path = award_logo;
+                self.Award.visible = true;
+            }
+            else
+                self.Award.visible = false;
+
+            var maziora_logo = PROJECT::getSpecialLogoPath(cpp.car_code, false, true);
+            if (maziora_logo != "")
+                self.Maziora.visible = true;
+            else
+                self.Maziora.visible = false;
+
+            self.Black::Car::flag.image_path = "piece/flag_menu/%{cpp.country}.img";
+            self.White::Car::flag.image_path = "piece/flag_menu/%{cpp.country}.img";
+
+            var tuner_name = context.translate(ROOT, "TunerNameI18n", cpp.tuner_label);
+            self.Black::Car::tuner_name.text = tuner_name;
+            self.White::Car::tuner_name.text = tuner_name;
+
+            var car_name = main::gtengine::MSpecDB::getCarShortName_A(cpp.car_code).upcase();
+            self.Black::Car::official_name.text = car_name;
+            self.White::Car::official_name.text = car_name;
+        }
+    }
+
+    module ROOT::ColorSelect::SceneNames
+    {
+        method setScene(scene_name, black_or_white, warp)
+        {
+            var is_white = black_or_white == "white";
+
+            for (var it = self.first; it != nil; it = it.next_widget)
+                it.active = false;
+
+            var activated_name;
+            switch (scene_name)
+            {
+                case "color_select_morning":
+                    self.Morning.active = true;
+                    activated_name = self.Morning;
+                    break;
+
+                case "color_select_day":
+                    self.Day.active = true;
+                    activated_name = self.Day;
+                    break;
+
+                case "color_select_night":
+                    self.Night.active = true;
+                    activated_name = self.Night;
+                    break;
+
+                case "color_select_white":
+                    self.White.active = true;
+                    activated_name = self.White;
+                    break;    
+            }
+
+            if (is_white)
+            {
+                activated_name.SceneName.black.visible = false;
+                activated_name.SceneName.white.visible = true;
+
+                if (warp != true)
+                    activated_name.SceneName.white.TransientReset();
+            }
+
+            else
+            {
+                activated_name.SceneName.black.visible = true;
+                activated_name.SceneName.white.visible = false;
+
+                if (warp != true)
+                    activated_name.SceneName.black.TransientReset();
+            }
+
+            activated_name.SceneName::FadeActor.restart();
+
+            if (warp == true)
+            {
+                self.DotBG::ChaseActor.freeze();
+                self.DotBG::ChaseActor.target_y = activated_name.y;
+                self.DotBG::ChaseActor.reset();
+            }
+            else
+            {
+                self.DotBG::ChaseActor.target_y = activated_name.y;
+            }
+        }    
+    }
+}
+
+module ROOT::SceneFace
+{
+    attribute command_end_func_;
+    attribute command_end_func_args_;
+    attribute on_carselect_ = false;
+    attribute y_rotation_thread_;
+    attribute y_rotate_fast_ = false;;
+    attribute wait_setup_end_thread_;
+    attribute current_cp_;
+
+    method beginSceneScript(context, scene_script, cp, command_end_func, command_end_func_args, on_carselect)
+    {
+        self.endSceneScript();
+        self.command_end_func_ = command_end_func;
+        self.command_end_func_args_ = command_end_func_args;
+
+        self.on_carselect_ = (on_carselect != nil) ? on_carselect : false;
+
+        if (cp == nil)
+            cp = main::gtengine::MCarParameter();
+
+        clearCar();
+
+        SceneFaceUtil::loadScene(self, scene_script, 
+            cp, 
+            nil, 
+            false
+        );
+
+        self.saveCommandQueue();
+        self.scene_fade = 1.0;
+        self.beginWaitSetupEnd(context);
+    }
+
+    method endSceneScript()
+    {
+        self.resetCommandQueue();
+        self.endWaitSetupEnd();
+        self.endCarRotation();
+        clearCar();
+    }
+
+    method on_signal(context, enum, param)
+    {
+        if (enum == SceneFaceUtil::HandleType::SCENE_START)
+        {
+            if (self.command_end_func_ != nil)
+            {
+                self.command_end_func_(context, self.command_end_func_args_);
+                self.command_end_func_ = nil;
+            }
+
+            self.command_end_func_args_ = nil;
+            self.setSignalHandler(nil);
+        }
+    }
+
+    method clearCar()
+    {
+        if (self.current_cp_ != nil)
+        {
+            self.execCommandImmidiate("clearEntity car1");
+            self.current_cp_ = nil;
+        }
+    }
+
+    method isSameCar(cp)
+    {
+        if (self.current_cp_ != nil)
+        {
+            var same_code = cp.getCarCode() == self.current_cp_.getCarCode();
+            var same_color = cp.color == self.current_cp_.color;
+
+            return [same_code, same_color];
+        }
+
+        return [false, false];
+    }
+
+    method changeCar(context, cp_or_ct)
+    {
+        |var same_code, var same_color| = isSameCar(cp_or_ct);
+
+        if (same_code && same_color)
+            return;
+
+        var car_label = cp_or_ct.getCarLabel();
+        var car_color = cp_or_ct.color;
+
+        self.endCarRotation();
+        self.clearCar();
+        self.resetCommandQueue();
+
+        self.execCommand("changeCar %{car_label} car1 true false mirror");
+        self.execCommand("setCarVariation %{car_color} car1");
+        self.execCommand("resetGlobalMotionFrame");
+
+        self.beginCarRotation();
+    }
+
+    method beginWaitSetupEnd(context)
+    {
+        self.wait_setup_end_thread_ = self._start_thread(self._wait_setup_end, [context]);
+    }
+
+    method endWaitSetupEnd()
+    {
+        self.command_end_func_ = nil;
+        self.command_end_func_args_ = nil;
+        self._terminate_thread(wait_setup_end_thread_);
+    }
+
+    method beginCarRotation(args)
+    {
+        self.y_rotation_thread_ = self._start_thread(self._y_rotation, args);
+    }
+
+    method endCarRotation()
+    {
+        self._terminate_thread(self.y_rotation_thread_);
+        SceneActor::CarFadeActor.reverse = false;
+        SceneActor::CarFadeActor.reset();
+        SceneActor.opacity = 0.0;
+        self.scene_fade = 0.0;
+    }
+
+    method _start_thread(exec_function, args)
+    {
+        var thread = Thread(exec_function, args);
+        thread.start();
+
+        return thread;
+    }
+
+    method _terminate_thread(thread)
+    {
+        if (thread != nil)
+        {
+            thread.terminate();
+            thread = nil;
+        }
+    }
+
+    method _wait_setup_end(args)
+    {
+        var context = args[0];
+
+        for (;;)
+        {
+            if (!self.isUnderSetup())
+            {
+                if (self.command_end_func_ != nil)
+                {
+                    self.command_end_func_(context, self.command_end_func_args_);
+                    self.command_end_func_ = nil;
+                }
+
+                self.command_end_func_args_ = nil;
+                return;
+            }
+
+            Thread::Sleep(0.1);
+        }
+    }
+
+    method _y_rotation(args)
+    {
+        for (;;)
+        {
+            if (!self.isUnderSetup())
+            {
+                SceneActor::CarFadeActor.start();
+
+                if (!ROOT::sCaptureMode)
+                    self.setEntityRotateVelocityY("CAR", "car1", ROOT::SceneActor.rotate);
+                else
+                    self.setEntityRotateY("CAR", "car1", ROOT::hidden::CaptureCarAngleValue.text.toInt());
+            }
+
+            self.scene_fade = SceneActor.opacity;
+
+            if (self.scene_fade < 1.0)
+                Thread::Sleep(0.01);
+            else
+                return;
+        }
+    }
+
+    method onFinalize(context)
+    {
+        self.endSceneScript();
+    }
+}
+
+module ROOT::hidden::CarThumb
+{
+    method onInitialize()
+    {
+        self.car.image_path = "";
+        self.owned.visible = false;
+        self.Level::value.text = "";
+        self.Level::FadeActor.reset();
+    }    
+}
+
+module ROOT::ButtonHelpGT5::Pane::Buttons
+{
+    SCALE_WIDGET_SDTV(UpDown::label, 2.6);
+
+    SCALE_WIDGET_SDTV(Start::label, 2.6);
+}
