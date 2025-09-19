@@ -52,6 +52,7 @@ module ScrollBox::ListBox
 	static sElemList = nil;
 	static sCarGarage = nil;
 	static sCacheNames = nil;
+
 	function refresh(context, elems)
 	{
 		sElemList = elems;
@@ -72,28 +73,24 @@ module ScrollBox::ListBox
 					val = main::menu::MCarData::GetCarLabelByArray([0, val.substr(1).toInt()]);
 
 				sCacheNames[i] = main::menu::MCarData::GetShortCarName(val);
-				break;
+				continue;
 			}
-			else
+			
+			var t = context.translate(ROOT, "TunerName", name);
+			if (name != t)
 			{
-				var t = context.translate(ROOT, "TunerName", name);
-				if (name != t)
-				{
-					sCacheNames[i] = t;
-					break;
-				}
-				else
-				{
-					t = context.translate(ROOT, "NationName", name);
-					if (name != t)
-					{
-						sCacheNames[i] = t;
-						break;
-					}
-					else
-						sCacheNames[i] = name;
-				}
+				sCacheNames[i] = t;
+				continue;
 			}
+			
+			t = context.translate(ROOT, "NationName", name);
+			if (name != t)
+			{
+				sCacheNames[i] = t;
+				continue;
+			}
+			
+			sCacheNames[i] = name;
 		}
 	}
 
@@ -113,7 +110,7 @@ module ScrollBox::ListBox
 		ListBox.update_callback = update_callback;
 		ListBox.focus_callback = focus_callback;
 		ListBox.magnify_ratio = 1.0;
-		ListBox.repeat = 0;
+		ListBox.repeat = false;
 		ListBox.alignment = 0.5;
 		ListBox.step_min = 1;
 		ListBox.step_max = 1;
@@ -145,7 +142,6 @@ module ScrollBox::ListBox
 
 	function visible_callback(context, index)
 	{
-		
 		for (var i = 0; i < index.size; i++)
 		{
 			var visible = ListBox.getItemVisible(index[i]);
@@ -190,6 +186,7 @@ module ScrollBox::ListBox
 				var gcar = main::menu::MCarGarage(car_code, 0);
 				set_car(context, gcar);
 			}
+
 			if (main::menu::MCarGarage(car_code).getColorNum() >= 2)
 				pushColorPane(context, car_code);
 			else
