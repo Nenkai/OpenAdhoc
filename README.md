@@ -656,26 +656,26 @@ No progress.
 </details>
 
 <details>
-  <summary>[❌️] GT4 Prologue</summary>
+  <summary>[🚧] GT4 Prologue (40%)</summary>
 
 ### GT4 Prologue
 Adhoc Version: 5<br>
-There are 11 projects.<br>
+5 of 11 projects are completed and can be compiled.<br>
 No progress has been made currently.
   
 |          Name          | Completed |                                     Purpose                                      | 
 |------------------------|-----------|----------------------------------------------------------------------------------|
-| language               |    ❌️     |                                                                                  |
-| memcard                |    ❌️     |                                                                                  |
-| option                 |    ❌️     |                                                                                  |
-| option2                |    ❌️     |                                                                                  |
-| prize                  |    ❌️     |                                                                                  |
-| prologue               |    ❌️     |                                                                                  |
-| prologue_arcade        |    ❌️     |                                                                                  |
-| prologue_opening       |    ❌️     |                                                                                  |
-| quick                  |    ❌️     |                                                                                  |
-| quick-arcade           |    ❌️     |                                                                                  |
-| GT4Application         |    ❌️    | Initializer and Config Script loader / re-loader                                  |
+| language               |    ✔️     | Language selection menu                                                          |
+| memcard                |    ✔️     | Save file Load/Save, Load/Save replay, etc.                                      |
+| option                 |    ❌️     | A hidden menu that contains advanced settings, primarily networking              |
+| option2                |    ✔️     | Options menu                                                                     |
+| prize                  |    ❌️     | Prize screen when unlocking a new car                                            |
+| prologue               |    ❌️     | School mode and its sub-menus                                                    |
+| prologue_arcade        |    ❌️     | Arcade mode and its sub-menus                                                    |
+| prologue_opening       |    ❌️     | Opening movie handler                                                            |
+| quick                  |    ✔️     | Pre-race menu for School mode                                                    |
+| quick-arcade           |    ❌️     | Pre-race menu for Arcade mode                                                    |
+| GT4Application         |    ✔️     | Initializer and Config Script loader / re-loader                                 |
 
 </details>
 
