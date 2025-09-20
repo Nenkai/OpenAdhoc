@@ -21,6 +21,11 @@ module CarRoot
 
     static sCaptureMode = false;
 
+    attribute filters_visible = true;
+    attribute filter_tuner_index = 0;
+    attribute filter_drivetrain_index = 0;
+    attribute filter_category_index = 0;
+
     function open(context, from_prev_page)
     {
         var gp = gArcadeSequence.getGP();
@@ -133,6 +138,11 @@ module CarRoot
 
         reset_widgets();
 
+        self.filters_visible = true;
+        self.initializeTunerList(context);
+        self.initializeDriveTrainList(context);
+        self.initializeCategoryList(context);
+
         self.FadeEffect.start();
 
         context.pushEvent(main::menu::MFunctionEvent(postInitialize, context));
@@ -212,6 +222,10 @@ module CarRoot
     method onFinalize(context)
     {
         sCaptureMode = false;
+
+        OptionMenuUtil::finalize(context, Filters::Tuner::OptionMenu);
+        OptionMenuUtil::finalize(context, Filters::DriveTrain::OptionMenu);
+        OptionMenuUtil::finalize(context, Filters::Category::OptionMenu);
     }
 
     method onRealize(context)
@@ -223,6 +237,11 @@ module CarRoot
     method onKeyPress(context, event)
     {
         LeaveDetectUtil::activated(context, event);
+
+        if (event.keysym == CELL_PAD_CTRL_SELECT)
+        {
+            self.toggleFilterVisibility(context);
+        }
 
         if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
         {
@@ -276,7 +295,7 @@ module CarRoot
         var is_ps3 = main::gtengine::MSpecDB::checkGenericFlag("has_premium_model", car_code);
         OverLapRoot::ButtonHelpGT5.setInsensitive("Square", !is_ps3);
 
-        Info.set(context, car_code);
+        Info.set(context, car_code, cp);
 
         var show_real_spec = false;
         if (tab_id == CarFinder::TAB_TYPE::FAVORITE)
@@ -322,6 +341,7 @@ module CarRoot
             static IMPORT = "import";
             static KIOSK = "kiosk";
             static CUSTOM = "custom";
+            static ALL = "all";
         }
 
         static sDuration;
@@ -349,7 +369,8 @@ module CarRoot
 
             self.current_tab_.set_finder(context, self.finder_);
 
-            if (0 < self.finder_.getItemCount())
+            var count = self.finder_.getItemCount();
+            if (0 < count)
             {
                 Tabs.focus_navigate(true);
             
@@ -361,28 +382,31 @@ module CarRoot
             } 
             else 
             {
-            
-                switch(id)
+                Body::empty_message.visible = true;
+
+                if (CarRoot.filter_tuner_index != 0 ||
+                    CarRoot.filter_drivetrain_index != 0 ||
+                    CarRoot.filter_category_index != 0)
                 {
-                    case TAB_TYPE::FAVORITE:
-
-                        Body::empty_message::FadeEffect.restart();
-                        Body::empty_message.text = context.translate(CarRoot, "MESSAGE_WHEN_FAVORITE_CARS_ARE_EMPTY");
-                        Body::empty_message.visible = true;
-                        break;
-                    case TAB_TYPE::IMPORT:
-
-                        Body::empty_message::FadeEffect.restart();
-                        Body::empty_message.text = context.translate(CarRoot, "MESSAGE_WHEN_IMPORT_CARS_ARE_EMPTY");
-                        Body::empty_message.visible = true;
-                        break;
-
-                    default:
-                        Body::empty_message::FadeEffect.restart();
-                        Body::empty_message.text = context.translate(CarRoot, "MESSAGE_WHEN_CARS_ARE_EMPTY");
-                        Body::empty_message.visible = true;
-                        break;
+                    Body::empty_message.text = "No cars are visible: check your filters.";
                 }
+                else
+                {
+                    switch(id)
+                    {
+                        case TAB_TYPE::FAVORITE:
+                            Body::empty_message.text = context.translate(CarRoot, "MESSAGE_WHEN_FAVORITE_CARS_ARE_EMPTY");
+                            break;
+                        case TAB_TYPE::IMPORT:
+                            Body::empty_message.text = context.translate(CarRoot, "MESSAGE_WHEN_IMPORT_CARS_ARE_EMPTY");
+                            break;
+                        default:
+                            Body::empty_message.text = context.translate(CarRoot, "MESSAGE_WHEN_CARS_ARE_EMPTY");
+                            break;
+                    }
+                }
+                
+                Body::empty_message::FadeEffect.restart();
             }
         }
 
@@ -465,6 +489,7 @@ module CarRoot
                         self.tabs_.push(TabClass(TAB_TYPE::FAVORITE, Tabs::FavoriteCars));
 
                     self.tabs_.push(TabClass(TAB_TYPE::ARCADE, Tabs::ArcadeCars));
+                    self.tabs_.push(TabClass(TAB_TYPE::ALL, Tabs::AllCars));
 
                     if (GetVersionBranch() != "demo")
                         self.tabs_.push(TabClass(TAB_TYPE::IMPORT, Tabs::ImportCars));
@@ -502,7 +527,7 @@ module CarRoot
                 Body::Composite,
                 dummy_initial_data,
                 false);
-                
+
             change_tab(context, focus_tab.id_, true);
 
             hide(context, true);
@@ -650,6 +675,20 @@ module CarRoot
             }
         }
 
+        method updateCarLists(context)
+        {
+            foreach (var tab in self.tabs_)
+            {
+                var initial_data = self.makeInitialDataForCar(context, tab.id_);
+                tab.initial_data_ = initial_data;
+
+                if (1 < self.tabs_.size)
+                    tab.tab_w_.visible = true;
+            }
+
+            change_tab(context, self.current_tab_.id_, true);
+        }
+
         method makeInitialDataForCar(context, tab_id)
         {
             var Finder = UIKitProject::FinderRoot;
@@ -724,21 +763,90 @@ module CarRoot
                         cars.push(ct);
                     }
                     break;
+
+                case TAB_TYPE::ALL:
+                    var car_codes = CarData::getCarList();
+                    foreach (var car_code in car_codes)
+                    {
+                        var ct = gtengine::MCarThin(car_code);
+                        ct.color = main::gtengine::MSpecDB::getCarVariationFlag(car_code, 1);
+                        cars.push(ct);
+                    }
+
+                    break;
+            }
+
+            var filter_tuner = nil;
+            var filter_drivetrain = nil;
+            var filter_category_cars = [];
+            if (CarRoot.filters_visible == true)
+            {
+                if (CarRoot.filter_tuner_index != 0)
+                {
+                    var tuner_list = CarData::getTunerLabelList();
+                    tuner_list.sort();
+                    tuner_list.unshift("---");
+                    filter_tuner = tuner_list[CarRoot.filter_tuner_index];
+                }
+
+                if (CarRoot.filter_drivetrain_index != 0)
+                {
+                    var dt_list = CarData::Premium::getDriveTrainList();
+                    filter_drivetrain = dt_list[CarRoot.filter_drivetrain_index];
+                }
+
+                if (CarRoot.filter_category_index != 0)
+                {
+                    var category_list = ["---"];
+                    foreach (|var k, var _| in ArcadeProject.gCarCategories)
+                    {
+                        category_list.push(k);
+                    }
+                    var filter_category = category_list[CarRoot.filter_category_index];
+                    filter_category_cars = ArcadeProject.gCarCategories[filter_category]["cars"].split(";");
+                }
             }
 
             var car_code;
             var candidates = Array();
+            var first = true;
             for (var i = 0; i < cars.size; i++)
             {
                 var car = cars[i];
-                var car_code;
+                var car_code; var car_label; var tuner_label; var drive_train;
                 if (car.isInstanceOf(Garage2::CarParameterProxy) || 
                     car.isInstanceOf(ImportGarage::CarParameterProxy) ||
                     car.isInstanceOf(CarData::CarParameterProxy)) {
                     car_code = car.car_code;
-                } else {
+                    car_label = main::gtengine::MSpecDB::getCarLabel(car_code);
+                    tuner_label = car.tuner_label;
+                    drive_train = car.drive_train;
+                } 
+                else 
+                {
                     car_code = car.getCarCode();
+                    car_label = main::gtengine::MSpecDB::getCarLabel(car_code);
+                    tuner_label = main::gtengine::MSpecDB::getTunerLabel(car_code);
+                    drive_train = main::gtengine::MSpecDB::getCarDriveTrain(car_code);
                 }
+
+                if (filter_category_cars.size > 0)
+                {
+                    if (filter_category_cars.indexOf(car_label) < 0)
+                        continue;
+                }
+                if (filter_tuner != nil)
+                {
+                    if (tuner_label != filter_tuner)
+                        continue;
+                }
+
+                if (filter_drivetrain != nil)
+                {
+                    if (drive_train != filter_drivetrain)
+                        continue;
+                }
+
                 var is_enable = true;
 
                 var is_racing_kart = gtengine::MSpecDB::checkGenericFlag("is_racing_kart", car_code);
@@ -888,7 +996,7 @@ module CarRoot
 
     module Info
     {
-        method set(context, car_code)
+        method set(context, car_code, cp)
         {
             var country_code = main::gtengine::MSpecDB::getCarCountry(car_code);
             var tuner_label = main::gtengine::MSpecDB::getTunerLabel(car_code);
@@ -898,7 +1006,7 @@ module CarRoot
                 self.Info::FadeEffect.start();
             }
 
-            self.Info::tuner_logo.on_delay_load_complete = self.*delay_load_complete;
+            self.Info::tuner_logo.on_delay_load_complete = *self.*delay_load_complete;
             self.Info::tuner_logo.image_path = "piece/tunner_logo_L/%{tuner_label}.img";
             self.Info::flag.image_path = "piece/flag_menu/%{country_code}.img";
             self.Info::tuner_name.text = context.translate(CarRoot, "TunerNameI18n", tuner_label);
@@ -907,6 +1015,16 @@ module CarRoot
             self.Info::premium.visible = is_ps3;
             self.Info::standard.visible = !is_ps3;
             self.Info::FadeEffect.reset();
+
+            var cp_real;
+            if (cp.isInstanceOf(gtengine::MCarThin))
+                cp_real = gtengine::MCarParameter(car_code);
+            else
+                cp_real = cp;
+
+            cp_real.beginInfo();
+            self.Info::PP::value.text = cp_real.getPP1000();
+            cp_real.endInfo();
         }
 
         method reset()
@@ -925,32 +1043,38 @@ module CarRoot
         method set(context, cp, show_real_spec)
         {
             var car_code = cp.getCarCode();
+            var cp_real;
+            if (cp.isInstanceOf(gtengine::MCarThin))
+                cp_real = gtengine::MCarParameter(car_code);
+            else
+                cp_real = cp;
+
             DetailBox::FadeEffect.on_effect_end = nil;
             DetailBox::FadeEffect.restart();
             DetailBox::FadeEffect.on_effect_end = function()
             {
                 DetailBox::FadeEffect.on_effect_end = nil;
 
-                if (show_real_spec == true)
+                cp_real.beginInfo();
+                DetailBox::MaxPower::value.TransientReset();
+                DetailBox::MaxPower::value.text = cp_real.getPowerString(true);
+                DetailBox::MaxTorque::value.TransientReset();
+                DetailBox::MaxTorque::value.text = cp_real.getTorqueString(true);
+                DetailBox::Weight::value.TransientReset();
+                DetailBox::Weight::value.text = cp_real.getWeightString();
+                cp_real.endInfo();
+
+                /*if (show_real_spec == true)
                 {
-                    cp.beginInfo();
-                    DetailBox::MaxPower::value.TransientReset();
-                    DetailBox::MaxPower::value.text = cp.getPowerString(true);
-                    DetailBox::MaxTorque::value.TransientReset();
-                    DetailBox::MaxTorque::value.text = cp.getTorqueString(true);
-                    DetailBox::Weight::value.TransientReset();
-                    DetailBox::Weight::value.text = cp.getWeightString();
-                    cp.endInfo();
-                } 
-                else 
-                {
+                } else {
                     DetailBox::MaxPower::value.TransientReset();
                     DetailBox::MaxPower::value.text = SpecDatabaseUtil::getCarMaxPowerText(context, car_code);
                     DetailBox::MaxTorque::value.TransientReset();
                     DetailBox::MaxTorque::value.text = SpecDatabaseUtil::getCarMaxTorqueText(context, car_code);
                     DetailBox::Weight::value.TransientReset();
                     DetailBox::Weight::value.text = SpecDatabaseUtil::getCarWeightText(context, car_code);
-                }
+                }*/
+
                 DetailBox::Displacement::value.TransientReset();
                 DetailBox::Displacement::value.text = SpecDatabaseUtil::getCarDisplacementText(context, car_code);
                 DetailBox::Drivetrain::value.TransientReset();
@@ -991,6 +1115,7 @@ module CarRoot
         {
             ArcadeProject::ignorePadEvent(true);
 
+            CarRoot.Filters.visible = false;
             self.prev_focus_ = CarRoot.getFocusWidget();
 
             var initial_data = makeInitialDataForCarVariation(context, car_code, focus_index);
@@ -1022,6 +1147,7 @@ module CarRoot
             self.MoveEffect.start();
 
             self.insensitive = true;
+            CarRoot.Filters.visible = CarRoot.filters_visible;
             CarRoot.setFocus(nil);
 
             context.sync(0.2);
@@ -1367,6 +1493,99 @@ module CarRoot
 
             self.request_cp_ = nil;
             self.current_cp_ = nil;
+        }
+    }
+
+    method toggleFilterVisibility(context)
+    {
+        self.filters_visible = !self.filters_visible;
+        self.Filters.visible = self.filters_visible;
+        if (self.filter_category_index != 0 ||
+            self.filter_drivetrain_index != 0 ||
+            self.filter_tuner_index != 0)
+        {
+            self.CarFinder.updateCarLists(context)
+        }
+    }
+
+    method initializeTunerList(context)
+    {
+        var option_menu = Filters::Tuner::OptionMenu;
+        OptionMenuUtil::finalize(context, option_menu);
+
+        var tuner_list = CarData::getTunerLabelList();
+        tuner_list.sort();
+        tuner_list.unshift("---");
+
+        OptionMenuUtil::initialize(context, CarRoot, option_menu, hidden::OptionMenuItem, tuner_list, "TunerNameI18n");
+        self.filter_tuner_index = 0;
+        option_menu.setIndex(context, self.filter_tuner_index);
+    }
+
+    method initializeDriveTrainList(context)
+    {
+        var option_menu = Filters::DriveTrain::OptionMenu;
+        var dt_list = CarData::Premium::getDriveTrainList();
+        // dt_list already contains "---"
+        OptionMenuUtil::initialize(context, CarRoot, option_menu, hidden::OptionMenuItem, dt_list, "DriveTrainName");
+        self.filter_drivetrain_index = 0;
+        option_menu.setIndex(context, self.filter_drivetrain_index);
+    }
+
+    method initializeCategoryList(context)
+    {
+        var option_menu = Filters::Category::OptionMenu;
+        var category_list = [];
+        foreach (|var k, var _| in ArcadeProject.gCarCategories)
+        {
+            category_list.push(k);
+        }
+        category_list.reverse();
+        category_list.unshift("---");
+        OptionMenuUtil::initialize(context, CarRoot, option_menu, hidden::OptionMenuItem, category_list);
+        self.filter_category_index = 0;
+        option_menu.setIndex(context, self.filter_category_index);
+    }
+
+    module Filters
+    {
+        module Tuner::OptionMenu
+        {
+            method onValueChanged(context)
+            {
+                self.pulldownValueChanged(context);
+                if (self.index != CarRoot.filter_tuner_index)
+                {
+                    CarRoot.filter_tuner_index = self.index;
+                    CarRoot.CarFinder.updateCarLists(context);
+                }
+            }
+        }
+
+        module DriveTrain::OptionMenu
+        {
+            method onValueChanged(context)
+            {
+                self.pulldownValueChanged(context);
+                if (self.index != CarRoot.filter_drivetrain_index)
+                {
+                    CarRoot.filter_drivetrain_index = self.index;
+                    CarRoot.CarFinder.updateCarLists(context);
+                }
+            }
+        }
+        
+        module Category::OptionMenu
+        {
+            method onValueChanged(context)
+            {
+                self.pulldownValueChanged(context);
+                if (self.index != CarRoot.filter_category_index)
+                {
+                    CarRoot.filter_category_index = self.index;
+                    CarRoot.CarFinder.updateCarLists(context);
+                }
+            }
         }
     }
 }
