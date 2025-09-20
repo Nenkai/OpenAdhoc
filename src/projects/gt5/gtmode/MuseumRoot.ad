@@ -2,6 +2,8 @@ module ROOT
 {
     hidden.visible = false;
 
+    static sInitialInit = false;
+
     method open(context)
     {
         SequenceUtil::startPage(context, ROOT);
@@ -96,23 +98,120 @@ module ROOT
 
     method initialize(context)
     {
-        var me = self;
-
-        Museum2.requestMuseumIdList(1, function (args)
+        if (LoginUtil::isOnline())
         {
-            |var context, var request| = args;
-
-            if (request.isDone())
+            var me = self;
+            Museum2.requestMuseumIdList(1, function (args)
             {
-                var list = Museum2.decodeMuseumIdList(request);
+                |var context, var request| = args;
 
-                if (request.isUpdated() || list.size != MuseumFileUtil::getMuseumIdListCount())
-                    var res = MuseumFileUtil::updateMuseumIdList(list);
+                if (request.isDone())
+                {
+                    var list = Museum2.decodeMuseumIdList(request);
 
-                me.Toc::List.initialize(context);
+                    if (request.isUpdated() || list.size != MuseumFileUtil::getMuseumIdListCount())
+                        var res = MuseumFileUtil::updateMuseumIdList(list);
+
+                    me.Toc::List.initialize(context);
+                    sInitialInit = true;
+                }
+            });
+        }
+        else
+        {
+            try
+            {
+                var museum_list = getOfflineMuseumListOrError(context);
+                if (museum_list.size != MuseumFileUtil::getMuseumIdListCount())
+                {
+                    var res = MuseumFileUtil::updateMuseumIdList(museum_list);
+                    DialogUtil::openConfirmDialog(context, DialogUtil::OK, "Museum list updated.");
+                }
+
+                self.Toc::List.initialize(context);
+                sInitialInit = true;
             }
-        });
+            catch (e)
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, e.toString().split(";").join("\n"));
+            }
+        }
+    }
 
+    method onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_SELECT:
+                if (sInitialInit)
+                {
+                    var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, "Add one of each museum card? (will take a few seconds)");
+                    if (res)
+                    {
+                        var museum_list = getOfflineMuseumListOrError(context);
+                        if (museum_list != nil)
+                        {
+                            MuseumFileUtil::begin();
+                            foreach (var museum in museum_list)
+                                MuseumFileUtil::increment(museum["museum_id"]);
+                            MuseumFileUtil::commit();
+                        }
+
+                        DialogUtil::openConfirmDialog(context, DialogUtil::OK, "Done.");
+
+                        // Reinitialize UI
+                        self.initialize(context);
+                    }
+                }
+
+                return EVENTRESULT_FILTER;
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+
+    method getOfflineMuseumListOrError(context)
+    {
+        var lang = "gb"; /* pdistd::MLocale::getLanguage() */
+        var fst = pdistd::ReadFile("/APP_DATA_RAW/museum/gt5/%{lang}/museum_%{lang}_l_1.xml");
+        var buf = fst["buffer"];
+        if (buf == nil)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, "Museum folder missing in game directory?");
+            return nil;
+        }
+
+        return getOfflineMuseumList(buf);
+    }
+
+    function getOfflineMuseumList(xml_buf)
+    {
+        var xml = pdistd::MXml();
+        xml.parse(xml_buf);
+        var dom = xml.result;
+        var list = dom["list"];
+
+        var museum_list = [];
+        if (list != nil)
+        {
+            for (var i = 0; i < list.size; i++)
+            {
+                var museum_node = list[i];
+                var museum_node_id = museum_node["id"];
+                for (var j = 0; j < museum_node_id.size; j++)
+                {
+                    var id_node = museum_node_id[j];
+                    museum_list.push([
+                        "museum_id" : id_node.getAttribute("id").toInt(),
+                        // "lastupdate" - only relevant for online
+                        "dealer" : id_node.getAttribute("dealer"),
+                        "dealer_id" : id_node.getAttribute("dealer_id").toInt()
+                    ]);
+                }
+            }
+        }
+
+        return museum_list;
     }
 
     module Toc
