@@ -1,0 +1,548 @@
+module PROJECT::ROOT
+{
+    static sXmlLobbyConfigList = nil;
+    static sMaxMember = nil;
+    static sHoldingRoomList = nil;
+    static sCategoryList = nil;
+
+    function onLoad(context)
+    {
+        setDialogMoveActorH(ListPane::ChatChannels);
+        setBlinkActor(ListPane::left);
+        setBlinkActor(ListPane::right);
+    }
+
+    function onUnload(context)
+    {
+        sXmlLobbyConfigList = nil;
+        sMaxMember = nil;
+        sHoldingRoomList = nil;
+        sCategoryList = nil;
+    }
+
+    function onInitialize(context)
+    {
+        enterPage(context, LobbyRoot, "TITLE");
+
+        sMaxMember = 100;
+        sHoldingRoomList = [];
+        sCategoryList = [];
+        PrivateRaceCommon::setToolTip(LobbyRoot["Common"]["ToolTip"]["tip"]);
+        ListPane::initialize(context);
+        var event = main::menu::MScriptEvent(context, LobbyRoot, "on_initialize");
+        context.pushEvent(event);
+        LobbyRoot.setFocus(CommandPane::Filter);
+    }
+
+    function onFinalize(context)
+    {
+        PrivateRaceCommon::disposeToolTip();
+        ListPane::finalize(context);
+        leavePage(context, LobbyRoot);
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        sXmlLobbyConfigList = nil;
+        sMaxMember = nil;
+        sHoldingRoomList = nil;
+        sCategoryList = nil;
+
+        QuickInputRoot::disposeCache();
+
+        start_page(context, HomeRoot);
+		return EVENTRESULT_FILTER;
+    }
+
+    function open(context)
+    {
+        clearLobbyWorldFilter(context);
+        start_page(context, LobbyRoot);
+    }
+
+    function activateListPane(context, args)
+    {
+        ListPane::ChatChannels.visible = true;
+        ListPane::ChatChannels.actor.out = false;
+        context.sync(0.25);
+        ListPane::left.active = true;
+        ListPane::right.active = true;
+    }
+
+    function deactivateListPane(context)
+    {
+        ListPane::left.active = false;
+        ListPane::right.active = false;
+
+        ListPane::ChatChannels.actor.out = true;
+        context.sync(0.25);
+
+        ListPane::ChatChannels.visible = false;
+    }
+
+    function on_initialize(context)
+    {
+        fetchAndInitializeLobbyConfig(context);
+        var text = context.translate(LobbyRoot, "GETTING_INFORMATION");
+        openProcessDialog(context, text, ListPane::initialize_list, nil);
+        activateListPane(context, nil);
+    }
+
+    function clearLobbyWorldFilter(context)
+    {
+        InputDialog::InputChatChannel::sFilterICType = nil;
+        if (!main::network.setLobbyWorldFilter(2147483647, 2147483647, 0, 0, 0, (1 << 6)))
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+            return false;
+        }
+        return true;
+    }
+
+    function noConfigAlert(context)
+    {
+        openOnlineErrorDialog(context);
+        start_page(context, HomeRoot);
+    }
+
+    function fetchAndInitializeLobbyConfig(context)
+    {
+        if (sXmlLobbyConfigList == nil)
+            fetchLobbyConfigList(context);
+
+        var res = false;
+        if (sXmlLobbyConfigList != nil)
+            res = initializeLobbyConfig();
+
+        if (!res)
+        {
+            var event = main::menu::MScriptEvent(context, LobbyRoot, "noConfigAlert");
+            context.pushEvent(event);
+        }
+    }
+
+    function fetchLobbyConfigList(context)
+    {
+        sXmlLobbyConfigList = getConfigList(context, 1);
+    }
+
+    function getListItems(item_list, is_Holding_room)
+    {
+        if (item_list != nil && item_list.size > 0)
+        {
+            var current_list = [];
+            if (is_Holding_room)
+                current_list = sHoldingRoomList;
+            else
+                current_list = sCategoryList;
+
+            var latest_id = 0;
+            
+            for (var i = 0; i < item_list.size; i++)
+            {
+                var current_id = item_list[i].getAttribute("id", (latest_id + 1)).toInt();
+                current_list.push([current_id, item_list[i].value]);
+                latest_id = current_id;
+            }
+            PrivateRaceCommon::sortList(current_list);
+            return true;
+        }
+        return false;
+    }
+
+    function initializeLobbyConfig()
+    {
+        if (sXmlLobbyConfigList == nil)
+            return false;
+
+        sHoldingRoomList = [];
+        sCategoryList = [];
+        var did_get_max_member = false;
+        var did_get_holding_room = false;
+        var did_get_category = false;
+
+        var lobby = sXmlLobbyConfigList["Lobby"][0];
+        if (lobby != nil)
+        {
+            var max_member = lobby["MaxMember"][0];
+            if (max_member != nil)
+            {
+                sMaxMember = max_member.value;
+                did_get_max_member = true;
+            }
+
+            var holding_room = lobby["HoldingRoom"][0];
+            if (holding_room != nil)
+            {
+                var item_list = holding_room["Item"];
+                did_get_holding_room = getListItems(item_list, 1);
+            }
+
+            var category = lobby["Category"][0];
+            if (category != nil)
+            {
+                var item_list = category["Item"];
+                did_get_category = getListItems(item_list, 0);
+            }
+        }
+        return (did_get_max_member || did_get_holding_room || did_get_category);
+    }
+}
+
+module PROJECT::ROOT::ListPane
+{
+    static sCurrentPage = nil;
+    static sChannelsNum = nil;
+    static sPageNum = nil;
+    static sPassword = nil;
+    static sLineName = nil;
+
+    function initialize_list(context)
+    {
+        sCurrentPage = 0;
+        sChannelsNum = 0;
+
+        var res = main::network.getTotalChannels();
+        if (res < 0)
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+            return;
+        }
+
+        sPageNum = ((res - 1) / 10) + 1;
+        refresh_list(context, 0);
+    }
+
+    function refresh_list(context, add_value)
+    {
+        if (add_value == nil)
+            add_value = 0;
+			
+        var NextPage = sCurrentPage + add_value;
+        var CurrentPage = sCurrentPage;
+        if (NextPage < 0)
+            return 0;
+
+        var total_chat_channels = main::network.getTotalChannels();
+        if (total_chat_channels < 0)
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+			return 0;
+        }
+
+        var MaxPage = ((total_chat_channels - 1) / 10) + 1;
+        if (MaxPage <= 0)
+            MaxPage = 1;
+
+        if (NextPage >= MaxPage)
+        {
+            if (add_value > 0)
+            {
+                openConfirmDialog(context, DIALOG_ERROR, context.translate(LobbyRoot, "NOT_NEXT_PAGE"));
+                return 0;
+            }
+            else
+                CurrentPage = MaxPage - 1;
+        }
+        else
+            CurrentPage += add_value;
+		
+        var chat_channel_list = main::network.getChannels(CurrentPage + 1, 10);
+        if (chat_channel_list == nil)
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+            return 0;
+        }
+        LobbyRoot.visible = false;
+        sCurrentPage = CurrentPage;
+        if (sCurrentPage < 0)
+            sCurrentPage = 0;
+
+        sPageNum = MaxPage;
+        ListPane::Info::chat_channels.text = context.translate(LobbyRoot, "TOTAL_CHAT_CHANNELS").build(total_chat_channels);
+        ListPane::Info::page.text = context.translate(LobbyRoot, "PAGE_NUMBER").build(sCurrentPage + 1, sPageNum);
+        ListPane::left.visible = !(sCurrentPage <= 0);
+        ListPane::right.visible = (total_chat_channels > 0);
+        
+        for (var i = 0; i < 10; i++)
+            ListPane::ChatChannels[sLineName[i]].visible = false;
+
+        sChannelsNum = chat_channel_list.size;
+
+        var line_index = 0;
+        for (var i = 0; i < sChannelsNum; i++)
+        {
+            var item = ListPane::ChatChannels[sLineName[line_index]];
+            if (PrivateRaceCommon::isWorldTypeVisible(chat_channel_list[i][9]))
+            {
+                var column = chat_channel_list[i];
+                set_item(context, item, column);
+                line_index++;
+            }
+        }
+
+        LobbyRoot.visible = true;
+        if (total_chat_channels == 0)
+            return 3;
+
+        return 1;
+    }
+
+    function set_item(context, item, column)
+    {
+        var id = column[0];
+        var name = column[9];
+        var category = column[4];
+        var player_count = column[1];
+        var max_players = column[2];
+        var password_required = column[5];
+        item.visible = true;
+        item.defineStatic("sId", id);
+
+        var category_item = item["category"];
+        var category_id = parseGenericFieldValue(category);
+        category_item.defineStatic("sCategoryId", category_id);
+
+        var category_text = PrivateRaceCommon::getTextFromItemList(sCategoryList, category_id);
+        category_item.text = category_text;
+        category_item.abbreviate();
+        category_item.defineStatic("sCategoryText", category_text);
+
+        var name_item = item["name"];
+        var name_text = PrivateRaceCommon::getChatChannelNameForPresentation(context, name);
+        name_item.text = name_text;
+        name_item.abbreviate();
+        name_item.defineStatic("sPresentaionName", name_text);
+		item["member"].text = ("%d/%d".format(player_count, max_players));
+
+        var password_item = item["password"];
+        var pass_req_val = parseGenericFieldValue(password_required);
+        var pass_req = (pass_req_val != 0);
+        password_item.visible = pass_req;
+        password_item.defineStatic("sPasswordRequired", pass_req);
+    }
+
+    function parseGenericFieldValue(value)
+    {
+        var res = 0;
+        
+        for (var i = 0; i < 32; i++)
+        {
+            if ((value & (1 << i)) != 0)
+            {
+                res = i;
+                break;
+            }
+        }
+        return res;
+    }
+
+    function initialize(context)
+    {
+        sCurrentPage = 0;
+        sChannelsNum = 0;
+        sPageNum = 0;
+        sPassword = "";
+        sLineName = ["Line0", "Line1", "Line2", "Line3", "Line4", "Line5", "Line6", "Line7", "Line8", "Line9"];
+        ListPane::left.visible = false;
+        ListPane::right.visible = false;
+        ListPane::ChatChannels.visible = false;
+        ListPane::ChatChannels.actor.out = true;
+        ListPane::ChatChannels.actor.warp();
+    }
+
+    function finalize(context)
+    {
+        sCurrentPage = nil;
+        sChannelsNum = nil;
+        sPageNum = nil;
+        sPassword = nil;
+        sLineName = nil;
+    }
+}
+
+module PROJECT::ROOT::ListPane::ChatChannels
+{
+    function onActivate(context, event)
+    {
+        var item = event.widget;
+        if (!item.visible)
+            return EVENTRESULT_FILTER;
+
+        main::sound.play("ok");
+        var name = item["name"]["sPresentaionName"];
+        var text = context.translate(ProfileRoot, "DO_YOU_JOIN_THIS_CHAT_CHANNEL").build(name);
+        var res = openConfirmDialog(context, DIALOG_QUERY, text);
+        if (res != nil && res)
+        {
+            var id = item["sId"];
+            var category = item["category"]["sCategoryId"];
+            var password_required = item["password"]["sPasswordRequired"];
+            var join_suceess = false;
+            if (password_required)
+                join_suceess = InputDialog::InputPassword::open(context, [0, id, 0]);
+            else
+                join_suceess = ChatRoot::joinChatChannel(context, 0, id, "");
+
+            if (join_suceess != nil && join_suceess)
+            {
+                ChatRoot::setChannelInfo(id, name);
+                start_page(context, ChatRoot);
+            }
+        }
+        return EVENTRESULT_FILTER;
+    }
+
+    function setTooltip(context, item)
+    {
+        if (item["name"]["sPresentaionName"] == nil && item["category"]["sCategoryText"] == nil)
+            return;
+
+        var name = item["name"]["sPresentaionName"].toString();
+        var category = item["category"]["sCategoryText"].toString();
+        var info = context.translate(LobbyRoot, "TOOLTIP|CHAT_CHANNEL_INFO").build(name, category);
+        PrivateRaceCommon::setToolTipOnValue(0, info);
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var item = event.widget;
+        setTooltip(context, item);
+    }
+
+    function onKeyPress(context, event)
+    {
+        if (event.keysym == PS2_PAD_CTRL_L3_LEFT || event.keysym == PS2_PAD_CTRL_L3_RIGHT)
+        {
+            main::sound.play("cursor");
+
+            if (event.keysym == PS2_PAD_CTRL_L3_LEFT)
+            {
+                if (ListPane::left.visible)
+                {
+                    var res = refresh_list(context, -1);
+                    if (res == 1)
+                    {
+                        var fcs_item = LobbyRoot.getFocusWidget();
+                        if (fcs_item.visible)
+                        {
+                            setTooltip(context, fcs_item);
+                        }
+                        else
+                        {
+                            fcs_item = ListPane::ChatChannels[sLineName[sChannelsNum - 1]];
+                            LobbyRoot.setFocus(fcs_item);
+                            setTooltip(context, fcs_item);
+                        }
+                    }
+                    if (res == 3)
+                        LobbyRoot.setFocus(CommandPane::Filter);
+                }
+            }
+            else
+            {
+                if (ListPane::right.visible)
+                {
+                    var res = refresh_list(context, 1);
+                    if (res == 1)
+                    {
+                        var fcs_item = LobbyRoot.getFocusWidget();
+                        if (fcs_item.visible)
+                        {
+                            setTooltip(context, fcs_item);
+                        }
+                        else
+                        {
+                            fcs_item = ListPane::ChatChannels[sLineName[sChannelsNum - 1]];
+                            LobbyRoot.setFocus(fcs_item);
+                            setTooltip(context, fcs_item);
+                        }
+                    }
+                }
+            }
+            
+            return EVENTRESULT_FILTER;
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::CommandPane::Filter
+{
+    function onActivate(context)
+    {
+        deactivateListPane(context);
+        var res = InputDialog::InputChatChannel::open(context, 1);
+        if (res != nil && res)
+            ListPane::refresh_list(context, 0);
+
+        activateListPane(context, nil);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(LobbyRoot, "TOOLTIP|CommandPane::Filter");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}
+
+module PROJECT::ROOT::CommandPane::Reload
+{
+    function onActivate(context)
+    {
+        main::sound.play("ok");
+        deactivateListPane(context);
+        ListPane::refresh_list(context, 0);
+        activateListPane(context, nil);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(LobbyRoot, "TOOLTIP|CommandPane::Reload");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}
+
+module PROJECT::ROOT::CommandPane::CreateChatChannel
+{
+    function onActivate(context)
+    {
+        deactivateListPane(context);
+        var res = InputDialog::InputChatChannel::open(context, 0);
+        if (res != nil)
+        {
+            |var id, var name, var password| = res;
+            res = ListPane::refresh_list(context, 0);
+            if (res == 0)
+            {
+                activateListPane(context, nil);
+                return EVENTRESULT_FILTER;
+            }
+
+            res = ChatRoot::joinChatChannel(context, 0, id, password);
+            if (res)
+            {
+                var presentation_name = PrivateRaceCommon::getRemovedPrefixWorldName(name);
+                ChatRoot::setChannelInfo(id, presentation_name);
+                start_page(context, ChatRoot);
+            }
+        }
+        
+        activateListPane(context, nil);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onFocusEnter(context, event)
+    {
+        var text = context.translate(LobbyRoot, "TOOLTIP|CommandPane::CreateChatChannel");
+        PrivateRaceCommon::setToolTipOnValue(0, text);
+    }
+}

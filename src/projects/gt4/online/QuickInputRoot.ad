@@ -1,0 +1,744 @@
+module PROJECT::ROOT
+{
+    static sActivePane = nil;
+    static sListMode = nil;
+    static sPrevMode = nil;
+    static sPrevText = nil;
+    static sIsGame = nil;
+    static sIsOpenNow = nil;
+    static sContextInputBox = nil;
+    static sContextInputText = nil;
+    static sFixedPhraseList = nil;
+    static sCurrentMenuList = nil;
+
+    function onLoad(context)
+    {
+        setDialogMoveActorH(MenuListPane);
+        setDialogMoveActorH(TextListPane);
+        setDialogMoveActorH(PlayerListPane);
+        initCache();
+    }
+
+    function onUnload(context)
+    {
+        disposeCache();
+    }
+
+    function initCache()
+    {
+        sFixedPhraseList  = nil;
+        sCurrentMenuList  = nil;
+    }
+
+    function disposeCache()
+    {
+        sFixedPhraseList  = nil;
+        sCurrentMenuList  = nil;
+    }
+
+    function onInitialize(context)
+    {
+        sActivePane = nil;
+        sListMode   = 0;
+        sPrevMode   = 0;
+        sPrevText   = "";
+        hidden.visible = false;
+        MenuListPane::initialize(context);
+        TextListPane::initialize(context);
+        PlayerListPane::initialize(context);
+    }
+
+    function onFinalize(context)
+    {
+        sActivePane = nil;
+        sListMode = nil;
+        sPrevMode = nil;
+        sPrevText = nil;
+        sIsGame = nil;
+        sIsOpenNow = nil;
+        sContextInputBox = nil;
+        sContextInputText = nil;
+        MenuListPane::finalize(context);
+        TextListPane::finalize(context);
+        PlayerListPane::finalize(context);
+    }
+
+    function open(context, input_box, input_box_input, is_game)
+    {
+        context.pushPage(QuickInputRoot);
+        sIsGame = is_game;
+        sIsOpenNow = true;
+        sContextInputBox = input_box;
+        sContextInputText = input_box_input;
+        PrivateRaceCommon::setToolTip(ToolTip::tip);
+        setNextStatus(0, nil);
+        activatePane(context, MenuListPane);
+        context.getUpdateContext().enterEventLoop();
+    }
+
+    function close(context)
+    {
+        if (isOpenNow())
+        {
+            sIsOpenNow = false;
+            PrivateRaceCommon::revertToolTip();
+            QuickInputRoot.setFocus(nil);
+            context.closePage(QuickInputRoot);
+            context.getUpdateContext().leaveEventLoop();
+        }
+    }
+
+    function isOpenNow()
+    {
+        return (sIsOpenNow != nil && sIsOpenNow);
+    }
+
+    function forcedClose(context)
+    {
+        if (isOpenNow())
+        {
+            var event = main::menu::MScriptEvent(context, MenuListPane, "onCancel");
+            context.pushEvent(event);
+        }
+    }
+
+    function noConfigAlert(context)
+    {
+        openOnlineErrorDialog(context);
+        restart(context);
+    }
+
+    function fetchAndInitializeFixedPhraseList(context)
+    {
+        if (sFixedPhraseList != nil)
+            return true;
+
+        if (!fetchFixedPhraseList(context))
+        {
+            var event = main::menu::MScriptEvent(context, QuickInputRoot, "noConfigAlert");
+            context.pushEvent(event);
+            return false;
+        }
+        return true;
+    }
+
+    function fetchFixedPhraseList(context)
+    {
+        var config = getConfigList(context, 3);
+        if (config != nil)
+        {
+            var chat = config["Chat"][0];
+            if (chat != nil)
+                sFixedPhraseList = chat["FixedPhrase"];
+        }
+
+        return (sFixedPhraseList != nil
+                && 0 < sFixedPhraseList.size
+                && sFixedPhraseList.size <= 21 - 1);
+    }
+
+    function activatePane(context, pane)
+    {
+        var prev_pane = sActivePane;
+        pane.visible = true;
+
+        if (prev_pane != nil)
+            prev_pane.close(context);
+
+        pane.open(context);
+        if (prev_pane != nil)
+            prev_pane.actor.out = true;
+
+        pane.actor.out = false;
+        context.sync(0.25);
+
+        if (prev_pane != nil)
+            prev_pane.visible = false;
+
+        sActivePane = pane;
+    }
+
+    function deactivateMenuListPane(context)
+    {
+        if (sActivePane != MenuListPane)
+            return;
+
+        MenuListPane.close(context);
+        MenuListPane.actor.out = true;
+        context.sync(0.25);
+        MenuListPane.visible = false;
+        sActivePane = nil;
+    }
+
+    function initializePane(pane)
+    {
+        pane.visible = false;
+        pane.actor.out = true;
+        pane.actor.warp();
+    }
+
+    function getPrevMode()
+    {
+        return (sPrevMode != nil) ? sPrevMode : false;
+    }
+
+    function getPrevText()
+    {
+		return (sPrevText != nil) ? sPrevText : "";
+    }
+
+    function getMode(item)
+    {
+        if (item == nil || item["sMode"] == nil)
+            return false;
+		
+        return item["sMode"];
+    }
+
+    function getValue(item)
+    {
+        if (item == nil || item["sValue"] == nil)
+        {
+            return "";
+        }
+        return item["sValue"];
+    }
+
+    function setNextStatus(mode, text)
+    {
+        sPrevMode = sListMode;
+        sPrevText = text;
+        sListMode = mode;
+    }
+
+    function isMenuListModeNow()
+    {
+        if (sListMode == nil)
+            return false;
+
+        return (sListMode == 0);
+    }
+
+    function isTextListModeNow()
+    {
+        if (sListMode == nil)
+            return false;
+
+		return (0 + 1 <= sListMode && sListMode <= 21 - 1)
+    }
+
+    function isPlayerListModeNow()
+    {
+        if (sListMode == nil)
+            return false;
+
+        return (sListMode == 21);
+    }
+}
+
+module PROJECT::ROOT::TextListPane
+{
+    static sCurrentIndex    = nil;
+    static sCurrentTextList = nil;
+
+    function initialize(context)
+    {
+        sCurrentIndex    = 0;
+        sCurrentTextList = nil;
+        initializePane(TextListPane);
+    }
+
+    function finalize(context)
+    {
+        sCurrentIndex    = nil;
+        sCurrentTextList = nil;
+    }
+
+    function open(context)
+    {
+        ScrollBox::ListBox::initialize(context);
+        PrivateRaceCommon::setToolTipOnValue(1, context.translate(QuickInputRoot, "TOOLTIP|TEXT_LIST_PANE"));
+        var res = ScrollBox::ListBox::refreshList(context);
+        restoreListBoxIndex();
+        QuickInputRoot.setFocus(ScrollBox::ListBox);
+        return res;
+    }
+
+    function close(context)
+    {
+        PrivateRaceCommon::setToolTipOnValue(0, "");
+    }
+
+    function gotoPrevPane(context)
+    {
+        resetListBoxIndex();
+        setNextStatus(getPrevMode(), nil);
+        activatePane(context, MenuListPane);
+    }
+
+    function gotoNextPane(context, item)
+    {
+        storeListBoxIndex();
+        setNextStatus(21, getValue(item));
+        activatePane(context, PlayerListPane);
+    }
+
+    function storeListBoxIndex()
+    {
+        sCurrentIndex = ScrollBox::ListBox.focus_index;
+    }
+
+    function restoreListBoxIndex()
+    {
+        var index = (sCurrentIndex != nil) ? sCurrentIndex : 0;
+        if (ScrollBox::ListBox.getItemCount() < index)
+            index = 0;
+
+        ScrollBox::ListBox.focus_index = index;
+    }
+
+    function resetListBoxIndex()
+    {
+        sCurrentIndex = 0;
+    }
+
+    function getFocusedItem(context)
+    {
+        var index = ScrollBox::ListBox.focus_index;
+        return ScrollBox::ListBox.getItemWidget(index, context);
+    }
+
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+        var message = getValue(getFocusedItem(context));
+        if (message == nil || message == "")
+        {
+            main::sound.play("disable");
+            return EVENTRESULT_FILTER;
+        }
+        if (message.size > 60)
+        {
+            var text = context.translate(QuickInputRoot, "ERROR|CHAT_MESSAGE_MAX");
+            openConfirmDialog(context, DIALOG_ERROR, text);
+            return EVENTRESULT_FILTER;
+        }
+        
+        sContextInputBox::open(context);
+        sContextInputText.value = message;
+        QuickInputRoot::close(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        switch(event.keysym)
+		{
+			case PS2_PAD_CTRL_L3_LEFT:
+				main::sound.play("cancel");
+				gotoPrevPane(context);
+				return EVENTRESULT_FILTER;
+
+			case PS2_PAD_CTRL_L3_RIGHT:
+				main::sound.play("ok");
+				gotoNextPane(context, getFocusedItem(context));
+				return EVENTRESULT_FILTER;
+
+			case PS2_PAD_CTRL_L2:
+				return EVENTRESULT_FILTER;
+		}
+        return EVENTRESULT_CONTINUE;
+    }
+
+    function onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        gotoPrevPane(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::TextListPane::ScrollBox::ListBox
+{
+    function initialize(context)
+    {
+        ListBox.setItemTemplate(context, hidden::Item);
+        ListBox.visible_callback = visible_callback;
+        ListBox.focus_callback = nil;
+        ListBox.step_min = 1;
+        ListBox.step_max = 2;
+    }
+
+    function setup_widget(context, i, w)
+    {
+        var text  = sCurrentTextList[i];
+        var value = w["value"];
+        value.text = text;
+        value.adjustScale();
+        w.defineStatic("sValue", text);
+    }
+
+    function visible_callback(context, index)
+    {
+        
+        for (var i = 0; i < index.size; i++)
+        {
+            var visible = ListBox.getItemVisible(index[i]);
+            if (visible)
+            {
+                var w = ListBox.getItemWidget(index[i], context);
+                setup_widget(context, index[i], w);
+                ListBox.setItemUpdate(index[i], 3);
+            }
+        }
+    }
+	
+    function refreshList(context)
+    {
+        if (!isTextListModeNow())
+            return false;
+
+        var title = nil;
+        var list  = [];
+        if (sListMode <= sFixedPhraseList.size)
+        {
+            var idx = sListMode - 1;
+            title = sCurrentMenuList[idx];
+            var fixed_phrase = sFixedPhraseList[idx];
+            var phrase       = fixed_phrase["Phrase"][0];
+            if (phrase != nil)
+            {
+                var item = phrase["Item"];
+                if (item != nil && item.size > 0)
+                {
+                    
+                    for (var i = 0; i < item.size; i++)
+                    {
+                        list.push(item[i].value);
+                    }
+                }
+            }
+        }
+        if (title == nil || list == [] || list.size == 0)
+            return false;
+
+        Title::title.text = title;
+        ListBox.setItemCount(0);
+        ListBox.setItemCount(list.size);
+        sCurrentTextList = list;
+        return true;
+    }
+}
+
+module PROJECT::ROOT::MenuListPane
+{
+	static sCurrentIndex = nil;
+    function initialize(context)
+    {
+        sCurrentIndex = 0;
+        initializePane(MenuListPane);
+    }
+
+    function finalize(context)
+    {
+        sCurrentIndex = nil;
+    }
+
+    function open(context)
+    {
+        ScrollBox::ListBox::initialize(context);
+        PrivateRaceCommon::setToolTipOnValue(1, context.translate(QuickInputRoot, "TOOLTIP|MENU_LIST_PANE"));
+        var res = ScrollBox::ListBox::refreshList(context);
+        restoreListBoxIndex();
+        QuickInputRoot.setFocus(ScrollBox::ListBox);
+        return res;
+    }
+
+    function close(context)
+    {
+        PrivateRaceCommon::setToolTipOnValue(0, "");
+    }
+
+    function gotoNextPane(context, item)
+    {
+        storeListBoxIndex();
+        setNextStatus(getMode(item), getValue(item));
+        activatePane(context, TextListPane);
+    }
+
+    function storeListBoxIndex()
+    {
+        sCurrentIndex = ScrollBox::ListBox.focus_index;
+    }
+
+    function restoreListBoxIndex()
+    {
+        var index = (sCurrentIndex != nil) ? sCurrentIndex : 0;
+        if (ScrollBox::ListBox.getItemCount() < index)
+            index = 0;
+
+        ScrollBox::ListBox.focus_index = index;
+    }
+
+    function resetListBoxIndex()
+    {
+        sCurrentIndex = 0;
+    }
+
+    function getFocusedItem(context)
+    {
+        var index = ScrollBox::ListBox.focus_index;
+        return ScrollBox::ListBox.getItemWidget(index, context);
+    }
+
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+        gotoNextPane(context, getFocusedItem(context));
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        switch(event.keysym)
+		{
+			case PS2_PAD_CTRL_L3_RIGHT:
+				main::sound.play("ok");
+				gotoNextPane(context, getFocusedItem(context));
+				return EVENTRESULT_FILTER;
+
+			case PS2_PAD_CTRL_L2:
+				return EVENTRESULT_FILTER;
+		}
+        return EVENTRESULT_CONTINUE;
+    }
+
+    function onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        deactivateMenuListPane(context);
+        QuickInputRoot::close(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::MenuListPane::ScrollBox::ListBox
+{
+    function initialize(context)
+    {
+        ListBox.setItemTemplate(context, hidden::Item);
+        ListBox.visible_callback = visible_callback;
+        ListBox.focus_callback = nil;
+        ListBox.step_min = 1;
+        ListBox.step_max = 2;
+    }
+
+    function setup_widget(context, i, w)
+    {
+        var text = sCurrentMenuList[i];
+        var value = w["value"];
+        value.text = text;
+        value.adjustScale();
+        w.defineStatic("sValue", text);
+        w.defineStatic("sMode", (i + 1));
+    }
+
+    function visible_callback(context, index)
+    {
+        
+        for (var i = 0; i < index.size; i++)
+        {
+            var visible = ListBox.getItemVisible(index[i]);
+            if (visible)
+            {
+                var w = ListBox.getItemWidget(index[i], context);
+                setup_widget(context, index[i], w);
+                ListBox.setItemUpdate(index[i], 3);
+            }
+        }
+    }
+
+    function refreshList(context)
+    {
+        if (!isMenuListModeNow())
+            return false;
+
+        if (sFixedPhraseList == nil)
+        {
+            if (!fetchAndInitializeFixedPhraseList(context))
+                return false;
+        }
+        var list = [];
+        
+        for (var i = 0; i < sFixedPhraseList.size; i++)
+        {
+            var fixed_phrase = sFixedPhraseList[i];
+            var name = "No title";
+            if (fixed_phrase["Name"] != nil && fixed_phrase["Name"][0] != nil)
+                name = fixed_phrase["Name"][0].value;
+
+            list.push(name);
+        }
+        if (list == [] || list.size == 0)
+            return false;
+
+        ListBox.setItemCount(0);
+        ListBox.setItemCount(list.size);
+        sCurrentMenuList = list;
+        return true;
+    }
+}
+
+module PROJECT::ROOT::PlayerListPane
+{
+    static sCurrentPlayerList = nil;
+
+    function initialize(context)
+    {
+        sCurrentPlayerList = nil;
+        initializePane(PlayerListPane);
+    }
+
+    function finalize(context)
+    {
+        sCurrentPlayerList = nil;
+    }
+
+    function open(context)
+    {
+        ScrollBox::ListBox::initialize(context);
+        PrivateRaceCommon::setToolTipOnValue(1, context.translate(QuickInputRoot, "TOOLTIP|PLAYER_LIST_PANE"));
+        var res = ScrollBox::ListBox::refreshList(context);
+        QuickInputRoot.setFocus(ScrollBox::ListBox);
+		return res;
+    }
+
+    function close(context)
+    {
+        PrivateRaceCommon::setToolTipOnValue(0, "");
+    }
+
+    function gotoPrevPane(context)
+    {
+        setNextStatus(getPrevMode(), nil);
+        activatePane(context, TextListPane);
+    }
+
+    function getFocusedItem(context)
+    {
+        var index = ScrollBox::ListBox.focus_index;
+        return ScrollBox::ListBox.getItemWidget(index, context);
+    }
+
+    function onActivate(context, event)
+    {
+        main::sound.play("ok");
+        if (getPrevText() == nil)
+            return EVENTRESULT_FILTER;
+
+        var text = getValue(getFocusedItem(context));
+        if (text == nil || text == "" || getPrevText() == nil || getPrevText() == "")
+        {
+            main::sound.play("disable");
+            return EVENTRESULT_FILTER;
+        }
+        var message = "%s > %s".format(getPrevText(), text);
+        if (message.size > 60)
+        {
+            text = context.translate(QuickInputRoot, "ERROR|CHAT_MESSAGE_MAX");
+            openConfirmDialog(context, DIALOG_ERROR, text);
+            return EVENTRESULT_FILTER;
+        }
+        else
+        {
+            sContextInputBox::open(context);
+            sContextInputText.value = message;
+            QuickInputRoot::close(context);
+        }
+        
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        switch(event.keysym)
+		{
+			case PS2_PAD_CTRL_L3_LEFT:
+				main::sound.play("cancel");
+				gotoPrevPane(context);
+				return EVENTRESULT_FILTER;
+
+			case PS2_PAD_CTRL_L2:
+				return EVENTRESULT_FILTER;
+
+		}
+        return EVENTRESULT_CONTINUE;
+    }
+
+    function onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        gotoPrevPane(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module PROJECT::ROOT::PlayerListPane::ScrollBox::ListBox
+{
+    function initialize(context)
+    {
+        ListBox.setItemTemplate(context, hidden::Item);
+        ListBox.visible_callback = visible_callback;
+        ListBox.focus_callback = nil;
+        ListBox.step_min = 1;
+        ListBox.step_max = 2;
+    }
+
+    function setup_widget(context, i, w)
+    {
+        var text = sCurrentPlayerList[i][1];
+        var value = w["value"];
+        value.text = text;
+        value.adjustScale();
+        w.defineStatic("sValue", text);
+    }
+
+    function visible_callback(context, index)
+    {
+        
+        for (var i = 0; i < index.size; i++)
+        {
+            var visible = ListBox.getItemVisible(index[i]);
+            if (visible)
+            {
+                var w = ListBox.getItemWidget(index[i], context);
+                setup_widget(context, index[i], w);
+                ListBox.setItemUpdate(index[i], 3);
+            }
+        }
+    }
+
+    function refreshList(context)
+    {
+        var list = nil;
+        if (sIsGame)
+            list = main::network.getGamePlayers();
+        else
+            list = main::network.getLobbyPlayers();
+
+        if (list == nil)
+        {
+            openOnlineErrorDialog(context);
+            restart(context);
+            return false;
+        }
+        var to_all = [];
+        to_all.push(0);
+        to_all.push(context.translate(QuickInputRoot, "LABEL|ALL"));
+        list.unshift(to_all);
+        ListBox.setItemCount(0);
+        ListBox.setItemCount(list.size);
+        sCurrentPlayerList = list;
+        return true;
+    }
+}

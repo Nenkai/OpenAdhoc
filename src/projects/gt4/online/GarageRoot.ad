@@ -1,0 +1,877 @@
+module PROJECT::ROOT
+{
+	static date_format = nil;
+	static slot_ = 0;
+	static game_ = nil;
+	static garage_ = nil;
+	static list_ = nil;
+	static cars_ = 0;
+	static page_ = 0;
+	static column_ = 4;
+	static item0_ = 1;
+	static item1_ = 8;
+	static sortUp_ = 1;
+	static nation_ = "all";
+	static tuner_ = "all";
+	static dtrain_ = "all";
+	static ridingCarVisible_ = false;
+	static lineName_ = ["Line0", "Line1", "Line2", "Line3", "Line4","Line5", "Line6", "Line7", "Line8", "Line9"];
+	static NationList_ = nil;
+	static TunerList_  = nil;
+	static DTrainList_ = ["FF", "FR", "MR", "RR", "4WD"];
+
+	function onLoad(context)
+	{
+		setBlinkActor(List::left);
+		setBlinkActor(List::right);
+	}
+	
+	function resetCondition()
+	{
+		page_   = 0;
+		column_ = 4;
+		item0_  = 1;
+		item1_  = 8;
+		sortUp_ = true;
+		nation_ = "all";
+		tuner_  = "all";
+		dtrain_ = "all";
+	}
+	
+	function open(context, game, slot)
+	{
+		slot_   = slot;
+		game_   = game;
+		garage_ = game.garage;
+		item0_ = 1;
+		List::bg.visible = true;
+		List::trade_bg.visible = false;
+		ridingCarVisible_ = true;
+		start_page(context, GarageRoot);
+	}
+	
+	function onInitialize(context)
+	{
+		enterPage(context, GarageRoot, nil);
+		Common::ToolTip::tip.remove();
+		date_format = context.translate(GarageRoot, "date_format");
+		init(context);
+		if (list_.size == 0)
+		{
+			print("no car in list!!");
+			resetCondition();
+			init(context);
+		}
+	}
+	
+	function onFinalize(context)
+	{
+		list_ = nil;
+		NationList_ = nil;
+		TunerList_ = nil;
+		Focus::Nation::OptionMenu::popup::vbox.clearWindow(context);
+		Focus::Manufacturer::OptionMenu::popup::vbox.clearWindow(context);
+		Focus::DriveTrain::OptionMenu::popup::vbox.clearWindow(context);
+		List::Title::SortMenu0::popup::vbox.clearWindow(context);
+		List::Title::SortMenu1::popup::vbox.clearWindow(context);
+		date_format = nil;
+		leavePage(context, GarageRoot);
+	}
+	
+	function onCancel(context)
+	{
+		garage_ = nil;
+		game_ = nil;
+		main::sound.play("cancel");
+		start_page(context, HomeRoot);
+		return EVENTRESULT_FILTER;
+	}
+	
+	function init(context)
+	{
+		cars_ = garage_.count;
+		initNationMenu(context, Focus::Nation::OptionMenu);
+		initTunerMenu(context, Focus::Manufacturer::OptionMenu);
+		initDTrainMenu(context, Focus::DriveTrain::OptionMenu);
+		initDispmenu(context, List::Title::SortMenu0, item0_, item1_);
+		initDispmenu(context, List::Title::SortMenu1, item1_, item0_);
+		updateList(context);
+	}
+	
+	function updateList(context)
+	{
+		pickupCars();
+		doSort();
+		updateView(context);
+	}
+
+	function updateView(context)
+	{
+		setSortState();
+		updatePage(context);
+		Info::cars.text = context.translate(GarageRoot, "n of n cars").format(list_.size, cars_);
+	}
+	
+	function updatePage(context)
+	{
+		var rideCarIdx = garage_.riding_car.getGarageIndex();
+		GarageRoot.visible = false;
+		var pages = getPageCount();
+		if (page_ >= pages)
+			page_ = 0;
+	
+		var top = 10 * page_;
+
+		// Show the 1st 10 entries for the page
+		var i;
+		for (i = 0; i < 10; ++i)
+		{
+			var idx = i + top;
+			if (idx >= list_.size)
+				break;
+	
+			var cg = list_[idx];
+			var item = List::Cars[lineName_[i]];
+			item.visible = true;
+			var garageIndex = cg.getGarageIndex();
+			if (ridingCarVisible_ && (rideCarIdx == garageIndex))
+				item.active = true;
+			else
+				item.active = false;
+	
+			var label = cg.getCarLabel();
+			item["name"].text = cg.short_name_no_year;
+			item["name"].abbreviate();
+			var year = main::menu::MCarData::GetModelYear(label);
+			var yearitem = item["year"];
+			if (year < 1945)
+			{
+				yearitem.text = year.toString();
+				yearitem.adjustScale();
+			}
+			else
+			{
+				yearitem.text = "'%02d".format(year % 100);
+				yearitem.scale_x = 1.0;
+			}
+
+			var item0 = item["item0"];
+			item0.proportional = (item0_ != 0);
+			item0.text = getItemText(context, cg, item0_);
+			item0.scale_x = 1.0;
+			item0.adjustScale();
+
+			var item1 = item["item1"];
+			item1.proportional = (item1_ != 0);
+			item1.text = getItemText(context, cg, item1_);
+			item1.scale_x = 1.0;
+			item1.adjustScale();
+			item["chip"].setData(cg);
+		}
+
+		// Continue to iterate through the remaining entries, but hidden
+		while (i < 10)
+		{
+			List::Cars[lineName_[i]].visible = false;
+			++i;
+		}
+	
+		Info::page.text = (pages == 0) ? "" : context.translate(GarageRoot, "Page n of n").format(page_ + 1, pages);
+		List::left.visible  = (pages > 1 && page_ > 0) ? true : false;
+		List::right.visible = (pages > 1 && page_ < (pages - 1));
+		GarageRoot.visible = true;
+	}
+
+	function getPageCount()
+	{
+		return (list_.size + (10 - 1)) / 10; // This is dumb, just do (list_.size + 9) / 10;
+	}
+	
+	function setSortState()
+	{
+		List::Rule::name.visible   = (column_ == 0);
+		List::Rule::year.visible   = (column_ == 1);
+		List::Rule::color.visible  = (column_ == 2);
+		List::Rule::item0.visible  = (column_ == 3);
+		List::Rule::item1.visible  = (column_ == 4);
+		setTriStateButtonState(List::Title::ButtonName,   (column_ == 0), sortUp_);
+		setTriStateButtonState(List::Title::ButtonYear,   (column_ == 1), sortUp_);
+		setTriStateButtonState(List::Title::ButtonColor,  (column_ == 2), sortUp_);
+		setTriStateButtonState(List::Title::ButtonItem0,  (column_ == 3), sortUp_);
+		setTriStateButtonState(List::Title::ButtonItem1,  (column_ == 4), sortUp_);
+	}
+	
+	function setTriStateButtonState(item, enable, isUp)
+	{
+		var state = enable ? (isUp ? 1 : 2) : 0;
+		item["off"].visible  = (state == 0);
+		item["up"].visible   = (state == 1);
+		item["down"].visible = (state == 2);
+	}
+
+	function setSortColumn(c)
+	{
+		if (c != column_)
+			sortUp_ = 1;
+		else
+			sortUp_ ^= 1;
+
+		column_ = c;
+	}
+
+	function doSort()
+	{
+		switch (column_)
+		{
+			case 0:
+				main::menu::MCarGarage::sortByName(list_, sortUp_);
+				break;
+
+			case 1:
+				main::menu::MCarGarage::sortByYear(list_, sortUp_);
+				break;
+
+	
+			case 2:
+				main::menu::MCarGarage::sortByColor(list_, sortUp_);
+				break;
+
+			case 3:
+			case 4:
+				switch ((column_ == 3) ? item0_ : item1_)
+				{
+					case 0:
+						main::menu::MCarGarage::sortByDate(list_, sortUp_);
+						break;
+
+					case 1:
+						main::menu::MCarGarage::sortByPower(list_, sortUp_);
+						break;
+
+					case 2:
+						main::menu::MCarGarage::sortByWeight(list_, sortUp_);
+						break;
+
+					case 3:
+						main::menu::MCarGarage::sortByPWR(list_, sortUp_);
+						break;
+
+					case 4:
+						main::menu::MCarGarage::sortByPrice(list_, sortUp_);
+						break;
+
+					case 5:
+						main::menu::MCarGarage::sortByDriveTrain(list_, sortUp_);
+						break;
+
+					case 6:
+						main::menu::MCarGarage::sortByCountry(list_, sortUp_);
+						break;
+
+					case 7:
+						main::menu::MCarGarage::sortByTuner(list_, sortUp_);
+						break;
+
+					case 8:
+						main::menu::MCarGarage::sortByRideHistory(list_, sortUp_);
+						break;
+
+					case 9:
+						main::menu::MCarGarage::sortByAspiration(list_, !sortUp_);
+						break;
+				}
+				break;
+		}
+	}
+
+	function changeSortColumn(context, c)
+	{
+		page_ = 0;
+		setSortColumn(c);
+		doSort();
+		updateView(context);
+	}
+	
+	function changeSortColumnNonFlip(context, c)
+	{
+		page_ = 0;
+		column_ = c;
+		doSort();
+		updateView(context);
+	}
+	
+	function adjustSelectedItemScale(optionmenu)
+	{
+		var item = optionmenu["selected_item"];
+		item["label"].is_face = false;
+		item["label"].w = 66.0;
+		item["label"].adjustScale();
+	}
+	
+	static dispItem_ = [
+		"acquire date",
+		"power",
+		"weight",
+		"power weight ratio",
+		"price",
+		"drive train",
+		"nation",
+		"tuner",
+		"ride history",
+		"aspiration"
+	];
+
+	function initDispmenu(context, optionmenu, value, otherValue)
+	{
+		var vbox = optionmenu["popup"]["vbox"];
+		vbox.clearWindow(context);
+		var n = dispItem_.size;
+		
+		for (var i = 0; i < n; ++i)
+		{
+			var item  = hidden::ItemItem.doCopy();
+			var textf = item["label"];
+			textf.text = context.translate(GarageRoot, dispItem_[i]);
+			textf.adjustScale();
+			if (i == otherValue)
+				item.insensitive = true;
+	
+			vbox.appendChild(context, item);
+		}
+		optionmenu.applyAppend(context);
+		optionmenu.setIndex(context, value);
+		adjustSelectedItemScale(optionmenu);
+	}
+	
+	function changeSortItemInsensitive(context, optionmenu, otherValue, value)
+	{
+		context.sync();
+		context.sync();
+		GarageRoot.visible = false;
+		var vbox = optionmenu["popup"]["vbox"];
+	
+		var n = dispItem_.size;
+		var insensitive_list = Array(n);
+		
+		for (var i = 0; i < n; ++i)
+			insensitive_list[i] = i == otherValue;
+
+		optionmenu.setInsensitive(context, insensitive_list);
+		optionmenu.setIndex(context, value);
+		adjustSelectedItemScale(optionmenu);
+		context.sync();
+		context.sync();
+		GarageRoot.visible = true;
+	}
+	
+	static aspirationStr_ = ["NA", "Turbo", "Super Charger"];
+
+	function getItemText(context, car, item)
+	{
+		switch (item)
+		{
+			case 0:
+				var date = main::menu::MCalendar::dayToDate(car.getDate());
+				return date_format.build(
+					(date[0] - 2005 + 1),
+					"%2d".format(date[1]),
+					"%3d".format(date[2])
+				);
+
+			case 1:
+				var v = car.getCurrentPower();
+				if (v <= 0)
+					return "----";
+				else
+					return "%d%s".format(v, main::menu::MUnit::GetUnitOfPower());
+
+			case 2:
+				return car.getCurrentMs("%d%s");
+	
+			case 3:
+				return car.getCurrentPWR("%.3t");
+	
+			case 4:
+				return main::menu::MUtility::GetMoneyString(car.getUsedSellPrice());
+	
+			case 5:
+				return context.translate(GarageRoot, "DriveTrainName", car.getDTrainType());
+	
+			case 6:
+				return context.translate(GarageRoot, "NATION|" + main::menu::MCarData::GetCountry(car.getCarLabel()));
+	
+			case 7:
+				return context.translate(GarageRoot, "TunerName", main::menu::MCarData::GetTuner(car.getCarLabel()));
+	
+			case 8:
+				var n = car.rideHistory;
+				if (n < 1023)
+					return (n + 1).toString();
+	
+				return "---";
+
+			case 9:
+				return context.translate(GarageRoot, aspirationStr_[car.getAspiration()]);
+		}
+	}
+	
+	function initNationMenu(context, optionmenu)
+	{
+		var vbox = optionmenu["popup"]["vbox"];
+		vbox.clearWindow(context);
+		var list = garage_.pickupCountry();
+		NationList_ = list;
+		var n = list.size;
+		var index = 0;
+		
+		for (var i = -1; i < n; ++i)
+		{
+			var item = hidden::NationItem.doCopy();
+			item["label"].text = context.translate(GarageRoot, (i < 0) ? "all" : ("NATION|" + list[i]));
+			item["label"].adjustScale();
+			vbox.appendChild(context, item);
+			if ((i >= 0) && (list[i] == nation_))
+				index = i + 1;
+		}
+		optionmenu.applyAppend(context);
+		optionmenu.setIndex(context, index);
+	}
+
+	function initTunerMenu(context, optionmenu)
+	{
+		var vbox = optionmenu["popup"]["vbox"];
+		vbox.clearWindow(context);
+		var list = garage_.pickupTuner(nation_);
+		TunerList_ = list;
+		var n = list.size;
+		var index = 0;
+		
+		for (var i = -1; i < n; ++i)
+		{
+			var item = hidden::TunerItem.doCopy();
+			item["label"].text = (i < 0) ? context.translate(GarageRoot, "all") : context.translate(GarageRoot, "TunerName", list[i]);
+			item["label"].adjustScale();
+			vbox.appendChild(context, item);
+			if ((i >= 0) && (list[i] == tuner_))
+				index = i + 1;
+		}
+		optionmenu.applyAppend(context);
+		optionmenu.setIndex(context, index);
+	}
+
+	function initDTrainMenu(context, optionmenu)
+	{
+		var vbox = optionmenu["popup"]["vbox"];
+		vbox.clearWindow(context);
+		var list = DTrainList_;
+		var n = list.size;
+		var index = 0;
+		
+		for (var i = -1; i < n; ++i)
+		{
+			var item = hidden::DTrainItem.doCopy();
+			item["label"].text = (i < 0) ? context.translate(GarageRoot, "all") : context.translate(GarageRoot, "DriveTrainName", list[i]);
+	
+			vbox.appendChild(context, item);
+			if ((i >= 0) && (list[i] == dtrain_))
+				index = i + 1;
+		}
+		optionmenu.applyAppend(context);
+		optionmenu.setIndex(context, index);
+	}
+
+	function pickupCars(context)
+	{
+		list_ = garage_.pickup(nation_, tuner_, dtrain_);
+	}
+	
+	function setCarNameToToolTip(i)
+	{
+		if (list_ != nil)
+		{
+			var idx = (i + (10 * page_));
+			if (idx < list_.size)
+				Common::ToolTip::tip.value = list_[idx].name;
+		}
+	}
+	
+	function doAutoSave(context, root, end_func, progress, makeEnable)
+	{
+		setCursor(context, "wait");
+		if (progress)
+			openProgressDialog(context, context.translate(GarageRoot, "MemoryCard", "now_saving"));
+	
+		var r = autoSave2(context, root["Common"]["Header"]["Memorycard"], nil, makeEnable);
+		if (progress)
+			closeProgressDialog(context);
+	
+		setCursor(context);
+		if (r && (end_func != nil))
+			end_func(context);
+	
+		context.flushKeyEvent();
+		return r;
+	}
+	
+	function changeCar(context, target_car)
+	{
+		main::sound.play("ok");
+		var manager = nil;
+		while (true)
+		{
+			manager = checkGameData(context, 0, manager);
+			if (manager != nil)
+			{
+				var r = main::game.garage.pushRidingCar(manager);
+				if (r == "OK")
+				{
+					var hasPrevCar = main::game.garage.hasRidingCar();
+					var prevCar = main::menu::MCarGarage();
+					if (hasPrevCar)
+						prevCar.copyFrom(main::game.garage.riding_car);
+	
+					main::game.garage.setRidingCar(target_car.getGarageIndex(), target_car);
+					if (doAutoSave(context, GarageRoot, nil, 0, 0))
+					{
+						var text = context.translate(GarageRoot, "OnlineMessage", "NOW_UPDATING_INFORMATION");
+						openProcessDialog(context, text, updateMyCarCode);
+						start_page(context, HomeRoot);
+						break;
+					}
+					else
+						main::game.garage.cancelRidingCar(hasPrevCar ? prevCar.getGarageIndex() : -1, prevCar);
+				}
+				else
+				{
+					if (reportGameDataError(context, 0, 1, r))
+						continue;
+				}
+			}
+			
+			openConfirmDialog(context, DIALOG_OK, context.translate(GarageRoot, "cancel change car"));
+			break;
+		}
+		return EVENTRESULT_FILTER;
+	}
+}
+
+module PROJECT::ROOT::Focus::Nation::OptionMenu
+{
+	function onPopupOpen(context)
+	{
+		List::Cars.visible = false;
+	}
+	
+	function onPopupClosed(context)
+	{
+		List::Cars.visible = true;
+	}
+	
+	function onValueChanged(context, index)
+	{
+		nation_ = (index == 0) ? "all" : NationList_[index - 1];
+		tuner_ = 0;
+		initTunerMenu(context, Focus::Manufacturer::OptionMenu);
+		updateList(context);
+	}
+}
+
+module PROJECT::ROOT::Focus::Manufacturer::OptionMenu
+{
+	function onPopupOpen(context)
+	{
+		List::Cars.visible = false;
+	}
+	
+	function onPopupClosed(context)
+	{
+		List::Cars.visible = true;
+	}
+	
+	function onValueChanged(context, index)
+	{
+		tuner_ = (index == 0) ? "all" : TunerList_[index - 1];
+		updateList(context);
+	}
+}
+
+module PROJECT::ROOT::Focus::DriveTrain::OptionMenu
+{
+	function onPopupOpen(context)
+	{
+		List::Cars.visible = false;
+	}
+	
+	function onPopupClosed(context)
+	{
+		List::Cars.visible = true;
+	}
+	
+	function onValueChanged(context, index)
+	{
+		dtrain_ = (index == 0) ? "all" : DTrainList_[index - 1];
+		updateList(context);
+	}
+}
+
+module PROJECT::ROOT::List::Title::ButtonName
+{
+	function onActivate(context, event)
+	{
+		main::sound.play("ok");
+		changeSortColumn(context, 0);
+	}
+}
+
+module PROJECT::ROOT::List::Title::ButtonYear
+{
+	function onActivate(context, event)
+	{
+		main::sound.play("ok");
+		changeSortColumn(context, 1);
+	}
+}
+
+module PROJECT::ROOT::List::Title::ButtonColor
+{
+	function onActivate(context, event)
+	{
+		main::sound.play("ok");
+		changeSortColumn(context, 2);
+	}
+}
+
+module PROJECT::ROOT::List::Title::ButtonItem0
+{
+	function onActivate(context, event)
+	{
+		main::sound.play("ok");
+		changeSortColumn(context, 3);
+	}
+}
+
+module PROJECT::ROOT::List::Title::ButtonItem1
+{
+	function onActivate(context, event)
+	{
+		main::sound.play("ok");
+		changeSortColumn(context, 4);
+	}
+}
+
+module PROJECT::ROOT::List::Title::SortMenu0
+{
+	function onValueChanged(context, index)
+	{
+		adjustSelectedItemScale(SortMenu0);
+		item0_ = index;
+		changeSortItemInsensitive(context, List::Title::SortMenu1, index, item1_);
+		if (column_ == 3)
+		changeSortColumnNonFlip(context, 3);
+		else
+		updatePage(context);
+	}
+}
+
+module PROJECT::ROOT::List::Title::SortMenu1
+{
+	function onValueChanged(context, index)
+	{
+		adjustSelectedItemScale(SortMenu1);
+		item1_ = index;
+		changeSortItemInsensitive(context, List::Title::SortMenu0, index, item0_);
+		if (column_ == 4)
+			changeSortColumnNonFlip(context, 4);
+		else
+			updatePage(context);
+	}
+}
+
+module PROJECT::ROOT::List::Cars
+{
+    static index_ = 0;
+
+    function onActivate(context, event)
+    {
+        var idx = index_ + (10 * page_);
+
+        if (idx < list_.size)
+        {
+            var car = list_[idx];
+
+            if (car.getGarageIndex() == garage_.riding_car.getGarageIndex())
+            {
+                main::sound.play("disable");
+                openConfirmDialog(context, DIALOG_ERROR, context.translate(GarageRoot, "you have already ridden this car"));
+                return EVENTRESULT_FILTER;
+            }
+
+            if (main::menu::MCarData::GetOpenModelType(car.car_code) == 2 || car.isStrange() || main::menu::MCarData::IsTestCar(car.car_code))
+            {
+                main::sound.play("ok");
+                var res = openConfirmDialog(context, DIALOG_QUERY, context.translate(GarageRoot, "this car cannot run with battle race"));
+                if (!res)
+                {
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            main::sound.play("ok");
+            if (!openConfirmDialog(context, DIALOG_QUERY, context.translate(GarageRoot, "do you change car")
+				.build(main::menu::MCarData::GetShortCarName(car.car_code))))
+			{
+                return EVENTRESULT_FILTER;
+			}
+			else
+			{
+            	var manager = nil;
+            	while (true)
+            	{
+            	    manager = checkGameData(context, 0, manager, slot_);
+
+            	    if (manager != nil)
+            	    {
+            	        var r = garage_.popGarageCar(car.getGarageIndex(), car, manager);
+
+            	        if (r == "OK")
+            	        {
+            	            changeCar(context, car);
+							break;
+            	        }
+					
+						if (reportGameDataError(context, 0, 0, r, slot_, 1))
+							continue;
+					}
+					break;
+            	}
+			}
+        }
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        if (event.keysym == PS2_PAD_CTRL_L3_LEFT)
+        {
+            if (list_.size >= 10)
+            {
+                main::sound.play("cursor");
+                --page_;
+                if (page_ < 0)
+                    page_ = getPageCount() - 1;
+
+                updatePage(context);
+                setCarNameToToolTip(index_);
+            }
+            return EVENTRESULT_FILTER;
+        }
+
+        if (event.keysym == PS2_PAD_CTRL_L3_RIGHT)
+        {
+            if (list_.size >= 10)
+            {
+                main::sound.play("cursor");
+                ++page_;
+                if (page_ >= getPageCount())
+                    page_ = 0;
+
+                updatePage(context);
+                setCarNameToToolTip(index_);
+            }
+
+            return EVENTRESULT_FILTER;
+        }
+		
+        return EVENTRESULT_CONTINUE;
+    }
+}
+
+module PROJECT::ROOT::List::Cars::Line0
+{
+	function onFocusEnter(context, event)
+	{
+		index_ = 0;
+		setCarNameToToolTip(index_);
+	}
+}
+
+module PROJECT::ROOT::List::Cars::Line1
+{
+	function onFocusEnter(context, event)
+	{
+		index_ = 1;
+		setCarNameToToolTip(index_);
+	}
+}
+
+module PROJECT::ROOT::List::Cars::Line2
+{
+	function onFocusEnter(context, event)
+	{
+		index_ = 2;
+		setCarNameToToolTip(index_);
+	}
+}
+
+module PROJECT::ROOT::List::Cars::Line3
+{
+	function onFocusEnter(context, event)
+	{
+		index_ = 3;
+		setCarNameToToolTip(index_);
+	}
+}
+
+module PROJECT::ROOT::List::Cars::Line4
+{
+	function onFocusEnter(context, event)
+	{
+		index_ = 4;
+		setCarNameToToolTip(index_);
+	}
+}
+
+module PROJECT::ROOT::List::Cars::Line5
+{
+	function onFocusEnter(context, event)
+	{
+		index_ = 5;
+		setCarNameToToolTip(index_);
+	}
+}
+
+module PROJECT::ROOT::List::Cars::Line6
+{
+	function onFocusEnter(context, event)
+	{
+		index_ = 6;
+		setCarNameToToolTip(index_);
+	}
+}
+
+module PROJECT::ROOT::List::Cars::Line7
+{
+	function onFocusEnter(context, event)
+	{
+		index_ = 7;
+		setCarNameToToolTip(index_);
+	}
+}
+
+module PROJECT::ROOT::List::Cars::Line8
+{
+	function onFocusEnter(context, event)
+	{
+		index_ = 8;
+		setCarNameToToolTip(index_);
+	}
+}
+
+module PROJECT::ROOT::List::Cars::Line9
+{
+	function onFocusEnter(context, event)
+	{
+		index_ = 9;
+		setCarNameToToolTip(index_);
+	}
+}
