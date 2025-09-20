@@ -806,7 +806,7 @@ Adhoc Version: 7<br>
 </details>
 
 <details>
-  <summary>[🚧] GT5 (2.11) (>=25%)</summary>
+  <summary>[🚧] GT5 (2.11) (>=40%)</summary>
   
 ### GT5
 Adhoc Version: 12<br>
@@ -825,12 +825,13 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 | dialog                 |    ❌    | N/A                                                                              |
 | gps_replay             |    ❌    | N/A                                                                              |
 | gtauto                 |    ❌    | N/A                                                                              |
-| gtmode                 |    ❌    | N/A                                                                              |
+| gtmode                 |    ✔️    | GT Mode. Includes main screen, garage, a/bspec, & every single submenu starting from there. |
 | gttop                  |    ✔️    | Main Menu                                                                        |
 | gttv                   |    ❌    | N/A                                                                              |
 | gttv2                  |    ❌    | N/A                                                                              |
 | leavedemo              |    ❌    | N/A                                                                              |
 | manual                 |    ❌    | N/A                                                                              |
+| main (scripts)         |    ✔️    | Entrypoint and all util scripts used by ALL projects.                            |
 | multimonitor           |    ❌    | N/A                                                                              |
 | museum                 |    ❌    | N/A                                                                              |
 | news                   |    ❌    | N/A                                                                              |
