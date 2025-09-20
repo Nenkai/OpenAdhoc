@@ -1,0 +1,217 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function inquiryOnlineRaceEnable(context)
+{
+    LeaveDetectUtil::suspend(context);
+    if (!Grim2Util::OnlineRace::isEnable())
+    {
+        main::sound.play("disable");
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(PROJECT, "OnlineMessage", "THIS_CANNOT_BE_SELECTED"));
+        LeaveDetectUtil::resume(context);
+        return false;
+    }
+
+    LeaveDetectUtil::resume(context);
+    return true;
+}
+
+function begin_osd(context) 
+{
+
+}
+
+function end_osd(context)
+{
+
+}
+
+function callMakeSureLogin(context)
+{
+    |var result, var ignore_error| = LoginUtil::makeSureLogin(context, begin_osd, end_osd);
+    if (!result)
+        return false;
+    
+    return true;
+}
+
+function goToLounge(context, user_id)
+{
+    CursorUtil::setCursor(ContextMain, "wait");
+    if (!OnlineUtil::initializeLobby(context, true))
+        return false;
+
+    var memberList = nil;
+    var room = OnlineUtil::searchPrivateLounge(context, ROOT, user_id);
+
+    var project = main::manager.loadProject("%{main::PROJECT_ROOT_DIR}/online/online");
+    self finally
+    {
+        main::manager.unloadProject(project);
+    }
+
+    var result = OnlineProject::RoomDetailDialog.open(context, room, OnlineProject::RoomDetailDialog.MODE_PRIVATE_LOUNGE);
+    if (result)
+    {
+        CursorUtil::setCursor(ContextMain, "wait");
+        PROJECT.history['GTModeRoot::lounge_name'] = user_id;
+        var onlineCourseList = CourseData::getOnlineCourseList();
+        var defaultCourse = onlineCourseList.size > 0 ? onlineCourseList[0] : gtengine::MSpecDB::getCourseCode("suzuka_east");
+        var gp = GameParameterUtil::createOnlineBattle(defaultCourse, gtengine::RoomType::PRIVATE_LOUNGE);
+        main::RaceOperator.game_parameter.deepCopy(gp);
+
+        if (OnlineUtil::enterPrivateRoom(context, user_id, OnlineProject::RoomConfigRoot))
+        {
+            GAME_STATUS.user_profile.context.skip_online_top_menu = true;
+            SequenceUtil::startSequence(context, main::GameSequence::RACE);
+        }
+        else
+            OnlineUtility.finalizeLobby();
+    }
+    else
+        OnlineUtility.finalizeLobby();
+}
+
+function getRoomTypeString(context, roomType)
+{
+    var roomTypeKey = nil;
+    switch (roomType)
+    {
+        case gtengine::RoomType::OPEN_MATCH:
+            roomTypeKey = "OPEN_MATCH";
+            break;
+
+        case gtengine::RoomType::QUICK_MATCH:
+            roomTypeKey = "ONLINE_EVENT";
+            break;
+
+        case gtengine::RoomType::PRIVATE_LOUNGE:
+            roomTypeKey = "LOUNGE";
+            break;
+
+        case gtengine::RoomType::SPORTS_MODE:
+            break;
+
+        case gtengine::RoomType::RACE_EVENT:
+            break;
+
+        case gtengine::RoomType::NONE:
+            ; // Fallthrough?
+    }
+
+    var msg = roomTypeKey != nil ? context.translate(ROOT, roomTypeKey) : "";
+    return msg;
+}
+
+function joinCurrentSession(context, friend)
+{
+    CursorUtil::setCursor(ContextMain, "wait");
+    if (!OnlineUtil::initializeLobby(context, true))
+        return false;
+
+    var need_finalize_lobby = true;
+    var roomType = getRoomTypeString(context, friend["roomType"]);
+    if (roomType == "")
+    {
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "OnlineMessage", "THIS_FRIEND_IS_NOT_JOINING_ANY_SESSIONS")
+            .build(friend["id"]));
+        OnlineUtility.finalizeLobby();
+        return;
+    }
+
+    var roomId = friend["roomId"];
+    var room = Lobby.getExternalRoomInfoSync(roomId);
+    if (room.isInstanceOf(Int))
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "OnlineMessage", "ROOM_NOT_FOUND") + "\n[%d:%d]".format(room, roomId));
+    else
+    {
+        var project = main::manager.loadProject("%{main::PROJECT_ROOT_DIR}/online/online");
+        self finally
+        {
+            main::manager.unloadProject(project);
+        }
+    
+        var result = OnlineProject::RoomDetailDialog.open(context, room, OnlineProject::RoomDetailDialog.MODE_JOIN_CURRENT_SESSION);
+        if (result != nil && result)
+        {
+            var loungeOwnerId = nil;
+            if (friend["roomType"] == gtengine::RoomType::PRIVATE_LOUNGE)
+                loungeOwnerId = friend["loungeOwnerId"];
+
+            if (OnlineUtil::enterRoomWithProgressDialog(context, [roomId, nil, loungeOwnerId]))
+            {
+                GAME_STATUS.user_profile.context.skip_online_top_menu = true;
+                SequenceUtil::startSequence(context, GameSequence::RACE);
+                need_finalize_lobby = false;
+            }
+        }
+    }
+
+    if (need_finalize_lobby)
+        OnlineUtility.finalizeLobby();
+}
+
+function getGameParameterList(context, from_server)
+{
+    var gp_list = [];
+    if (from_server)
+    {
+        var xml_data = nil;
+        var all_region = true;
+
+        var request = main::EventRace2.requestEventRaceList(all_region, function(args) {});
+        if (Grim2Util::__deprecated__join__(context, request))
+            xml_data = main::EventRace2.decodeEventRaceList(request);
+
+        if (xml_data != nil)
+        {
+            var tmp_gp_list = GameParameterUtil::parseXML(xml_data);
+            if (tmp_gp_list.size > 0)
+            {
+                for (var i = 0; i < tmp_gp_list.size; i++)
+                {
+                    var gp = tmp_gp_list[i];
+                    if (gp.event.game_mode == gtengine::GameMode::ONLINE_BATTLE ||
+                        gp.event.game_mode == gtengine::GameMode::ONLINE_TIME_ATTACK)
+                        gp_list += gp;
+                }
+            }
+        }
+    }
+    else
+    {
+        var files = ["autosalon_gt"];
+        foreach (var file in files)
+        {
+            var path = "textdata/demo/%{file}.xml";
+            var fst = main::pdistd::ReadFile(path);
+            var xml_data = fst["buffer"];
+
+            if (xml_data != nil)
+            {
+                var tmp_gp_list = GameParameterUtil::parseXML(xml_data);
+                if (tmp_gp_list.size <= 0)
+                    continue;
+                
+                gp_list += tmp_gp_list;
+            }
+        }
+    }
+
+    return gp_list;
+}

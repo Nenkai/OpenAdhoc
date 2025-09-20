@@ -1,0 +1,676 @@
+class CarUploader : UIKitProject::ProgressRoot::GrimHttp
+{
+    attribute cp;
+
+    method __init__(cp)
+    {
+        self.cp = cp;
+        self.auto_mode = true;
+    }
+
+    method begin_message(context)
+    {
+        return "%s".format(
+            context.translate(ROOT, "MyHome", "MSG_UPLOADING"), 
+            context.translate(ROOT, "MyHome", "FORMAT_NAME").build("", "1/2"));
+    }
+
+    method success_message(context)
+    {
+        return nil;
+    }
+
+    method failed_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_UPLOAD_FAILED");
+    }
+
+    method cancel_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "QUERY_UPLOAD_CANCEL");
+    }
+
+    method beginImpl(context)
+    {
+        var car_label = cp.getCarLabel();
+        var buf = cp.serialize();
+        var blob = pdistd::MBlob(buf);
+        var blob = pdistd::Deflate(blob);
+
+        self.request = OnlineBSpec.requestPushCar(blob, car_label, function (args) {});
+
+        return true;
+    }
+}
+
+class ThumbnailUploader : UIKitProject::ProgressRoot::GrimHttp
+{
+    attribute grim_car_id;
+    attribute garage_id;
+    attribute cpp;
+
+    method __init__(context, grim_car_id, garage_id, cpp)
+    {
+        self.grim_car_id = grim_car_id;
+        self.garage_id = garage_id;
+        self.cpp = cpp;
+        self.auto_mode = true;
+    }
+
+    method begin_message(context)
+    {
+        return "%s".format(
+            context.translate(ROOT, "MyHome", "MSG_UPLOADING"), 
+            context.translate(ROOT, "MyHome", "FORMAT_NAME").build("", "2/2"));
+    }
+
+    method success_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_FRIEND_OPEN");
+    }
+
+    method failed_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_UPLOAD_FAILED");
+    }
+
+    method cancel_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "QUERY_UPLOAD_CANCEL");
+    }
+
+    method beginImpl(context)
+    {
+        captureIconImpl(context, self.garage_id, self.cpp, ["M"]);
+        var icon_path = GarageUtil::getThumbnailPath(self.garage_id, "M");
+
+        var png = pdistd::ReadFile(icon_path);
+        var blob = png["buffer"];
+        self.request = OnlineBSpec.requestUploadCarThumbnail(blob, grim_car_id, function (args) {});
+
+        return true;
+    }
+}
+
+class CaptureThumbnailAll : UIKitProject::ProgressRoot::ThreadData
+{
+    method begin_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_UPLOADING");
+    }
+
+    method success_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_UPLOAD_SUCCESS");
+    }
+
+    method failed_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_UPLOAD_FAILED");
+    }
+}
+
+function showErrorInvalidCar(context, cpp)
+{
+    var car_label = gtengine::MSpecDB::getCarLabel(cpp.car_code);
+    var dlc_type = DLCUtil::Car::getType(car_label);
+
+    if (dlc_type != "")
+    {
+        var dlc_name = context.translate(ROOT, "DLC", "ENTITLEMENT_TITLE_%s".format(dlc_type));
+        ERROR1(context, ROOT, "ERROR_INVALID_DLC_CAR", dlc_name);
+    }
+    else
+        ERROR1(context, ROOT, "ERROR_INVALID_VOUCHER_CAR", cpp.short_name);
+}
+
+function setFavorite(context, cpp, garage_id, args, callback, item_w)
+{
+    var result = false;
+    var flag = args;
+    var garage = main::GAME_STATUS.user_profile.garage;
+
+    if (flag)
+    {
+        if (cpp.invalid)
+        {
+            showErrorInvalidCar(context, cpp);
+            return;
+        }
+
+        if (garage.getFavoriteCount() < garage.getFavoriteMax())
+        {
+            garage.setFavorite(garage_id, true);
+            var result = true;
+        }
+        else
+            ERROR(context, ROOT, "ERROR_FAVORITE_IS_FULL");
+    }
+    else
+    {
+        garage.setFavorite(garage_id, false);
+        var result = true;
+    }
+
+    if (result)
+        callbackIf(context, callback, cpp, garage_id, item_w);
+
+    return result;
+}
+
+function setFavoriteByList(context, cpp_list, dummy_garage_id, args, callback, item_w)
+{
+    var result = false;
+    var flag = args;
+    var garage = main::GAME_STATUS.user_profile.garage;
+
+    var garage_id_list = Array();
+
+    foreach (var cpp in cpp_list)
+    {
+        var is_favorite = cpp.favorite != 0;
+        if ((is_favorite && !flag) || (!is_favorite && flag))
+        {
+            if (flag && cpp.invalid)
+                ;
+            else
+                garage_id_list.push(cpp.garage_id);
+        }
+    }
+
+    if (flag)
+    {
+        if (garage_id_list.size + garage.getFavoriteCount() < garage.getFavoriteMax())
+        {
+            garage.setFavoriteByList(garage_id_list, true);
+            var result = true;
+        }
+        else
+            ERROR(context, ROOT, "ERROR_FAVORITE_IS_FULL");
+    }
+    else
+    {
+        garage.setFavoriteByList(garage_id_list, false);
+        var result = true;
+    }
+
+    if (result)
+        callbackIf(context, callback, cpp_list, dummy_garage_id, item_w);
+
+    return result;
+}
+
+function setOnline(context, cpp, garage_id, args, callback, item_w)
+{
+    var flag = args;
+    var garage = GAME_STATUS.user_profile.garage;
+
+    if (flag)
+    {
+        if (cpp.invalid)
+        {
+            showErrorInvalidCar(context, cpp);
+            return;
+        }
+
+        if (garage.getOnlineCount() < garage.getOnlineMax())
+        {
+            if (QUERY(context, ROOT, "QUERY_SET_ONLINE"))
+            {
+                var uploader = CarUploader(cpp.getCP());
+
+                if (UIKitProject::ProgressRoot.open(context, [uploader]))
+                {
+                    setOnlineImpl(context, garage, cpp, garage_id, true, callback, item_w);
+
+                    var grim_car_id = OnlineBSpec.decodeResultLong(uploader.request);
+                    garage.updateGrimCarId(garage_id, grim_car_id);
+
+                    var thumbnail_uploader = ThumbnailUploader(context, grim_car_id, garage_id, cpp);
+                    if (UIKitProject::ProgressRoot.open(context, [thumbnail_uploader]))
+                    {
+                        var photo_id = OnlineBSpec.decodeResultString(thumbnail_uploader.request);
+                        if (photo_id == "")
+                            ERROR(context, ROOT, "MSG_UPLOAD_FAILED");
+                    }
+                    else
+                        ;
+                }
+            }
+        }
+        else
+            ERROR(context, ROOT, "ERROR_ONLINE_IS_FULL");
+    }
+    else
+    {
+        if (QUERY(context, ROOT, "QUERY_SET_OFFLINE"))
+        {
+            |var online, var favorite, var grim_car_id| = garage.getStatus(garage_id);
+
+            var request = GrimFacade::OnlineBSpec::requestPopCar(context, grim_car_id, function (args) {});
+
+            if (Grim2Util::__deprecated__join__(context, request))
+            {
+                if (OnlineBSpec.decodeResult(request))
+                    setOnlineImpl(context, garage, cpp, garage_id, false, callback, item_w);
+            }
+            else
+                REQUEST_ERROR(context, ROOT, "MSG_UPLOAD_FAILED", request);
+        }
+    }
+}
+
+function showDetail(context, cpp, garage_id, args, callback, item_w)
+{
+    if (cpp.buf == nil && cpp.cp == nil)
+        return;
+
+    |var online_mode, var no_demo| = args;
+    var need_update = CarDetailPopup.open(context, cpp, garage_id, online_mode, no_demo);
+
+    if (need_update)
+    {
+        var new_cpp = getCurrentCpp(garage_id);
+        copyIf(new_cpp, cpp);
+
+        callbackIf(context, callback, new_cpp, garage_id, item_w);
+    }
+}
+
+function rideCar(context, cpp, garage_id, args, callback, item_w)
+{
+    if (cpp.invalid)
+    {
+        showErrorInvalidCar(context, cpp);
+        return;
+    }
+
+    var garage = main::GAME_STATUS.user_profile.garage;
+
+    if (garage.riding_id != garage_id)
+    {
+        if (QUERY1(context, ROOT, "DO_YOU_RIDE_CAR", cpp.short_name))
+        {
+            garage.rideCar(garage_id);
+            var cp = garage.getRidingCar();
+            ActionLogUtil::rideCar(cp.getCarLabel());
+            var new_cpp = getCurrentCpp(garage_id);
+            copyIf(new_cpp, cpp);
+
+            callbackIf(context, callback, new_cpp, garage_id, item_w);
+        }
+    }
+    else
+    {
+        ERROR(context, ROOT, "NOW_RIDING");
+    }
+
+}
+
+function tuning(context, cpp, garage_id, args, callback, item_w)
+{
+    if (cpp != nil && cpp.invalid)
+    {
+        showErrorInvalidCar(context, cpp);
+        return;
+    }
+
+    var cp = GAME_STATUS.user_profile.garage.getCar(garage_id);
+    if (cp == nil)
+        return;
+
+    SettingProject::SettingPopup.open(context, cp, nil, nil);
+
+    var new_cpp = getCurrentCpp(garage_id);
+    copyIf(new_cpp, cpp);
+
+    if (new_cpp != nil)
+        callbackIf(context, callback, new_cpp, garage_id, item_w);
+}
+
+function borrowCar(context, cpp, garage_id, args, callback, item_w)
+{
+    var active_friend = args[0];
+    var active_friend_id = active_friend["id"].toString();
+
+    var cp = (cpp.isInstanceOf(Garage2::CarParameterProxy)) ? cpp.getCP() : cpp;
+
+    var short_name = main::gtengine::MSpecDB::getCarShortName(cp.getCarCode());
+
+    var is_voucher_car = isVoucherOrDlcCar(cp.getCarCode());
+    if (!is_voucher_car)
+    {
+        if (QUERY2(context, ROOT, "DO_YOU_RIDE_FRIEND_CAR", active_friend_id, short_name))
+        {
+            GAME_STATUS.user_profile.garage.rideFriendCar(cp);
+            ActionLogUtil::rideFriendCar(cp.getCarLabel(), active_friend_id);
+
+            callbackIf(context, callback, cpp, garage_id, item_w);
+            OK(context, ROOT, "MSG_DONE");
+        }
+    }
+    else
+        ERROR(context, ROOT, "ERROR_CANNOT_BORROW_VOUCHER_CAR");
+}
+
+function getCurrentCpp(garage_id)
+{
+   var cpp_list = GAME_STATUS.user_profile.garage.getCarList2("WHERE garage_id = ?", [garage_id], "", true);
+   if (cpp_list.size > 0)
+   {
+       var row = cpp_list[0];
+       return GAME_STATUS.user_profile.garage.convertRow2Cpp(row);
+   }
+
+   return nil;
+}
+
+function copyIf(src_cpp, dst_cpp)
+{
+    if (dst_cpp != nil && src_cpp != nil)
+        dst_cpp.copyIf(src_cpp);
+}
+
+function captureIconImpl(context, garage_id, cpp, type_list)
+{
+    SceneFaceForCapture.visible = true;
+    ThumbnailUtil::captureIconForGarage(context, SceneFaceForCapture, garage_id, cpp, type_list);
+
+    SceneFaceForCapture.visible = false;
+}
+
+function captureIcon(context, cpp, garage_id, args, callback, item_w)
+{
+    ignorePadEvent(true);
+    captureIconImpl(context, garage_id, cpp, ["M", "L"]);
+
+    if (item_w != nil)
+        item_w.setInfo(context, cpp, garage_id);
+
+    ignorePadEvent(false);
+}
+
+function captureIconAll(context, data_list, large)
+{
+    SceneFaceForCapture.visible = true;
+
+    var capturer = CaptureThumbnailAll(function (args, progress)
+    {
+        |var context, var data_list| = args;
+        var index = 1;
+
+        foreach (|var garage_id, var cpp| in data_list)
+        {
+            ThumbnailUtil::captureIconForGarage(context, SceneFaceForCapture, garage_id, cpp, ["M", "L"]);
+            progress.value = index.toFloat() / data_list.size;
+            index++
+        }
+    }, [context, data_list]);
+
+    capturer.auto_mode = true;
+    UIKitProject::ProgressRoot.open(context, [capturer]);
+
+    SceneFaceForCapture.visible = false;
+}
+
+function playDemo(context, cpp, garage_id, args, callback, item_w, return_page)
+{
+    if (cpp.invalid)
+    {
+        showErrorInvalidCar(context, cpp);
+        return
+    }
+
+    var cp = GAME_STATUS.user_profile.garage.getCar(cpp.garage_id);
+    if (cp != nil)
+        CarDemoRoot.open(context, cp, return_page);
+}
+
+function checkSell(context, cpp, garage_id, show_error)
+{
+    var cp = GAME_STATUS.user_profile.garage.getCar(garage_id);
+    if (cp == nil)
+        return false;
+
+    var car_code = cp.getCarCode();
+    var garage = main::GAME_STATUS.user_profile.garage;
+    var is_online = garage.isOnline(garage_id);
+
+    if (is_online)
+    {
+        if (show_error)
+        {
+            main::sound.play("disable");
+            ERROR(context, ROOT, "ERROR_CAR_IS_ONLINE");
+        }
+
+        return false;
+    }
+
+    var is_voucher_car = main::gtengine::MSpecDB::checkGenericFlag("is_voucher_car", car_code);
+    if (!is_voucher_car)
+    {
+        var car_label = cp.getCarLabel();
+        if (car_label == "ft_86_2_concept_11" || car_label == "racing_kart_125_sp_xx")
+            is_voucher_car = true;
+    }
+
+    if (is_voucher_car)
+    {
+        if (show_error)
+        {
+            main::sound.play("disable");
+            ERROR(context, ROOT, "ERROR_SELL_VOUCHER_CAR");
+        }
+
+        return false;
+    }
+
+    if (garage.riding_id == garage_id)
+    {
+        if (show_error)
+            ERROR(context, ROOT, "ERROR_RIDING_CAR_SELL");
+
+        return false;
+    }
+
+    return true;
+}
+
+function sell(context, cpp, garage_id, args, callback, item_w)
+{
+    if (!checkSell(context, cpp, garage_id, true))
+        return;
+
+    var cp = GAME_STATUS.user_profile.garage.getCar(garage_id);
+    var car_code = cp.getCarCode();
+
+    var price = main::gtengine::MSpecDB::getCarPrice(car_code);
+    var dont_sell = main::gtengine::MSpecDB::checkGenericFlag("dont_sell", car_code);
+
+    if (dont_sell || price <= 0)
+    {
+        if (!QUERY_D_NO(context, ROOT, "QUERY_CAR_LEAVE"))
+            return;
+
+        if (!QUERY_D_NO(context, ROOT, "QUERY_CAR_LEAVE_REALLY"))
+            return;
+    }
+    else
+    {
+        var sell_price = price * 0.3; // 30% Sale price
+        var sell_price_str = main::pdiext::MMisc::GetMoneyString(sell_price);
+
+        if (main::GAME_STATUS.user_profile.checkCashOverLimit(sell_price))
+        {
+            if (!QUERY1_D_NO(context, ROOT, "QUERY_CAR_SELL_IF_CASH_LIMIT", sell_price_str))
+                return;
+        }
+        else
+        {
+            if (!QUERY1_D_NO(context, ROOT, "QUERY_CAR_SELL", sell_price_str))
+                return;
+        }
+
+        main::GAME_STATUS.user_profile.addCash(context, sell_price);
+        main::sound.play("buy_shop");
+
+        EventPresentUtil::checkTrophyMillionaire();
+    }
+
+    GAME_STATUS.user_profile.garage.removeCar(garage_id);
+
+    if (item_w != nil && item_w["invalid"] != nil)
+        item_w.invalid = true;
+
+    OK_AUTO_CLOSE(context, ROOT, "MSG_SELL_CAR");
+    callbackIf(context, callback, cpp, garage_id, item_w);
+}
+
+function delete(context, cpp, garage_id, args, callback, item_w)
+{
+    if (!QUERY_D_NO(context, ROOT, "QUERY_CAR_DELETE"))
+        return;
+
+    GAME_STATUS.user_profile.garage.removeCar(garage_id);
+
+    if (item_w != nil && item_w["invalid"] != nil)
+        item_w.invalid = true;
+
+    OK_AUTO_CLOSE(context, ROOT, "MSG_DELETE");
+    callbackIf(context, callback, cpp, garage_id, item_w);
+}
+
+function checkPresent(context, cpp, garage_id, show_error)
+{
+    var garage = GAME_STATUS.user_profile.garage;
+
+    if (garage.riding_id == garage_id)
+    {
+        if (show_error)
+            ERROR(context, ROOT, "ERROR_RIDING_CAR_SEND");
+
+        return false;
+    }
+
+    var status = garage.getStatus(garage_id);
+
+    if (status != nil)
+    {
+        |var online| = status;
+
+        if (online)
+        {
+            if (show_error)
+                ERROR(context, ROOT, "ERROR_CAR_IS_ONLINE");
+
+            return false;
+        }
+    }
+
+    var cp = cpp.getCP();
+    var car_code = cp.getCarCode();
+
+    if (!gtengine::MSpecDB::checkGenericFlag("can_present", car_code))
+    {
+        if (show_error)
+            ERROR(context, ROOT, "ERROR_PRESENT_VOUCHER_CAR");
+
+        return false;
+    }
+
+    var threshold_price = Grim2.getServerOptionToInt("gt5", "present.car.price_limit", 1000000);
+    var price = gtengine::MSpecDB::getCarPrice(cp.getCarCode());
+
+    if (price >= threshold_price)
+    {
+        if (show_error)
+            ERROR(context, ROOT, "ERROR_PRESENT_VOUCHER_CAR");
+
+        return false;
+    }
+
+    return true;
+}
+
+function present(context, cpp, garage_id, args, callback, item_w)
+{
+    var garage = GAME_STATUS.user_profile.garage;
+
+    var cp = cpp.getCP();
+    var friend = args;
+
+    var result = SettingPresentDialog.open(context, friend, nil, cp, nil);
+
+    if (result == nil)
+        return;
+
+    if (!LoginUtil::isOnline())
+    {
+        ERROR(context, ROOT, "MSG_UPLOAD_FAILED");
+        return;
+    }
+
+    var blob = GameItemUtil::createBlobFromCarParameter(cp);
+    var request = GrimFacade::ItemBox::requestSendItem(context, result["user_id"], 
+    gtengine::GameItemType::SPECIAL, blob, result["comment"], 
+    pdistd::MNetworkInterface::getMacAddress(), function (args) {});
+
+    if (Grim2Util::__deprecated__join__(context, request))
+    {
+        var result = ItemBox.decodeResult(request);
+
+        if (result == 1)
+        {
+            garage.removeCar(garage_id);
+            saveNow(context);
+
+            SoundUtil::PlayStreamSE("/sound_gt/se/gt5_present_send");
+            OK_AUTO_CLOSE(context, ROOT, "MSG_SEND_SUCCESS");
+
+            if (item_w != nil && item_w["invalid"] != nil)
+                item_w.invalid = true;
+        }
+
+        else
+        {
+            var error = "MSG_UPLOAD_FAILED";
+            if (result == -1)
+                error = "MSG_ITEMBOX_RECEIVE_LIMIT";
+            else if (result == -2)
+                error = "MSG_ITEMBOX_SEND_LIMIT";
+
+            ERROR(context, ROOT, error);
+        }
+    }
+
+    callbackIf(context, callback, cpp, garage_id, item_w);
+}
+
+function setOnlineImpl(context, garage, cpp, garage_id, value, callback, item_w)
+{
+    garage.setOnline(garage_id, value);
+
+    if (!value)
+    {
+        OK_AUTO_CLOSE(context, ROOT, "MSG_FRIEND_CLOSE");
+    }
+
+    callbackIf(context, callback, cpp, garage_id, item_w);
+}
+
+function callbackIf(context, callback, cpp, garage_id, item_w)
+{
+    if (callback != nil)
+    {
+        callback(context, cpp, garage_id, item_w);
+    }
+}
+
+function isVoucherOrDlcCar(car_code)
+{
+    var is_voucher_car = gtengine::MSpecDB::checkGenericFlag("is_voucher_car", car_code);
+    var is_dlc_car = gtengine::MSpecDB::checkGenericFlag("is_dlc_cat", car_code); // BUG: is_dlc_car?
+
+    return is_voucher_car || is_dlc_car;
+}

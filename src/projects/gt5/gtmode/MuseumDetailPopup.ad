@@ -1,0 +1,301 @@
+module ROOT
+{
+    attribute dealer;
+    attribute start_museum_id;
+    attribute museum_id_list;
+    attribute index;
+    attribute closed;
+    attribute popup;
+    attribute need_update;
+    
+    method open(context, dealer, start_museum_id)
+    {
+        self.need_update = false;
+        self.dealer = dealer;
+        self.start_museum_id = start_museum_id;
+        self.closed = false;
+    
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+    
+        self.popup.open();
+    
+        return self.need_update;
+    }
+    
+    method close(context)
+    {
+        if (self.closed)
+            return;
+    
+        self.closed = true;
+        ContextMain.event_mask = 0x05;
+        ContextMain.disableInput();
+    
+        FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+        
+            ContextMain.enableInput();
+        }
+    
+        FadeActor.out = true;
+    }
+    
+    method onInitialize(context)
+    {
+        foreach (var name in ["spotA", "spotD"])
+            Museum[name].opacity = 0.0;
+    
+        self.museum_id_list = MuseumFileUtil::getMuseumIdListIhave(self.dealer);
+    
+        self.index = 0;
+        var i = 0;
+    
+        foreach (var mid in self.museum_id_list)
+        {
+            if (self.start_museum_id == mid.museum_id)
+            {
+                self.index = i;
+                break;
+            }
+        
+            ++i;
+        }
+    
+        updateMuseum(context);
+        ROOT.setFocus(Command::Buttons::Close);
+    }
+    
+    method onFinalize(context)
+    {
+    
+    }
+    
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+    
+        return EVENTRESULT_FILTER;
+    }
+    
+    method updateMuseum(context)
+    {
+        var previous = self.index != 0;
+        Command::Buttons::Previous::Image.visible = previous;
+        Command::Buttons::Previous::ImageI.visible = !previous;
+    
+        var next = self.index < self.museum_id_list.size - 1;
+        Command::Buttons::Next::Image.visible = next;
+        Command::Buttons::Next::ImageI.visible = !next;
+    
+        Museum::Dynamic::ScalarInterpolator.reset();
+    
+        if (self.museum_id_list.size == 0)
+            return;
+    
+        var mid = self.museum_id_list[self.index];
+        var museum_id = mid.museum_id;
+        var museum = MuseumFileUtil::getMuseum(museum_id);
+    
+        if (museum == nil)
+            return;
+    
+        var image_face = Museum::Dynamic::SBox::ImageFace;
+    
+        if (museum.count == 0)
+            image_face.image_path = "";
+        else if (museum.online == 0)
+        {
+            var image_path = "piece/museum/%{museum_id}";
+            if (!pdistd::Exist(image_path))
+                return;
+        
+            image_face.image_path = image_path;
+        }
+        else
+        {
+            var image_path = Museum2.getImagePath(museum_id);
+            if (pdistd::Exist(image_path))
+                image_face.image_path = image_path;
+            else
+            {
+                image_face.image_path = "";
+                Museum2.requestImage(museum_id, function (args) 
+                {
+                    |var context, var request| = args;
+                
+                    if (request.isDone())
+                        image_face.image_path = image_path;
+                });
+            }
+        }
+    
+        Museum::Dynamic::TextFaceAge.text = museum.year;
+        var caption = pdistd::TextConv(museum.caption);
+    
+        Museum::Dynamic::TextFace.text = caption;
+        Museum::Static::TextFaceDealer.text = context.translate(ROOT, "TunerNameI18n", museum.dealer);
+        Museum::Static::ImageFace.image_path = "piece/tunner_logo_M/%{museum.dealer}.img";
+    
+        Command::New::TextFace.text = museum.count;
+        Command::Info::TextFaceDealer.text = context.translate(ROOT, "TunerName", museum.dealer);
+        Command::Info::TextFaceDealerID.text = context.translate(ROOT, "Number", "FORMAT_NO").build(museum.dealer_id);
+    
+        DebugID.text = "ID: " + museum_id;
+        Museum::Dynamic::ScalarInterpolator.restart();
+    }
+    
+    module Command::Buttons
+    {
+    
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+            var localized_text = context.translate(ROOT, "MyHome", w.name.upcase());
+        
+            BalloonTip.set_value(context, w, localized_text, 0);
+        
+            return EVENTRESULT_FILTER;
+        } 
+        
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+        
+            return EVENTRESULT_FILTER;
+        }
+        
+        module Previous
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+            
+                if (ROOT.index > 0)
+                {
+                    --ROOT.index;
+                    ROOT.updateMuseum(context);
+                }
+            
+                return EVENTRESULT_FILTER;
+            }    
+        }
+        
+        module Next
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+            
+                if (ROOT.index < ROOT.museum_id_list.size - 1)
+                {
+                    ++ROOT.index;
+                    ROOT.updateMuseum(context);
+                }
+            
+                return EVENTRESULT_FILTER;
+            }    
+        }
+        
+        module Present
+        {
+            function onCallback(context, friend_name)
+            {
+                var mid = ROOT.museum_id_list[ROOT.index];
+                var museum = MuseumFileUtil::getMuseum(mid.museum_id);
+            
+                if (museum == nil)
+                    return;
+            
+                var museum_map = [
+                    "museum_id" : museum.museum_id,
+                    "year" : museum.year,
+                    "dealer" : museum.dealer,
+                    "caption" : museum.caption,
+                    "online" : museum.online,
+                    "dealer_id" : museum.dealer_id
+                ];
+            
+                var result = SettingPresentDialog.open(context, friend_name, nil, nil, museum_map);
+                if (result == nil)
+                    return;
+            
+                if (!LoginUtil::isOnline())
+                {
+                    ERROR(context, ROOT, "MSG_UPLOAD_FAILED");
+                    return;
+                }
+            
+                var blob = GameItemUtil::createBlobFromMuseum(museum_map);
+            
+                var request = GrimFacade::ItemBox::requestSendItem(context, result["user_id"], 
+                gtengine::GameItemType::MUSEUMCARD, blob, result["comment"], 
+                pdistd::MNetworkInterface::getMacAddress(), function (args) {});
+            
+                if (Grim2Util::__deprecated__join__(context, request))
+                {
+                    var result = ItemBox.decodeResult(request);
+                    if (result == 1)
+                    {
+                        ROOT.need_update = true;
+                    
+                        MuseumFileUtil::decrement(museum.museum_id);
+                        saveNow(context);
+                        SoundUtil::PlayStreamSE("/sound_gt/se/gt5_present_send");
+                        OK(context, ROOT, "MSG_UPLOAD_SUCCESS");
+                        ROOT.updateMuseum(context);
+                    }
+                    else
+                    {
+                        var error = "MSG_UPLOAD_FAILED";
+                    
+                        if (result == -1)
+                            error = "MSG_ITEMBOX_RECEIVE_LIMIT";
+                        else if (-2 == result)
+                            error = "MSG_ITEMBOX_SEND_LIMIT";
+                    
+                        ERROR(context, ROOT, error);
+                    }
+                }
+                else
+                    ERROR(context, ROOT, "MSG_UPLOAD_FAILED");
+            } 
+        
+            method onActivate(context)
+            {
+                var mid = ROOT.museum_id_list[ROOT.index];
+                var museum = MuseumFileUtil::getMuseum(mid.museum_id);
+            
+                if (museum == nil || museum.count == 0)
+                    main::sound.play("disable");
+                else
+                {
+                    main::sound.play("ok");
+                    var friend_list = getFriendList(context);
+                    var friend = UserProfileProject::FriendListPopup.open(context, friend_list);
+                
+                    if (friend != nil)
+                        onCallback(context, friend);
+                }
+            
+                return EVENTRESULT_FILTER;
+            }
+        }
+        
+        module Close
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                ROOT.close(context);
+            
+                return EVENTRESULT_FILTER;
+            }    
+        }
+    }
+}

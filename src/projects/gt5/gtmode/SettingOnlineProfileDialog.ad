@@ -1,0 +1,229 @@
+module ROOT
+{
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute user_profile;
+
+    hidden.visible = false;
+
+    method open(context)
+    {
+        self.result = false;
+
+        self.closed = false;
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return self.result;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        UserProfile2.clearCallback();
+        ContextMain.event_mask = 0x05;
+        ContextMain.disableInput();
+
+        FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        }
+
+        FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        var radiobox_list = [
+            Popup::Pane::Body::HBox::VBoxL::PlayTime::RadioBox,
+            Popup::Pane::Body::HBox::VBoxR::Comment::RadioBox,
+            Popup::Pane::Body::Profile::HBox::RadioBox
+        ];
+
+        foreach (var radiobox in radiobox_list)
+        {
+            radiobox.setup([
+                [radiobox.HBox::On::RadioButton, true],
+                [radiobox.HBox::Off::RadioButton, false]
+            ], 1);
+        }
+
+        var format = context.translate(ROOT, "MyHome", "WITHIN_N_LETTERS");
+
+        Popup::Pane::Body::HBox::VBoxL::PlayTime::TextFace.text = "%s %s".format(context.translate(ROOT, "PLAY_TIME"), format.build(20));
+
+        Popup::Pane::Body::HBox::VBoxR::Comment::TextFace.text = "%s %s".format(context.translate(ROOT, "INTRODUCE"), format.build(80));
+
+        var country = NP.getRegionName().downcase();
+        var user_id = pdistd::getPlayerName();
+        Popup::Pane::Body::HBox::VBoxL::OnlineId::Value::ImageFace.image_path = "piece/flag_ranking/%{country}.img";
+        Popup::Pane::Body::HBox::VBoxL::OnlineId::Value::TextFace.text = user_id;
+
+        Popup::Pane::FootRow::CancelOK::OK.insensitive = true;
+
+        UserProfile2.requestUserProfile(user_id, function (args) 
+        {
+            |var context, var request| = args;
+
+            if (request.isDone())
+            {
+                ROOT.user_profile = UserProfile2.decodeUserProfile(request);
+
+                var friend_count = 0;
+
+                if (ROOT.user_profile["gt_friend_list"] != "")
+                    friend_count = ROOT.user_profile["gt_friend_list"].split(", ").size;
+
+                Popup::Pane::Body::HBox::VBoxR::Friend::TextFace.text = friend_count;
+                Popup::Pane::Body::HBox::VBoxL::PlayTime::RadioBox.setSelectValue(0 == ROOT.user_profile["playtime_level"]);
+
+                Popup::Pane::Body::HBox::VBoxR::Comment::RadioBox.setSelectValue(0 == ROOT.user_profile["comment_level"]);
+                Popup::Pane::Body::Profile::HBox::RadioBox.setSelectValue(0 == ROOT.user_profile["profile_level"]);
+
+                Popup::Pane::Body::HBox::VBoxL::PlayTime::InputText::InputTextFace.value = ROOT.user_profile["playtime"];
+                Popup::Pane::Body::HBox::VBoxR::Comment::InputText::InputTextFace.value = ROOT.user_profile["comment"];
+            }
+
+            Popup::Pane::FootRow::CancelOK::OK.insensitive = false;
+        });
+
+        Popup::Pane::FootRow::CancelOK::Cancel.visible = isCancelable(context);
+        ROOT.setFocus(Popup::Pane::FootRow::CancelOK::OK);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+
+        if (isCancelable(context))
+            ROOT.setFocus(Popup::Pane::FootRow::CancelOK::Cancel);
+        else
+            ROOT.setFocus(Popup::Pane::FootRow::CancelOK::OK);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method isCancelable(context)
+    {
+        return GLOBAL_STATUS.user_profile.context.myhome_setting_level >= 4;
+    }
+
+    method vulgarityFilter(context, playtime, comment)
+    {
+        VulgarityFilterUtil::begin();
+
+        |var playtime_result, var playtime_sanitized_text| = VulgarityFilterUtil::check(playtime);
+        |var comment_result, var comment_sanitized_text| = VulgarityFilterUtil::check(comment);
+
+        VulgarityFilterUtil::end();
+
+        if (!playtime_result || !comment_result)
+            return [nil, nil];
+
+        return [playtime_sanitized_text, comment_sanitized_text];
+    }
+
+    method updateData(context)
+    {
+        var playtime_level = Popup::Pane::Body::HBox::VBoxL::PlayTime::RadioBox.getSelectedButtonValue() ? 0 : 1;
+        var comment_level = Popup::Pane::Body::HBox::VBoxR::Comment::RadioBox.getSelectedButtonValue() ? 0 : 1;
+        var profile_level = Popup::Pane::Body::Profile::HBox::RadioBox.getSelectedButtonValue() ? 0 : 1;
+        var playtime = Popup::Pane::Body::HBox::VBoxL::PlayTime::InputText::InputTextFace.value;
+        var comment = Popup::Pane::Body::HBox::VBoxR::Comment::InputText::InputTextFace.value;
+
+        var changed = ROOT.user_profile["playtime_level"] != playtime_level || 
+            ROOT.user_profile["comment_level"] != comment_level || 
+            ROOT.user_profile["profile_level"] != profile_level || 
+            ROOT.user_profile["playtime"] != playtime || 
+            ROOT.user_profile["comment"] != comment;
+
+        if (!changed)
+        {
+            ROOT.result = true;
+            close(context);
+            return;
+        }
+
+        |var playtime_new, var comment_new| = vulgarityFilter(context, playtime, comment);
+        if (playtime_new != nil && comment_new != nil)
+        {
+            var request = GrimFacade::UserProfile::requestUpdateOnlineProfile(context, 
+            profile_level, comment_level, playtime_level, playtime_new, comment_new, function (args) {});
+
+            if (Grim2Util::__deprecated__join__(context, request))
+            {
+                ROOT.result = true;
+                ROOT.close(context);
+            }
+            else
+            {
+                ERROR(context, ROOT, "MSG_UPLOAD_FAILED");
+                ROOT.close(context);
+            }
+        }
+        else
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "Network", "ERROR_ONLINE_FUNCTION"));
+            ROOT.close(context);
+        }
+    }
+
+    module Popup::Pane
+    {
+        module FootRow::CancelOK
+        {
+            module Cancel
+            {
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    ROOT.close(context);
+
+                    return EVENTRESULT_FILTER;
+                }
+
+                method onCancel(context)
+                {
+                    main::sound.play("cancel");
+                    ROOT.close(context);
+
+                    return EVENTRESULT_FILTER;
+                }            
+            }
+
+            module OK
+            {
+                method onActivate(context)
+                {    
+                    main::sound.play("ok");
+
+                    if (ROOT.user_profile != nil)
+                    {
+                        CursorUtil::setCursor(context, "wait");
+                        updateData(context);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+        }    
+    }
+}

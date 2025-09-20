@@ -1,0 +1,1068 @@
+module ROOT
+{
+    attribute open_on_init = true;
+
+    module Function
+    {
+        #include "ReplayFunction.ad"
+    }
+
+    attribute popup;
+    attribute closed = false;
+    attribute strategy;
+    attribute order;
+
+    attribute by;
+    attribute ignore_update;
+    attribute course_code_list;
+    attribute game_mode_index;
+    attribute course_index;
+
+    attribute button_help;
+    attribute button_help_l1;
+
+    hidden.visible = false;
+
+    static GAME_MODE_LIST = [
+        "SINGLE_RACE",
+        "TIME_ATTACK",
+        "DRIFT_ATTACK",
+        "FREE_RUN",
+        "EVENT_RACE",
+        "EVENT_RALLY",
+        "LICENSE",
+        "SCHOOL",
+        "ONLINE_ROOM",
+        "ARENA",
+        "SPLIT_BATTLE",
+        "SPEED_TEST"
+    ];
+
+    function getLocalizedCourseName(context, course_code)
+    {
+        var course_info = CourseData::getCourseInfo(course_code);
+
+        if (course_info.is_reverse)
+        {
+            return "%s / %s".format(
+                context.translate(ROOT, "CourseName", course_info.name),
+                context.translate(ROOT, "CourseData", "direction_reverse")
+            );
+        }
+        else
+            return context.translate(ROOT, "CourseName", course_info.name);
+    }
+
+    function sortByCourseName(context, list, by)
+    {
+        var func = function (a, b)
+        {
+            if (a.course_code == b.course_code)
+                return false;
+
+            if (by == "DESC")
+                return getLocalizedCourseName(context, a.course_code) > getLocalizedCourseName(context, b.course_code);
+            else
+                return getLocalizedCourseName(context, a.course_code) < getLocalizedCourseName(context, b.course_code);
+        }
+
+        list.sort(func);
+    }
+
+    class Strategy
+    {
+
+    }
+
+    class LibraryStrategy : Strategy
+    {
+        method getList(context, game_mode, course_code, order, by)
+        {
+            var list = ReplayFileUtil::getList(game_mode, course_code, order, by);
+            if (order == "course_code")
+                sortByCourseName(context, list, by);
+
+            return list;
+        }  
+
+        method getLocalizeKey(name)
+        {
+            switch (name)
+            {
+                case "SearchSort":
+                    return "SEARCH_SORT";
+
+                case "PlayAll":
+                    return "PLAY_ALL";
+
+                case "Import":
+                    return "IMPORT";
+
+                case "Close":
+                    return "CLOSE";    
+            }
+        }
+
+        method getHeaderText(context, count)
+        {
+            var text = "";
+            if (ROOT.game_mode_index > 0)
+            {
+                var game_mode = ROOT::GAME_MODE_LIST[ROOT.game_mode_index - 1];
+                text += context.translate(ROOT, "GameModeName", game_mode);
+            }
+
+            if (ROOT.course_index != 0)
+            {
+                if (text != "")
+                    text += " / ";
+
+                var course_code = ROOT.course_code_list[ROOT.course_index - 1];
+                text += getLocalizedCourseName(context, course_code);
+            }
+
+            if (text == "")
+                text = context.translate(ROOT, "MyHome", "ALL");
+
+            return [text, count, true];
+        }
+    }
+
+    class FavoriteStrategy : Strategy
+    {
+        method getList(context, game_mode, course_code, order, by)
+        {
+            var list = ReplayFileUtil::getFavoriteList(order, by);
+            if (order == "course_code")
+                sortByCourseName(context, list, by);
+
+            return list;
+        }
+
+        method getLocalizeKey(name)
+        {
+            switch (name)
+            {
+                case "SearchSort":
+                    return "SORT";
+
+                case "PlayAll":
+                    return "PLAY_ALL";
+
+                case "Import":
+                    return "IMPORT";
+
+                case "Close":
+                    return "CLOSE";    
+            }
+        }
+
+        method getHeaderText(context, count)
+        {
+            return [
+                context.translate(ROOT, "MyHome", "FAVORITE"), 
+                "%d / %d".format(count, ReplayFileUtil::getFavoriteMax()), true
+            ];
+        }
+    }
+
+    method open(context)
+    {
+        self.closed = false;
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return true;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        ContextMain.event_mask = 5;
+        ContextMain.disableInput();
+
+        Popup::FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        }
+
+        Popup::FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        initializeCommon(context);
+
+        self.game_mode_index = 0;
+        self.course_index = 0;
+        self.order = "datetime";
+        self.by = "ASC";
+
+        self.strategy = LibraryStrategy();
+
+        Popup::Pane::Tab.setActive(true, false);
+
+        initializeGameModeList(context);
+        initializeCourseList(context);
+
+        warpActors(Popup::Pane::Body::bg, self.open_on_init);
+        context.pushEvent(main::menu::MFunctionEvent(initialize, context));
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method initializeCommon(context)
+    {
+        self.button_help = [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_SHOW")],
+            ["Triangle", context.translate(ROOT, "MyHome", "BUTTON_HELP_MENU")],
+            ["L1", context.translate(ROOT, "MyHome", "BUTTON_HELP_MULTI_SELECT")]
+        ];
+
+        self.button_help_l1 = [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_SELECT")],
+            ["Triangle", context.translate(ROOT, "MyHome", "BUTTON_HELP_MENU")],
+            ["Square", context.translate(ROOT, "MyHome", "BUTTON_HELP_SELECT_UNSELECT_ALL")]
+        ];
+
+        ButtonHelpGT5.set(context, self.button_help);
+        ButtonHelpGT5.hide();
+
+        var radiobox_list = [
+            Popup::Pane::Body::Filter::VBox::Order::RadioBox,
+            Popup::Pane::Body::Filter::VBox::By::RadioBox
+        ];
+
+        foreach (var radiobox in radiobox_list)
+        {
+            var radiobutton_list = [];
+            for (var it = radiobox.VBox.first; it != nil; it = it.next)
+                radiobutton_list.push([it.RadioButton, 0]);
+
+            radiobox.setup(radiobutton_list, 0);
+        }
+
+        Popup::Pane::Title::HBox::SearchSort.active = self.open_on_init;
+        warpActors(Popup::Pane::Body::Filter, self.open_on_init);
+
+        Popup::Pane::Body::Filter.insensitive = !self.open_on_init;
+        ROOT.setFocus(Popup::Pane::Title::HBox::Close);
+    }
+
+    method initialize(context)
+    {
+        Popup::Pane::Body::List.finalizeFinder(context);
+        Popup::Pane::Body::List.initializeFinder(context);
+    }
+
+    method initializeGameModeList(context)
+    {
+        var game_mode_list = [context.translate(ROOT, "MyHome", "ALL")];
+
+        game_mode_list += ROOT::GAME_MODE_LIST;
+
+        OptionMenuUtil::finalize(context, Popup::Pane::Body::Filter::VBox::Search::GameMode::OptionMenu);
+        OptionMenuUtil::initialize(context, ROOT, Popup::Pane::Body::Filter::VBox::Search::GameMode::OptionMenu, hidden::OptionMenuItem, game_mode_list, "GameModeName");
+        Popup::Pane::Body::Filter::VBox::Search::GameMode::OptionMenu.setIndex(context, self.game_mode_index);
+    }
+
+    method initializeCourseList(context)
+    {
+        self.ignore_update = true;
+        self.course_index = 0;
+
+        var course_list = [context.translate(ROOT, "MyHome", "ALL")];
+
+        var game_mode = (self.game_mode_index == 0) ? nil : ROOT::GAME_MODE_LIST[self.game_mode_index - 1];
+
+        self.course_code_list = ReplayFileUtil::getCourseCodeList(game_mode);
+
+        var func = function (a, b)
+        {
+            if (a == b)
+                return false;
+
+            return getLocalizedCourseName(context, a) < getLocalizedCourseName(context, b);
+        }
+
+        self.course_code_list.sort(func);
+
+        foreach (var course_code in self.course_code_list)
+            course_list.push(getLocalizedCourseName(context, course_code));
+
+        OptionMenuUtil::finalize(context, Popup::Pane::Body::Filter::VBox::Search::Course::OptionMenu);
+        OptionMenuUtil::initialize(context, ROOT, Popup::Pane::Body::Filter::VBox::Search::Course::OptionMenu, hidden::OptionMenuItem, course_list);
+        Popup::Pane::Body::Filter::VBox::Search::Course::OptionMenu.setIndex(context, self.course_index);
+
+        self.ignore_update = false;
+    }
+
+    method __initializeCourseList(context)
+    {
+        self.ignore_update = true;
+        self.course_index = 0;
+
+        var genre_list = [context.translate(ROOT, "MyHome", "ALL")];
+
+        self.course_code_list = ReplayFileUtil::getCourseCodeList(self.genre);
+
+        var func = function (a, b)
+        {
+            if (a == b)
+                return false;
+
+            return getLocalizedCourseName(context, a) < getLocalizedCourseName(context, b);
+        }
+
+        self.course_code_list.sort(func);
+
+        foreach (var course_code in self.course_code_list)
+            genre_list.push(getLocalizedCourseName(context, course_code));
+
+        OptionMenuUtil::finalize(context, Popup::Pane::Body::Filter::VBox::Search::Course::OptionMenu);
+
+        OptionMenuUtil::initialize(context, ROOT, Popup::Pane::Body::Filter::VBox::Search::Course::OptionMenu, hidden::OptionMenuItem, genre_list);
+        Popup::Pane::Body::Filter::VBox::Search::Course::OptionMenu.setIndex(context, self.course_index);
+
+        self.ignore_update = false;
+    }
+
+    method onFinalize(context)
+    {
+        self.button_help = nil;
+        self.button_help_l1 = nil;
+
+        Popup::Pane::Body::List.finalizeFinder(context);
+        OptionMenuUtil::finalize(context, Popup::Pane::Body::Filter::VBox::Search::GameMode::OptionMenu);
+        OptionMenuUtil::finalize(context, Popup::Pane::Body::Filter::VBox::Search::Course::OptionMenu);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        var result = ButtonHelpGT5.hideIf();
+
+        if (result)
+        {
+            Popup::Pane::Body::List.multi_select = false;
+            Popup::Pane::Body::List::updateStatusAll(context);
+        }
+
+        ROOT.setFocus(Popup::Pane::Title::HBox::Close);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    module Popup::Pane
+    {
+        module Tab
+        {
+            method setActive(library, favorite)
+            {
+                var list = 
+                [
+                    ["Library", library],
+                    ["Favorite", favorite]
+                ];
+
+                foreach (|var name, var flag| in list)
+                {
+                    HBox[name].active = flag;
+                    HBox[name].bg.visible = !flag;
+                    HBox[name].bgA.visible = flag;
+                }
+
+                var search_sort = ROOT.strategy.getLocalizeKey("SearchSort");
+                if (search_sort != nil)
+                {
+                    Popup::Pane::Title::HBox::SearchSort.visible = true;
+                    var mode_search_sort = "SEARCH_SORT" == search_sort;
+
+                    startActors(Popup::Pane::Body::Filter::VBox::Search, mode_search_sort);
+                    Popup::Pane::Body::Filter::VBox::Search.insensitive = !mode_search_sort;
+                }
+                else
+                {
+                    Popup::Pane::Title::HBox::SearchSort.visible = false;
+                    startActors(Popup::Pane::Body::Filter, true);
+
+                    startActors(Popup::Pane::Body::bg, true);
+
+                    Popup::Pane::Body::Filter.insensitive = true;
+                    Popup::Pane::Title::HBox::SearchSort.flag = false;
+
+                    Popup::Pane::Title::HBox::SearchSort.active = false;
+                }
+            }
+
+            module HBox
+            {
+                module Library
+                {
+                    method onActivate(context)
+                    {
+                        if (!self.active)
+                        {
+                            main::sound.play("tab_switch");
+                            ROOT.strategy = LibraryStrategy();
+                        
+                            setActive(true, false);
+                            ROOT.initialize(context);
+                        }
+                    
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module Favorite
+                {
+                    method onActivate(context)
+                    {
+                        if (!self.active)
+                        {
+                            main::sound.play("tab_switch");
+                            ROOT.strategy = FavoriteStrategy();
+
+                            setActive(false, true);
+                            ROOT.initialize(context);
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }    
+                }
+            }
+        }
+
+        module Title::HBox
+        {
+            method onFocusEnter(context, event)
+            {
+                var w = event.widget;
+                var localized_text = context.translate(ROOT, "MyHome", ROOT.strategy.getLocalizeKey(w.name));
+
+                BalloonTip.set_value(context, w, localized_text, 0);
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onFocusLeave(context)
+            {
+                BalloonTip.reset_value();
+
+                return EVENTRESULT_FILTER;
+            }
+
+            module Close
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    ROOT.close(context);
+                
+                    return EVENTRESULT_FILTER;
+                }
+            
+                method onCancel(context)
+                {
+                    main::sound.play("cancel");
+                    ROOT.close(context);
+                
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+
+            module SearchSort
+            {
+                attribute flag = true;
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                
+                    startActors(Popup::Pane::Body::Filter, self.flag);
+                    startActors(Popup::Pane::Body::bg, self.flag);
+                
+                    Popup::Pane::Body::Filter.insensitive = self.flag;
+                
+                    self.flag = !self.flag;
+                    self.active = self.flag;
+                
+                    return EVENTRESULT_FILTER
+                }
+            }
+
+            module PlayAll
+            {
+                method onActivate(context)
+                {
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+
+            module Import
+            {
+                method onActivate(context)
+                {
+                    var size = pdistd::GetDiskFreeSize("/APP_DATA");
+                
+                    var size = size.toLong() - ((32 * 0x400) * 0x400);
+                    if (size < 0)
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MyHome", "FAILED_IMPORT_REPLAY"));
+                        return EVENTRESULT_FILTER;
+                    }
+                
+                    main::sound.play("ok");
+                
+                    Function::beginTint(context);
+                
+                    var dir = pdiext::MProductInformation::GetGameProductNumberShort() + '-RPL';
+                    var tmp_path = ORG.replay_org_path + "_tmp";
+                    var sdata = SaveDataUtilGT5::getGT5ReplayForLoad(context, tmp_path, dir);
+                
+                    pdistd::MakeDirectoryForFile(tmp_path, false);
+                
+                    |var result, var buf| = SaveDataUtil::load(context, sdata);
+                
+                    if (result == SaveDataUtil::RETCODE::SUCCESS)
+                    {
+                        var data = ReplayFileUtil::Data();
+                    
+                        var header_buf = ORG.getReplayHeaderFromPath(tmp_path);
+                        if (header_buf == nil)
+                        {
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                            context.translate(ROOT, "MyHome", "FAILED"));
+                        }
+                        else
+                        {
+                            data.create(context, header_buf, tmp_path);
+                        
+                            var onelap = data.onelap;
+                        
+                            ReplayFileUtil::exec_save(data, onelap, tmp_path);
+                        
+                            DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+                            context.translate(ROOT, "MyHome", "IMPORT_REPLAY_DONE"));
+                            
+                            ORG.replay_work_path = ORG.replay_org_path;
+                            ROOT.initialize(context);
+                        }
+                    }
+                    else if (result != SaveDataUtil::RETCODE::CANCEL_BY_USER)
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR,
+                        context.translate(ROOT, "MyHome", "FAILED_IMPORT_REPLAY"));
+                    }
+                
+                    Function::endTint(context);
+                
+                    return EVENTRESULT_FILTER;
+                }    
+            }
+        }
+
+        module Body
+        {
+            module Filter::VBox
+            {
+                module Search
+                {
+                    module GameMode::OptionMenu
+                    {
+                        method onValueChanged(context)
+                        {
+                            self.pulldownValueChanged(context);
+                        
+                            if (ROOT.game_mode_index != self.index)
+                            {
+                                ROOT.game_mode_index = self.index;
+                                ROOT.initializeCourseList(context);
+                            
+                                ROOT.initialize(context);
+                            }
+                        
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    module Course::OptionMenu
+                    {
+                        method onValueChanged(context)
+                        {
+                            self.pulldownValueChanged(context);
+                        
+                            if (ROOT.course_index != self.index)
+                            {
+                                ROOT.course_index = self.index;
+                            
+                                if (!ROOT.ignore_update)
+                                    ROOT.initialize(context);
+                            }
+                        
+                            return EVENTRESULT_FILTER;
+                        }    
+                    }
+                }
+
+                module Order::RadioBox
+                {
+                    static TABLE = 
+                    [
+                        "DateTime" : "datetime",
+                        "Event" : "title",
+                        "Course" : "course_code"
+                    ];
+                
+                    method onActivate(context, event)
+                    {
+                        var name = event.widget.parent.name;
+                    
+                        var order = TABLE[name];
+                        if (ROOT.order != order)
+                        {
+                            ROOT.order = order;
+                            ROOT.initialize(context);
+                        }
+                    
+                        return EVENTRESULT_FILTER;
+                    }    
+                }
+
+                module By::RadioBox
+                {
+                    method onActivate(context, event)
+                    {
+                        var by = event.widget.parent.name.upcase();
+                        if (ROOT.by != by)
+                        {
+                            ROOT.by = by;
+                            ROOT.initialize(context);
+                        }
+                    
+                        return EVENTRESULT_FILTER;
+                    }    
+                }
+            }
+
+            module List
+            {
+                attribute finder;
+                attribute view_mode = 1;
+                attribute multi_select = false;
+                attribute select_map;
+                attribute select_all;
+            
+                function updateStatus(context, replay, item_w)
+                {
+                    var exist = ReplayFileUtil::isExist(replay.id);
+                
+                    if (!exist)
+                    {
+                        item_w.invalid = true;
+                        item_w.ImageFaceD.visible = true;
+                    
+                        foreach (var label in ["header", "body", "bodyR", "ImageFace", "icon", "favorite", "type", "check"])
+                            item_w[label].visible = false;
+                    
+                        item_w.title.text = context.translate(ROOT, "MyHome", "NO_DATA");
+                    }
+                    else
+                    {
+                        var header = context.translate(ROOT, "GameModeName", replay.title);
+                        if (replay.onelap > 0)
+                            header += " %s".format(context.translate(ROOT, "MyHome", "BEST_LAP_REPLAY"));
+                    
+                        if (replay.game_id > 0 || replay.title == "SPEED_TEST")
+                            header += Function::getTitleInfo(context, replay);
+                    
+                        item_w.header.text = header;
+                    
+                        if (replay.course_name == "" || replay.course_name == "No Name")
+                            item_w.title.text = getLocalizedCourseName(context, replay.course_code);                    
+                        else
+                        {
+                            var format = context.translate(ROOT, "MyHome", "FORMAT_VALUE");
+                            item_w.title.text = format.build(getLocalizedCourseName(context, replay.course_code), replay.course_name);
+                        }
+                    
+                        item_w.body.text = gtengine::MSpecDB::getCarName(replay.target_car_code);
+                        item_w.bodyR.text = getDateTime(context, ROOT, replay.datetime);
+                    
+                        if (replay.title != "EVENT_RALLY")
+                        {
+                            var course_info = CourseData::getCourseInfo(replay.course_code);
+                        
+                            item_w.ImageFace.image_path = "piece/replay_thumb/%s.img".format(course_info.map);
+                            item_w.icon.image_path = "piece/course_logo_S/%s.img".format(course_info.logo);
+                        }
+                        else
+                            item_w.ImageFace.image_path = "piece/replay_thumb/%s.img".format(main::gtengine::MSpecDB::getCourseLabel(replay.course_code));
+                    
+                        item_w.favorite.visible = replay.favorite == 1;
+                        item_w.check.visible = List.multi_select && List.select_map[replay.id] != nil;
+                    
+                        |var image_path, var text| = Function::getTypeInfo(context, replay);
+                    
+                        item_w.type::Icon::ImageFace.image_path = image_path;
+                        item_w.type::TextFace.text = text;
+                    }
+                }
+
+                function onInitItem(context, candidate_data, item_w, arg)
+                {
+                    var replay = candidate_data.value_;
+                
+                    item_w.invalid = false;
+                    updateStatus(context, replay, item_w);
+                }
+
+                function updateStatusAll2(context)
+                {
+                    if (List.multi_select)
+                    {
+                        ButtonHelpGT5.set(context, ROOT.button_help);
+                        List.multi_select = false;
+                    }
+                
+                    updateStatusAll(context);
+                }
+
+                function updateStatusAll2If(context)
+                {
+                    var state = context.getUpdateContext().getPadButtonState(0);
+                    if ((state & 0x100) != 0x100)
+                        updateStatusAll2(context);                
+                }
+
+                function updateStatusAll(context)
+                {
+                    var count = List.finder.getItemCount(context);
+                    for (var i = 0; i < count; ++i)
+                    {
+                        var item_w = List.finder.getItemWidget(i);
+                        if (item_w == nil)
+                            continue;         
+
+                        var candidate_data = List.finder.getItemData(context, i);
+                        if (candidate_data == nil)
+                            continue;
+
+                        var replay = candidate_data.value_;
+                        updateStatus(context, replay, item_w);
+                    }
+                }
+
+                function onActivateItem(context, folder_data, func_close, arg)
+                {
+                    if (ROOT.closed)
+                        return;
+                
+                    var candidate_data = folder_data.getItemData();
+                    var replay = candidate_data.value_;
+                
+                    var focus_index = List.finder.getFocusIndex(context);
+                    var item_w = List.finder.getItemWidget(focus_index);
+                
+                    if (item_w != nil && !item_w.invalid)
+                    {
+                        if (List.multi_select)
+                        {
+                            if (List.select_map[replay.id] == nil)
+                                List.select_map[replay.id] = replay;
+                            else
+                                List.select_map[replay.id] = nil;
+                        
+                            List::updateStatus(context, replay, item_w);
+                        }
+                        else
+                            Function::showDetail(context, replay, nil, List::updateStatus, item_w);
+                    }
+                
+                }
+
+                function updateStatusAllIf(context)
+                {
+                    var state = context.getUpdateContext().getPadButtonState(0);
+                    if ((state & 0x100) != 0x100)
+                    {
+                        ButtonHelpGT5.set(context, ROOT.button_help);
+                        return;
+                    }
+                
+                    ButtonHelpGT5.set(context, ROOT.button_help_l1);
+                    List.multi_select = true;
+                    var selected = false;
+                
+                    foreach (|var key, var value| in List.select_map)
+                    {
+                        if (value != nil)
+                        {
+                            selected = true;
+                            break;
+                        }
+                    }
+                
+                    if (!selected)
+                        return;
+                
+                    updateStatusAll(context);
+                }
+
+                function onFocusEnter(context, candidate_data, item_w, arg)
+                {
+                    var result = ButtonHelpGT5.appearIf();
+                
+                    if (result)
+                        updateStatusAllIf(context);                
+                }
+
+                function onFocusLeave(context, candidate_data, item_w, arg)
+                {
+                
+                }
+
+                method initializeFinder(context)
+                {
+                    self.multi_select = false;
+                    self.select_map = Map();
+                    self.select_all = false;
+                
+                    var initial_data = makeInitialData(context);
+                    self.finder = UIKitProject::FinderRoot.setCopy(context, self, initial_data, false);
+                
+                    var course_code = nil;
+                    if (ROOT.course_index > 0)
+                        course_code = ROOT.course_code_list[ROOT.course_index - 1];
+                
+                    var game_mode = nil;
+                    if (ROOT.game_mode_index > 0)
+                        game_mode = ROOT::GAME_MODE_LIST[ROOT.game_mode_index - 1];
+                
+                    var replay_list = ROOT.strategy.getList(context, game_mode, course_code, ROOT.order, ROOT.by);
+                
+                    Popup::Pane::Header.setText(context, ROOT.strategy.getHeaderText(context, replay_list.size));
+                
+                    Popup::Pane::Body::List::ImageFaceD.visible = replay_list.size == 0;
+                    Popup::Pane::Body::List::TextFaceD.visible = replay_list.size == 0;
+                
+                    var candidates = UIKitProject::FinderRoot.makeCandidates(replay_list);
+                    self.finder.replaceCurrentFolderCandidates(context, candidates, 0);
+                }
+
+                method makeInitialData(context)
+                {
+                    var Finder = UIKitProject::FinderRoot;
+                    var candidates = Finder.makeCandidates(Array(0));
+                
+                    var initial_data = Finder.InitialData(candidates);
+                
+                    initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+                
+                    initial_data.cb_init_item_ = onInitItem;
+                
+                    initial_data.cb_on_activate_ = onActivateItem;
+                    initial_data.v_scrollbar_ = Scrollbar::VScrollbar;
+                    initial_data.item_cache_ = false;
+                    initial_data.extended_item_ = hidden::List;
+                
+                    initial_data.cb_focus_enter_ = onFocusEnter;
+                    initial_data.cb_focus_leave_ = onFocusLeave;
+                    initial_data.import_iconbox_parameter_ = hidden::IconBox;
+                
+                    return initial_data;
+                }
+
+                method finalizeFinder(context)
+                {
+                    if (self.finder != nil)
+                    {
+                        self.removeChild(context, self.finder);
+                        self.finder = nil;
+                    }
+                
+                    BalloonTip.reset_value();
+                }
+
+                function onFunctionCallback(context, data)
+                {
+                    |var func, var replay, var args, var callback, var item_w| = data;
+                
+                    Function[func](context, replay, args, callback, item_w);
+                }
+
+                function onNullCallback(context, data)
+                {
+                
+                }
+
+                method showContextMenu(context)
+                {
+                    var focus_index = self.finder.getFocusIndex(context);
+                    var item_w = self.finder.getItemWidget(focus_index);
+                
+                    if (item_w == nil || item_w.invalid)
+                        return;
+                
+                    var candidate_data = self.finder.getItemData(context, focus_index);
+                    var replay = candidate_data.value_;
+                
+                    var on = context.translate(ROOT, "MyHome", "ON");
+                    var off = context.translate(ROOT, "MyHome", "OFF");
+                
+                    var favorite_cascade = [
+                        UIKitProject::ContextMenuPopup::Data(on, true, (replay.favorite) ? onNullCallback : onFunctionCallback, ["setFavorite", replay, true, List::updateStatus, item_w]),
+                        UIKitProject::ContextMenuPopup::Data(off, true, (replay.favorite) ? onFunctionCallback : onNullCallback, ["setFavorite", replay, false, List::updateStatus, item_w])
+                    ];
+                    favorite_cascade[0].on = replay.favorite == 1;
+                    favorite_cascade[1].on = replay.favorite == 0;
+                    
+                    var data_list = [
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "BUTTON_HELP_SHOW"), true, onFunctionCallback, ["showDetail", replay, nil, List::updateStatus, item_w]),
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "PLAY"), true, onFunctionCallback, ["play", replay, nil, List::updateStatus, item_w])
+                    ];
+                
+                    if (replay.onelap > 0 && (replay.title == "TIME_ATTACK" || replay.title == "ONLINE_TIME_ATTACK" || replay.title == "FREE_RUN"))
+                        data_list.push(UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "LOGGER"), true, onFunctionCallback, ["logger", replay, nil, List::updateStatus, item_w]));
+                
+                    data_list.push(nil); // Separator
+                    data_list.push(UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "FAVORITE"), true, nil, nil, favorite_cascade));
+                    data_list.push(nil); // Separator
+                    data_list.push(UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "EXPORTSAVEDATA"), true, onFunctionCallback, ["export", replay]));
+                    data_list.push(UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "DELETE"), true, onFunctionCallback, ["delete", replay, nil, List::updateStatus, item_w]));
+                    data_list.push(UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "DELETEALL"), true, onFunctionCallback, ["deleteAll", replay, nil, List::updateStatusAll]));
+                    data_list.push(nil); // Separator
+                    data_list.push(UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "CANCEL"), true, onNullCallback, nil));
+                
+                    var title = nil;
+                    var x = item_w.sx + (item_w.w * item_w.cursor_align_x);
+                    var y = item_w.sy + (item_w.h * item_w.cursor_align_y);
+
+                    UIKitProject::ContextMenuPopup.open(context, x, y, title, data_list);
+                }
+
+                method showContextMenuMultiSelect(context)
+                {
+                    var focus_index = self.finder.getFocusIndex(context);
+                    var item_w = self.finder.getItemWidget(focus_index);
+                
+                    if (item_w == nil)
+                        return;
+                    
+                    if (self.select_map == nil || self.select_map.size == 0)
+                        return;
+                
+                    var replay_list = Array();
+                    foreach (|var key, var replay| in self.select_map)
+                    {
+                        if (replay == nil)
+                            continue;                 
+                        
+                        replay_list.push(replay);
+                    }
+                
+                    if (replay_list.size == 0)
+                        return;
+                
+                    var data_list = [
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "DELETE_SELECTED"), true, onFunctionCallback, ["deleteSelected", replay_list, nil, List::updateStatusAll2If]),
+                        nil, // Separator
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "CANCEL"), true, List::updateStatusAll2If, nil)
+                    ];
+                
+                    var title = nil;
+                
+                    var x = item_w.sx + (item_w.w * item_w.cursor_align_x);
+                    var y = item_w.sy + (item_w.h * item_w.cursor_align_y);
+                
+                    var result = UIKitProject::ContextMenuPopup.open(context, x, y, title, data_list);
+                
+                    if (!result)
+                        List::updateStatusAll2If(context);                
+                }
+
+                method toggleSelect(context)
+                {
+                    if (self.select_all)
+                        self.select_map = Map();                
+                    else
+                    {
+                        var count = self.finder.getItemCount(context);
+                        for (var i = 0; i < count; ++i)
+                        {
+                            var candidate_data = self.finder.getItemData(context, i);
+                            if (candidate_data == nil)
+                                continue;
+
+                            var replay = candidate_data.value_;
+                            self.select_map[replay.id] = replay;
+                        }
+                    }
+                
+                    self.select_all = !self.select_all;
+                    updateStatusAll(context);
+                }
+
+                method onKeyPress(context, event)
+                {
+                    if (ROOT.closed)
+                    {
+                        return EVENTRESULT_CONTINUE;
+                    }
+                    else if (event.keysym == CELL_PAD_CTRL_L1)
+                    {
+                        self.multi_select = true;
+                        ButtonHelpGT5.set(context, ROOT.button_help_l1);
+                        updateStatusAll(context);
+                    }
+                    else if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+                    {
+                        ButtonHelpGT5.hide();
+                        self.multi_select = false;
+                        updateStatusAll(context);
+                    
+                        return EVENTRESULT_CONTINUE;
+                    }
+                    else if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
+                    {
+                        main::sound.play("context_menu_op");
+                    
+                        if (List.multi_select)
+                            showContextMenuMultiSelect(context);                    
+                        else
+                            showContextMenu(context);
+                    
+                        return EVENTRESULT_FILTER;
+                    }
+                
+                    else if (event.keysym == CELL_PAD_CTRL_SQUARE)
+                    {
+                        if (self.multi_select)
+                            toggleSelect(context);
+                    
+                        return EVENTRESULT_FILTER;
+                    }
+                
+                    return EVENTRESULT_CONTINUE;
+                }
+
+                method onKeyRelease(context, event)
+                {
+                    if (event.keysym == CELL_PAD_CTRL_L1)
+                        updateStatusAll2(context);
+                
+                    return EVENTRESULT_CONTINUE;
+                }
+            } //List
+        } //Body
+    } //Popup::Pane
+}

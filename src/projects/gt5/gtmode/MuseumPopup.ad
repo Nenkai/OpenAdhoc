@@ -1,0 +1,437 @@
+module ROOT
+{
+    hidden.visible = false;
+
+    attribute dealer;
+    attribute closed;
+    attribute popup;
+    attribute present_to;
+    attribute format_no;
+
+    attribute isJPTW;
+    attribute isQABuild;
+    attribute museum_cache;
+    attribute request_list;
+    attribute watcher;
+
+    attribute tsm_redist_size;
+    attribute count_cache;
+    attribute update_museum_cache;
+    attribute need_update;
+
+    method open(context, dealer, present_to)
+    {
+        self.need_update = false;
+        self.dealer = dealer;
+        self.present_to = present_to;
+        self.closed = false;
+
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return need_update;
+    }
+
+    method updateDB(contet) // BUG: context?
+    {
+        if (self.update_museum_cache.size > 0)
+            MuseumFileUtil::updateMuseum2(self.update_museum_cache);
+
+        self.update_museum_cache = [];
+    }
+
+    method updateCountList(context)
+    {
+        self.count_cache = Map();
+        var count_list = MuseumFileUtil::getCountList(self.dealer);
+
+        foreach (var c in count_list)
+            self.count_cache[c[0]] = c[1];
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        ContextMain.event_mask = 0x05;
+        ContextMain.disableInput();
+        updateDB(context);
+
+        FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        }
+
+        FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        var res = pdistd::GetTsmOptionSize("PFGMemGetRedist");
+
+        if (res[0])
+        {
+            self.tsm_redist_size = res[1];
+            pdistd::SetTsmOptionSize("PFGMemSetRedist", (10 * 0x400) * 0x400);
+        }
+
+        ButtonHelpGT5.set(context, 
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_OPEN")],
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_CANCEL")]
+        ]);
+
+        hidden::Item::New.visible = false;
+
+        TextFaceDealer.text = context.translate(ROOT, "TunerNameI18n", self.dealer);
+
+        var language = pdistd::MLocale::getLanguage();
+
+        self.isJPTW = language == "JP" || language == "TW";
+
+        self.format_no = context.translate(ROOT, "Number", "FORMAT_NO");
+        self.isQABuild = pdiext::isQABuild();
+
+        self.museum_cache = Map();
+        self.count_cache = Map();
+        self.update_museum_cache = [];
+        self.request_list = [];
+
+        updateCountList(context);
+        List.initialize(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        if (self.watcher != nil)
+        {
+            WatcherUtil::Delete(self.watcher);
+            self.watcher = nil;
+        }
+
+        if (self.tsm_redist_size != nil)
+        {
+            pdistd::SetTsmOptionSize("PFGMemSetRedist", self.tsm_redist_size);
+            self.tsm_redist_size = nil;
+        }
+
+        self.format_no = nil;
+        self.isJPTW = nil;
+        self.isQABuild = nil;
+        self.museum_cache = nil;
+        self.count_cache = nil;
+        self.update_museum_cache = nil;
+        self.request_list = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onTick(context)
+    {
+        if (self.request_list == nil)
+            return;
+
+        if (self.watcher == nil)
+            return;
+
+        while (self.request_list.size > 0)
+        {
+            |var request, var candidate_data| = self.request_list.shift();
+            var item_index = candidate_data.item_index_;
+
+            var item_w = self.List.finder.getItemWidget(item_index);
+
+            if (item_w != nil)
+            {
+                if (request.isDone())
+                {
+                    var mid = candidate_data.value_;
+                    var museum_id = mid.museum_id;
+                }
+
+                break;
+            }
+        }
+    }
+
+    module List
+    {
+        attribute finder;
+
+        function getCaption(s)
+        {
+            var caption = "";
+
+            if (ROOT.isJPTW)
+                caption = s.split("\n").join("");
+            else
+                caption = s.split("\n").join(" ");
+
+            return pdistd::TextConv(caption);
+        }
+
+        function getDealerId(dealer_id)
+        {
+            return ROOT.format_no.build(dealer_id);
+        }
+
+        function getDebugId(museum_id)
+        {
+            var debug_id = "";
+
+            if (ROOT.isQABuild)
+                debug_id = "ID: " + museum_id;
+
+            return debug_id;
+        }
+
+        function getMuseum(museum_id)
+        {
+            return ROOT.museum_cache[museum_id];
+        }
+
+        function getCount(museum_id)
+        {
+            var count = 0;
+            var c = ROOT.count_cache[museum_id];
+
+            if (c != nil)
+                count = c;
+
+            return count;
+        }
+
+        function setup2(context, item_w, museum)
+        {
+            var museum_id = museum["museum_id"];
+            var count = getCount(museum_id);
+
+            item_w.TextFace.text = getCaption(museum["caption"]);
+            item_w.TextFaceYear.text = museum["year"];
+
+            item_w.New::TextFace.text = count;
+
+            item_w.New.visible = count > 0;
+            item_w.DebugID.text = getDebugId(museum_id);
+
+            item_w.DealerID.text = getDealerId(museum["dealer_id"]);
+
+            if (count > 0)
+            {
+                if (museum["online"] == 0)
+                    item_w.ImageFace.image_path = "piece/museum/%{museum_id}";
+                else
+                {
+                    var image_path = Museum2.getImagePath(museum_id);
+
+                    if (pdistd::Exist(image_path))
+                        item_w.ImageFace.image_path = image_path;
+                    else
+                    {
+                        Museum2.requestImage(museum_id, function (args)
+                        {
+                            |var context, var request| = args;
+                            if (request.isDone())
+                                item_w.ImageFace.image_path = image_path;
+                        });
+                    }
+                }
+            }
+            else
+                item_w.ImageFace.image_path = "";
+        }
+
+        function updateStatus(context)
+        {
+            var size = List.finder.getItemCount(context);
+
+            for (var index = 0; index < size; ++index)
+            {
+                var item_w = List.finder.getItemWidget(index);
+                if (item_w == nil)
+                    continue;
+               
+                var candidate_data = List.finder.getItemData(context, index);
+                var museum = candidate_data.value_;
+                var count = getCount(museum.museum_id);
+
+                item_w.New.visible = count > 0;
+                item_w.New::TextFace.text = count;
+
+                if (count == 0)
+                    item_w.ImageFace.image_path = "";
+            }
+        }
+
+        function onInitItem(context, candidate_data, item_w, arg)
+        {
+            var mid = candidate_data.value_;
+            var museum_id = mid.museum_id;
+            var museum = getMuseum(museum_id);
+
+            if (museum != nil)
+                setup2(context, item_w, museum);
+            else
+            {
+                Museum2.requestMuseum(museum_id, function (args) 
+                {
+                    |var context, var request| = args;
+
+                    if (ROOT.request_list != nil)
+                    {
+                        if (request.isDone())
+                        {
+                            var museum2 = Museum2.decodeMuseum(request);
+                            ROOT.museum_cache[museum_id] = museum2;
+
+                            ROOT.update_museum_cache.push(museum2);
+                            List::setup2(context, item_w, museum2);
+                        }
+                    }
+                });
+            }
+
+        }
+
+        function onActivateItem(context, folder_data, func_close, arg)
+        {
+            var candidate_data = folder_data.getItemData();
+            var mid = candidate_data.value_;
+            var museum_id = mid.museum_id;
+            var museum = getMuseum(museum_id);
+
+            if (museum == nil)
+                return;
+
+            var count = getCount(museum_id);
+            if (count == 0)
+                return;
+
+            if (ROOT.present_to != nil)
+            {
+                var museum_map = museum;
+                var result = SettingPresentDialog.open(context, ROOT.present_to, nil, nil, museum_map);
+
+                if (result == nil)
+                    return;
+
+                if (!LoginUtil::isOnline())
+                {
+                    ERROR(context, ROOT, "MSG_UPLOAD_FAILED");
+                    return;
+                }
+
+                var blob = GameItemUtil::createBlobFromMuseum(museum_map);
+
+                var request = GrimFacade::ItemBox::requestSendItem(context, result["user_id"], 
+                gtengine::GameItemType::MUSEUMCARD, blob, result["comment"], 
+                pdistd::MNetworkInterface::getMacAddress(), function (args) {});
+
+                if (Grim2Util::__deprecated__join__(context, request))
+                {
+                    var result = ItemBox.decodeResult(request);
+
+                    if (result == 1)
+                    {
+                        MuseumFileUtil::decrement(museum_id);
+                        saveNow(context);
+                        SoundUtil::PlayStreamSE("/sound_gt/se/gt5_present_send");
+                        OK(context, ROOT, "MSG_UPLOAD_SUCCESS");
+                    }
+                    else
+                    {
+                        var error = "MSG_UPLOAD_FAILED";
+                        if (result == -1)
+                            error = "MSG_ITEMBOX_RECEIVE_LIMIT";
+                        else if (result == -2)
+                            error = "MSG_ITEMBOX_SEND_LIMIT";
+
+                        ERROR(context, ROOT, error);
+                    }
+
+                    ROOT.close(context);
+                }
+            }
+            else
+            {
+                ROOT.updateDB(context);
+                var res = MuseumDetailPopup.open(context, ROOT.dealer, museum_id);
+
+                if (res)
+                {
+                    ROOT.updateCountList(context);
+                    updateStatus(context);
+                    ROOT.need_update = true;
+                }
+            }
+
+        }
+
+        function onFocusEnter(context, candidate_data, item_w, arg)
+        {
+            item_w.FrameImageFaceF::ScalarInterpolator.start();
+        }
+
+        function onFocusLeave(context, candidate_data, item_w, arg)
+        {
+            item_w.FrameImageFaceF::ScalarInterpolator.reset();
+        }
+
+        method initialize(context)
+        {
+            var initial_data = makeInitialData(context);
+            self.finder = UIKitProject::FinderRoot.setCopy(context, self, initial_data, false);
+
+            var id_list = MuseumFileUtil::getMuseumIdList(ROOT.dealer);
+            var candidates = UIKitProject::FinderRoot.makeCandidates(id_list);
+
+            self.finder.replaceCurrentFolderCandidates(context, candidates, 0);
+        }
+
+        method makeInitialData(context)
+        {
+            var Finder = UIKitProject::FinderRoot;
+            var candidates = Finder.makeCandidates(Array(0));
+
+            var initial_data = Finder.InitialData(candidates);
+
+            initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+            initial_data.cb_init_item_ = onInitItem;
+            initial_data.cb_on_activate_ = onActivateItem;
+            initial_data.v_scrollbar_ = Scrollbar::VScrollbar;
+            initial_data.item_cache_ = false;
+
+            initial_data.extended_item_ = hidden::Item;
+            initial_data.h_item_count_ = 4;
+            initial_data.cb_focus_enter_ = onFocusEnter;
+            initial_data.cb_focus_leave_ = onFocusLeave;
+
+            return initial_data;
+        }
+
+        method onFinalize(context)
+        {
+            if (self.finder != nil)
+            {
+                self.removeChild(context, self.finder);
+                self.finder = nil;
+            }
+        }
+    }
+}

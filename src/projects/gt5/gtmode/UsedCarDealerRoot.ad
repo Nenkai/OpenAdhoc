@@ -1,0 +1,1262 @@
+module ROOT
+{
+    hidden.visible = false;
+
+    attribute capture_mode = false;
+    attribute sort_order_seed = true;
+    attribute mode_online = false;
+
+    method open(context, mode_online)
+    {
+        self.mode_online = mode_online;
+        SequenceUtil::startPage(context, self);
+    }
+
+    method close(context)
+    {
+        SequenceUtil::startPage(context, GTModeRoot);
+    }
+
+    method onCancel(context)
+    {
+        PROJECT::playBackHomeSound();
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onInitialize(context)
+    {
+        if (self.mode_online)
+        {
+            ROOT::ButtonHelpGT5.set(context, [
+                [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")], 
+                [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+            ]);
+
+            self.U.visible = false;
+            self.H.visible = true;
+
+            var text = context.translate(ROOT, "GTModeProject::GTModeRoot", "LABEL_ONLINEUSEDCARDEALER").split("\n").join(" ");
+
+            self.title.text = text.upcase();
+            CarSelect.sort_order.visible = false;
+        }
+        else
+        {
+            ROOT::ButtonHelpGT5.set(context, 
+            [
+                [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")], 
+                [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")], 
+                ["Square", context.translate(ROOT, "MyHome", "BUTTON_HELP_CHANGE_VIEW")]
+            ]);
+
+            self.U.visible = true;
+            self.H.visible = false;
+
+            self.title.text = context.translate(ROOT, "PAGE_NAME");
+            CarSelect.sort_order.visible = true;
+        }
+
+        CarSelect.ToolTip.tip.remove();
+        CarSelect.ToolTip.tip.action_type = 1;
+
+        ROOT::MyHome.appear(context, true);
+        ROOT::CarSelect.hide(context, true);
+
+        SoundUtil::MenuBGMCrossfadeGroup("dealer_used", 0.0, 3.0);
+
+        context.pushEvent(main::menu::MFunctionEvent(postInitialize, context));
+    }
+
+    method postInitialize(context)
+    {
+        if (checkDebugCommand(context))
+            self.capture_mode = true;
+
+        title.TransientReset();
+        CarSelect.appear(context, true);
+    }
+
+    method openModeIntroduction(context)
+    {
+        var flag_name = mode_online ? "ONLINE_DEALER" : "USEDCAR_DEALER";
+        if (!GAME_STATUS.user_profile.game_flags.getFlag("INTRODUCTION", flag_name))
+        {
+            context.wait(0.5);
+
+            DialogUtil::openInformationDialog(context,  context.translate(ROOT, "IntroductionGT5", flag_name));
+
+            GAME_STATUS.user_profile.game_flags.setFlag("INTRODUCTION", flag_name, true);
+        }
+    }
+
+    method buyUsedCar(context, cp, price, sold_out, new_flag, seed, min_seed, if_debug)
+    {
+        var car_code = cp.getCarCode();
+        var car_color = cp.color;
+        var garage = main::GAME_STATUS.user_profile.garage;
+
+        var color_name = main::gtengine::MSpecDB::getCarColorName(car_code, car_color);
+        var price_str = main::pdiext::MMisc::GetMoneyString(price);
+        var mycash = &main::GAME_STATUS.user_profile.cash;
+
+        if (if_debug == nil)
+            if_debug = false;
+
+        var purchase_level = gtengine::MSpecDB::getCarPurchaseLevel(car_code);
+
+        if (GAME_STATUS.user_profile.getAspecLevel() < purchase_level && 
+            GAME_STATUS.user_profile.getBspecLevel() < purchase_level && 
+            !if_debug)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                context.translate(ROOT, "GTModeProject::CarDealerRoot", "DIALOG_NEED_MORE_AB_LEVEL").build(purchase_level));
+
+            return false;
+        }
+
+        if (price == 0 && !if_debug)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, context.translate(ROOT, "GTModeProject::CarDealerRoot", "DIALOG_NOT_FOR_SALE"));
+            return false;
+        }
+
+        var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, context.translate(ROOT, "GTModeProject::CarDealerRoot", "DIALOG_DO_YOU_BUY_CAR"));
+
+        if (res)
+        {
+            if (garage.getCount() < garage.getMax() || if_debug)
+            {
+                var price = price.toInt();
+                if (*mycash >= price || if_debug)
+                {
+                    if (!if_debug)
+                        *mycash -= price;
+
+                    var garage_id = garage.addCar(cp);
+
+                    ROOT::HeaderGT5::HBox::Credits.refresh();
+
+                    if (price >= (10000000 / 100))
+                        PDINetwork.unlockTrophyAsync(gtengine::TrophyType::OBTAIN_EXPENSIVE_CAR);
+
+                    if (price >= (100000000 / 100))
+                        PDINetwork.unlockTrophyAsync(gtengine::TrophyType::OBTAIN_SUPER_EXPENSIVE_CAR);
+
+                    if ((cp.odometer / 1000) >= 300000)
+                        PDINetwork.unlockTrophyAsync(gtengine::TrophyType::OBTAIN_LOVED_CAR);
+
+                    if (price != -1)
+                    {
+                        if (!self.mode_online)
+                            UsedCarUtil::addBuyList(seed, min_seed);
+                        else
+                            UsedCarUtil::addBuyListOnline(seed, min_seed);
+                    }
+
+                    CarDeliveryRoot.open(context, cp, garage_id, false);
+                    ActionLogUtil::buyCar(cp.getCarLabel());
+                    return true;
+                }
+                else
+                {
+                    main::sound.play("disable");
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "GTModeProject::CarDealerRoot", "DIALOG_NOT_ENOUGH_CREDITS"));
+                    return false;
+                }
+            }
+            else
+            {
+                main::sound.play("disable")
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "GTModeProject::CarDealerRoot", "DIALOG_GARAGE_FULL"));
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    method getUsedCarData(context, sort_order)
+    {
+        if (!self.mode_online)
+            return getUsedCarDataOffline(context, sort_order);
+        else
+            return getUsedCarDataOnline(context, sort_order);
+    }
+
+    method getUsedCarDataOnline(context, sort_order)
+    {
+        var request = Grim2.requestUsedCarList(function (args) {});
+
+        if (Grim2Util::__deprecated__join__(context, request))
+        {
+            var list = [];
+            var usedcar_list = Grim2.decodeUsedCarList(request);
+
+            var seed_x = (usedcar_list["version"] * 30) + getSeedPS3();
+
+            var text = usedcar_list[pdistd::MLocale::getLanguage()];
+
+            CarSelect.ToolTip.tip.value = text;
+            CarSelect.ToolTip.tip.resetAction();
+
+            var random = pdistd::MRandom();
+
+            foreach (var usedcar in usedcar_list["car_list"])
+            {
+                var seed = seed_x + usedcar["usedcar_id"];
+                random.mt_seed = seed;
+                var new_flag = UsedCarUtil::checkNewFlagListOnline(seed);
+
+                var cp = main::gtengine::MCarParameter(usedcar["car_code"]);
+                cp.color = getCarColor(usedcar, random);
+
+                var odometer_km = getOdometer(usedcar, random);
+                var price = getPrice(odometer_km, usedcar);
+
+                cp.setNewCar();
+                cp.odometer = odometer_km * 1000;
+                var oil_life_km = odometer_km;
+
+                if (oil_life_km > 5000)
+                    oil_life_km = 5000;
+
+                cp.oil_life = oil_life_km * 1000;
+                cp.engine_life = cp.odometer;
+                cp.body_life = cp.odometer;
+
+                var sold_out = false;
+                var min_seed = 0;
+
+                if (!UsedCarUtil::checkBuyListOnline(seed, usedcar_list["version"]))
+                    sold_out = true;
+
+                list.push([cp, price, sold_out, new_flag, seed, min_seed]);
+            }
+
+            if (!sort_order)
+                list.sort(function (a, b) { return a[1].toInt() < b[1].toInt() })
+
+            return list;
+        }
+        else
+        {
+            return [];
+        }
+
+    }
+
+    method getUsedCarDataOffline(context, sort_order)
+    {
+        var list = [];
+        var REQUIRED_NUM = 30;
+
+        var seed = getSeedPS3();
+        var min_seed = 0;
+        var new_flag = false;
+
+        var random = pdistd::MRandom();
+
+        for (var i = 0; i < REQUIRED_NUM; i++)
+        {
+            var seed_x = (seed + (i * 2)) + (GAME_STATUS.user_profile.gameday * 12);
+            random.mt_seed = seed_x;
+            var odds_x = random.getMTInt() % 0x7FFFFFFF;
+
+            if (i == 0)
+                min_seed = seed_x;
+
+            var new_flag = UsedCarUtil::checkNewFlagList(seed_x);
+
+            var usedcar = UsedCarUtil::getUsedCarRecordByOdds(odds_x);
+            var cp = main::gtengine::MCarParameter(usedcar["car_code"]);
+            cp.color = getCarColor(usedcar, random);
+
+            var odometer_km = getOdometer(usedcar, random);
+            var price = getPrice(odometer_km, usedcar);
+
+            cp.setNewCar();
+            cp.odometer = odometer_km * 1000;
+
+            var oil_life_km = odometer_km;
+            if (oil_life_km > 5000)
+                oil_life_km = 5000;
+            cp.oil_life = oil_life_km * 1000;
+            cp.engine_life = cp.odometer;
+            cp.body_life = cp.odometer;
+
+            if (!UsedCarUtil::checkBuyList(seed_x))
+                list.push([cp, (price + 0.5).toInt(), true, new_flag, seed_x, min_seed]);
+            else
+                list.push([cp, (price + 0.5).toInt(), false, new_flag, seed_x, min_seed]);
+        }
+
+        if (sort_order)
+            list.sort(compareToSeed);
+        else
+            list.sort(compareToPrice);
+
+        return list;
+    }
+
+    method compareToPrice(a_record, b_record)
+    {
+        return a_record[1] < b_record[1]
+    }
+
+    method compareToSeed(a_record, b_record)
+    {
+        return a_record[4] > b_record[4]
+    }
+
+    method getSeedPS3()
+    {
+        var seed = 0;
+        var address = pdistd::MNetworkInterface::getMacAddress().split(":");
+
+        for (var j = 0; j < address.size; j++)
+            seed += address[j].toInt(16);
+
+        return seed;
+    }
+
+    method getCarColor(usedcar, random)
+    {
+        var color = usedcar["color"];
+        var variation = gtengine::MSpecDB::getCarVariation(usedcar["car_code"]);
+
+        if (color == -1 || variation < color)
+            color = random.getMTInt() % variation;
+
+        return color
+    }
+
+    method getOdometer(usedcar, random)
+    {
+        var odometer_km = 0;
+        var diff_odometer = usedcar["odometer_max"].toInt() - usedcar["odometer_min"].toInt();
+
+        if (diff_odometer != 0)
+        {
+            odometer_km = random.getMTInt() % (usedcar["odometer_max"].toInt() - usedcar["odometer_min"].toInt());
+            odometer_km += usedcar["odometer_min"].toInt();
+        }
+
+        return odometer_km
+    }
+
+    method getPrice(odometer_km, usedcar)
+    {
+        var calc_odd = odometer_km;
+
+        if (calc_odd >= 300000)
+            calc_odd -= 300000;
+
+        var price_origine = usedcar["price"].toFloat();
+        var price = price_origine - (((calc_odd.toFloat() / 10000) * price_origine) / 20);
+
+        return price;
+    }
+
+    function ShapeRefresh(shape, keta, value)
+    {
+        var items = Array(keta);
+
+        var i = 0;
+        if (value.isInstanceOf(System::String))
+        {
+            var chars = value.split("").reverse();
+
+            for (var i = 0; i < keta; i++)
+                items[i] = (i < chars.size) ? chars[i] : " ";
+
+            items = items.reverse();
+        }
+        else
+        {
+            for (var i = 0; i < keta; i++)
+                items[i] = GetDigit(value, keta - i);
+        }
+
+        SetImageShape(shape, items, 0, 0);
+    }
+
+    function GetDigit(value, keta)
+    {
+        for (var i = 0; i < keta - 1; ++i)
+            value /= 10;
+
+        return (value % 10).toInt();
+    }
+
+    function SetImageShape(image_shape, items, base_x, base_y)
+    {
+        var seg7_texdata = [
+            "0" : [0, 0, 23, 32],
+            "1" : [23, 0, 23, 32],
+            "2" : [46, 0, 23, 32],
+            "3" : [69, 0, 23, 32],
+            "4" : [92, 0, 23, 32],
+            "5" : [0, 32, 23, 32],
+            "6" : [23, 32, 23, 32],
+            "7" : [46, 32, 23, 32],
+            "8" : [69, 32, 23, 32],
+            "9" : [92, 32, 23, 32],
+            ":" : [115, 0, 10, 32],
+            "H" : [0, 64, 23, 32],
+            "i" : [23, 0, 23, 32],
+            "L" : [23, 64, 23, 32],
+            "o" : [46, 64, 23, 32],
+            " " : [0, 0, 23, 0]
+        ];
+
+        var ary_size = items.size * 4;
+        var vertex = Array(ary_size);
+        var texcode = Array(ary_size);
+
+        var i = 0;
+
+        var bx = base_x;
+        var by = base_y;
+        var first_num = true;
+
+        image_shape.prim_mode = "quads";
+
+        for (var j = 0; j < items.size; j++)
+        {
+            var item = items[j];
+
+            if (first_num && item == 0 && j < (items.size - 1))
+                first_num = true;
+            else
+                first_num = false;
+
+            var data;
+            if (first_num)
+                data = [0, 0, 23, 0];
+            else
+                data = seg7_texdata[item.toString()];
+
+            if (data == nil)
+                data = [0, 0, 0, 0];
+
+            |var x, var y, var w, var h| = data;
+
+            vertex[i] = [bx, by];
+            vertex[i + 1] = [bx + w, by];
+
+            vertex[i + 2] = [bx + w, by + h];
+            vertex[i + 3] = [bx, by + h];
+
+            var u1 = x / 128.0;
+            var u2 = (x + w) / 128.0;
+            var v1 = y / 128.0;
+            var v2 = (y + h) / 128.0;
+
+            texcode[i] = [u1, v1];
+            texcode[i + 1] = [u2, v1];
+
+            texcode[i + 2] = [u2, v2];
+            texcode[i + 3] = [u1, v2];
+
+            bx += w;
+            i += 4;
+        }
+
+        image_shape.updateVT(vertex, texcode);
+    }
+
+    function checkDebugCommand(context)
+    {
+        if (pdiext::isQABuild())
+        {
+            var state = context.getUpdateContext().getPadButtonState(0);
+
+            if (state & 0x800)
+                return true;
+        }
+
+        return false
+    }
+}
+
+module ROOT::CarSelect
+{
+    method appear(context, warp)
+    {
+        self.insensitive = false;
+        PROJECT::ignorePadEvent(true);
+
+        var effect_end = method(context)
+        {
+            self.BackBoard::ParallelActor.start();
+            self.CarList::IconBox::ParallelActor.start();
+
+            context.pushEvent(main::menu::MFunctionEvent(ROOT.setFocus, self.CarList::IconBox));
+            context.pushEvent(main::menu::MFunctionEvent(ROOT.openModeIntroduction, context));
+
+            PROJECT::ignorePadEvent(false);
+
+            self.FadeActor.on_effect_end = nil;
+        }
+
+        self.BackBoard::ParallelActor.reset();
+
+        self.CarList::IconBox::ParallelActor.reset();
+        self.FadeActor.reverse = false;
+
+        self.FadeActor.on_effect_end = self.*effect_end;
+        self.FadeActor.start();
+        
+        if (warp)
+            self.FadeActor.warp();
+    }
+
+    method hide(context, warp)
+    {
+        self.insensitive = true;
+        ROOT.setFocus(nil);
+
+        BalloonTip.reset_value();
+
+        self.FadeActor.reverse = true;
+        self.FadeActor.start();
+
+        if (warp)
+            self.FadeActor.warp();
+    }
+}
+
+module ROOT::CarSelect::CarList::IconBox
+{
+    attribute thread_;
+
+    static sUnlockTime = 0.1;
+
+    attribute scroll_lock_;
+    attribute new_list = Array(30);
+    attribute online_new_list = Array(30)
+
+    method onInitialize(context)
+    {
+        CarSelect.TextFace.text = "";
+        var cardata_list = ROOT.getUsedCarData(context, ROOT::sort_order_seed);
+
+        if (!ROOT.mode_online)
+        {
+            for (var i = 0; i < new_list.size; i++)
+                new_list[i] = cardata_list[i][4];  
+        }
+        else
+        {
+            if (cardata_list.size == 0)
+            {
+                context.pushEvent(main::menu::MFunctionEvent(function (context) 
+                {
+                    gotoGrandTop(context);
+                }, context));
+
+                return;  
+            }
+
+            for (var i = 0; i < cardata_list.size; i++)
+                online_new_list[i] = cardata_list[i][4];
+        }
+
+        self.CarSelect::sort_order.text = context.translate(ROOT, "MyHome", ROOT::sort_order_seed ? "SORT_TO_SEED" : "SORT_TO_PRICE");
+        self.v_adjustment = main::menu::MAdjustment();
+        self.CarList::VScrollbar.adjustment = self.v_adjustment;
+
+        create_items(context, cardata_list);
+
+        self.thread_ = Thread(item_animation);
+        self.thread_.start();
+
+        self.scroll_lock_ = false;
+        context.addTimeOut("scroll_unlock", self.setScrollUnlock, context);
+    }
+
+    method onFinalize(context)
+    {
+        if (!ROOT.mode_online)
+            UsedCarUtil::updateNewFlagList(self.new_list);
+        else
+            UsedCarUtil::updateNewFlagListOnline(self.online_new_list);
+
+        context.removeTimeOut("scroll_unlock");
+
+        self.setItemCount(0, 0);
+
+        if (self.thread_ != nil)
+        {
+            self.thread_.terminate();
+            self.thread_ = nil;
+        }
+    }
+
+    function gotoGrandTop(context)
+    {
+        ERROR(context, ROOT, "GOTO_GRANDTOP_IF");
+        Grim2.setInitialize(false);
+        SequenceUtil::startProject(context, "gttop");
+    }
+
+    method onActivate(context, event)
+    {
+        main::sound.play("ok");
+        var focused_item = self.getItemWidget(self.focus_index);
+
+        if (focused_item != nil)
+        {
+            ROOT::CarSelect.hide(context, false);
+            ROOT::MyHome.hide(context, false);
+
+            ROOT::CarDetail.open(context, focused_item.cp_, focused_item.price_, focused_item.sold_out_, focused_item.new_flag_, focused_item.seed_, focused_item.min_seed_);
+
+            ROOT::MyHome.appear(context, false);
+            ROOT::CarSelect.appear(context, false);
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (event.keysym == CELL_PAD_CTRL_L3_UP || event.keysym == CELL_PAD_CTRL_L3_DOWN)
+        {
+            if (self.scroll_lock_)
+                return EVENTRESULT_FILTER;
+
+            self.setScrollLock(context);
+        }
+
+        else if (event.keysym == CELL_PAD_CTRL_SQUARE)
+        {
+            if (!ROOT.mode_online)
+            {
+                BalloonTip.reset_value();
+                ROOT.setFocus(nil);
+                PROJECT::ignorePadEvent(true);
+
+                ROOT::sort_order_seed = !ROOT::sort_order_seed;
+                var cardata_list = ROOT.getUsedCarData(context, ROOT::sort_order_seed);
+
+                self.CarSelect::sort_order.text = context.translate(ROOT, "MyHome", ROOT::sort_order_seed ? "SORT_TO_SEED" : "SORT_TO_PRICE");
+
+                self.CarList.visible = false;
+                self.create_items(context, cardata_list);
+
+                self.CarList.visible = true;
+
+                PROJECT::ignorePadEvent(false);
+                ROOT.setFocus(self.CarList::IconBox);
+            }
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+
+    method onFocusNotify(context, new_index, old_index)
+    {
+        if (pdiext::MSystemConfiguration::isSDTV())
+        {
+            var new_item = self.getItemWidget(new_index);
+            if (new_item != nil)
+                BalloonTip.set_value(context, new_item, gtengine::MSpecDB::getCarShortName(new_item.cp_.getCarCode()), 0);    
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method create_items(context, cardata_list)
+    {
+        self.setItemTemplate(context, hidden::CarItem);
+        self.setItemCount(0, 0);
+
+        self.postRedraw();
+        var item_count_h = 2;
+
+        var item_count_v = cardata_list.size / item_count_h;
+        self.setItemCount(item_count_h, item_count_v);
+
+        for (var i = 0; i < self.getItemCount(); i++)
+        {
+            var item = self.getItemWidget(i, context);
+
+            if (i < cardata_list.size)
+                item.init(context, cardata_list[i], i);
+            else
+                item.insensitive = true;
+        }
+
+        self.CarList::VScrollbar.adjustment.adjust();
+    }
+
+    method item_animation(context)
+    {
+        for (;;)
+        {
+            var visible_item_indexes = [];
+
+            for (var i = 0; i < self.getItemCount(); i++)
+            {
+                if (self.getItemVisible(i))
+                    visible_item_indexes.push(i);
+            }
+
+            foreach (var i in visible_item_indexes)
+            {
+                var item = self.getItemWidget(i)
+
+                if (item == nil)
+                    ;
+                else
+                {
+                    var target_center = (item.sy) + (item.h / 2);
+                    var display_area_top = self.CarList.y;
+                    var display_area_bottom = self.CarList.sy + self.CarList.h;
+                    var half_h = self.CarList.h / 2.0;
+
+                    if (target_center < display_area_top)
+                    {
+                        item.center_y = 1.0;
+                        item.ParallelActor.reverse = true;
+                        item.ParallelActor.start();
+                    }
+                    else if (target_center > display_area_bottom)
+                    {
+                        item.center_y = 0.0;
+                        item.ParallelActor.reverse = true;
+                        item.ParallelActor.start();
+                    }
+                    else if (target_center < (display_area_top + half_h))
+                    {
+                        if (item.ParallelActor.reverse)
+                        {
+                            item.MoveActor.reverse = true;
+                            item.MoveActor.setEndValue(0, -100);
+                            item.MoveActor.restart();
+                        }
+
+                        item.center_y = 1.0;
+                        item.ParallelActor.reverse = false;
+                        item.ParallelActor.start();
+                    }
+                    else
+                    {
+                        if (item.ParallelActor.reverse)
+                        {
+                            item.MoveActor.reverse = true;
+                            item.MoveActor.setEndValue(0, 100);
+                            item.MoveActor.restart();
+                        }
+
+                        item.center_y = 0.0;
+                        item.ParallelActor.reverse = false;
+                        item.ParallelActor.start();
+                    }
+                }
+            }
+
+            Thread::Sleep(0.01);
+        }
+    }
+
+    method setScrollLock(context)
+    {
+        context.setTimeOut("scroll_unlock", sUnlockTime);
+        self.scroll_lock_ = true;
+    }
+
+    method setScrollUnlock(context)
+    {
+        context.setTimeOut("scroll_unlock", 0.0);
+        self.scroll_lock_ = false;
+    }
+}
+
+module ROOT::hidden::CarItem
+{
+    attribute cp_;
+    attribute price_;
+    attribute new_flag_;
+    attribute seed_;
+    attribute min_seed_;
+    attribute sold_out_;
+
+    method init(context, cardata, index)
+    {
+        self.cp_ = cardata[0];
+        self.price_ = cardata[1];
+        self.sold_out_ = cardata[2];
+        self.new_flag_ = cardata[3];
+        self.seed_ = cardata[4];
+        self.min_seed_ = cardata[5];
+
+        self.cp_.beginInfo();
+        var car_code = self.cp_.getCarCode();
+        var color = self.cp_.color;
+        var price_str = main::pdiext::MMisc::GetMoneyString(self.price_);
+
+        self.ColorTip::ColorFace.setCarColor(car_code, color);
+        var tuner_label = gtengine::MSpecDB::getTunerLabel(car_code);
+        self.manufacturer_name.text = context.translate(ROOT, "TunerName", tuner_label);
+
+        self.car_name.text = gtengine::MSpecDB::getCarShortName(car_code);
+        self.LV::need_level.text = gtengine::MSpecDB::getCarPurchaseLevel(car_code);
+
+        self.HBox::Price::value.text = price_str;
+        self.HBox.minimum_width = 0.0;
+
+        self.HBox::New.visible = !self.sold_out_ && self.new_flag_;
+        self.PP::value.text = self.cp_.getPP1000();
+        self.Type::TextFace.text = "S";
+
+        self.owned.visible = GAME_STATUS.user_profile.garage.hasCar(car_code);
+        self.SoldOut.visible = self.sold_out_;
+
+        self.ShapeRefresh(self.OdoMeter::meter_shadow, 7, "88888888");
+        self.ShapeRefresh(self.OdoMeter::meter, 7, (self.cp_.odometer / 1000).toInt());
+
+        if (index % 2)
+            self.center_x = 0;
+        else
+            self.center_x = 1.0;
+
+        self.ParallelActor.reverse = false;
+        self.ParallelActor.reset();
+
+        self.MoveActor.reverse = false;
+        self.MoveActor.reset();
+
+        self.cp_.endInfo();
+    }
+}
+
+module ROOT::CarDetail
+{
+
+    attribute cp_;
+    attribute price_;
+    attribute new_flag_;
+    attribute seed_;
+    attribute min_seed_;
+    attribute sold_out_;
+    attribute prev_focus_;
+    attribute result_;
+    attribute event_loop;
+
+    method open(context, cp, price, sold_out, new_flag, seed, min_seed)
+    {
+        ROOT::ButtonHelpGT5.set(context, [
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+        ]);
+
+        self.insensitive = false;
+        PROJECT::ignorePadEvent(true);
+        
+        self.cp_ = cp;
+        self.price_ = price;
+        self.new_flag_ = new_flag;
+        self.seed_ = seed;
+        self.min_seed_ = min_seed;
+        self.sold_out_ = sold_out;
+        self.prev_focus_ = ROOT.getFocusWidget();
+
+        self.Buttons::Purchase.active = !self.sold_out_;
+
+        ROOT::SceneFace.loadCar(self.cp_);
+        ROOT::SceneFace.visible = true;
+
+        self.setCarInfo(context);
+
+        var effect_end = method (context)
+        {
+            context.pushEvent(main::menu::MFunctionEvent(ROOT.setFocus, Buttons::Purchase));
+
+            PROJECT::ignorePadEvent(false);
+            self.FadeActor.on_effect_end = nil;
+        }
+
+        self.FadeActor.reverse = false;
+        self.FadeActor.on_effect_end = self.*effect_end;
+        self.FadeActor.start();
+
+        self.insensitive = false;
+
+        self.result_ = nil;
+
+        self.event_loop = main::menu::EventLoop(context);
+        self.event_loop.enter();
+
+        var result = self.result_;
+        self.result_ = nil;
+
+        return result;
+    }
+
+    method close(context)
+    {
+        self.FadeActor.reverse = true;
+        self.FadeActor.start();
+
+        ROOT::SceneFace.clearCar();
+
+        self.insensitive = true;
+        ROOT.setFocus(nil);
+
+        Thread::Sleep(0.5);
+        ROOT::SceneFace.visible = false;
+
+        ROOT.setFocus(self.prev_focus_);
+        self.prev_focus_ = nil;
+
+        BalloonTip.reset_value();
+
+        if (self.event_loop != nil)
+        {
+            self.event_loop.leave();
+            self.event_loop = nil;
+        }
+
+        if (ROOT.mode_online)
+        {
+            ROOT::ButtonHelpGT5.set(context, [
+                [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")], 
+                [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+            ]);
+        }
+
+        else
+        {
+            ROOT::ButtonHelpGT5.set(context, [
+                [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")], 
+                [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")],
+                ["Square", context.translate(ROOT, "MyHome", "BUTTON_HELP_CHANGE_VIEW")]
+            ]);
+        }
+    }
+
+    method onInitialize(context)
+    {
+        self.insensitive = true;
+        self.FadeActor.reverse = false;
+        self.FadeActor.reset();
+
+        self.Description::ScrolledWindow::clip.scroll_mode = 2;
+        var adj = main::menu::MAdjustment()
+
+        self.Description::Scrollbar::VScrollbar.adjustment = adj;
+        self.Description::ScrolledWindow::clip.v_adjustment = adj;
+
+        self.Description::ScrolledWindow::clip.space.y = 0.0;
+        self.Description::ScrolledWindow::clip.manual_target_y = 0.0;
+    }
+
+    method onFinalize(context)
+    {
+        if (self.event_loop != nil)
+        {
+            self.event_loop.leave();
+            self.event_loop = nil;
+        }
+
+        self.cp_ = nil;
+        self.price_ = nil;
+        self.new_flag_ = nil;
+        self.seed_ = nil;
+        self.min_seed_ = nil;
+        self.sold_out_ = nil;
+        self.prev_focus_ = nil;
+        self.result_ = nil;
+    }
+
+    method onActivate(context, event)
+    {
+        if (event.widget == self.Buttons.Purchase)
+        {
+            if (!self.Buttons.Purchase.active)
+            {
+                sound.play("disable");
+                return EVENTRESULT_FILTER
+            }
+
+            sound.play("ok");
+
+            ROOT.buyUsedCar(context, self.cp_, self.price_, self.sold_out_, self.new_flag_, self.seed_, self.min_seed_);
+            return EVENTRESULT_FILTER;
+        }
+        else if (event.widget == self.Buttons.Demo)
+        {
+            sound.play("ok");
+            CarDemoRoot.open(context, self.cp_, ROOT);
+
+            return EVENTRESULT_FILTER;
+        }
+        else if (event.widget == self.Buttons.Exit)
+        {
+            sound.play("ok");
+
+            self.result_ = false;
+            self.close(context);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        return EVENTRESULT_CONTINUE
+    }
+
+    method onFocusEnter(context, event)
+    {
+        if (event.widget == self.Buttons.Purchase)
+            BalloonTip.reset_value();
+        else if (event.widget == self.Buttons.Demo)
+            BalloonTip.set_value(context, event.widget, context.translate(ROOT, "MyHome", "DEMO"), 0);
+        else if (event.widget == self.Buttons.Exit)
+            BalloonTip.set_value(context, event.widget, context.translate(ROOT, "MyHome", "CLOSE"), 0);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.result_ = false;
+        self.close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onKeyPress(context, event)
+    {
+        var scrollclip = self.Description::ScrolledWindow::clip;
+        var space = scrollclip.space;
+        var textface = space.TextFace;
+        var line_height = textface.line_height;
+
+        var status = EVENTRESULT_CONTINUE;
+
+        if (event.keysym == CELL_PAD_CTRL_L3_UP)
+        {
+            if (scrollclip.manualTargetIncY(line_height))
+                status = EVENTRESULT_STOP;
+        }
+
+        if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+        {
+            if (scrollclip.manualTargetIncY(-line_height))
+                status = EVENTRESULT_STOP;
+        }
+
+        if (pdiext::isQABuild() && event.keysym == CELL_PAD_CTRL_START)
+        {
+            ROOT.buyUsedCar(context, self.cp_, self.price_, self.sold_out_, self.new_flag_, self.seed_, self.min_seed_, true);
+            return EVENTRESULT_FILTER;
+        }
+
+        return status;
+    }
+
+    method setCarInfo(context)
+    {
+        self.cp_.beginInfo();
+        var car_code = self.cp_.getCarCode();
+        var car_color = self.cp_.color;
+
+        var rtext = main::pdistd::MRText();
+        rtext.load("/description/gt5/%s.rt2".format(pdistd::MLocale::getLanguage()));
+
+        var car_label = gtengine::MSpecDB::getCarLabel(car_code);
+        var car_description = rtext.get("CarDescription", car_label);
+        rtext.unload();
+
+        var clip = self.Description::ScrolledWindow::clip;
+        clip.space::TextFace.text = pdistd::TextConv(car_description);
+        clip.manual_target_y = 0.0;
+
+        var info = self.InfoMain;
+        var country_code = gtengine::MSpecDB::getCarCountry(car_code);
+        var tuner_label = main::gtengine::MSpecDB::getTunerLabel(car_code);
+
+        info.official_name.text = gtengine::MSpecDB::getCarShortName(car_code);
+        info.official_name.TransientReset();
+
+        info.flag.image_path = "piece/flag_menu/%{country_code}.img";
+        info.tuner_name.text = context.translate(ROOT, "TunerNameI18n", tuner_label);
+        info.ColorTip::ColorFace.setCarColor(car_code, car_color);
+
+        var color_name = main::gtengine::MSpecDB::getCarColorName(car_code, car_color).trim();
+        info.color_name.text = (color_name != "") ? color_name : "--";
+
+        self.tuner_logo.image_path = "piece/tunner_logo_M/%{tuner_label}.img";
+
+        var spec = self.CarSpec;
+        spec.Displacement::value.text = SpecDatabaseUtil::getCarDisplacementText(context, car_code);
+        spec.MaxPower::value.text = SpecDatabaseUtil::getCarMaxPowerText(context, car_code);
+        spec.MaxTorque::value.text = SpecDatabaseUtil::getCarMaxTorqueText(context, car_code);
+        spec.Drivetrain::value.text = SpecDatabaseUtil::getCarDrivetrainText(context, car_code);
+        spec.Length::value.text = SpecDatabaseUtil::getCarLengthText(context, car_code);
+        spec.Width::value.text = SpecDatabaseUtil::getCarWidthText(context, car_code);
+        spec.Height::value.text = SpecDatabaseUtil::getCarHeightText(context, car_code);
+        spec.Weight::value.text = SpecDatabaseUtil::getCarWeightText(context, car_code);
+
+        self.HBox::Level::need_level.text = gtengine::MSpecDB::getCarPurchaseLevel(car_code);
+        self.HBox::Price::price.text = main::pdiext::MMisc::GetMoneyString(self.price_);
+
+        self.HBox::PP::value.text = self.cp_.getPP1000();
+
+        ROOT::ShapeRefresh(self.OdoMeter::meter_shadow, 7, "88888888");
+        ROOT::ShapeRefresh(self.OdoMeter::meter, 7, (self.cp_.odometer / 1000));
+
+        self.cp_.endInfo();
+    }
+}
+
+SCALE_WIDGET_SDTV(ROOT::CarDetail::Description::ScrolledWindow::clip::space::TextFace, 2.6);
+
+module ROOT::SceneFace
+{
+    attribute scene_fade_thread_;
+
+    method loadCar(cp)
+    {
+        var car_label = cp.getCarLabel();
+        var car_color = cp.color;
+
+        ROOT::SceneActor::CarFadeActor.reverse = false;
+        ROOT::SceneActor.opacity = 0.0;
+
+        self.scene_fade = 0.0;
+        self.resetCommandQueue();
+
+        self.execCommand("changeCar %{car_label} car0 true false mirror");
+        self.execCommand("setCarVariation %{car_color} car0");
+
+        self.execCommand("resetGlobalMotionFrame");
+
+        self._terminate_thread(self.scene_fade_thread_);
+        self.scene_fade_thread_ = self._start_thread(self._scene_fade);
+    }
+
+    method clearCar()
+    {
+        if (self.isUnderSetup())
+            self.execCommandImmidiate("clearEntity car0");
+
+        var effect_end = method (context)
+        {
+            self._terminate_thread(self.scene_fade_thread_);
+            ROOT::SceneActor::CarFadeActor.on_effect_end = nil;
+        };
+
+        ROOT::SceneActor::CarFadeActor.reverse = true;
+
+        ROOT::SceneActor::CarFadeActor.on_effect_end = self.*effect_end;
+        ROOT::SceneActor::CarFadeActor.start();
+    }
+
+    method hideCar(warp)
+    {
+
+    }
+
+    method _scene_fade(context)
+    {
+        for (;;)
+        {
+            if (!self.isUnderSetup())
+            {
+                SceneActor::CarFadeActor.start();
+
+                if (!ROOT.capture_mode)
+                    self.setEntityRotateVelocityY("CAR", "car0", SceneActor.rotate);
+                else
+                    self.setEntityRotateY("CAR", "car0", ROOT::hidden::CaptureCarAngleValue.text.toInt());
+
+                self.setEntityRotateVelocityY("CAR", "car0", SceneActor.rotate);
+            }
+
+            self.scene_fade = SceneActor.opacity;
+            Thread::Sleep(0.01);
+        }
+    }
+
+    method _start_thread(exec_function)
+    {
+        var thread = Thread(exec_function);
+        thread.start();
+        return thread;
+    }
+
+    method _terminate_thread(thread)
+    {
+        if (thread != nil)
+        {
+            thread.terminate();
+            thread = nil;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        self.setClearColorBuffer(false);
+
+        SceneActor.opacity = 0.0;
+        self.scene_fade = 0.0;
+
+        SceneFaceUtil::loadScene(SceneFace, "used_car_dealer", nil, nil, false);
+        self.saveCommandQueue();
+    }
+
+    method onFinalize(context)
+    {
+        self._terminate_thread(self.scene_fade_thread_);
+    }
+}
+
+module ROOT::MyHome
+{
+    method appear(context, warp)
+    {
+        self.insensitive = false;
+        self.FadeActor.reverse = false;
+
+        self.FadeActor.start();
+
+        if (warp)
+            self.FadeActor.warp();
+    }
+
+    method hide(context, warp)
+    {
+        self.insensitive = true;
+        self.FadeActor.reverse = true;
+        self.FadeActor.start();
+
+        if (warp)
+            self.FadeActor.warp();
+    }
+
+    method onActivate(context)
+    {
+        PROJECT::playBackHomeSound();
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFocusEnter(context, event)
+    {
+        BalloonTip.set_value(context, event.widget, context.translate(ROOT, "MyHome", "MYHOME_BACK_BUTTON"), 20);
+
+        return EVENTRESULT_STOP;
+    }
+
+    method onFocusLeave(context, event)
+    {
+        BalloonTip.reset_value();
+
+        return EVENTRESULT_STOP;
+    }
+}

@@ -1,0 +1,335 @@
+module CourseMaker
+{
+    #include "projects/gt5/race_course_edit/CourseMakerFunction.ad"
+}
+
+class CourseUploader : UIKitProject::ProgressRoot::GrimHttp
+{
+    attribute course;
+
+    method __init__(course)
+    {
+        self.course = course;
+        self.auto_mode = true;
+    }
+
+    method begin_message(context)
+    {
+        return "%s".format(
+            context.translate(ROOT, "MyHome", "MSG_UPLOADING"), 
+            context.translate(ROOT, "MyHome", "FORMAT_NAME")
+            .build("", "1/2"));
+    }
+
+    method success_message(context)
+    {
+        return nil;
+    }
+
+    method failed_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_UPLOAD_FAILED");
+    }
+
+    method cancel_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "QUERY_UPLOAD_CANCEL");
+    }
+
+    method beginImpl(context)
+    {
+        VulgarityFilterUtil::begin();
+
+        |var title_result, var title_sanitized_text| = VulgarityFilterUtil::check(self.course.title);
+        |var comment_result, var comment_sanitized_text| = VulgarityFilterUtil::check(self.course.comment);
+        VulgarityFilterUtil::end();
+
+        if (!title_result || !comment_result)
+            return false;
+
+        var title = title_sanitized_text;
+        var comment = comment_sanitized_text;
+
+        if (comment == "?")
+            comment += " ";
+
+        var st = pdistd::ReadFile(self.course.filename);
+        var buf = st["buffer"];
+
+        var course_pathway = gtengine::MCoursePathway();
+        course_pathway.deserialize(buf);
+
+        if (course_pathway != nil)
+        {
+            var online_id = NP.getOnlineId();
+            if (online_id == nil)
+                return false;
+
+            if (course_pathway.author.size == 0)
+            {
+                course_pathway.author = online_id;
+                course_pathway.title = title;
+                buf = nil;
+                buf = course_pathway.serialize();
+            }
+        }
+
+        var author = course_pathway.author;
+        var blob = pdistd::MBlob(buf);
+        var packed_blob = pdistd::Deflate(blob);
+
+        self.request = Course.requestUploadCourse(
+            packed_blob, 
+            title, comment, 
+            self.course.genre, self.course.length, self.course.weather, self.course.start_datetime, 
+            author, self.course.elevation, self.course.straight, self.course.corner, 
+            self.course.datetime, self.course.online_race, self.course.weather_value0, 
+            self.course.initial_retention, self.course.weather_accel, self.course.time_progress_speed, 
+            function (args) {}
+        );
+
+        return true;
+    }
+}
+
+class ThumbnailUploader : UIKitProject::ProgressRoot::GrimHttp
+{
+    attribute grim_course_id;
+    attribute thumbnail_filename;
+
+    method __init__(grim_course_id, thumbnail_filename)
+    {
+        self.grim_course_id = grim_course_id;
+        self.thumbnail_filename = thumbnail_filename;
+        self.auto_mode = true;
+    }
+
+    method begin_message(context)
+    {
+        return "%s".format(
+            context.translate(ROOT, "MyHome", "MSG_UPLOADING"), 
+            context.translate(ROOT, "MyHome", "FORMAT_NAME").build("", "2/2"));
+    }
+
+    method success_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_FRIEND_OPEN");
+    }
+
+    method failed_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "MSG_UPLOAD_FAILED");
+    }
+
+    method cancel_message(context)
+    {
+        return context.translate(ROOT, "MyHome", "QUERY_UPLOAD_CANCEL");
+    }
+
+    method beginImpl(context)
+    {
+        var st = pdistd::ReadFile(self.thumbnail_filename);
+        var buf = st["buffer"];
+        if (buf == nil)
+            return false;
+
+        var blob = pdistd::MBlob(buf);
+
+        self.request = Course.requestUploadThumbnail(blob, self.grim_course_id, function (args) {});
+        return true;
+    }
+}
+
+function setFavorite(context, course, args, callback, item_w)
+{
+    var result = false;
+    var flag = args;
+
+    if (flag)
+    {
+        if (CourseFileUtil::getFavoriteCount() < CourseFileUtil::getFavoriteMax())
+        {
+            setFavoriteImpl(context, course, true, callback, item_w);
+            var result = true;
+        }
+        else
+            ERROR(context, ROOT, "ERROR_FAVORITE_IS_FULL");
+    }
+    else
+    {
+        setFavoriteImpl(context, course, false, callback, item_w);
+        var result = true;
+    }
+
+    return result
+}
+
+function setFavoriteByList(context, course_list, args, callback, item_w)
+{
+    var result = false;
+    var flag = args;
+    var course_id_list = Array();
+
+    foreach (var course in course_list)
+    {
+        var is_favorite = course.favorite != 0;
+        if ((is_favorite && !flag) || (!is_favorite && flag))
+            course_id_list.push(course.id);
+    }
+
+    if (flag)
+    {
+        if (course_id_list.size + CourseFileUtil::getFavoriteCount() < CourseFileUtil::getFavoriteMax())
+        {
+            CourseFileUtil::setFavoriteByList(course_id_list, true);
+            var result = true;
+        }
+        else
+            ERROR(context, ROOT, "ERROR_FAVORITE_IS_FULL");
+    }
+
+    else
+    {
+        CourseFileUtil::setFavoriteByList(course_id_list, false);
+        var result = true;
+    }
+
+    if (result)
+    {
+        foreach (var course in course_list)
+            course.favorite = flag;
+
+        callbackIf(context, callback, course_list, item_w);
+    }
+
+    return result;
+}
+
+function setOnline(context, course, args, callback, item_w)
+{
+    var flag = args;
+
+    if (flag)
+    {
+        if (CourseFileUtil::getOnlineCount() < CourseFileUtil::getOnlineMax())
+        {
+            if (QUERY(context, ROOT, "QUERY_SET_ONLINE"))
+            {
+                var uploader = CourseUploader(course);
+
+                if (UIKitProject::ProgressRoot.open(context, [uploader]))
+                {
+                    setOnlineImpl(context, course, true, callback, item_w);
+                    course.grim_course_id = Course.decodeResultLong(uploader.request);
+
+                    CourseFileUtil::updateGrimCourseId(course.id, course.grim_course_id);
+
+                    var thumbnail_uploader = ThumbnailUploader(course.grim_course_id, course.thumbnail_filename);
+
+                    if (UIKitProject::ProgressRoot.open(context, [thumbnail_uploader]))
+                    {
+                        var photo_id = OnlineBSpec.decodeResultString(thumbnail_uploader.request);
+                        if (photo_id == "")
+                            ERROR(context, ROOT, "MSG_UPLOAD_FAILED");
+                        else
+                            PDINetwork.unlockTrophyAsync(gtengine::TrophyType::UPLOAD_COURSE);
+                    }
+                }
+            }
+        }
+        else
+        {
+            ERROR(context, ROOT, "ERROR_ONLINE_IS_FULL")
+        }
+    }
+    else
+    {
+        if (QUERY(context, ROOT, "QUERY_SET_OFFLINE"))
+        {
+            var request = GrimFacade::Course::requestDeleteCourse(context, course.grim_course_id, function (args) {});
+            if (Grim2Util::__deprecated__join__(context, request))
+            {
+                if (Course.decodeResult(request))
+                {
+                    setOnlineImpl(context, course, false, callback, item_w);
+                }
+            }
+            else
+            {
+                REQUEST_ERROR(context, ROOT, "MSG_UPLOAD_FAILED", request);
+            }
+        }
+    }
+}    
+
+function showDetail(context, course, args, callback, item_w)
+{
+    |var delete_mode, var is_friend| = args;
+    var need_update = CourseDetailPopup.open(context, course, delete_mode, is_friend);
+
+    if (need_update)
+        callbackIf(context, callback, course, item_w);
+}
+
+function edit(context, course, args, callback, item_w)
+{
+    if (course.online != 0)
+    {
+        ERROR(context, ROOT, "ERROR_COURSE_IS_ONLINE");
+        return;
+    }
+
+    if (course.author != "")
+    {
+        ERROR(context, ROOT, "ERROR_CANNOT_EDIT_COURSE");
+        return;
+    }
+
+    var result = SettingCommentDialog.open(context, "COURSEEDIT", "COURSE", course.title, course.comment);
+    if (result != nil)
+    {
+        CourseFileUtil::updateTitleComment(course.id, result["title"], result["comment"]);
+        course.title = result["title"];
+        course.comment = result["comment"];
+
+        callbackIf(context, callback, course, item_w);
+    }
+}
+
+function delete(context, course, args, callback, item_w)
+{
+    if (!QUERY_D_NO(context, ROOT, "QUERY_DELETE"))
+        return;
+
+    CourseMaker::deleteRankings(context, course.genre, course.filename);
+    CourseFileUtil::remove(course);
+
+    callbackIf(context, callback, course, item_w);
+}
+
+function setFavoriteImpl(context, course, value, callback, item_w)
+{
+    CourseFileUtil::setFavorite(course.id, value);
+    course.favorite = value;
+    callbackIf(context, callback, course, item_w);
+}
+
+function setOnlineImpl(context, course, value, callback, item_w)
+{
+    CourseFileUtil::setOnline(course.id, value);
+    course.online = value;
+
+    if (!value)
+        OK_AUTO_CLOSE(context, ROOT, "MSG_FRIEND_CLOSE");
+
+    callbackIf(context, callback, course, item_w);
+}
+
+function callbackIf(context, callback, course, item_w)
+{
+    if (callback != nil)
+    {
+        callback(context, course, item_w);
+    }
+    
+}

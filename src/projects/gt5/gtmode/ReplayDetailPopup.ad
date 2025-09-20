@@ -1,0 +1,454 @@
+module ROOT
+{
+    module Function
+    {
+        #include "ReplayFunction.ad"
+    }
+
+    attribute popup;
+    attribute closed = false;
+    attribute replay;
+    attribute need_update;
+
+    function getLocalizedCourseName(context, course_code)
+    {
+        var course_info = CourseData::getCourseInfo(course_code);
+
+        if (course_info.is_reverse)
+        {
+            return "%s / %s".format(
+                context.translate(ROOT, "CourseName", course_info.name), 
+                context.translate(ROOT, "CourseData", "direction_reverse")
+            );
+        }
+        else
+            return context.translate(ROOT, "CourseName", course_info.name);
+    }
+
+    method open(context, replay)
+    {
+        self.need_update = false;
+        self.replay = replay;
+        self.closed = false;
+
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return self.need_update = true;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        ContextMain.event_mask = 5;
+        ContextMain.disableInput();
+
+        DetailPopup2::FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        }
+
+        DetailPopup2::FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        var replay_info = getReplayInfo(context);
+        var space = DetailPopup2::Pane::Body::ScrolledWindow::clip::space;
+
+        space.Title.TextFace.text = getTitle(context);
+
+        space.Header::TextFace.text = getHeader(context, replay_info);
+        space.Body::TextFaceL.text = gtengine::MSpecDB::getCarName(replay.target_car_code);
+        space.Body::TextFaceR.text = getDateTime(context, ROOT, replay.datetime);
+
+        space.TextFace.text = getThemeInfo(context);
+        space.TextFace.text += getDriverInfo(context, replay_info);
+
+        space.TextFace.text += getWeatherInfo(context, replay_info);
+        space.TextFace.text += getSubtitle(context);
+        space.TextFace.text += getDescription(context);
+        space.TextFace.text += getGridInfo(context, replay_info);
+        space.TextFace.text += getFileSizeInfo(context, replay);
+
+        DetailPopup2::Pane::Footer::CommandB::Favorite::CheckBox.active = self.replay.favorite != 0;
+
+        if (replay.title != "EVENT_RALLY")
+        {
+            var course_info = CourseData::getCourseInfo(replay.course_code);
+            var course_label = gtengine::MSpecDB::getCourseLabel(replay.course_code);
+
+            DetailPopup2::Pane::Body::ImageFace.image_path = "piece/replay_thumb/%s.img".format(course_info.map);
+
+            DetailPopup2::Pane::Body::ImageFaceLogo.image_path = "piece/course_logo_S/%s.img".format(course_info.logo);
+
+            if (course_label.beginWith("template"))
+                DetailPopup2::Pane::Body::Map.visible = false;
+            else
+            {
+                DetailPopup2::Pane::Body::Map.visible = true;
+                DetailPopup2::Pane::Body::Map::ImageFace.image_path = "piece/course_map_M/%s.img".format(course_info.map);
+            }
+        }
+        else
+        {
+            var course_label = gtengine::MSpecDB::getCourseLabel(replay.course_code);
+            DetailPopup2::Pane::Body::ImageFace.image_path = "piece/replay_thumb/%s.img".format(course_label);
+
+            DetailPopup2::Pane::Body::ImageFaceLogo.image_path = "";
+            DetailPopup2::Pane::Body::Map.visible = false;
+        }
+
+        |var image_path, var text| = Function::getTypeInfo(context, self.replay);
+        space.Title::type::Icon::ImageFace.image_path = image_path;
+        space.Title::type::TextFace.text = text;
+
+        ROOT.setFocus(DetailPopup2::Pane::Footer::CommandB::Close);
+        DetailPopup2::Pane::Body::ScrolledWindow::clip.scroll_mode = 2;
+
+        var adj = main::menu::MAdjustment();
+
+        DetailPopup2::Pane::Body::ScrolledWindow::clip.v_adjustment = adj;
+        DetailPopup2::Pane::Body::Scrollbar::VScrollbar.adjustment = adj;
+
+        DetailPopup2::Pane::Body::ScrolledWindow::clip.space.y = 0.0;
+        DetailPopup2::Pane::Body::ScrolledWindow::clip.manual_target_y = 0.0;
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method getThemeInfo(context)
+    {
+        var course_label = gtengine::MSpecDB::getCourseLabel(self.replay.course_code);
+
+        if (course_label.beginWith("template"))
+        {
+            var format = context.translate(ROOT, "MyHome", "FORMAT_VALUE");
+            return format.build(context.translate(ROOT, "MyHome", "THEME"), 
+                context.translate(ROOT, "CourseName", course_label)) + "\n";
+        }
+
+        return "";
+    }
+
+    method getHeader(context, replay_info)
+    {
+        var course_label = gtengine::MSpecDB::getCourseLabel(self.replay.course_code);
+
+        if (self.replay.course_name == "")
+            return getLocalizedCourseName(context, self.replay.course_code);
+        else
+        {
+            var format = context.translate(ROOT, "MyHome", "FORMAT_VALUE");
+            return format.build(getLocalizedCourseName(context, self.replay.course_code), self.replay.course_name);
+        }
+    }
+
+    method getTitle(context)
+    {
+        var title = context.translate(ROOT, "GameModeName", replay.title);
+
+        if (replay.onelap > 0 && (replay.title == "TIME_ATTACK" || replay.title == "ONLINE_TIME_ATTACK" || replay.title == "FREE_RUN"))
+        {
+            title += " %s".format(context.translate(ROOT, "MyHome", "BEST_LAP_REPLAY"));
+            DetailPopup2::Pane::Footer::CommandB::Logger.visible = true;
+        }
+        else
+            DetailPopup2::Pane::Footer::CommandB::Logger.visible = false;
+
+        if (replay.game_id > 0 || replay.title == "SPEED_TEST")
+            title += Function::getTitleInfo(context, replay);
+
+        return title;
+    }
+
+    method getReplayInfo(context)
+    {
+        var header = ORG.getReplayHeaderFromPath(self.replay.filename);
+        var info = gtengine::MReplayInfo();
+
+        info.initialize(header);
+
+        return info;
+    }
+
+    method getDriverInfo(context, replay_info)
+    {
+        var dp = replay_info.getDriverParameter();
+
+        if (replay.title == "EVENT_RACE")
+        {
+            var spec = (replay.bspec_type == gtengine::BSpecType::ONLY_B) ? "B-spec" : "A-spec";
+
+            var format_name = context.translate(ROOT, "MyHome", "FORMAT_NAME");
+            var format_value = context.translate(ROOT, "MyHome", "FORMAT_VALUE");
+
+            var text = format_value.build(format_name.build(context.translate(ROOT, "Driver", "DRIVER"), spec), dp.display_name);
+            return text;
+        }
+        else
+        {
+            var format = context.translate(ROOT, "MyHome", "FORMAT_VALUE");
+            return format.build(context.translate(ROOT, "Driver", "DRIVER"), dp.display_name);
+        }
+    }
+
+    method getWeatherInfo(context, replay_info)
+    {
+        var rp = replay_info.getRaceParameter();
+        var decisive_weather = rp.decisive_weather;
+        var result = "";
+
+        switch (decisive_weather)
+        {
+            case gtengine::DecisiveWeather::SUNNY:
+                var result = "SUNNY";
+                break;
+
+            case gtengine::DecisiveWeather::RAINY:
+                var result = "RAINY";
+                break;
+
+            case gtengine::DecisiveWeather::SNOWY:
+                var result = "SNOWY";
+                break;    
+        }
+
+        if (result == "")
+            return result;
+
+        var format = context.translate(ROOT, "MyHome", "FORMAT_VALUE");
+        return "\n" + format.build(
+            context.translate(ROOT, "RaceCourseEditProject::CourseMakerRoot", "WEATHER"), 
+            context.translate(ROOT, "RaceCourseEditProject::CourseMakerRoot", result)
+        );
+    }
+
+    method getGridInfo(context, replay_info)
+    {
+        if (replay_info.entry_num == 1 || self.replay.title == "EVENT_RALLY")
+            return "";
+
+        var list = [];
+        var car0 = "";
+        var one_make = true;
+
+        for (var i = 0; i < replay_info.entry_max; ++i)
+        {
+            var cp = replay_info.getCarParameter(i, true);
+
+            if (cp != nil)
+            {
+                var car_label = cp.getCarLabel();
+
+                if (i == 0)
+                    car0 = cp.getCarLabel();
+                else
+                {
+                    if (car0 != car_label)
+                        one_make = false;
+                }
+
+                list.push(gtengine::MSpecDB::getCarShortName(car_label));
+            }
+        }
+
+        var format = context.translate(ROOT, "MyHome", "FORMAT_GRID_LIST");
+
+        var text = "\n" + format.build(list.size) + "\n";
+
+        if (one_make)
+            text += context.translate(ROOT, "MyHome", "ONEMAKE");
+        else
+            text += list.join("\n");
+        return text;
+    }
+
+    method getFileSizeInfo(context, replay)
+    {
+        var format = context.translate(ROOT, "MyHome", "FORMAT_VALUE");
+
+        return "\n" + format.build(context.translate(ROOT, "MyHome", "FILESIZE"), 
+            UnitUtil::getDiskSizeString(context, replay.filesize));
+    }
+
+    method getSubtitle(context)
+    {
+        if (self.replay.subtitle == "")
+            return "";
+
+        return "\n" + self.replay.subtitle;
+    }
+
+    method getDescription(context)
+    {
+        if (self.replay.description == "")
+            return "";
+
+        return "\n" + self.replay.description;
+    }
+
+    method onFinalize(context)
+    {
+
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    module DetailPopup2::Pane
+    {
+        module Footer
+        {
+            module CommandB
+            {
+                method onFocusEnter(context, event)
+                {
+                    var w = event.widget;
+                    var text = w.name.upcase();
+                
+                    if (text != "CHECKBOX" && text != "PLAY")
+                    {
+                        var localized_text = context.translate(ROOT, "MyHome", text);
+                        BalloonTip.set_value(context, w, localized_text, 0);
+                    }
+                
+                    return EVENTRESULT_FILTER;
+                }
+
+                method onFocusLeave(context)
+                {
+                    BalloonTip.reset_value();
+                
+                    return EVENTRESULT_FILTER;
+                }
+
+                method onKeyPress(context, event)
+                {
+                    var scrollclip = DetailPopup2::Pane::Body::ScrolledWindow::clip;
+                
+                    var space = scrollclip.space;
+                    var textface = space.TextFace;
+                    var line_height = textface.line_height;
+                
+                    var status = EVENTRESULT_CONTINUE;
+                
+                    if (event.keysym == CELL_PAD_CTRL_L3_UP)
+                    {
+                        if (scrollclip.manualTargetIncY(line_height))
+                            status = EVENTRESULT_STOP;
+                    }
+                
+                    if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+                    {
+                        if (scrollclip.manualTargetIncY(-line_height))
+                            status = EVENTRESULT_STOP;
+                    }
+                
+                    return status;
+                }
+
+                module Favorite::CheckBox
+                {
+                    method onCallback(context, replay, item_w)
+                    {
+                        CheckBox.active = !CheckBox.active;
+                        ROOT.need_update = true;
+                    }
+
+                    method onActivate(context)
+                    {
+                        main::sound.play("cursor");
+                    
+                        Function::setFavorite(context, ROOT.replay, !ROOT.replay.favorite, onCallback);
+                    
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module Play
+                {
+                    method onActivate(context)
+                    {
+                        main::sound.play("ok");
+                    
+                        var result = Function::play(context, ROOT.replay);
+                    
+                        if (!result)
+                            ROOT.close(context);
+                    
+                        return EVENTRESULT_FILTER;
+                    }    
+                }
+
+                module Logger
+                {
+                    method onActivate(context)
+                    {
+                        main::sound.play("ok");
+                    
+                        var result = Function::logger(context, ROOT.replay);
+                    
+                        if (!result)
+                            ROOT.close(context);
+                    
+                        return EVENTRESULT_FILTER;
+                    }        
+                }
+
+                module ExportSaveData
+                {
+                    method onActivate(context)
+                    {
+                        main::sound.play("ok");
+                    
+                        Function::export(context, ROOT.replay);
+                        return EVENTRESULT_FILTER;
+                    }        
+                }
+
+                module Delete
+                {
+                    method onActivate(context)
+                    {
+                        main::sound.play("ok");
+                    
+                        var result = Function::delete(context, ROOT.replay);
+                    
+                        if (result)
+                        {
+                            ROOT.close(context);
+                        }
+                    
+                        return EVENTRESULT_FILTER;
+                    }        
+                }
+
+                module Close
+                {
+                    method onActivate(context)
+                    {
+                        main::sound.play("ok");
+                        ROOT.close(context);
+                    
+                        return EVENTRESULT_FILTER;
+                    }    
+                }
+            }   
+        }   
+    }
+}

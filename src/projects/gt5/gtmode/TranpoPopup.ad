@@ -1,0 +1,968 @@
+module ROOT
+{
+    module Function
+    {
+        #include "ItemFunction.ad"
+    }
+
+    hidden.visible = false;
+
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+
+    method open(context)
+    {
+        self.result = false;
+        self.closed = false;
+
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return self.result;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        ContextMain.event_mask = 0x05;
+        ContextMain.disableInput();
+
+        Body::FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        }
+
+        Body::FadeActor.out = false;
+    }
+
+    method onInitialize(context)
+    {
+        Body::ButtonHelpGT5.set(context, [
+            [Body::ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_OPEN")],
+            [Body::ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_CANCEL")],
+            ["Square", context.translate(ROOT, "BUTTON_HELP_OPEN_ALL")]
+        ]);
+
+        initialize(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method initialize(context)
+    {
+        Body::List.finalizeFinder(context);
+        Body::List.initializeFinder(context);
+    }
+
+    method onFinalize(context)
+    {
+        Body::List.finalizeFinder(context);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    function GetOneLineText(txt)
+    {
+        var txt_array = txt.split("\n");
+
+        for (var i = 0; i < txt_array.size; i++)
+        {
+            txt_array[i] = txt_array[i].removeLastOf(" ");
+
+            var size_before = txt_array[i].size;
+            txt_array[i] = txt_array[i].removeLastOf("-");
+
+            if (i < txt_array.size - 1)
+            {
+                switch (main::pdistd::MLocale::getLanguage())
+                {
+                    case "JP":
+                    case "CN":
+                    case "TW":
+                        break;
+
+                    default:
+                        if (size_before == txt_array[i].size)
+                            txt_array[i] += " ";
+                        break;            
+                }
+            }
+        }
+
+        return txt_array.join("");
+    }
+
+    function checkDebugCommand(context)
+    {
+        if (pdiext::isQABuild())
+        {
+            var state = context.getUpdateContext().getPadButtonState(0);
+
+            if (state & 0x800)
+                return true;
+        }
+
+        return false;
+    }
+
+    module Body::List
+    {
+        attribute finder;
+
+        function getTicketCategory(_class)
+        {
+            if (_class == "R")
+                return "RALLY";
+            else if (_class == "N")
+                return "NASCAR";
+            else if (_class == "M")
+                return "MUSCLE";
+            else
+            {
+                var c = _class.toInt();
+
+                if (c <= 5)
+                    return "BEGINNER";
+                else if (c <= 9)
+                    return "AMATEUR";
+                else if (c <= 12)
+                    return "PROFESSIONAL";
+                else if (c <= 17)
+                    return "EXPERT";
+                else if (c <= 21)
+                    return "EXTREME";
+                else
+                    return "ENDURANCE";
+            }
+        }
+
+        function onInitItem(context, candidate_data, item_w, arg)
+        {
+            var item = candidate_data.value_;
+            var item_code = item["item_code"];
+
+            var blob = GameItemUtil::ItemBox::getItemEntity(item["itembox_id"]);
+            var zero_blob = pdistd::MBlob("0");
+
+            var bg = "";
+            if (blob != zero_blob && item["sender"] != "" && GameItemUtil::isCarTicket(item))
+                bg = "white";
+            else if (item_code == "presentcar_ticket_00")
+                bg = "green";
+            else if (item_code == "concept_presentcar_ticket_13" || item_code.beginWith("year_presentcar_ticket_"))
+                bg = "black";
+            else
+                bg = "blue";
+
+            item_w.bg_ticket.image_path = "piece/ticket/ticket_%{bg}.img";
+
+            var _class = "";
+            if (item_code == "presentcar_ticket_00")
+            {
+                ;
+            }
+            else
+            {
+                if (item_code == "concept_presentcar_ticket_13" || item_code.beginWith("year_presentcar_ticket_"))
+                    _class = "dummy";
+                else if (item_code.beginWith("presentcar_ticket"))
+                {
+                    _class = item_code.substr("presentcar_ticket_".size);
+                    if (_class == "lv0")
+                        _class = "00";
+                }
+                else if (item_code.beginWith("concept_presentcar_ticket_"))
+                {
+                    var id = item_code.substr("concept_presentcar_ticket_".size);
+                    if (id == "05")
+                        _class = "N";
+                    else if (id == "11" || id == "12")
+                        _class = "M";
+                    else if (id == "07" || id == "08" || id == "09")
+                        _class = "R";
+                }
+            }
+
+            if (_class != "")
+            {
+                item_w.ColorTip.visible = false;
+                item_w.type.TextFace.text = "*";
+                item_w.title_type.text = context.translate(ROOT, "Ticket", "TYPE_CLASS");
+
+                if (_class != "dummy")
+                {
+                    item_w.img_class.image_path = "piece/ticket/class_%{_class}.img";
+
+                    var category = getTicketCategory(_class);
+                    item_w.title_class.text = context.translate(ROOT, "Ticket", "CATEGORY_%{category}");
+                }
+            }
+            else
+            {
+                var color = item["argument1"];
+                var car_label = item["code"];
+                var car_code = gtengine::MSpecDB::getCarCode(car_label);
+
+                var cp;
+                if (item["sender"] != "")
+                {
+                    if (item["itembox_id"] != 0)
+                    {
+                        if (blob == zero_blob)
+                        {
+                            cp = gtengine::MCarParameter(car_code);
+                            cp.color = color;
+                        }
+                        else
+                        {
+                            cp = main::gtengine::MCarParameter();
+                            cp.deserialize(blob);
+                        }
+                    }
+                    else
+                        cp = gtengine::MCarParameter(car_code);
+
+                    item_w.ColorTip::ColorFace.setCarParameter(cp);
+                }
+                else
+                    item_w.ColorTip::ColorFace.setCarColor(car_code, color);
+
+                item_w.ColorTip.visible = true;
+                var is_premium = gtengine::MSpecDB::checkGenericFlag("has_premium_model", car_code);
+
+                item_w.type.TextFace.text = context.translate(ROOT, "SpecFormat", (is_premium) ? "car_premium_short" : "car_standard_short");
+
+                item_w.type.visible = true;
+
+                item_w.title_type.text = context.translate(ROOT, "Ticket", "TYPE_COLOR");
+                item_w.title_class.text = "";
+            }
+
+            var code = item["code"];
+
+            if (code != "")
+            {
+                var car_label = code;
+
+                var manufacture_name = context.translate(ROOT, "TunerName", gtengine::MSpecDB::getTunerLabel(car_label));
+                var car_name = gtengine::MSpecDB::getCarShortName(car_label);
+
+                if (bg == "white")
+                {
+                    item_w.manufacture.text = "%s".format(manufacture_name);
+                    item_w.car.text = "%s".format(car_name);
+                }
+                else
+                {
+                    item_w.manufacture.text = manufacture_name;
+                    item_w.car.text = car_name;
+                }
+            }
+            else
+            {
+                item_w.manufacture.text = "***";
+                item_w.car.text = item["item_name"];
+            }
+        }
+
+        function onActivateItem(context, folder_data, func_close, arg)
+        {
+            var candidate_data = folder_data.getItemData();
+
+            var item = candidate_data.value_;
+            ROOT::Body::FadeActor.out = false;
+            var res = Function::use(context, item);
+
+            if (res)
+            {
+                ROOT.result = true;
+                ROOT.close(context);
+            }
+            else
+            {
+                ROOT::Body::FadeActor.out = true;
+            }
+        }
+
+        method onKeyPressEvent(context, event)
+        {
+            if (event.keysym == CELL_PAD_CTRL_SQUARE)
+            {
+                main::sound.play("ok");
+                ROOT::Body::FadeActor.out = false;
+
+                var item_list = [];
+                var item_count = self.finder.getItemCount();
+
+                for (var i = 0; i < item_count; i++)
+                {
+                    var candidate_data = self.finder.getItemData(context, i);
+
+                    if (candidate_data != nil)
+                    {
+                        var item = candidate_data.value_;
+                        item_list.push(item);
+                    }
+                }
+
+                var item_count = item_list.size;
+                var msg = "";
+                var limit = 100;
+
+                if (item_count > limit)
+                {
+                    msg = context.translate(ROOT, "QUERY_ITEM_USE_ALL_OVER100").build(item_count, limit);
+
+                    item_list.resize(limit);
+                    item_count = limit;
+                }
+                else
+                    msg = context.translate(ROOT, "QUERY_ITEM_USE_ALL").build(item_count);
+
+                if (checkDebugCommand(context))
+                {
+                    CarDeliveryPopup.debug_mode = true;
+                    msg += "\n(DEBUG MODE - Tickets are not removed)";
+                }
+
+                var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, msg);
+                if (res)
+                {
+                    var delivery_logs = [];
+
+                    var res2 = CarDeliveryPopup.open(context, item_list, &delivery_logs);
+                    CarDeliveryLogPopup.open(context, delivery_logs);
+                    saveNow(context);
+
+                    if (res2)
+                    {
+                        ROOT.result = true;
+                        ROOT.close(context);
+                    }
+                    else
+                    {
+                        ROOT.initialize(context);
+                        ROOT::Body::FadeActor.out = true;
+                    }
+                }
+                else
+                    ROOT::Body::FadeActor.out = true;
+
+                return EVENTRESULT_FILTER;
+            }
+
+            return EVENTRESULT_CONTINUE;
+        }
+
+        method initializeFinder(context)
+        {
+            var initial_data = makeInitialData(context);
+
+            self.finder = UIKitProject::FinderRoot.setCopy(context, self, initial_data, false);
+
+            var item_list = GameItemUtil::ItemBox::getPresentCarTicket("create_date", "desc");
+
+            var candidates = UIKitProject::FinderRoot.makeCandidates(item_list);
+            self.finder.replaceCurrentFolderCandidates(context, candidates, 0);
+            self.finder.onFocus(context);
+        }
+
+        method makeInitialData(context)
+        {
+            var Finder = UIKitProject::FinderRoot;
+            var candidates = Finder.makeCandidates(Array(0));
+
+            var initial_data = Finder.InitialData(candidates);
+
+            initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+
+            initial_data.cb_init_item_ = onInitItem;
+            initial_data.cb_on_activate_ = onActivateItem;
+            initial_data.cb_on_key_press_ = onKeyPressEvent;
+            initial_data.v_scrollbar_ = VScrollbar;
+
+            initial_data.item_cache_ = false;
+            initial_data.extended_item_ = hidden::Item;
+            initial_data.h_item_count_ = 2;
+            initial_data.import_iconbox_parameter_ = hidden::IconBox;
+
+            return initial_data;
+        }
+
+        method finalizeFinder(context)
+        {
+            if (self.finder != nil)
+            {
+                self.removeChild(context, self.finder);
+                self.finder = nil;
+            }
+        }
+    }
+
+    module CarDeliveryPopup
+    {
+
+    attribute debug_mode = false;
+    attribute item_list;
+    attribute progress;
+    attribute event_loop;
+    attribute delivery_logs_ref;
+
+    method open(context, item_list, delivery_logs_ref)
+    {
+        self.item_list = item_list;
+        self.delivery_logs_ref = delivery_logs_ref;
+
+        ROOT::Body.insensitive = true;
+        ROOT.setFocus(Footer::Buttons);
+
+        context.wait(0.5);
+        self.appear();
+        CursorUtil::setCursor(context, "wait");
+        Footer::Buttons::Close.visible = false;
+
+        var res = usePresentCarTicketAll(context);
+
+        if (res)
+            SoundUtil::PlayStreamSE("/sound_gt/se/gt5_buy_car");
+        else
+            main::sound.play("disable");
+
+        CursorUtil::setCursor(context, "cursor_chrome");
+        Footer::Buttons::Close.visible = true;
+
+        ROOT.setFocus(Footer::Buttons::Close);
+
+        self.event_loop = main::menu::EventLoop(context);
+        self.event_loop.enter();
+
+        self.hide();
+        ROOT::Body.insensitive = false;
+
+        return res;
+    }
+
+    method _close(context)
+    {
+        if (self.event_loop != nil)
+        {
+            self.event_loop.leave();
+            self.event_loop = nil;
+        }
+    }
+
+    method appear(warp)
+    {
+        self.insensitive = false;
+        self.FadeActor.out = true;
+        self.FadeActor.start();
+
+        if (warp == true)
+            self.FadeActor.warp();
+    }
+
+    method hide(warp)
+    {
+        self.insensitive = true;
+        self.FadeActor.out = false;
+        self.FadeActor.start();
+
+        if (warp == true)
+            self.FadeActor.warp();
+    }
+
+    method onInitialize(context)
+    {
+        self.hide(true);
+
+        Body::Phase1.hide(context, true);
+        Body::Phase2.hide(context, true);
+
+        self.progress = main::pdistd::MProgress();
+        Body::Progress::Bar::progress.progress = self.progress;
+        Body::Progress::Bar::progress.linear_mode = true;
+    }
+
+    method onActivate(context)
+    {
+        main::sound.play("ok");
+        self._close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self._close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method usePresentCarTicketAll(context)
+    {
+        Body::Phase1.hide(context, true);
+        Body::Phase2.hide(context, true);
+
+        var garage = GAME_STATUS.user_profile.garage;
+        var game_flags = GAME_STATUS.user_profile.game_flags;
+        var item_box = GAME_STATUS.user_profile.itembox;
+
+        for (var i = 0; i < item_list.size; i++)
+        {
+            var item = self.item_list[i];
+
+            Title::label.text = item.item_name;
+
+            var max = item_list.size;
+            var current = i + 1;
+
+            Body::Progress::Counter::TextFace.text = "%d/%d".format(current, max);
+
+            Body::Phase2.hide(context, false);
+            Body::Phase1.set(context, item);
+            Body::Phase1.appear(context, false);
+
+            var cp = Function::getCarByCarTicket(item);
+            var car_code = cp.getCarCode();
+            var car_label = cp.getCarLabel();
+            var paint_id = cp.getPaintID();
+            var first_car = false;
+
+            var garage_id = -1;
+
+            if (garage.getCount() + 1 >= garage.getMax())
+            {
+                main::sound.play("disable");
+                visible_error(true);
+
+                if (self.delivery_logs_ref != nil)
+                {
+                    (*self.delivery_logs_ref).push(CarDeliveryLogPopup::LogData(item, nil));
+                }
+
+                return false;
+            }
+
+            var garage_id = garage.addCar(cp);
+            var invalid_car = !DLCUtil::Car::isAvailable(car_label);
+
+            if (invalid_car)
+                GAME_STATUS.user_profile.garage.setInvalid([car_label], true);
+
+            var car_year = gtengine::MSpecDB::getCarYear(car_code);
+
+            if (car_year > 1900 && car_year < 1960)
+                PDINetwork.unlockTrophyAsync(gtengine::TrophyType::OBTAIN_BEFORE50S_CAR);
+
+            if (!self.debug_mode)
+            {
+                if (!GameItemUtil::ItemBox::delete2(item))
+                {
+                    ERROR(context, ROOT, "MSG_FAILED");
+                    return false;
+                }
+
+                --item.count;
+            }
+
+            GameItemUtil::putPaintItem(paint_id);
+
+            var progress_base = i.toFloat() / max.toFloat();
+            self.progress.value = progress_base + (0.5 / max.toFloat());
+
+            SceneFaceForCapture.visible = true;
+
+            ThumbnailUtil::captureIconForGarage(context, SceneFaceForCapture, garage_id, cp, ["L"]);
+
+            SceneFaceForCapture.visible = false;
+
+            Body::Phase1.hide(context, false);
+            Body::Phase2.set(context, garage_id, cp, paint_id);
+            Body::Phase2.appear(context, false);
+
+            self.progress.value = progress_base + (1.0 / max.toFloat());
+
+            SceneFaceForCapture.visible = true;
+            ThumbnailUtil::captureIconForGarage(context, SceneFaceForCapture, garage_id, cp, ["M"]);
+            SceneFaceForCapture.visible = false;
+
+            if (self.delivery_logs_ref != nil)
+                (*self.delivery_logs_ref).push(CarDeliveryLogPopup::LogData(item, car_code, paint_id));
+
+            var strlog;
+            if (garage.getCount() == 1 || !game_flags.getFlag("USER_STATUS", "GET_FIRST_CAR"))
+            {
+                DialogUtil::openInformationDialog(context, context.translate(ROOT, "GTModeProject::CarDeliveryRoot", "MESSAGE_GET_FIRST_CAR"));
+                game_flags.setFlag("USER_STATUS", "GET_FIRST_CAR", true);
+
+                CursorUtil::setCursor(context, "wait");
+
+                garage.rideCar(garage_id);
+                ActionLogUtil::rideCar(cp.getCarLabel());
+
+                strlog = "GF=%s:GC=%s:GU=%s".format(car_label, car_label, main::PDINetwork.getClientName());
+                main::Grim2.requestPutLog(strlog);
+            }
+            else
+            {
+                strlog = "GC=%s:GU=%s".format(car_label, main::PDINetwork.getClientName());
+                main::Grim2.requestPutLog(strlog);
+            }
+        }
+
+        return true;
+    }
+
+    method visible_error(flag)
+    {
+        self.Body::Phase1::TextFace2.visible = !flag;
+        self.Body::Phase1::Error.visible = flag;
+        self.Body::Progress.visible = !flag;
+    }
+
+    module Body
+    {   
+        module Phase1
+        { 
+            method appear(warp)
+            {
+                self.insensitive = false;
+                self.FadeActor.out = true;
+                self.FadeActor.start(); 
+
+                if (warp == true)
+                    self.FadeActor.warp();
+            }   
+
+            method hide(warp)
+            {
+                self.insensitive = true;
+                self.FadeActor.out = false;
+                self.FadeActor.start(); 
+
+                if (warp == true)
+                    self.FadeActor.warp();
+            }   
+
+            method set(context, item, log_data_ref)
+            {
+                visible_error(false);   
+
+                var ticket_name = item.item_name;
+                self.TextFace.text = context.translate(ROOT, "MSG_USE_CAR_TICKET").build(ticket_name);  
+
+                var car_ticket = Image::CarTicketMini;
+                var item_code = item.item_code; 
+
+                var blob = GameItemUtil::ItemBox::getItemEntity(item["itembox_id"]);
+                var zero_blob = pdistd::MBlob("0");    
+
+                var bg = "";
+                var _class = "";    
+
+                if (blob != zero_blob && item.sender != "" && GameItemUtil::isCarTicket(item))
+                    bg = "thumb_white";
+                else if (item_code == "presentcar_ticket_00")
+                    bg = "thumb_green";
+                else if (item_code == "concept_presentcar_ticket_13" || item_code.beginWith("year_presentcar_ticket_"))
+                {
+                    bg = "thumb_black";
+                    _class = "dummy";
+                }   
+                else if (item_code.beginWith("presentcar_ticket"))
+                {
+                    _class = item_code.substr("presentcar_ticket_".size);   
+                    if (_class == "lv0")
+                        _class = "00";
+                }
+                else if (item_code.beginWith("concept_presentcar_ticket_"))
+                {
+                    var id = item_code.substr("concept_presentcar_ticket_".size);   
+                    if (id == "05")
+                        _class = "N";
+                    else if (id == "11" || id == "12")
+                        _class = "M";
+                    else if (id == "07" || id == "08" || id == "09")
+                        _class = "R";
+
+                    bg = "thumb_blue_%{_class}";
+                }
+ 
+                car_ticket.bg.image_path = "piece/ticket/%{bg}.img";   
+
+                if (_class == "")
+                {
+                    var color = item.argument1;
+                    var car_label = item.code;
+                    var car_code = gtengine::MSpecDB::getCarCode(car_label);    
+
+                    if (item["sender"] != "")
+                    {
+                        var cp;
+                        if (item["itembox_id"] != 0)
+                        {
+                            if (blob == zero_blob)
+                            {
+                                cp = gtengine::MCarParameter(car_code);
+                                cp.color = color;
+                            }   
+                            else
+                            {
+                                cp = main::gtengine::MCarParameter();
+                                cp.deserialize(blob);
+                            }
+                        }   
+                        else
+                            cp = gtengine::MCarParameter(car_code);
+
+                        car_ticket.ColorTip::ColorFace.setCarParameter(cp);
+                    }   
+                    else
+                        car_ticket.ColorTip::ColorFace.setCarColor(car_code, color); 
+
+                    car_ticket.ColorTip.visible = true;
+
+                    var is_premium = gtengine::MSpecDB::checkGenericFlag("has_premium_model", car_code);    
+                    car_ticket.type.TextFace.text = context.translate(ROOT, "SpecFormat", (is_premium) ? "car_premium_short" : "car_standard_short");   
+                    car_ticket.type.visible = true;
+                }   
+                else
+                {
+                    car_ticket.ColorTip.visible = false;
+                    car_ticket.type.visible = false;
+                }   
+
+            }
+        }
+
+        module Phase2
+        {  
+            method appear(warp)
+            {
+                self.insensitive = false;
+                self.FadeActor.out = true;
+                self.FadeActor.start(); 
+
+                if (warp == true)
+                    self.FadeActor.warp();
+            }   
+
+            method hide(warp)
+            {
+                self.insensitive = true;
+                self.FadeActor.out = false;
+                self.FadeActor.start(); 
+
+                if (warp == true)
+                    self.FadeActor.warp();
+            }   
+
+            method set(context, garage_id, cp, paint_id)
+            {
+                var car_code = cp.getCarCode();
+                var car_color = cp.color;   
+
+                var tuner_label = gtengine::MSpecDB::getTunerLabel(car_code);   
+
+                self.VBox::ImageFace.image_path = GarageUtil::getThumbnailPath(garage_id, "L");
+                self.VBox::TunerLogo.image_path = "piece/tunner_logo_M/%{tuner_label}.img";    
+
+                self.VBox::CarName.text = gtengine::MSpecDB::getCarShortName(car_code);
+                self.VBox::ColorName.text = gtengine::MSpecDB::getCarColorName(car_code, car_color);    
+
+                if (paint_id > 0)
+                {
+                    var paint_name = gtengine::MSpecDB::getPaintColorName_A(paint_id);    
+
+                    self.VBox::TextFace2.text = context.translate(ROOT, "MSG_YOU_GOT_PAINT_ITEM").build(paint_name);    
+                    self.VBox::TextFace2.visible = true;
+                }   
+                else
+                    self.VBox::TextFace2.visible = false;
+                }
+            }
+        } 
+    }
+
+    module CarDeliveryLogPopup
+    {   
+        class LogData
+        {   
+            attribute ticket_name;
+            attribute car_name;
+            attribute paint_name;   
+
+            method __init__(item, car_code, paint_id)
+            {
+                self.ticket_name = item.item_name;  
+
+                if (car_code != nil)
+                    self.car_name = gtengine::MSpecDB::getCarShortName(car_code);
+
+                if (paint_id != nil)
+                    self.paint_name = paint_id > 0 ? gtengine::MSpecDB::getPaintColorName_A(paint_id) : nil;
+            }
+        }   
+
+        attribute event_loop;   
+
+        method open(context, delivery_logs)
+        {
+            ROOT::Body.insensitive = true;
+            createLogItems(context, delivery_logs); 
+
+            self.appear();
+            ROOT.setFocus(Buttons::Close);  
+
+            self.event_loop = main::menu::EventLoop(context);   
+
+            self.event_loop.enter();
+            self.hide();    
+
+            ROOT::Body.insensitive = false;
+        }   
+
+        method _close(context)
+        {
+            if (self.event_loop != nil)
+            {
+                self.event_loop.leave();
+                self.event_loop = nil;
+            }
+        }   
+
+        method appear(warp)
+        {
+            self.insensitive = false;
+            self.FadeActor.out = true;
+            self.FadeActor.start(); 
+
+            if (warp == true)
+                self.FadeActor.warp();
+        }   
+
+        method hide(warp)
+        {
+            self.insensitive = true;
+            self.FadeActor.out = false;
+            self.FadeActor.start(); 
+
+            if (warp == true)
+                self.FadeActor.warp();
+        }   
+
+        method onInitialize(context)
+        {
+            self.hide(true);
+        }   
+
+        method onFinalize(context)
+        {
+            ScrolledWindow::ScrollClip::space.clearWindow(context);
+        }   
+
+        method onKeyPress(context, event)
+        {
+            var status = EVENTRESULT_CONTINUE; 
+            if (event.keysym == CELL_PAD_CTRL_L3_UP)
+            {
+                ScrolledWindow::ScrollClip.manualTargetIncY(96.0);
+                status = EVENTRESULT_FILTER;
+            }   
+
+            else if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+            {
+                ScrolledWindow::ScrollClip.manualTargetIncY(-96.0);
+                status = EVENTRESULT_FILTER;
+            }   
+
+            return status;
+        }   
+
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+            self._close(context);   
+
+            return EVENTRESULT_FILTER;
+        }   
+
+        method onCancel(context)
+        {
+            main::sound.play("cancel");
+            self._close(context);   
+
+            return EVENTRESULT_FILTER;
+        }   
+
+        method createLogItems(context, delivery_logs)
+        {
+            ScrolledWindow::ScrollClip::space.clearWindow(context); 
+
+            foreach (var log_data in delivery_logs)
+            {
+                var item = hidden::LogItem.doCopy();
+                item.initialize(context, log_data);
+                ScrolledWindow::ScrollClip::space.appendChild(context, item);
+            }   
+        }
+    }
+
+    module hidden
+    {   
+        module Item
+        {   
+
+            method initialize(context, item)
+            {   
+
+            }    
+        }   
+
+        module LogItem
+        {   
+            method initialize(context, log_data)
+            {
+                self.VBox::TicketName.text = context.translate(ROOT, "CAR_TICKET").build(log_data.ticket_name); 
+
+                if (log_data.car_name != nil)
+                {
+                    self.VBox::CarName.text = context.translate(ROOT, "MSG_YOU_GOT_THIS_CAR").build(log_data.car_name);
+                    self.VBox::CarName.visible = true;
+                    self.VBox::Error.visible = false;
+                }   
+                else
+                {
+                    self.VBox::Error.text = GetOneLineText(context.translate(ROOT, "MSG_GARAGE_FULL"));
+                    self.VBox::Error.visible = true;
+                    self.VBox::CarName.visible = false;
+                }   
+
+                if (log_data.paint_name != nil)
+                {
+                    self.VBox::PaintName.text = context.translate(ROOT, "MSG_YOU_GOT_PAINT_ITEM").build(log_data.paint_name);
+                    self.VBox::PaintName.visible = true;
+                }   
+                else
+                    self.VBox::PaintName.visible = false;
+            }    
+        }
+    }
+}

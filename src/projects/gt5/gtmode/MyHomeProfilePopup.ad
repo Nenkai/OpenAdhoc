@@ -1,0 +1,1026 @@
+module ROOT
+{
+    module Function
+    {
+        #include "PhotoFunction.ad"
+    }  
+
+    hidden.visible = false;
+
+    attribute closed;
+    attribute popup;
+    attribute user_id;
+    attribute need_update_driver;
+    attribute online_userprofile;
+    attribute update_profile_photo;
+
+    module __BalloonTarget__
+    {
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+            var localized_text = "";
+            var key = w.name.upcase();
+
+            switch (key)
+            {
+                case "PROFILEPHOTO":
+                    localized_text = context.translate(ROOT, "Driver", key);
+                    break;
+
+                case "CHANGEWEAR":
+                case "CHANGEWEARRANDOM":
+                    localized_text = context.translate(ROOT, "Driver", key);
+                    var is_offline_me = ROOT.user_id == nil && !LoginUtil::isOnline();
+                    var is_online_me = ROOT.user_id == Grim2.getLoginUserId();
+
+                    var dp;
+                    if (is_offline_me || is_online_me)
+                    {
+                        dp = GAME_STATUS.user_profile.residence.getPlayer(0);
+                    }
+                    else if (ROOT.online_userprofile != nil)
+                    {
+                        dp = gtengine::MCarDriverParameter();
+                        dp.head_code = ROOT.online_userprofile["menu_helmet"];
+                        dp.head_color_code = ROOT.online_userprofile["menu_helmet_color"];
+
+                        dp.body_code = ROOT.online_userprofile["menu_wear"];
+                        dp.body_color_code = ROOT.online_userprofile["menu_wear_color"];
+                    }
+
+                    if (dp != nil)
+                        ROOT::WearItemName.open(dp, true);
+
+                    break;
+
+                default:
+                    if (key == "EXIT")
+                        key = "CLOSE";
+
+                    localized_text = context.translate(ROOT, "MyHome", key);
+                    break;
+            }
+
+            BalloonTip.set_value(context, w, localized_text, 0);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            ROOT::WearItemName.close(false);
+
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    class WaitingCapture : UIKitProject::ProgressRoot::ThreadData
+    {
+        attribute auto_mode = true;
+
+        method begin_message(context)
+        {
+            return context.translate(ROOT, "Driver", "CAPTURING_PROFILE_PHOTO");
+        }
+    }
+
+    method open(context, user_id)
+    {
+        self.user_id = user_id;
+        self.closed = false;
+        self.need_update_driver = false;
+        self.update_profile_photo = false;
+        self.online_userprofile = nil;
+
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+
+        self.popup.open();
+
+        return true;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        if (self.need_update_driver && LoginUtil::isOnline())
+        {
+            var aspec_dp = GAME_STATUS.user_profile.residence.referPlayer();
+
+            UserProfile2.requestUpdateHelmet(aspec_dp.head_code, aspec_dp.head_color_code, function (args) {});
+            UserProfile2.requestUpdateWear(aspec_dp.body_code, aspec_dp.body_color_code, function (args) {});
+
+            Grim2Util::PUTLOG::WEAR::changeA(aspec_dp);
+            UserProfile2.clearMe();
+            self.need_update_driver = false;
+        }
+
+        ContextMain.event_mask = 0x05;
+        ContextMain.disableInput();
+
+        DetailPopup2::FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        }
+
+        DetailPopup2::FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        PROJECT.history['ItemPopup::keep_order'] = true;
+
+        if (self.user_id == nil)
+        {
+            if (LoginUtil::isOnline())
+            {
+                self.user_id = Grim2.getLoginUserId();
+                initializeAsOnline(context);
+            }
+            else
+                initializeAsOfflineMe(context);
+
+            DetailPopup2::Pane::Footer::HBox::ProfilePhoto.visible = true;
+            DetailPopup2::Pane::Footer::HBox::ChangeWear.visible = true;
+            DetailPopup2::Pane::Footer::HBox::ChangeWearRandom.visible = true;
+        }
+        else
+        {
+            initializeAsOnline(context);
+
+            DetailPopup2::Pane::Footer::HBox::ProfilePhoto.visible = false;
+            DetailPopup2::Pane::Footer::HBox::ChangeWear.visible = false;
+            DetailPopup2::Pane::Footer::HBox::ChangeWearRandom.visible = false;
+        }
+
+        ROOT.setFocus(DetailPopup2::Pane::Footer::HBox::Close);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        PROJECT.history['ItemPopup::keep_order'] = false;
+        PROJECT.history['ItemPopup::order'] = "create_date";
+
+        PROJECT.history['ItemPopup::by'] = "ASC";
+
+        DetailPopup2::Pane::Body::Info::UserId::ImageFace.image_path = "";
+        DetailPopup2::Pane::Body::SBox::VBox::Sign::ImageFace.image_path = "";
+        DetailPopup2::Pane::Body::ImageFace.image_path = "";
+
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method setProgress(context, aspec_level, bspec_level, aspec_exp, bspec_exp, aspec_next_level, bspec_next_level)
+    {
+        var parent = DetailPopup2::Pane::Body::SBox::VBox::Level;
+        parent.ASpec::HBox::TextFace.text = aspec_level;
+        parent.BSpec::HBox::TextFace.text = bspec_level;
+
+        var width = parent.ASpec::Bar::Progress.w;
+        var aspec_current = aspec_exp;
+
+        if (aspec_current > 0)
+        {
+            var aspec_width = (width * aspec_current) / aspec_next_level;
+            parent.ASpec::Bar::Progress::bar::ScalarInterpolator.setEndValue(0, aspec_width);
+        }
+        else
+            parent.ASpec::Bar::Progress::bar::ScalarInterpolator.setEndValue(0, 0);
+
+        parent.ASpec::Bar::Progress::bar::ScalarInterpolator.restart();
+
+        var bspec_current = bspec_exp;
+
+        if (bspec_current > 0)
+        {
+            var bspec_width = (width * bspec_current) / bspec_next_level;
+            parent.BSpec::Bar::Progress::bar::ScalarInterpolator.setEndValue(0, bspec_width);
+        }
+        else
+            parent.BSpec::Bar::Progress::bar::ScalarInterpolator.setEndValue(0, 0);
+
+        parent.BSpec::Bar::Progress::bar::ScalarInterpolator.restart();
+    }
+
+    method setLevelOffline(context, aspec_level, bspec_level)
+    {
+        var aspec_exp = GAME_STATUS.user_profile.getAspecCurrentPoint();
+        var bspec_exp = GAME_STATUS.user_profile.getBspecCurrentPoint();
+        var aspec_next_level = GAME_STATUS.user_profile.getAspecPointForNextLevel();
+        var bspec_next_level = GAME_STATUS.user_profile.getBspecPointForNextLevel();
+
+        setProgress(context, aspec_level, bspec_level, aspec_exp, bspec_exp, aspec_next_level, bspec_next_level);
+    }
+
+    method setLevelOnline(context, aspec_level, bspec_level, aspec_exp, bspec_exp)
+    {
+        var aspec_next_level = GAME_STATUS.user_profile.getExpForNextLevel(aspec_level);
+        var bspec_next_level = GAME_STATUS.user_profile.getExpForNextLevel(bspec_level);
+
+        setProgress(context, aspec_level, bspec_level, aspec_exp, bspec_exp, aspec_next_level, bspec_next_level);
+    }
+
+    method setInfo(context, user_id, online, country)
+    {
+        DetailPopup2::Pane::Body::Info::UserId::TextFace.text = user_id;
+        DetailPopup2::Pane::Body::Info::TextFace.text = context.translate(ROOT, "MyHome", online ? "ONLINE" : "OFFLINE");
+
+        if (country != "" && online)
+        {
+            DetailPopup2::Pane::Body::Info::UserId::ImageFace.from_disk = true;
+            DetailPopup2::Pane::Body::Info::UserId::ImageFace.image_path = "piece/flag_ranking/%{country}.img";
+        }
+        else
+        {
+            DetailPopup2::Pane::Body::Info::UserId::ImageFace.from_disk = false;;
+            DetailPopup2::Pane::Body::Info::UserId::ImageFace.image_path = "image/gt5/icon/user_offline.dds";
+        }
+    }
+
+    method setLicense(context, license)
+    {
+        var label = license.downcase();
+        if (label == "")
+            label = "none";
+
+        DetailPopup2::Pane::Body::SBox::VBox::Sign::ImageFace.image_path = "piece/license_icon/%{label}.img";
+    }
+
+    method setAvatar(context, u, is_me)
+    {
+        var dp = gtengine::MCarDriverParameter();
+
+        if (u != nil)
+        {
+            dp.head_code = u["menu_helmet"];
+            dp.head_color_code = u["menu_helmet_color"];
+            dp.body_code = u["menu_wear"];
+            dp.body_color_code = u["menu_wear_color"];
+
+            if (is_me)
+            {
+                var dp0 = GAME_STATUS.user_profile.residence.getPlayer(0);
+                var changed = false;
+
+                if (dp0.head_code != dp.head_code || dp0.head_color_code != dp.head_color_code)
+                {
+                    dp.head_code = dp0.head_code;
+                    dp.head_color_code = dp0.head_color_code;
+                    changed = true;
+
+                    UserProfile2.requestUpdateHelmet(dp.head_code, dp.head_color_code, function (args) {});
+                }
+
+                if (dp0.body_code != dp.body_code || dp0.body_color_code != dp.body_color_code)
+                {
+                    dp.body_code = dp0.body_code;
+                    dp.body_color_code = dp0.body_color_code;
+                    changed = true;
+
+                    UserProfile2.requestUpdateWear(dp.body_code, dp.body_color_code, function (args) {});
+                }
+
+                if (changed)
+                    UserProfile2.clearMe();
+            }
+
+            var bg_image = "image/gt5/bg/scene_bg_Aspec_%02d.dds".format(u["menu_color"] + 1);
+            DetailPopup2::Pane::Body::bg.image_path = bg_image;
+            DetailPopup2::Pane::Body::SceneFace.image_path = bg_image;
+        }
+        else
+        {
+            var dp = GAME_STATUS.user_profile.residence.getPlayer(0);
+
+            var bg_image = "image/gt5/bg/scene_bg_Aspec_%02d.dds".format(GLOBAL_STATUS.user_profile.context.myhome_color_id + 1);
+
+            DetailPopup2::Pane::Body::bg.image_path = bg_image;
+            DetailPopup2::Pane::Body::SceneFace.image_path = bg_image;
+        }
+
+        DetailPopup2::Pane::Body::SceneFace.loadDriver(dp);
+    }
+
+    method initializeAsOfflineMe(context)
+    {
+        DetailPopup2::Pane::Body::SBox::VBox::ActiveTime.visible = false;
+        DetailPopup2::Pane::Body::Message.visible = false;
+
+        var aspec_level = GAME_STATUS.user_profile.getAspecLevel();
+        var bspec_level = GAME_STATUS.user_profile.getBspecLevel();
+
+        setLevelOffline(context, aspec_level, bspec_level);
+
+        var user_id = pdistd::getPlayerName();
+        setInfo(context, user_id, false, NP.getRegionName().downcase());
+
+        setLicense(context, LicenseUtil::getString());
+        setAvatar(context, nil);
+
+        DetailPopup2::Pane::Footer::HBox::Profile.visible = false;
+        DetailPopup2::Pane::Body::Info::TextFace.visible = false;
+        DetailPopup2::Pane::Body::SBox::VBox::FriendCount.visible = false;
+    }
+
+    method initializeAsOnline(context)
+    {
+        DetailPopup2::Pane::Body::SBox::VBox::ActiveTime.visible = true;
+        DetailPopup2::Pane::Body::Message.visible = true;
+        DetailPopup2::Pane::Footer::HBox::Profile.visible = true;
+
+        DetailPopup2::Pane::Body::Info::TextFace.visible = true;
+        DetailPopup2::Pane::Body::SBox::VBox::FriendCount::TextFace.text = "";
+        DetailPopup2::Pane::Body::SBox::VBox::FriendCount.visible = true;
+
+        DetailPopup2::Pane::Body::SBox::VBox::ActiveTime::TextFace.text = "";
+        DetailPopup2::Pane::Body::Message::TextFace.text = "";
+
+        var friend_list = NP.getFriendList();
+        friend_list.sort();
+
+        var pos = friend_list.bsearch(self.user_id);
+        var is_friend = pos != -1;
+
+        var is_me = self.user_id == Grim2.getLoginUserId();
+
+        var request = UserProfile2.requestUserProfile(self.user_id, function (args) {});
+
+        if (Grim2Util::__deprecated__join__(context, request))
+        {
+            var u = UserProfile2.decodeUserProfile(request);
+            ROOT.online_userprofile = u;
+
+            setLevelOnline(context, u["aspec_level"], u["bspec_level"], u["aspec_exp"], u["bspec_exp"]);
+
+            if (is_me)
+                setInfo(context, self.user_id, true, u["country"]);
+            else
+            {
+                var np_friend_list = OnlineUtility.getFriendPresenceList();
+
+                foreach (var friend in np_friend_list)
+                {
+                    if (friend["id"].toString() == self.user_id)
+                    {
+                        setInfo(context, self.user_id, friend["presenceState"] == pdistd::PresenceState::SameContext, u["country"]);
+                        break;
+                    }
+                }
+            }
+
+            var license_level = u["license_level"];
+            var license = (license_level == -1) ? "" : ["B", "A", "IC", "IB", "IA", "S"][license_level];
+            setLicense(context, license);
+
+            setAvatar(context, u, is_me);
+
+            var friend_count = 0;
+            if (u["gt_friend_list"] != "")
+                friend_count = u["gt_friend_list"].split(", ").size;
+
+            DetailPopup2::Pane::Body::SBox::VBox::FriendCount::TextFace.text = friend_count;
+
+            if (is_me || is_friend || u["playtime_level"] == 0)
+                DetailPopup2::Pane::Body::SBox::VBox::ActiveTime::TextFace.text = nl2space(u["playtime"]);
+
+            if (is_me || is_friend || u["comment_level"] == 0)
+            {
+                DetailPopup2::Pane::Body::ToolTipFace.remove();
+
+                DetailPopup2::Pane::Body::ToolTipFace.action_type = 1;
+                DetailPopup2::Pane::Body::ToolTipFace.resetAction();
+
+                DetailPopup2::Pane::Body::ToolTipFace.value = nl2space(u["comment"]);
+            }
+        }
+    }
+
+    method setWear(dp, head_code, head_color_code, body_code, body_color_code)
+    {
+        var wearing_sp_item = GameItemUtil::isSpecialWearSet(dp.head_code);
+        if (wearing_sp_item)
+            GameItemUtil::takeOffAvatorItem(gtengine::GameItemCategory::DRIVER_SET, dp.head_code, dp.head_color_code);
+        else
+        {
+            if (head_code != nil && dp.head_code != DriverUtil::DEFAULT_HELMET_CODE)
+                GameItemUtil::takeOffAvatorItem(gtengine::GameItemCategory::DRIVER_HEAD, dp.head_code, dp.head_color_code);
+
+            if (body_code != nil && dp.body_code != DriverUtil::DEFAULT_WEAR_CODE)
+                GameItemUtil::takeOffAvatorItem(gtengine::GameItemCategory::DRIVER_BODY, dp.body_code, dp.body_color_code);
+        }
+
+        var is_sp_item = GameItemUtil::isSpecialWearSet(head_code);
+        if (is_sp_item)
+        {
+            dp.head_code = head_code;
+            dp.head_color_code = head_color_code;
+            dp.body_code = body_code;
+            dp.body_color_code = body_color_code;
+
+            GameItemUtil::takeOnAvatorItem(gtengine::GameItemCategory::DRIVER_SET, head_code, head_color_code);
+        }
+        else
+        {
+            if (head_code != nil)
+            {
+                dp.head_code = head_code;
+                dp.head_color_code = head_color_code;
+
+                GameItemUtil::takeOnAvatorItem(gtengine::GameItemCategory::DRIVER_HEAD, head_code, head_color_code);
+            }
+
+            if (body_code != nil)
+            {
+                dp.body_code = body_code;
+                dp.body_color_code = body_color_code;
+
+                GameItemUtil::takeOnAvatorItem(gtengine::GameItemCategory::DRIVER_BODY, body_code, body_color_code);
+            }
+
+            var wearing_sp_head = GameItemUtil::isSpecialWearSet(dp.head_code);
+            var wearing_sp_body = GameItemUtil::isSpecialWearSet(dp.body_code);
+
+            if ((wearing_sp_head && !wearing_sp_body) || (!wearing_sp_head && wearing_sp_body))
+            {
+                if (wearing_sp_head)
+                {
+                    dp.head_code = DriverUtil::DEFAULT_HELMET_CODE;
+                    dp.head_color_code = DriverUtil::DEFAULT_HELMET_COLOR;
+                }
+
+                if (wearing_sp_body)
+                {
+                    dp.body_code = DriverUtil::DEFAULT_WEAR_CODE;
+                    dp.body_color_code = DriverUtil::DEFAULT_WEAR_COLOR;
+                }
+            }      
+        }
+
+    }
+
+    method setWearDebug(dp)
+    {
+        var t_head_code = [
+            9, 10, 11, 12, 14, 15, 16, 17,
+            18, 19, 20, 21, 22, 23, 24, 25,
+            26, 27, 28, 29, 30, 31, 32, 33,
+            34, 35, 36, 39, 40, 41, 42, 43
+        ];
+
+        var t_body_code = [
+            14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35
+        ];
+
+        dp.head_code = t_head_code[pdistd::MRandom::GetValue(0, t_head_code.size)];
+        dp.body_code = t_body_code[pdistd::MRandom::GetValue(0, t_body_code.size)];
+
+        if (dp.head_code <= 12 || dp.head_code >= 39)
+        {
+            dp.head_color_code = 0;
+            dp.body_code = dp.head_code;
+            dp.body_color_code = 0;
+        }
+        else
+        {
+            dp.head_color_code = pdistd::MRandom::GetValue(1, 30 + 1);
+            dp.body_color_code = pdistd::MRandom::GetValue(1, 30 + 1);
+        }
+
+    }
+
+    method takeProfilePhoto(context)
+    {
+        var space = pdistd::GetDiskFreeSize("/APP_DATA_RAW");
+        var need_size_mb = 32;
+        var need_size = (need_size_mb * 0x400) * 0x400;
+
+        if (space < need_size)
+        {
+            main::sound.play("disable");
+
+            var threshold = "%d%s".format(need_size_mb, context.translate(ROOT, "Unit", "MEGA_BYTE"));
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "SystemMessage", "DISKFULL").build(threshold));
+            return;
+        }
+
+        main::sound.play("ok");
+        CursorUtil::setCursor(ContextMain, "wait");
+        pdistd::MakeDirectory("/APP_DATA_RAW/photo/temp");
+
+        var profile_photo_scenes = [
+            "s0655", "s0657", "s0659",
+            "s0661", "s0663", "s0665",
+            "s0667", "s0669", "s0671"
+        ];
+
+        var photo_list = Array(profile_photo_scenes.size);
+        var updater = WaitingCapture(function (args, progress) 
+        {
+            var ratio = 1.0 / profile_photo_scenes.size;
+
+            for (var i = 0; i < profile_photo_scenes.size; i++)
+            {
+                progress.value = ratio * (i + 1);
+
+                photo_list[i] = takeSceneCapture(context, "/APP_DATA_RAW/photo/temp", profile_photo_scenes[i]);
+            }
+
+            progress.value = 1.0;
+
+        }, context);
+
+        UIKitProject::ProgressRoot.open(context, [updater]);
+        CursorUtil::setCursor(ContextMain, "cursor_chrome");
+
+        var work_path = ProfilePhotoSelect.open(context, photo_list);
+
+        if (work_path != nil)
+        {
+            var thumb_path = work_path.getDeepCopy();
+            var thumb_path = (thumb_path - ".jpg") + "_t.jpg";
+
+            pdistd::CopyFile(work_path, thumb_path);
+            savePhotoFile(context, work_path, thumb_path);
+
+            DialogUtil::openConfirmDialogAutoClose(context, DialogUtil::OK, 
+            context.translate(ROOT, "Driver", "CAPTURING_PROFILE_PHOTO_DONE"));
+
+            GLOBAL_STATUS.user_profile.context.avatar_photo_id = PhotoFileUtil::getLastProfilePhotoId();
+
+            GTModeRoot::updateAvatarPhoto(context);
+            ROOT.update_profile_photo = true;
+        }
+
+        pdistd::RemoveDirectory("/APP_DATA_RAW/photo/temp", true);
+    }
+
+    function takeSceneCapture(context, work_dir, scene_file)
+    {
+        SceneFaceForCapture.visible = true;
+        var sf = ROOT::SceneFaceForCapture;
+
+        var dp = GAME_STATUS.user_profile.residence.getPlayer(0);
+
+        sf.setDefaultDriver(dp);
+        sf.loadCommandFile("code:%{scene_file}");
+
+        while (sf.isUnderSetup())
+            context.wait(0.1);
+
+        var current_time = pdiext::getBetterTime();
+        var current_time_sec = current_time.getBySecond();
+
+        var work_path = "%s/%08x.jpg".format(work_dir, current_time_sec);
+
+        sf.iconCaptureBegin();
+        sf.iconShotImage();
+        sf.waitTickEntry();
+
+        pdistd::MakeDirectoryForFile(work_path);
+        sf.iconCompositeSave(work_path);
+
+        sf.iconCaptureEnd();
+
+        SceneFaceForCapture.visible = false;
+
+        return work_path;
+    }
+
+    method savePhotoFile(context, work_path, thumb_path)
+    {
+        var data = PhotoFileUtil::Data();
+        var st = main::pdistd::GetFileStatus(work_path);
+        var st_t = main::pdistd::GetFileStatus(thumb_path);
+
+        if (st["result"] == 0 && st_t["result"] == 0)
+        {
+            data.filesize = st["size"];
+            data.filesize_t = st_t["size"];
+            data.id = 0;
+
+            data.genre = PhotoFileUtil::GENRE::PHOTO_PROFILE;
+            data.title = "";
+            data.subtitle = "";
+            data.description = "";
+
+            data.width = ROOT::SceneFaceForCapture.w;
+            data.height = ROOT::SceneFaceForCapture.h;
+
+            data.orientation = 1;
+            data.car_label = "";
+            data.snapshot_filename = "";
+
+            data.favorite = 0;
+            data.online = 0;
+            data.vertical = 0;
+            data.is_3d = 0;
+
+            data.car_position_left = -1;
+            data.car_position_top = -1;
+            data.car_position_right = -1;
+            data.car_position_bottom = -1;
+
+            data.online_id = main::Grim2.getLoginUserId();
+
+            PhotoFileUtil::save(context, work_path, thumb_path, data);
+        }
+    }
+
+    module __SceneFaceUtil__
+    {
+        attribute update_thread;
+
+        method onFinalize(context)
+        {
+            _stop_update();
+        }
+
+        method setDefaultDriver(dp)
+        {
+            self.execCommand("setDefaultDriver %s %s %s %s 1".format(dp.head_code, dp.body_code, dp.head_color_code, dp.body_color_code));
+
+        }
+
+        method loadDriver(dp)
+        {
+            fade_reset();
+            setDefaultDriver(dp);
+
+            self.loadCommandFile("code:s0636");
+            fade_start();
+        }
+
+        method reloadDriver(dp)
+        {
+            fade_reset();
+            setDefaultDriver(dp);
+
+            self.loadCommandFile("code:s0652");
+            fade_start();
+        }
+
+        method fade_reset()
+        {
+            _stop_update();
+            SceneActor::CarFadeActor.reverse = false;
+            SceneActor::CarFadeActor.reset();
+
+            SceneActor.opacity = 0.0;
+            self.scene_fade = 0.0;
+        }
+
+        method fade_start()
+        {
+            _start_update();
+        }
+
+        method _start_update()
+        {
+            self.update_thread = Thread(self._update);
+            self.update_thread.start();
+        }
+
+        method _stop_update()
+        {
+            if (self.update_thread != nil)
+            {
+                self.update_thread.terminate();
+                self.update_thread = nil;
+            }
+        }
+
+        method _update(context)
+        {
+            for (;;)
+            {
+                if (!self.isUnderSetup())
+                    SceneActor::CarFadeActor.start();
+
+                self.scene_fade = SceneActor.opacity;
+                Thread::Sleep(0.005);
+            }
+        }
+    }
+
+    module SceneFaceForCapture
+    {
+        SceneFaceForCapture.visible = false;
+
+        import __SceneFaceUtil__::setDefaultDriver;
+    }
+
+    module DetailPopup2::Pane::Body::SceneFace
+    {
+        import __SceneFaceUtil__::*;
+    }
+
+    module DetailPopup2::Pane::Footer::HBox
+    {
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+            var name = w.name;
+
+            if (name == "Close")
+            {
+                var localized_text = context.translate(ROOT, "MyHome", w.name.upcase());
+                BalloonTip.set_value(context, w, localized_text, 0);
+            }
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+
+            return EVENTRESULT_FILTER;
+        }
+
+        module Profile
+        {
+
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                var pdinetwork_user_id = nil;
+
+                if (ROOT.user_id == Grim2.getLoginUserId())
+                    pdinetwork_user_id = PDINetwork.getMyUserId();
+                else
+                    pdinetwork_user_id = PDINetwork.getFriendList(ROOT.user_id);
+
+                if (pdinetwork_user_id != nil)
+                    PDINetwork.showProfile(pdinetwork_user_id);
+                else
+                    ;
+
+                return EVENTRESULT_FILTER;
+            }    
+        }
+
+        module ChangeWear
+        {
+            import __BalloonTarget__::*;
+
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                var res = PROJECT::ItemPopup.open(context, PROJECT::ItemPopup::Mode::USE_DRIVER_ITEM);
+
+                if (res != nil)
+                {
+                    var dp = GAME_STATUS.user_profile.residence.referPlayer();
+                    dp.reconstruct();
+
+                    |var category_id, var code, var color_code| = res;
+
+                    if (category_id == gtengine::GameItemCategory::DRIVER_HEAD)
+                        ROOT.setWear(dp, code, color_code, nil, nil);
+                    else if (category_id == gtengine::GameItemCategory::DRIVER_BODY)
+                        ROOT.setWear(dp, nil, nil, code, color_code);
+                    else if (category_id == gtengine::GameItemCategory::DRIVER_SET)
+                        ROOT.setWear(dp, code, color_code, code, color_code);
+
+                    DetailPopup2::Pane::Body::SceneFace.reloadDriver(dp);
+
+                    WearItemName.open(dp, true);
+                    ROOT.need_update_driver = true;
+                }
+
+                return EVENTRESULT_FILTER;
+            }    
+        }
+
+        module ChangeWearRandom
+        {
+            import __BalloonTarget__::*;
+
+            method onActivate(context)
+            {
+                CursorUtil::setCursor(ContextMain, "wait");
+
+                ContextMain.event_mask = 0x05;
+                ContextMain.disableInput();
+
+                main::sound.play("ok");
+
+                var has_head_item = false;
+                var has_body_item = false;
+                var head_code;
+                var head_color_code;
+                var body_code;
+                var body_color_code;
+
+                var item_head = GameItemUtil::getRandomAvatorHead();
+                if (item_head != nil)
+                {
+                    head_code = item_head["value"];
+                    head_color_code = item_head["argument1"];
+                    has_head_item = true;
+                }
+
+                var item_body = GameItemUtil::getRandomAvatorBody();
+                if (item_body != nil)
+                {
+                    body_code = item_body["value"];
+                    body_color_code = item_body["argument1"];
+                    has_body_item = true;
+                }
+
+                if (has_head_item || has_body_item)
+                {
+                    var dp = GAME_STATUS.user_profile.residence.referPlayer();
+                    dp.reconstruct();
+
+                    ROOT.setWear(dp, head_code, head_color_code, body_code, body_color_code);
+
+                    DetailPopup2::Pane::Body::SceneFace.reloadDriver(dp);
+                    WearItemName.open(dp, true);
+
+                    ROOT.need_update_driver = true;
+                    context.wait(1.5);
+                }
+                else
+                    context.wait(0.5);
+
+                ContextMain.enableInput();
+                CursorUtil::setCursor(ContextMain, "cursor_chrome");
+
+                return EVENTRESULT_FILTER;
+            }    
+        }
+
+        module ProfilePhoto
+        {
+            import __BalloonTarget__::*;
+
+            method onActivate(context)
+            {
+                takeProfilePhoto(context);
+
+                return EVENTRESULT_FILTER;
+            }    
+        }
+
+        module Close
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                if (ROOT.update_profile_photo && LoginUtil::isOnline())
+                {
+                    var photo = PhotoFileUtil::get(GLOBAL_STATUS.user_profile.context.avatar_photo_id);
+                    Function::updateAvatarImage(context, photo);
+                }
+
+                ROOT.close(context);
+
+                return EVENTRESULT_FILTER;
+            }    
+        }
+    }
+
+    module ProfilePhotoSelect
+    {
+        attribute event_loop;
+        attribute prev_focus;
+        attribute result;
+
+        method open(context, photo_list)
+        {
+            ROOT::DetailPopup2.insensitive = true;
+            self.IconBox.setItemTemplate(context, hidden::ProfilePhotoSelectItem);
+
+            var h_item_count = 3;
+
+            var v_item_count = (photo_list.size + (h_item_count - 1)) / h_item_count;
+            self.IconBox.setItemCount(v_item_count, h_item_count);
+
+            for (var i = 0; i < photo_list.size; ++i)
+            {
+                var item = self.IconBox.getItemWidget(i, context);
+                item.ImageFace.image_path = photo_list[i];
+            }
+
+            self.visible = true;
+            self.prev_focus = ROOT.getFocusWidget();
+            ROOT.setFocus(self.IconBox);
+
+            self.result = nil;
+            self.event_loop = main::menu::EventLoop(context);
+            self.event_loop.enter();
+
+            if (self.result != nil)
+                return photo_list[self.result];
+            else
+                return nil;
+        }
+
+        method close(context)
+        {
+            if (self.event_loop != nil)
+            {
+                ROOT::DetailPopup2.insensitive = false;
+                self.visible = false;
+                self.insensitive = true;
+
+                self.IconBox.setItemCount(0, 0);
+
+                self.event_loop.leave();
+                self.event_loop = nil;
+
+                ROOT.setFocus(self.prev_focus);
+            }
+        }
+
+        method onInitialize(context)
+        {
+            self.IconBox.v_adjustment = self.VScrollbar.adjustment = menu::MAdjustment();
+
+            self.visible = false;
+            self.insensitive = true;
+
+            self.ButtonHelpGT5.set(context, [
+                [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")],
+                [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+            ]);
+
+        }
+
+        module IconBox
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                self.ProfilePhotoSelect.result = self.focus_index;
+                self.ProfilePhotoSelect.close(context);
+            
+                return EVENTRESULT_FILTER;
+            }
+        
+            method onCancel(context)
+            {
+                main::sound.play("cancel");
+                self.ProfilePhotoSelect.result = nil;
+                self.ProfilePhotoSelect.close(context);
+            
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module WearItemName
+    {
+        method open(dp, reset_actor = false)
+        {
+            var head_name = GameItemUtil::getAvatorHeadName(dp.head_code);
+            var body_name = GameItemUtil::getAvatorBodyName(dp.body_code);
+
+            var head_name = GameItemUtil::makeAvatorItemName(head_name, dp.head_color_code, dp.head_code);
+            var body_name = GameItemUtil::makeAvatorItemName(body_name, dp.body_color_code, dp.body_code);
+
+            WearItemName::Window::TextFace2.text = head_name;
+            WearItemName::Window::TextFace4.text = body_name;
+            WearItemName::FadeActor.out = false;
+
+            if (reset_actor)
+                WearItemName::FadeActor.restart();
+            else
+                WearItemName::FadeActor.start();
+        } 
+
+        method close(reset = false)
+        {
+            WearItemName::FadeActor.out = true;
+
+            if (reset)
+                WearItemName::FadeActor.restart();
+            else
+                WearItemName::FadeActor.start();
+        }
+    }
+}

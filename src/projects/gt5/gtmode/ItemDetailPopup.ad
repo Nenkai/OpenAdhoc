@@ -1,0 +1,508 @@
+module ROOT
+{
+    module Function
+    {
+        #include "ItemFunction.ad"
+    }
+
+    attribute popup;
+    attribute closed = false;
+    attribute result = false;
+    attribute item;
+    attribute gt_friend_list;
+    attribute horn_sound;
+
+    method open(context, item, gt_friend_list)
+    {
+        self.item = item;
+        self.gt_friend_list = gt_friend_list;
+        self.result = false;
+        self.closed = false;
+
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return self.result;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        ContextMain.event_mask = 0x05;
+        ContextMain.disableInput();
+
+        DetailPopup2::FadeActor.on_effect_end = function (context)
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        }
+
+        DetailPopup2::FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        var space = DetailPopup2::Pane::Body::ScrolledWindow::clip::space;
+        space.Title::TextFace.text = Function::getCategoryName(self.item);
+        space.Title::TextFaceR.text = "%s %d".format(context.translate(ROOT, "MyHome", "HAVE_ITEM_COUNT"), self.item.count);
+
+        var text = GameItemUtil::getItemText(self.item);
+        space.Header::TextFace.text = text[0];
+        space.TextFace.text = text[1];
+
+        DetailPopup2::Pane::Body::Image::ImageFace.image_path = getImagePath(context);
+
+        ROOT.setFocus(DetailPopup2::Pane::Footer::CommandB::Close);
+        DetailPopup2::Pane::Body::ScrolledWindow::clip.scroll_mode = 2;
+
+        var adj = main::menu::MAdjustment();
+        DetailPopup2::Pane::Body::ScrolledWindow::clip.v_adjustment = adj;
+        DetailPopup2::Pane::Body::Scrollbar::VScrollbar.adjustment = adj;
+
+        DetailPopup2::Pane::Body::ScrolledWindow::clip.space.y = 0.0;
+        DetailPopup2::Pane::Body::ScrolledWindow::clip.manual_target_y = 0.0;
+
+        var is_setting = false;
+        switch (self.item.category_id)
+        {
+            case gtengine::GameItemCategory::BODY_CHASSIS:
+            case gtengine::GameItemCategory::ENGINE:
+            case gtengine::GameItemCategory::ADMISSION:
+            case gtengine::GameItemCategory::EMISSION:
+            case gtengine::GameItemCategory::BOOSTER:
+            case gtengine::GameItemCategory::TRANSMISSION:
+            case gtengine::GameItemCategory::DRIVETRAIN:
+            case gtengine::GameItemCategory::SUSPENSION:
+            case gtengine::GameItemCategory::BRAKE:
+            case gtengine::GameItemCategory::BTIRE:
+            case gtengine::GameItemCategory::CTIRE:
+            case gtengine::GameItemCategory::VTIRE:
+            case gtengine::GameItemCategory::STIRE:
+                is_setting = true;
+                break;
+        }
+
+        var can_use = (self.item.category_id != gtengine::GameItemCategory::PAINT_ITEM && 
+            self.item.category_id != gtengine::GameItemCategory::PRESENTCAR_TICKET && 
+            self.item.category_id != gtengine::GameItemCategory::DRIVER_HEAD && 
+            self.item.category_id != gtengine::GameItemCategory::DRIVER_BODY && 
+            self.item.category_id != gtengine::GameItemCategory::DRIVER_SET && 
+            self.item.category_id != gtengine::GameItemCategory::SPECIAL_TICKET) || 
+            GameItemUtil::isCanUseSpecialTicket(self.item.gameitem_id);
+
+        var cp = GAME_STATUS.user_profile.garage.getRidingCar();
+        var can_performance = self.item.type_id == gtengine::GameItemType::TUNEPARTS && is_setting && cp != nil;
+
+        DetailPopup2::Pane::Body::Performance.visible = can_performance;
+
+        if (can_performance)
+        {
+            var parts_type = gtengine::CarPartsType[self.item.defines_type];
+            var category = GameItemUtil::getCategory(self.item);
+            var result = SettingUtil::validate(cp, parts_type, category);
+
+            if (result == SettingUtil::RESULT::ERROR_SUCCESS)
+            {
+                DetailPopup2::Pane::Body::Performance.visible = true;
+                DetailPopup2::Pane::Body::Error.visible = false;
+
+                var value = getValue(cp, parts_type);
+                DetailPopup2::Pane::Body::Performance::VBox::HBoxPS::TextFace1.text = value[0];
+                DetailPopup2::Pane::Body::Performance::VBox::HBoxPS::TextFace2.text = value[1];
+
+                DetailPopup2::Pane::Body::Performance::VBox::HBoxPP::TextFace1.text = value[2];
+                DetailPopup2::Pane::Body::Performance::VBox::HBoxPP::TextFace2.text = context.translate(ROOT, "Unit", "PERFORMANCE_POINT");
+
+                var new_cp = gtengine::MCarParameter();
+                new_cp.deepCopy(cp);
+
+                var res = SettingUtil::setParts(new_cp, parts_type, category);
+                var new_value = getValue(new_cp, parts_type);
+
+                DetailPopup2::Pane::Body::Performance::VBox::HBoxPS::TextFace3.text = new_value[0];
+                DetailPopup2::Pane::Body::Performance::VBox::HBoxPS::TextFace4.text = new_value[1];
+                DetailPopup2::Pane::Body::Performance::VBox::HBoxPP::TextFace3.text = new_value[2];
+                DetailPopup2::Pane::Body::Performance::VBox::HBoxPP::TextFace4.text = context.translate(ROOT, "Unit", "PERFORMANCE_POINT");
+
+                if (value[0] == new_value[0])
+                    DetailPopup2::Pane::Body::Performance.visible = false;
+            }
+            else
+            {
+                DetailPopup2::Pane::Body::Performance.visible = false;
+                DetailPopup2::Pane::Body::Error.visible = true;
+
+                var table = [
+                    "",
+                    "THIS_CAR_CANNOT_ATTACH",
+                    "THIS_PARTS_NEED_ORDERED",
+                    "THIS_PARTS_ALREADY_ATTACH",
+                    "THIS_PARTS_PREV_ORDERED",
+                    "THIS_ALERT_UNSET"
+                ];
+
+                DetailPopup2::Pane::Body::Error::TextFace.text = context.translate(ROOT, "MyHome", table[result]).build(" ");
+
+                if (result != SettingUtil::RESULT::ALERT_UNSET)
+                    can_use = false;
+            }
+        }
+        else
+        {
+            DetailPopup2::Pane::Body::Performance.visible = false;
+            DetailPopup2::Pane::Body::Error.visible = false;
+        }
+
+        if (self.item.type_id == gtengine::GameItemType::DRIVER_ITEM && 
+            self.item.category_id == gtengine::GameItemCategory::DRIVER_HEAD)
+            DetailPopup2::Pane::Body::Image::ImageFace.y = 12;
+        else
+            DetailPopup2::Pane::Body::Image::ImageFace.y = 24;
+
+        DetailPopup2::Pane::Footer::CommandB::Present.visible = LoginUtil::isOnline();
+
+        var can_present = Function::checkPresent(context, self.item, false);
+
+        DetailPopup2::Pane::Footer::CommandB::Present::Image.visible = can_present;
+        DetailPopup2::Pane::Footer::CommandB::Present::ImageI.visible = !can_present;
+
+        var is_horn = gtengine::GameItemCategory::HORN == self.item.category_id;
+        DetailPopup2::Pane::Footer::CommandB::HornCurrent.visible = is_horn;
+        DetailPopup2::Pane::Footer::CommandB::HornAfter.visible = is_horn;
+
+        if (is_horn)
+            can_use = cp.horn_sound_id != 0;
+
+        if (GAME_STATUS.user_profile.garage.isRidingFriendCar())
+            can_use = false;
+
+        DetailPopup2::Pane::Footer::CommandB::Use.visible = can_use;
+
+        var use_text = context.translate(ROOT, "MyHome", "USE");
+        if (self.item.type_id == gtengine::GameItemType::SPECIAL && GameItemUtil::isCarRefreshTicket(self.item))
+            use_text = context.translate(ROOT, "MyHome", "USE2");
+
+        DetailPopup2::Pane::Footer::CommandB::Use::TextFace.text = use_text;
+        DetailPopup2::Pane::Footer::CommandB::Use::TextFaceI.text = use_text;
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        self.horn_sound = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method getValue(cp, parts_type)
+    {
+        var result = [];
+
+        cp.beginInfo();
+
+        switch (parts_type)
+        {
+            case gtengine::CarPartsType::LIGHT_WEIGHT:
+            case gtengine::CarPartsType::LIGHT_WEIGHT_WINDOW:
+            case gtengine::CarPartsType::BONNET:
+            case gtengine::CarPartsType::STIFFNESS:
+                result = [cp.getWeight(), pdiext::MUnit::GetUnitOfMass()];
+                break;
+
+            default:
+                |var power_f| = cp.getPower();
+                var power = pdiext::MUnit::GetPowerForDisplay(power_f.toInt());
+
+                result = [power, pdiext::MUnit::GetUnitOfPower()];
+                break;
+        }
+
+        result.push(cp.getPP1000());
+        cp.endInfo();
+
+        return result;
+    }
+
+    method playHorn(context, push, horn_sound_id)
+    {
+        var code = nil;
+
+        if (push)
+        {
+            if (self.horn_sound == nil || self.horn_sound[0] != horn_sound_id)
+            {
+                self.horn_sound = nil;
+                var soundeffect = main::pdiext::MSoundEffect("carsound/se/%05d.sgd".format(horn_sound_id));
+                if (soundeffect != nil)
+                    self.horn_sound = [horn_sound_id, soundeffect];
+            }
+
+            code = "horn";
+        }
+
+        main::sound.playSingle(code);
+    }
+
+    method getImagePath(context)
+    {
+        var image_path = "";
+
+        switch (self.item.type_id)
+        {
+            case gtengine::GameItemType::CAR:
+                var car_label = self.item.code;
+                image_path = "car/thumbnail_M/%{car_label}";
+                break;
+
+            case gtengine::GameItemType::TUNEPARTS:
+                image_path = "piece/tuningitem_L/%{self.item.item_code}.img";
+                break;
+
+            case gtengine::GameItemType::SPECIAL:
+                if (GameItemUtil::isCarRefreshTicket(self.item))
+                    image_path = "piece/tuningitem_L/coupon_rebirth.img";
+                else if (GameItemUtil::isBodyRefreshTicket(self.item))
+                    image_path = "piece/tuningitem_L/coupon_chassis.img";
+                else if (GameItemUtil::isOilChangeTicket(self.item))
+                    image_path = "piece/tuningitem_L/coupon_oil.img";
+                else if (GameItemUtil::isCarWashTicket(self.item))
+                    image_path = "piece/tuningitem_L/coupon_wash.img";
+                else if (GameItemUtil::isOverHaulicket(self.item)) // NOTE: Typo? Actual function name, but still a typo
+                    image_path = "piece/tuningitem_L/coupon_engine.img";
+                else
+                    image_path = "piece/tuningitem_L/ticket.img";
+                break;
+
+            case gtengine::GameItemType::OTHERPARTS:
+                var paint = self.item.item_code;
+                image_path = "piece/tuningitem_L/%{paint}.img";
+                break;
+
+            case gtengine::GameItemType::DRIVER_ITEM:
+                if (self.item.category_id == gtengine::GameItemCategory::DRIVER_HEAD)
+                {
+                    var head_code = self.item["value"];
+                    var head_color_code = self.item["argument1"];
+
+                    image_path = ThumbnailUtil::Avatar::getImagePath(ThumbnailUtil::Avatar::Genre::SIMPLE, 
+                    ThumbnailUtil::Avatar::Type::MET, "M", head_code, head_color_code, 0, 0);
+                }
+
+                else if (self.item.category_id == gtengine::GameItemCAtegory::DRIVER_BODY)
+                {
+                    var body_code = self.item["value"];
+                    var body_color_code = self.item["argument1"];
+
+                    image_path = ThumbnailUtil::Avatar::getImagePath(ThumbnailUtil::Avatar::Genre::SIMPLE, 
+                    ThumbnailUtil::Avatar::Type::SUITS, "M", 0, 0, body_code, body_color_code);
+                }
+
+                else if (self.item.category_id == gtengine::GameItemCategory::DRIVER_SET)
+                {
+                    var head_code = self.item["value"];
+                    var head_color_code = self.item["argument1"];
+
+                    var body_code = self.item["value"];
+                    var body_color_code = self.item["argument1"];
+
+                    image_path = ThumbnailUtil::Avatar::getImagePath(ThumbnailUtil::Avatar::Genre::SETUP, 
+                    ThumbnailUtil::Avatar::Type::MET_SUITS, "M", head_code, head_color_code, body_code, body_color_code);
+                }
+                break;
+
+            default:
+                break;    
+        }
+
+        return image_path;
+    }
+
+    module DetailPopup2::Pane
+    {
+        module Footer
+        {
+            module CommandB
+            {
+                method onFocusEnter(context, event)
+                {
+                    var w = event.widget;
+                    var text = w.name.upcase();
+
+                    if (text != "USE" && text != "BUY")
+                    {
+                        var localized_text = context.translate(ROOT, "MyHome", text);
+                        BalloonTip.set_value(context, w, localized_text, 0);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+
+                method onFocusLeave(context)
+                {
+                    BalloonTip.reset_value();
+
+                    return EVENTRESULT_FILTER;
+                }
+
+                method onKeyPress(context, event)
+                {
+                    var scrollclip = DetailPopup2::Pane::Body::ScrolledWindow::clip;
+                    var space = scrollclip.space;
+                    var textface = space.TextFace;
+                    var line_height = textface.line_height;
+
+                    var status = EVENTRESULT_CONTINUE;
+                    if (event.keysym == CELL_PAD_CTRL_L3_UP)
+                    {
+                        if (scrollclip.manualTargetIncY(line_height))
+                            status = EVENTRESULT_STOP;
+                    }
+
+                    if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+                    {
+                        if (scrollclip.manualTargetIncY(-line_height))
+                            status = EVENTRESULT_STOP;
+                    }
+
+                    return status;
+                }
+
+                method onKeyRelease(context, event)
+                {
+                    if (event.keysym == CELL_PAD_CTRL_CROSS)
+                        ROOT.playHorn(context, false);
+
+                    return EVENTRESULT_CONTINUE;
+                }
+
+                module HornCurrent
+                {
+                    method onActivate(context)
+                    {
+                        var cp = GAME_STATUS.user_profile.garage.getRidingCar();
+
+                        if (cp != nil)
+                            ROOT.playHorn(context, true, cp.horn_sound_id);
+
+                        return EVENTRESULT_CONTINUE;
+                    }    
+                }
+
+                module HornAfter
+                {
+                    method onActivate(context)
+                    {
+                        var item = ROOT.item;
+                        var horn_item_id = item.argument1;
+
+                        var horn_info = gtengine::MSpecDB::getHornItemInfo(horn_item_id);
+                        var horn_sound_id = horn_info[0];
+
+                        ROOT.playHorn(context, true, horn_sound_id);
+
+                        return EVENTRESULT_CONTINUE;
+                    }    
+                }
+
+                module Use
+                {
+                    method onActivate(context)
+                    {
+                        main::sound.play("ok");
+
+                        var res = Function::use(context, ROOT.item);
+
+                        if (res)
+                        {
+                            ROOT.result = true;
+                            ROOT.close(context);
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }    
+                }
+
+                module Present
+                {
+
+                    function onCallback(context, friend)
+                    {
+                        var res = Function::present(context, ROOT.item, friend);
+
+                        if (res)
+                        {
+                            ROOT.result = true;
+                            ROOT.close(context);
+                        }
+                    } 
+
+                    method onActivate(context)
+                    {
+                        if (!LoginUtil::isOnline())
+                        {
+                            main::sound.play("disable");
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                            context.translate(ROOT, "Network", "ERROR_ONLINE_FUNCTION"));
+
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        main::sound.play("ok");
+
+                        if (Function::checkPresent(context, ROOT.item, true))
+                        {
+                            var friend = UserProfileProject::FriendListPopup.open(context, ROOT.gt_friend_list);
+                            if (friend != nil)
+                                onCallback(context, friend);
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module Delete
+                {
+                    method onActivate(context)
+                    {
+                        main::sound.play("ok");
+                        var res = Function::delete(context, ROOT.item);
+
+                        if (res)
+                        {
+                            ROOT.result = true;
+                            ROOT.close(context);
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }    
+                }
+
+                module Close
+                {
+                    method onActivate(context)
+                    {
+                        main::sound.play("ok");
+                        ROOT.close(context);
+                    
+                        return EVENTRESULT_FILTER;
+                    }    
+                }
+            }
+        }    
+    }
+}
