@@ -934,7 +934,7 @@ Out of scope. GT7 no longer uses Adhoc language and instead uses Swift (custom p
 
 ## ⚙️ Compilation
 
-[Adhoc Toolchain](https://github.com/Nenkai/GTAdhocToolchain) version 1.3.3 is required to compile game scripts. 
+[Adhoc Toolchain](https://github.com/Nenkai/GTAdhocToolchain) **version 1.3.5** is required to compile game scripts. 
 The tool itself is command line-based without a native GUI, however it does have a VS Code Extension, and a Python GUI wrapper for streamlined usage / workflow.
 > [!TIP]
 Adhoc Toolchain (i.e `adhoc.exe`) can be added to your **PATH** (Optional)
