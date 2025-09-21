@@ -958,98 +958,71 @@ For more details refer to the [Adhoc Page](https://nenkai.github.io/gt-modding-h
 * The Adhoc toolchain allows disassembling scripts into an assembly-like text form. Most scripts contain symbols which are mandatory and thus allows reconstructing code back into source. Very rarely did syntax have to be made up to support specific adhoc features due to no original source reference, so the documentation is the code.
 * To disassemble a script, run the following command: adhoc `path:\to\.adc\file`<br>
 
-### 2. Decompilation
+### 2. Learning & Decompilation
 **Translation**<br>
-* Understanding how to read the disassembly can be challenging at first. Compare reversed scripts against their corresponding disassembly code to learn.
-* Translating by hand is very time-consuming. If you have the patience, you can train an AI model to translate the disassembly for you by having it help you edit code that's already translated,
-and attempt to have it decompile disassembly every so often.
-* The key to training it is providing a lot of adhoc source code, and over many separate chats over time. It needs to learn the format of adhoc much moreso than the disassembly.
-* This can take a very long time before it gets any good, but if it does it can make short work of even the largest scripts.<br>
+* Understanding how to read the disassembly can be challenging at first.
+* Play around with adhoc first. [Learn the basics](https://nenkai.github.io/gt-modding-hub/concepts/adhoc/adhoc), [the language](https://nenkai.github.io/gt-modding-hub/concepts/adhoc/language/), [and more](https://github.com/Nenkai/GTAdhocToolchain/wiki). Compile basic code, investigate the disassembly, [optionally have GT6 run your code using TinyWeb, through RPCS3](https://nenkai.github.io/gt-modding-hub/concepts/adhoc/tinyweb/)
+* Refer to the repository for examples of matching code.
+* Translating by hand is a time-consuming and a somewhat steep process, but it is still far easier than decompiling matching assembly language.
+* **Once you understand Adhoc well to the point where you know the bytecode, can reverse projects manually yourself and know general compilation process inside-out**, you may train an AI model to translate the disassembly for you by having it help you edit code that's already translated,
+and attempt to have it decompile disassembly every so often. The key to training it is providing a lot of adhoc source code, and over many separate chats over time. It needs to learn the format of adhoc much moreso than the disassembly. This can take a very long time before it gets any good, but if it does it can make short work of even the largest scripts.<br>
 <details>
   <summary> 📝 Translation example (Expand to view)</summary>
 
   Disassembly:<br>
   
-1A4E| 118| 30| `FUNCTION_DEFINE - onActivate(context)`<br>
-// *FUNCTION_DEFINE means we are beginning a new function. we write function onActivate(context) {*<br>
-`> Instruction Count: 43 (1A7F)`<br>
-`> Stack Size: 6 - Variable Heap Size: 7 - Variable Heap Size Static: =Variable Heap Size`<br>
-1A87| 109|  0| VARIABLE_PUSH: Slide,slide,`Slide::slide`, Static:2<br>
-// *The 1st piece of relevant code is Slide::slide*<br>
-// *making this the start of the 1st line of code inside this function.*<br>
-1AB0| 109|  1| EVAL<br>
-1AB5| 109|  2| ATTRIBUTE_PUSH: `isPlaying`<br>
-// *attributes are represented by period `.` so now we have Slide::slide.isPlaying*<br>
-1AC5| 109|  3| EVAL<br>
-1ACA| 109|  4| `CALL: ArgCount=0`<br>
-// *we now know there's arguments with CALL: ArgCount. In this case it's 0 so we will now have Slide::slide.isPlaying()*<br>
-1AD3| 109|  5| EVAL<br>
-1AD8| 109|  6| UNARY_OPERATOR: ! (`!`)<br>
-// *We don't know how this is used quite yet, for now we hold onto that*<br>
-1AE0| 109|  7| `JUMP_IF_FALSE: Jump To Func Ins 39`<br>
-// *Now we know. Jump if false is a standard if() statement. So now our 1st line of code is complete: if (!Slide::slide.isPlaying()) {*<br>
-  1AE9| 110|  8| NOP<br>
-  1AEE| 111|  9| VARIABLE_PUSH: main,sound,`main::sound`, Static:3<br>
-  // *Now inside the if statement, our 2nd line of code begins. So far we have main::sound*<br>
-  1B15| 111| 10| EVAL<br>
-  1B1A| 111| 11| `ATTRIBUTE_PUSH: play`<br>
-  // *attribute for main::sound, now we have main::sound.play*<br>
-  1B25| 111| 12| EVAL<br>
-  1B2A| 111| 13| STRING_CONST: `ok`<br>
-  // *A string! these are represented by quotes `""`. For now we don't know how this is used. Save for later.*<br>
-  1B33| 111| 14| `CALL: ArgCount=1`<br>
-  // *With the argument here we now know: main::sound.play("ok")*<br>
-  1B3C| 111| 15| EVAL<br>
-  1B41| 111| 16| POP_OLD<br>
-  // *POP_OLDs incidcate the end for a line of code, so the 2nd line is done<br>
-  // *and since it isn't an if or a switch case, we finish it off with semicolon: main::sound.play("ok");*<br>
-  1B46| 112| 17| VARIABLE_PUSH: Slide,slide,`Slide::slide`, Static:2<br>
-  // *Now on the 3rd line starting with Slide::slide*<br>
-  1B6F| 112| 18| EVAL<br>
-  1B74| 112| 19| `ATTRIBUTE_PUSH: doPlay`<br>
-  // *Now we have Slide::slide.doPlay*<br>
-  1B81| 112| 20| EVAL<br>
-  1B86| 112| 21| `CALL: ArgCount=0`<br>
-  // *Now we have Slide::slide.doPlay()<br>
-  1B8F| 112| 22| EVAL<br>
-  1B94| 112| 23| POP_OLD<br>
-  // *Cap it off with semicolon: Slide::slide.doPlay();*<br>
-  1B99| 113| 24| VARIABLE_PUSH: sensitive,`sensitive`, Static:4<br>
-  // *4th line: sensitive*<br>
-  1BBC| 113| 25| EVAL<br>
-  1BC1| 113| 26| `CALL: ArgCount=0`<br>
-  // *Now we have sensitive()*<br>
-  1BCA| 113| 27| EVAL<br>
-  1BCF| 113| 28| POP_OLD<br>
-  // *Confirms the end of line 4, cap it off with semicolon<br>
-  1BD4| 114| 29| VARIABLE_PUSH: SlideRoot,`SlideRoot`, Static:5<br>
-  // *5th line: SlideRoot*<br>
-  1BF7| 114| 30| EVAL<br>
-  1BFC| 114| 31| `ATTRIBUTE_PUSH: setFocus`<br>
-  // *Now we have SlideRoot.setFocus*<br>
-  1C0B| 114| 32| EVAL<br>
-  1C10| 114| 33| VARIABLE_PUSH: Stop,`Stop`, Static:6<br>
-  // *Don't know what to do with `Stop` just yet*<br>
-  1C29| 114| 34| EVAL<br>
-  1C2E| 114| 35| `CALL: ArgCount=1`<br>
-  // *Now we do: SlideRoot.setFocus(Stop)<br>
-  1C37| 114| 36| EVAL<br>
-  1C3C| 114| 37| POP_OLD<br>
-  // *Cap it off with semicolon*<br>
-  1C41| 115| 38| NOP<br>
-  // *As per the jump instruction from earlier, we have now exited the if statement and need to cap it off with the other end of the curly bracket }.*<br>
-  `1C46| 117| 39| INT_CONST: 2 (0x02)`<br>
-  `1C4F| 117| 40| POP_OLD`<br>
-  `1C54| 117| 41| SET_STATE_OLD: State=RETURN (1)`<br>
-  // *This particular bundle of code means we are returning something specific. In this case*<br>
-  // *we are returning 2 (`return 2;`) however the correct interpretation is EVENTRESULT type 2,*<br>
-  // *which is EVENTRESULT_FILTER. so the correct translation is `return EVENTRESULT_FILTER;`.*<br>
-  // *This is commonly seen on functions that involve canceling things and going backward.*<br>
-  `1C5A| 118| 42| SET_STATE_OLD: State=RETURN (1)`<br>
-  // *The compiler automatically handles the final return on any function, so these are not written.*<br>
-
-Translated:<br>
 ```
+// 1st column is the hex location of the instruction in the binary file.
+// 2nd column is the source line number.
+// 3rd one is the instruction index for the current code frame.
+// Rest is instruction contents.
+
+// *FUNCTION_DEFINE is a new function declaration, equivalent to 'function onActivate(context) {
+1A4E| 118| 30| FUNCTION_DEFINE - onActivate(context) '
+> Instruction Count: 43 (1A7F)<br>
+> Stack Size: 6 - Variable Heap Size: 7 - Variable Heap Size Static: =Variable Heap Size<br>
+
+// Evaluating a module path. Equivalent to 'Slide::slide'
+1A87| 109|  0| VARIABLE_PUSH: Slide,slide,`Slide::slide`, Static:2
+1AB0| 109|  1| EVAL
+
+// Accessing the isPlaying attribute of above path, so 'Slide::slide.isPlaying'
+1AB5| 109|  2| ATTRIBUTE_PUSH: `isPlaying`<br>
+1AC5| 109|  3| EVAL<br>
+
+// Calling it. So we're making a call with 0 arguments, so we have: 'Slide::slide.isPlaying()'
+1ACA| 109|  4| `CALL: ArgCount=0`<br>
+1AD3| 109|  5| EVAL<br>
+
+// This is a unary operator so we want to check if the above is false. Essentially this is 'if (!Slide::slide.isPlaying()) { ...'
+// The JUMP_IF_FALSE index essentially is the end of the if block.
+1AD8| 109|  6| UNARY_OPERATOR: ! (`!`)
+1AE0| 109|  7| JUMP_IF_FALSE: Jump To Func Ins 39
+
+// NOPs are used in earlier versions whenever a curly bracket was used in the original source code. This would have allowed a debugger to step through it.
+1AE9| 110|  8| NOP
+
+// Making yet another call, this time with one argument. Equivalent to 'main::sound.play("ok")'
+1AEE| 111|  9| VARIABLE_PUSH: main,sound,main::sound, Static:3
+1B15| 111| 10| EVAL<br>
+1B1A| 111| 11| ATTRIBUTE_PUSH: play
+1B25| 111| 12| EVAL<br>
+1B2A| 111| 13| STRING_CONST: ok
+1B33| 111| 14| CALL: ArgCount=1
+1B3C| 111| 15| EVAL<br>
+1B41| 111| 16| POP_OLD  // We aren't doing anything about the return value so it is being POP'ed.
+
+// ...
+// Skipping ahead, we reach the bottom of the function. SET_STATE is used as flow control, and in this case indicates a return to parent frame/function.
+// (in particular, 2 is equal to EVENTRESULT_FILTER, which is a ui define for input control and whether to process other events).
+// If a return was not manually specified, the compiler will always insert one (otherwise the function would never actually return).
+1C46| 117| 39| INT_CONST: 2 (0x02)`<br>
+1C4F| 117| 40| POP_OLD`<br>
+1C54| 117| 41| SET_STATE_OLD: State=RETURN (1)`<br>
+```
+
+Translated:
+```c
 function onActivate(context)
 {
     if (!Slide::slide.isPlaying())
@@ -1063,26 +1036,38 @@ function onActivate(context)
     return EVENTRESULT_FILTER;
 }
 ```
---- End Translation Example ---
+
 </details>
 
-**Things that are okay to discard**
-* Following line numbers - attempting to follow line numbers for code that may be stripped from undefined original preprocessor directives or missing comment blocks can leave holes in the source, therefore prefered not to follow line numbers for better readability.
-* Logic order - It is common that scripts were written using such pattern: `nil != myObject` or `"Dog" == myString`. For readability, literals should always be on the right-hand side such as `myObject != nil`.
-
-**Things that should be preserved, or recommended to have**
-* All code of any kind should be present in the scripts; bugs should NOT be fixed but should **always** be marked with a `// BUG: <comment>` block. An example of this is usage of undeclared variables, typos.
-* Comments to help understand code in general are not needed but appreciated.
-* Usage of `PROJECT` and `ROOT` defines should be used everywhere besides the main module declarations.
-* Usage of other defines such as `EVENTRESULT` and `PAD` defines (list [here](https://github.com/Nenkai/GTAdhocToolchain/wiki/Builtin-Macros))
-
-### 3. Compilation, comparison, commit
+### 3. Decompilation/Contribution Guidelines
 * The 1st roadblock is squashing any mistakes in translating the disassembly if your translated code doesn't at least compile. You'll be on your own until you can get it to compile.
 * Once you successfully compile it, the next step is to revise the translated code to get it to completely match the original compiled code. To do so, disassemble both the original .adc and your new .adc.
-Use the included python compare script in the Toolchain's scripts folder to diff them. This will output an html file letting you view both disassemblies side-by-side.
+Use the included `GTAdhocCompare.py` script in the Toolchain's scripts folder to diff them. This will output an html file letting you view both disassemblies side-by-side.
 Red highlights indicate missing logic, and green highlights indicate added logic. Revise your translated code until all relevant red and green highlights from the comparison are eliminated.
-* Once your translated code is fully matching (or at least as close as possible), fork the repo, add your files to your fork, then make a pull request. In the Pull request conversation, add any relevant information
-about your new files. If you have any mistakes that you are unable to correct, point them out for review and suggestions.
+* You should always do this in multiple passes. For the first pass, ensure that most things match by comparing with `GTAdhocCompare.py`. Next, compare with `GTAdhoCompare.py` with the `-j` argument. This also allows comparing jump instruction indices to make sure branches match aswell.
+* Refer to below for things that can be omitted or not.
+
+#### Things that must be preserved, aka, contribution guidelines
+* The *logic* should be perfectly matching. No typos, misnaming, anything that otherwise would make a script behave differently. Sometimes because of compiler differences it may not be possible, but the goal is to have the logic match nonetheless.
+* All code of any kind should be present in the scripts; bugs should NOT be fixed but should **always** be marked with a `// BUG: <comment>` block. An example of this is usage of undeclared variables, typos.
+* Usage of `PROJECT` and `ROOT` defines should be used everywhere besides the main module declarations.
+* Usage of other defines must be used when applicable such as `EVENTRESULT` and `PAD` defines (list [here](https://github.com/Nenkai/GTAdhocToolchain/wiki/Builtin-Macros))
+* You should use preprocessor macros when the source code clearly shows use of one (i.e many statements on the same source line is a hint that a macro may've been used).
+* Comments to help understand code in general are not needed but appreciated.
+
+#### Things that are okay to discard
+* Following line numbers - attempting to follow line numbers for code that may be stripped from undefined original preprocessor directives or missing comment blocks can leave holes in the source, therefore prefered not to follow line numbers for better readability. Please make sure that the code is pretty much written in the same style as the projects already on this repository.
+* `SOURCE_FILE` instructions - These *will* be off due to path differences & the custom compiler emits them per file (on enter, and on exit to resume to the previous file). Earlier than GT5 had an issue in their compilers where `SOURCE_FILE` instructions were sometimes not emitted at the right spot.
+* Logic order - It is common that scripts were written using such pattern: `nil != myObject` or `"Dog" == myString`. For readability, literals should always be on the right-hand side such as `myObject != nil`.
+* `LOGICAL_OR`/`LOGICAL_AND` jump indices - The custom compiler may be slightly inaccurate when emitting these instructions. Namely the jump indices may look off (jumping to other `LOGICAL_*` rather than the end of a statement). This is okay to omit as the compiler does not implement short-circuit evaluation optimization like the original compiler does, but the way the instructions are executed will still produce the same result. **However it does make it a little harder to make sure that the logic matches when both `LOGICAL_AND` and `LOGICAL_OR`'s are used within the same statement, so make sure to review those instructions carefully!*
+* For GT5 and above, `LEAVE` instructions may be emitted that essentially cleanups local variables used within a statement (one is emitted at the end of any block statement `}` that should be clearing some variables). These may throw the jump indices a little, but as long as the logic still matches, this is okay to omit. `GTAdhocCompare` will not show leaves by default. The `-j` argument will not show them either, but may show a difference in jump indices. Make sure to review them. You can also use the `-l` argument to include `LEAVE` in the compare output.
+
+**Once your translated code is fully matching (or at least as close as possible), fork the repo, add your files to your fork, then make a pull request. In the Pull request conversation, add any relevant information
+about your new files. If you have any mistakes that you are unable to correct, point them out for review and suggestions. Preferably your projects should be already matching and thus doesn't need verification. Otherwise open an issue.**
+
+> [!NOTE]
+> Since this is a custom compiler, some issues may pop up. Feel free to reach out on the [GTAdhocToolchain](https://github.com/Nenkai/GTAdhocToolchain) repository.
+> It should be capable of compiling most projects without issues, but it is not without issues. (Stack handling should be reworked eventually using GT7 compiler research. (as of 21/09/2025))
 
 ## 📜 History
 * August 2020 - Initial breakthrough in Adhoc, dissasembler built based on reverse-engineering
