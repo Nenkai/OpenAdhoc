@@ -1040,6 +1040,7 @@ function onActivate(context)
 </details>
 
 ### 3. Decompilation/Contribution Guidelines
+* One golden rule before anything: Always, always, always make sure that you are running the latest version of the toolchain.
 * The 1st roadblock is squashing any mistakes in translating the disassembly if your translated code doesn't at least compile. You'll be on your own until you can get it to compile.
 * Once you successfully compile it, the next step is to revise the translated code to get it to completely match the original compiled code. To do so, disassemble both the original .adc and your new .adc.
 Use the included `GTAdhocCompare.py` script in the Toolchain's scripts folder to diff them. This will output an html file letting you view both disassemblies side-by-side.
