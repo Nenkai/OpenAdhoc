@@ -1052,10 +1052,11 @@ Red highlights indicate missing logic, and green highlights indicate added logic
 #### Things that must be preserved, aka, contribution guidelines
 * The *logic* should be perfectly matching. No typos, misnaming, anything that otherwise would make a script behave differently. Sometimes because of compiler differences it may not be possible, but the goal is to have the logic match nonetheless.
 * All code of any kind should be present in the scripts; bugs should NOT be fixed but should **always** be marked with a `// BUG: <comment>` block. An example of this is usage of undeclared variables, typos.
-* Usage of `PROJECT` and `ROOT` defines should be used everywhere besides the main module declarations.
+* Usage of `PROJECT` and `ROOT` defines should be used everywhere to replace the current root name. Example: `MyMenuRoot` should be replaced with just `ROOT` (which should match the file name aswell).
 * Usage of other defines must be used when applicable such as `EVENTRESULT` and `PAD` defines (list [here](https://github.com/Nenkai/GTAdhocToolchain/wiki/Builtin-Macros))
 * You should use preprocessor macros when the source code clearly shows use of one (i.e many statements on the same source line is a hint that a macro may've been used).
 * Comments to help understand code in general are not needed but appreciated.
+* GT4 and earlier - bool instructions did not exist, and are instead represented by a integer instruction instead. When applicable, try to recognize when bools are actually used (`0` is `false`, `1` is `true`).
 
 #### Things that are okay to discard
 * Following line numbers - attempting to follow line numbers for code that may be stripped from undefined original preprocessor directives or missing comment blocks can leave holes in the source, therefore prefered not to follow line numbers for better readability. Please make sure that the code is pretty much written in the same style as the projects already on this repository.
