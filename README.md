@@ -1044,7 +1044,9 @@ function onActivate(context)
 * Once you successfully compile it, the next step is to revise the translated code to get it to completely match the original compiled code. To do so, disassemble both the original .adc and your new .adc.
 Use the included `GTAdhocCompare.py` script in the Toolchain's scripts folder to diff them. This will output an html file letting you view both disassemblies side-by-side.
 Red highlights indicate missing logic, and green highlights indicate added logic. Revise your translated code until all relevant red and green highlights from the comparison are eliminated.
-* You should always do this in multiple passes. For the first pass, ensure that most things match by comparing with `GTAdhocCompare.py`. Next, compare with `GTAdhoCompare.py` with the `-j` argument. This also allows comparing jump instruction indices to make sure branches match aswell.
+* Use the highlighted `n` link to navigate between differences, **do not just scroll up or down to find mismatches**. The `n` will jump to the next difference. 
+* You should compare built scripts in multiple passes. For the first pass, ensure that most things match by comparing with `GTAdhocCompare.py`. Next, compare with `GTAdhoCompare.py` with the `-j` argument. This also allows comparing jump instruction indices to make sure branches match aswell.
+* The more passes the better. Human mistakes are expected such as typos, wrongly recognized branches, and so on. You can't expect to decompile correctly on the first try even if you are certain. You may still be left with dozens of mismatches you didn't pick up between passes.
 * Refer to below for things that can be omitted or not.
 
 #### Things that must be preserved, aka, contribution guidelines
