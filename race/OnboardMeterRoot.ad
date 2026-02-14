@@ -1,0 +1,996 @@
+module OnboardMeterRoot
+{
+    hidden.visible = false;
+
+    static sLayoutView = [
+        [Panel, true],
+        [Parette::Input, false],
+        [Parette::Tacho, false],
+        [Parette::speed, false],
+        [Parette::gear, false],
+        [Parette::Indicator, false]
+    ];
+
+    static sLayoutGM = [
+        Parette::Gmonitor,
+        [0x3EA, 0x402],
+        [0x3E0, 0x414]
+    ];
+
+    static sLayoutHD = [
+        [Panel, [0x244, 0x348]],
+        [Parette::Input, [0x150, 0x3B0]],
+        [Parette::speed, [0x1E8, 0x3B0]],
+        [Parette::gear, [0x500, 0x3B0]],
+        [Parette::Indicator, [0x500, 0x3B0]],
+        [Parette::Tacho, [0x598, 0x3B0]],
+        [Parette::Boost, [0x6C8, 0x3B0]],
+        [Parette::Tire, [0x20, 0x3B0]],
+        [Parette::Gas, [0xB8, 0x3B0]],
+        [InfoLeft, [0x00, 0x00]],
+        [InfoRight, [0x00, 0x00]],
+        [MapClip, [0x14, 0xA0]]
+    ];
+
+    static sLayoutSD = [
+        [Panel, [0x244, 0x348]],
+        [Parette::Input, [0x150 + 0xF0, 0x3A6]],
+        [Parette::speed, [0x1E8 + 0xF0, 0x3A6]],
+        [Parette::Tacho, [0x598 - 0xF0, 0x3A6]],
+        [Parette::gear, [0x500 - 0xF0, 0x3A6]],
+        [Parette::Indicator, [0x500 - 0xF0, 0x3A6]],
+        [Parette::Boost, [0x6C8 - 0xF0, 0x33C]],
+        [Parette::Tire, [0x20 + 0xF0, 0x3A6]],
+        [Parette::Gas, [0xB8 + 0xF0, 0x3A6]],
+        [InfoLeft, [0xF0, 0x00]],
+        [InfoRight, [-0xF0, 0x00]],
+        [MapClip, [0xF0, 0xEC]]
+    ];
+
+    static sLayoutSprit = [
+        [Info::SectionTime,       0, [0x320, 0x56], [0x320, 0x272]],
+        [Info::DiffTime,          0, [0x320, 0x82], [0x320, 0x29E]],
+        [Info::Current,           0, [0x320, 0x20], [0x320, 0x23C]],
+        [WongWay,                 0, [0x39C, 0x12C], [0x39C, 0x348]],
+        [Adjuster,                0, [0x2DC, 0x140], [0x2DC, 0x35C]],
+        [InfoLeft::RacePosition, -1, [0x46, 0x20], [0x46, 0x23C]],
+        [InfoLeft::LapNumber,    -1, [0x12A, 0x20], [0x12A, 0x23C]],
+        [MapClip,                -1, [-0x08, 0x76], [-0x08, 0x292]],
+        [InfoRight::TotalTime,    1, [0x60A, 0x20], [0x60A, 0x23C]],
+        [InfoRight::BestLap,      1, [0x60A, 0x7C], [0x60A, 0x298]],
+        [Parette::Tacho,          1, [0x60A, 0x19E], [0x60A, 0x3BA]],
+        [Parette::speed,          1, [0x60A, 0x134], [0x60A, 0x350]],
+        [Parette::gear,           1, [0x6A2, 0x134], [0x6A2, 0x350]]
+    ];
+
+    static sRacerCol = [
+        menu::MColorObject(212.0 / 0xFF, 212.0 / 0xFF, 212.0 / 0xFF, 1.0),
+        menu::MColorObject(220.0 / 0xFF, 172.0 / 0xFF, 30.0 / 0xFF, 1.0)
+    ];
+
+    static sUnitTable = [
+        "piece/car_meter/GTMeter_Text_kmh.img",
+        "piece/car_meter/GTMeter_Text_mph.img"
+    ];
+
+    static sWatcher;
+    static sPenaltyText;
+    static sPenaltyReason;
+    static sDriftScale = 2.0;
+
+    static sDriftOldScore = 0.0;
+    static sDriftIntervalFrame = 0;
+    static sDriftOldState = 0;
+    static sDriftPrevNoteRate = 0;
+    static sDriftBlinkNow = 0;
+    static sWinN = 1;
+    static sView = -1;
+    
+    function UnitImagePath()
+    {
+        var Unit = pdiext::MUnit::GetCurrentUnitOfVelocity();
+        return sUnitTable[Unit & 1];
+    }
+
+    method appearPanel()
+    {
+        Info::Penalty::FadeInterpolator.start();
+        Panel::FadeInterpolator.reverse = true;
+        Parette::FadeInterpolator.reverse = true;
+        DivWork::FadeInterpolator.reverse = true;
+
+        Panel::FadeInterpolator.restart();
+        Parette::FadeInterpolator.restart();
+        DivWork::FadeInterpolator.restart();
+    }
+
+    method disappearPanel()
+    {
+        Info::Penalty::FadeInterpolator.stop();
+        Panel::FadeInterpolator.reverse = false;
+        Parette::FadeInterpolator.reverse = false;
+        DivWork::FadeInterpolator.reverse = false;
+
+        Panel::FadeInterpolator.restart();
+        Parette::FadeInterpolator.restart();
+        DivWork::FadeInterpolator.restart();
+        Adjuster.visible = false;
+    }
+
+    function appearDriftPanel()
+    {
+        var W = Info::DriftScore;
+        W.visible = true;
+        W.FadeInterpolator.reverse = true;
+        W.FadeInterpolator.restart();
+        W.VectorInterpolator.reverse = true;
+        W.VectorInterpolator.restart();
+
+        var color = main::menu::MColorObject(204.0 / 255, 211.0 / 255, 239.0 / 255, 1.0);
+
+        W.SectionScore.base_color = color;
+        W.SectionScoreAdd.base_color = color;
+        W.SectionScore.visible = true;
+        W.SectionScoreAdd.visible = true;
+        W.Meter::blink.visible = false;
+    }
+
+    function disappearDriftPanel()
+    {
+        var state = main::ORG.getRaceDisplayState(0);
+
+        var W = Info::DriftScore;
+        W.FadeInterpolator.reverse = false;
+        W.FadeInterpolator.restart();
+        W.VectorInterpolator.reverse = false;
+        W.VectorInterpolator.restart();
+
+        var color = main::menu::MColorObject(236.0 / 255, 190.0 / 255, 5.0 / 255, 1.0);
+
+        W.SectionScore.base_color = color;
+        W.SectionScoreAdd.base_color = color;
+        W.SectionScoreAdd::FadeInterpolator.reverse = true;
+        W.SectionScoreAdd::FadeInterpolator.restart();
+    }
+
+    function driftScoreDecideAppear()
+    {
+        main::ORG.fetchRaceDisplay();
+        var state = main::ORG.getRaceDisplayState(0);
+
+        var W = Info::DriftScore;
+        W.visible = false;
+        W.ScalarInterpolator.restart();
+        W.visible = true;
+    }
+
+    function clearRaceDispInfo()
+    {
+        sPenaltyReason = 0;
+
+        Info::Penalty.visible = false;
+        Info::DiffTime.visible = false;
+        Info::SectionTime.visible = false;
+        Info::DriftScore.visible = false;
+        InfoRight::DriftBestScore.visible = false;
+        InfoRight::DriftTotalScore.visible = false;
+        RaceRoot::Info::Infomation::TempRanking.visible = false;
+        InfoRight::RemainTime.visible = false;
+        InfoRight::OnlineRecord.visible = false;
+        Adjuster.visible = false;
+    }
+
+    function onTick(context)
+    {
+        if (!ROOT.visible)
+            return;
+
+        var OP = main::GAME_STATUS.user_profile.option;
+        
+        if (!OP.monitor_race_display_enable)
+        {
+            ROOT.visible = RaceRoot.visible = false;
+        }
+
+        main::ORG.fetchRaceDisplay();
+        var state = main::ORG.getRaceDisplayState(0);
+
+        if (state.is_target_existing && state.meter_mode & 2)
+        {
+            Parette.visible = true;
+            var view = (state.meter_type) ? 1 : 0;
+
+            if (sWinN == 1 && sView != view)
+            {
+                foreach (var B in sLayoutView)
+                {
+                    B[0].visible = B[1] != view;
+                }
+
+                setDriftScoreView();
+            }
+
+            else
+            {
+                DivWork.visible = true;
+            }
+
+            sView = view;
+
+            if (sPenaltyReason)
+            {
+                var W = Info::Penalty::FadeInterpolator;
+                var DT = W.FadeInterpolator.ramain_time;
+
+                if (DT <= 0)
+                {
+                    sPenaltyReason = 0;
+                    var DT = 0;
+                }
+
+                W.Sec.text = sPenaltyText[0].build("%4.1f".format(DT.toFloat()));
+            }
+
+            if (state.drift_section_max > 0)
+                onTickDrift(context);
+        }
+
+        else
+        {
+            Panel.visible = false;
+            Parette.visible = false;
+            WongWay.visible = false;
+            DivWork.visible = false;
+            Adjuster.visible = false;
+
+            Info::Penalty.visible = false;
+            sPenaltyReason = 0;
+            sView = -1;
+        }
+
+        var visible = state.gt5plogo_visible && !Panel.visible && !Parette.visible;
+    }
+
+    function onTickDrift(context)
+    {
+        var state = main::ORG.getRaceDisplayState(0);
+        var W = Info::DriftScore;
+        var change_sector = false;
+
+        if (sDriftOldState != state.drift_section_state && state.drift_section_state == 1)
+        {
+            appearDriftPanel();
+            main::sound.play("point_reset", 0.5);
+            sDriftBlinkNow = 0;
+
+            sDriftScale = 1.5;
+            sDriftPrevNoteRate = 0;
+            var change_sector = true;
+            offVisibleFlag();
+        }
+
+        else if (sDriftOldState != state.drift_section_state && state.drift_section_state >= 2)
+        {
+            resetBlink();
+            sDriftPrevNoteRate = 0;
+            disappearDriftPanel();
+
+            if (state.drift_section_grade == 0)
+                main::sound.play("license_cursor");
+
+            else
+                main::sound.play("point4");
+                
+            switch (state.drift_section_grade)
+            {
+                case 4:
+                    main::sound.play("big_cheer");
+                    break;
+
+                case 3:
+                    main::sound.play("clap_b");
+                    break;
+                    
+                case 2:
+                    main::sound.play("clap_m");
+                    break;
+                    
+                case 1:
+                    main::sound.play("clap_s");
+                    break;
+                    
+                default:
+                    main::sound.play("booing");
+                    break;    
+            } 
+            
+            sDriftScale = 1.5;
+            var change_sector = true;
+        }
+        
+        sDriftOldState = state.drift_section_state;
+        var diff = sDriftOldScore - state.drift_section_score;
+
+        if (diff < 0)
+            diff *= -1.0;
+
+        if (state.drift_section_score == 0 && diff > 0.0)
+        {
+            sDriftIntervalFrame = 0;
+            sDriftScale = 1.5;
+        }
+        
+        if (sDriftIntervalFrame <= 0 && diff > 0.0 && !change_sector)
+        {
+            if (state.drift_section_score == 0)
+                main::sound.play("license_cursor");
+
+            else
+                main::sound.play("tab_switch");
+                
+            var add_rate = (diff * state.drift_section_immediate) / 10.0;
+            sDriftScale += add_rate * 0.7;
+            sDriftIntervalFrame = 11 - add_rate;
+            
+            if (sDriftIntervalFrame < 2)
+                sDriftIntervalFrame = 2;
+
+            if (sDriftScale > 1.5)
+                sDriftScale = 1.5;
+                
+            W.SectionScoreAdd::FadeInterpolator.reverse = true;
+            W.SectionScoreAdd::FadeInterpolator.restart();    
+        }
+
+        else if (sDriftIntervalFrame > 0)
+        {
+            sDriftIntervalFrame -= 1;
+        }
+
+        sDriftScale += (0.9 - sDriftScale) * 0.1;
+        W.SectionScore.scale_x = 0.9;
+        W.SectionScore.scale_y = 0.9;
+        W.SectionScoreAdd.scale_x = sDriftScale;
+        W.SectionScoreAdd.scale_y = sDriftScale;
+
+        sDriftOldScore = state.drift_section_score;
+        onTickMeter(context);
+    }
+
+    function getAddFlag(num)
+    {
+        if (num < 0)
+            var num = 0;
+
+        var id = num % 10;
+        var W = Info::DriftScore::Meter::add;
+        
+        if (main::GAME_STATUS.config.drift_flag)
+            var W = Info::DriftScore::Meter::add_real;
+
+        var list = [
+            W.base0, W.base1, W.base2, W.base3, W.base4, 
+            W.base5, W.base6, W.base7, W.base8, W.base9
+        ];
+        
+        var flag = list[id];
+        return flag;
+    }
+
+    function onFlag(num)
+    {
+        if (num > 9 && !main::GAME_STATUS.config.drift_flag_loop)
+            return;
+
+        if (num < 0)
+            var num = 0;
+            
+        var flag = getAddFlag(num);
+        flag.visible = true;
+        flag.VectorInterpolator.reverse = false;
+        flag.VectorInterpolator.restart();
+        flag.ScalarInterpolator.reverse = false;
+        flag.ScalarInterpolator.restart();
+        
+        if (main::GAME_STATUS.config.drift_flag_loop)
+        {
+            var color0 = [255, 76, 76, 255];
+            var color1 = [255, 235, 0, 255];
+            var color2 = [157, 0, 157, 255];
+            var col_list = [color0, color1, color2];
+
+            var col_id = (num / 10.0) % 3;
+            flag.face_color = col_list[col_id];
+        }
+
+        else
+        {
+            if (main::GAME_STATUS.config.drift_flag)
+                return;
+
+            var color0 = [255, 76, 76, 255];
+            flag.face_color = color0;    
+        }
+
+        var state = main::ORG.getRaceDisplayState(0);
+    }
+
+    function offFlag(num)
+    {
+        if (num > 9)
+            return;
+
+        if (num < 0)
+            var num = 0;
+            
+        var flag = getAddFlag(num);
+        flag.VectorInterpolator.reverse = true;
+        flag.VectorInterpolator.restart();
+        
+        if (!main::GAME_STATUS.config.drift_flag)
+        {
+            flag.face_color = [255, 76, 76, 255];
+        }
+    }
+
+    function clearFlagColor()
+    {
+        if (main::GAME_STATUS.config.drift_flag)
+            return;
+
+        for (var id = 0; id < 10; id++)
+        {
+            var flag = getAddFlag(id);
+            flag.face_color = [255, 76, 76, 255];
+        }    
+    }
+
+    function offVisibleFlag()
+    {
+        for (var id = 0; id < 10; id++)
+        {
+            var flag = getAddFlag(id);
+            flag.visible = false;
+        }
+    }
+
+    function resetBlink()
+    {
+        var WM = Info::DriftScore::Meter::blink;
+
+        var list = [
+            WM.base0, WM.base1, WM.base2, WM.base3, WM.base4, 
+            WM.base5, WM.base6, WM.base7, WM.base8, WM.base9
+        ];
+
+        for (var id = 0; id < 10; id++)
+        {
+            var flag = list[id];
+            flag.FaceColorInterpolator.restart();
+        }
+    }
+
+    function onTickMeter(context)
+    {
+        var state = main::ORG.getRaceDisplayState(0);
+        var score = state.drift_section_grade_rate * 10.0;
+        var score = score.toInt();
+        var W = Info::DriftScore::Meter;
+
+        W.TextFace.text = state.drift_section_grade_rate* 10.0;
+        W.TextFace0.text = score;
+        W.TextFace1.text = sDriftPrevNoteRate;
+
+        if (score >= sDriftPrevNoteRate + 1)
+        {
+            var prev = sDriftPrevNoteRate;
+
+            while (prev < score)
+            {
+                onFlag(prev);
+                prev++;
+            }
+
+            sDriftPrevNoteRate = score;
+
+            if (score == 10)
+                resetBlink();
+        }
+
+        if (score < sDriftPrevNoteRate && score < 10)
+        {
+            clearFlagColor();
+            var prev = sDriftPrevNoteRate;
+
+            if (prev > 9)
+                var prev = 9;
+
+            while (prev >= score)
+            {
+                var id = prev % 10;
+                offFlag(id);
+                prev--;
+            }
+            
+            sDriftPrevNoteRate = score;
+        }
+
+        if (score >= 10 || (state.drift_section_state >= 2 && state.drift_section_grade != 0))
+        {
+            W.Meter::blink.visible = true;
+        }
+
+        else
+        {
+            W.Meter::blink.visible = false;
+        }
+    }
+
+    method activePenalty(slot_id, speed_kmh, reason, span_sec, now_sec)
+    {
+        if (reason < 1 || reason > 7)
+            return;
+
+        if (sPenaltyReason)
+            ;
+            
+        else
+            ;
+
+        sPenaltyReason = reason;
+        Info::Penalty.visible = false;
+        Info::Penalty.Explanation.text = sPenaltyText[sPenaltyReason];
+
+        Info::Penalty.Sec.text = sPenaltyText[0].build("%4.1f".format(span_sec.toFloat()));
+        Info::Penalty.FadeInterpolator.setEndDuration(0, span_sec - 0.3);
+        
+        Info::Penalty.FadeInterpolator.initialize();
+        Info::Penalty.FadeInterpolator.restart();
+        Info::Penalty.visible = true;
+    }
+
+    function onLoad(context)
+    {
+
+    }
+
+    function onInitialize(context)
+    {
+        if (sWatcher == nil)
+        {
+            sWatcher = WatcherUtil::Create(context, onTick);
+        }
+
+        sPenaltyText = Array(8);
+
+        sPenaltyText[0] = context.translate(ROOT, "RaceProject::OnboardMeterRoot", "penalty_");
+        sPenaltyText[1] = context.translate(ROOT, "RaceProject::OnboardMeterRoot", "Penalty_Collision");
+        sPenaltyText[2] = context.translate(ROOT, "RaceProject::OnboardMeterRoot", "Penalty_PullingOver");
+        sPenaltyText[3] = context.translate(ROOT, "RaceProject::OnboardMeterRoot", "Penalty_Contact");
+        sPenaltyText[4] = context.translate(ROOT, "RaceProject::OnboardMeterRoot", "Penalty_SideAttack");
+        sPenaltyText[5] = context.translate(ROOT, "RaceProject::OnboardMeterRoot", "Penalty_Shortcut");
+        sPenaltyText[6] = context.translate(ROOT, "RaceProject::OnboardMeterRoot", "Penalty_Flying");
+        sPenaltyText[7] = "dmy";
+
+        sPenaltyReason = 0;
+        InfoRight::ClearTime.visible = hasClearTime();
+
+        if (InfoRight::ClearTime.visible)
+        {
+            var eval_condition = gSequenceCondition.gp.event.eval_condition;
+            var eval_type = eval_condition.type;
+
+            InfoRight::ClearTime::GoldTime.visible = (eval_condition.gold != 0) ? true : false;
+            InfoRight::ClearTime::SilverTime.visible = (eval_condition.silver != 0) ? true : false;
+            InfoRight::ClearTime::BronzeTime.visible = (eval_condition.bronze != 0) ? true : false;
+
+            if (eval_type == main::gtengine::EvalType::ORDER)
+            {
+                var gold_data = OrdinalUtil::getOrdinalNumber(context, ROOT, eval_condition.gold.toInt());
+                var silver_data = OrdinalUtil::getOrdinalNumber(context, ROOT, eval_condition.silver.toInt());
+                var bronze_data = OrdinalUtil::getOrdinalNumber(context, ROOT, eval_condition.bronze.toInt());
+
+                InfoRight::ClearTime::GoldTime::TextFace.text = gold_data;
+                InfoRight::ClearTime::SilverTime::TextFace.text = silver_data;
+                InfoRight::ClearTime::BronzeTime::TextFace.text = bronze_data;
+                InfoRight::ClearTime::GoldTime::ImageShape.visible = false;
+                InfoRight::ClearTime::SilverTime::ImageShape.visible = false;
+                InfoRight::ClearTime::BronzeTime::ImageShape.visible = false;
+
+                InfoRight::ClearTime::GoldTime::TextFace.visible = InfoRight::ClearTime::GoldTime.visible;
+                InfoRight::ClearTime::SilverTime::TextFace.visible = InfoRight::ClearTime::SilverTime.visible;
+                InfoRight::ClearTime::BronzeTime::TextFace.visible = InfoRight::ClearTime::BronzeTime.visible;
+            }
+
+            else
+            {
+                InfoRight::ClearTime::GoldTime::ImageShape.visible = true;
+                InfoRight::ClearTime::SilverTime::ImageShape.visible = true;
+                InfoRight::ClearTime::BronzeTime::ImageShape.visible = true;
+
+                InfoRight::ClearTime::GoldTime::TextFace.visible = false;
+                InfoRight::ClearTime::SilverTime::TextFace.visible = false;
+                InfoRight::ClearTime::BronzeTime::TextFace.visible = false;
+            }
+        }
+
+        InfoRight::RacerPane.initialize(context);
+
+        if (AppOpt.defined("chromakey"))
+            ChromaKey.visible = true;
+
+        Panel.visible = false;
+        Parette.visible = false;
+        WongWay.visible = false;
+        DivWork.visible = false;
+        var OP = main::GAME_STATUS.user_profile.option;
+        
+        MapClip.visible = false;
+        DriverName.visible = false;
+        Panel::Speedmeter::SpeedGuage.image_path = "";
+        Panel::Tachometer::RevGuage.image_path = "";
+        Parette::Tacho::RevGuage.image_path = "";
+
+        Info.visible = false;
+        InfoLeft.visible = false;
+        InfoRight.visible = false;
+        InfoRight::RacerPane.visible = false;
+        Info::Penalty.visible = false;
+        Info::DiffTime.visible = false;
+        Info::SectionTime.visible = false;
+
+        Info::DriftScore.visible = false;
+        InfoRight::DriftBestScore.visible = false;
+        InfoRight::DriftTotalScore.visible = false;
+        RaceRoot::Info::Infomation::TempRanking.visible = false;
+        InfoRight::RemainTime.visible = false;
+        InfoRight::RemainTime.opacity = 1.0;
+        InfoRight::OnlineRecord.visible = false;
+
+        var N = (gSequenceCondition.game_mode == gtengine::GameMode::TIME_ATTACK) ? 8 : 3;
+        var A = InfoRight::LastLap;
+        var B = hidden::lapshape;
+
+        if (A["lapshape"] == nil)
+        {
+            for (var i = 0; i < N; i++)
+            {
+                var C = B.doCopy();
+                A.appendChild(context, C);
+                C.y = B.h * i;
+
+                C.x = B.x;
+                C.w = B.w;
+                C.h = B.h;
+            }
+        }
+
+        Adjuster.visible = false;
+        Adjuster.SliderA.visible = false;
+        Adjuster.SliderB.visible = false;
+
+        sDriftOldScore = 0.0;
+        sDriftScale = 5.0;
+        sDriftIntervalFrame = 0;
+        sDriftOldState = 0;
+        sDriftPrevNoteRate = 0;
+        sDriftBlinkNow = 0;
+
+        Info::DriftScore.TextFace.text = context.translate(ROOT, "RaceProject::OnboardMeterRoot", "Drift_Point");
+
+        switch (main::GAME_STATUS.config.drift_flag)
+        {
+            case 0:
+                Info::DriftScore::Meter::add.visible = true;
+                Info::DriftScore::Meter::add_real.visible = false;
+                break;
+
+            default:
+                Info::DriftScore::Meter::add.visible = false;
+                Info::DriftScore::Meter::add_real.visible = true;
+                break;    
+        }
+
+        sView = -1;
+        Parette::speed::Img_unit.image_path = Panel::DigitalSpeed::Img_unit.image_path = UnitImagePath();
+
+        var S4x3 = (pdiext::MSystemConfiguration::is4x3()) ? true : false;
+
+        if (S4x3)
+        {
+            Parette::Gmonitor.y = 1041;
+            var DX = 240;
+        }
+
+        else
+        {
+            Parette::Gmonitor.y = 1026;
+            var DX = 0;
+        }
+
+        var idx = (OP.race_map_scale > 9) ? 5 : OP.race_map_scale;
+        var map_scale = MapScaleTable[idx - 1];
+
+        RaceRoot::Info::Infomation.x = DX;
+        sWinN = main::RaceOperator.window_max;
+
+        if (sWinN == 2)
+        {
+            MapClip.window_size = [300, 300];
+
+            foreach (var W in sLayoutSprit)
+            {
+                var B = W[0];
+                var L1 = W[2];
+                var L2 = W[3];
+                B.x = L1[0] - (W[1].toFloat() * DX);
+
+                var A = B.doCopy();
+                DivWork.appendChild(context, A);
+                B.y = L1[1].toFloat();
+                A.y = L2[1].toFloat();
+            }
+
+            InfoRight::LastLap.visible = false;
+            Parette::Indicator.visible = false;
+            Parette::Gmonitor.visible = false;
+            Parette::Boost.visible = false;
+            Parette::Input.visible = false;
+            Parette::Gas.visible = false;
+            Parette::Tire.visible = false;
+
+            DivWork.visible = true;
+            MapClip::CourseMapFace.begin(ORG, MapClip, MapClip::ComCar, OP.race_map_view_mode, map_scale, 0);
+
+            DivWork.MapClip::CourseMapFace.begin(ORG, DivWork.MapClip, DivWork.MapClip::ComCar, 
+            OP.race_map_view_mode, map_scale, 1);
+        }
+
+        else
+        {
+            foreach (var Q in (S4x3) ? sLayoutSD : sLayoutHD)
+            {
+                Q[0].visible = false;
+                Q[0].window_position = Q[1];
+            }
+
+            Parette::Gas.visible = true;
+            Parette::Tire.visible = true;
+            setDriftScoreView();
+
+            if (gSequenceCondition.game_mode == main::gtengine::GameMode::EVENT_RALLY)
+            {
+                MapClip.window_position = [(1920 -256) / 2, 512];
+                MapClip.window_size = [256, 256];
+
+                MapClip::CourseMapFace.begin(main::ORG, MapClip, MapClip::ComCar, 4, 100, 0);
+                MapClip::CourseMapFace.autoscale(50, 130, 200, 400);
+            }
+
+            else
+            {
+                MapClip.window_size = [400, 400];
+                MapClip::CourseMapFace.begin(main::ORG, MapClip, MapClip::ComCar, 
+                OP.race_map_view_mode, map_scale, 0);
+
+                if (gSequenceCondition.game_mode != gtengine::GameMode::LICENSE 
+                && gSequenceCondition.game_mode != gtengine::GameMode::TIME_ATTACK 
+                && gSequenceCondition.game_mode != gtengine::GameMode::FREE_RUN 
+                && gSequenceCondition.game_mode != gtengine::GameMode::SCHOOL 
+                && gSequenceCondition.game_mode != gtengine::GameMode::TOUR 
+                && gSequenceCondition.game_mode != gtengine::GameMode::DRIFT_ATTACK 
+                && gSequenceCondition.game_mode != gtengine::GameMode::COURSE_EDIT)
+                {
+                    InfoRight::RacerPane.visible = !hasClearTime();
+                }
+            }
+        }
+
+        if (gSequenceCondition.game_mode == gtengine::GameMode::BEHAVIOR)
+        {
+            InfoRight::RacerPane.visible = false;
+            InfoRight::TotalTime.visible = false;
+            InfoRight::BestLap.visible = false;
+        }
+
+        RaceDisplayFace.beginN(ROOT, main::RaceOperator.window_max);
+
+        if (OP.monitor_race_display_enable == false)
+        {
+            ROOT.visible = false;
+            RaceRoot.visible = false;
+        }
+
+        else
+        {
+            ROOT.visible = true;
+            RaceRoot.visible = true;
+        }
+    }
+
+    function setDriftScoreView()
+    {
+        var state = main::ORG.getRaceDisplayState(0);
+
+        if (state.drift_section_max > 0)
+        {
+            Info::DiffTime.visible = false;
+            Info::SectionTime.visible = false;
+            Info::Current.visible = false;
+            InfoRight::TotalTime.visible = false;
+            InfoRight::BestLap.visible = false;
+            InfoRight::LastLap.visible = false;
+            InfoRight::DriftBestScore.visible = true;
+            InfoRight::DriftTotalScore.visible = true;
+        }
+
+        else
+        {
+            if (gSequenceCondition.game_mode == main::gtengine::GameMode::BEHAVIOR)
+            {
+                InfoRight::BestLap.visible = false;
+                InfoRight::LastLap.visible = false;
+                InfoRight::DriftBestScore.visible = false;
+                InfoRight::DriftTotalScore.visible = false;
+            }
+
+            else
+            {
+                Info::Current.visible = true;
+                InfoRight::BestLap.visible = true;
+                InfoRight::LastLap.visible = true;
+                InfoRight::DriftBestScore.visible = false;
+                InfoRight::DriftTotalScore.visible = false;
+            }
+        }
+    }
+
+    function onFinalize(context)
+    {
+        if (sWatcher != nil)
+        {
+            WatcherUtil::Delete(sWatcher);
+            sWatcher = nil;
+        }
+
+        RaceDisplayFace.end();
+        MapClip::CourseMapFace.end();
+        InfoRight::RacerPane.finalize(context);
+        InfoRight::LastLap.clearWindow(context);
+        DivWork.clearWindow(context);
+    }
+
+    method setRaceParameter(rp)
+    {
+        Info::DriftScore.visible = false;
+    }
+
+    function onRankingUpdateResult(context, result, car_rank, all_rank, eve_rank)
+    {
+        if (PluginModule.defined("onRankingUpdateResult"))
+        {
+            PluginModule::onRankingUpdateResult(context, result, car_rank, all_rank, eve_rank);
+
+            if (result == false)
+                return;
+
+            if (car_rank == nil || all_rank == nil || eve_rank == nil)
+                return;
+                
+            var W = RaceRoot::Info::Infomation::TempRanking;
+            
+            if (eve_rank != 0)
+            {
+                W.TextFace.text = context.translate(RaceRoot, "TEMP_RANKING_EVENT").build(eve_rank);
+            }
+
+            else if (all_rank == 0)
+            {
+                W.TextFace.text = context.translate(RaceRoot, "TEMP_RANKING_CAR").build(car_rank);
+            }
+
+            else
+            {
+                W.TextFace.text = context.translate(RaceRoot, "TEMP_RANKING_ALL").build(car_rank, all_rank);
+            }
+
+            W.visible = false;
+            W.ScalarInterpolator.restart();
+            W.visible = true;
+        }
+    }
+
+    function onTempRankingUpdate(context, car_rank, all_rank, eve_rank)
+    {
+        if (car_rank == nil || all_rank == nil || eve_rank == nil)
+            return;
+
+        var W = RaceRoot::Info::Infomation::TempRanking;
+        
+        if (eve_rank != 0)
+        {
+            W.TextFace.text = context.translate(RaceRoot, "TEMP_RANKING_EVENT").build(eve_rank);
+        }
+
+        else if (all_rank == 0)
+        {
+            W.TextFace.text = context.translate(RaceRoot, "TEMP_RANKING_CAR").build(car_rank);
+        }
+
+        else
+        {
+            W.TextFace.text = context.translate(RaceRoot, "TEMP_RANKING_ALL").build(car_rank, all_rank);
+        }
+
+        W.visible = false;
+        W.ScalarInterpolator.restart();
+        W.visible = true;
+    }
+
+    module InfoRight::RacerPane
+    {
+        attribute items;
+
+        method initialize(context)
+        {
+            var rp = ORG.getBackRaceParameter();
+
+            if (rp.race_type != gtengine::RaceType::COMPETITION 
+            || rp.flagset == gtengine::RaceFlagSet::FLAGSET_RALLY 
+            || rp.racers_max <= 1)
+            {
+                self.visible = false;
+                return;
+            }
+
+            if (AppOpt.defined("chromakey"))
+                ChromaKey.visible = true;
+
+            var racers_list = ORG.getCarOrderList();
+            var step_y = hidden::RacerItem.h;
+            var num = racers_list.size;
+            self.items = Array(16);
+            
+            for (var i = 0; i < 16; i++)
+            {
+                var item = hidden::RacerItem.doCopy();
+                item.y = step_y * i;
+                self.appendChild(context, item);
+
+                self.items[i] = item;
+                var item2 = hidden::NameItem.doCopy();
+                ROOT::DriverName.appendChild(context, item2);
+                item2.Instance.instance_widget = item.label;
+            }
+
+            var RY = (racers_list.size > 8) ? 8 : racers_list.size;
+            self.h = (RY * step_y) + 2;
+            self.FixedBase.h = 768;
+            self.FixedNum.h = 768;
+            self.visible = true;
+        }
+
+        method finalize(context)
+        {
+            if (!self.visible)
+                return;
+
+            ROOT.DriverName.clearChildren(context);
+            
+            if (self.items != nil)
+            {
+                foreach (var w in self.items)
+                {
+                    self.removeChild(context, w);
+                }
+            }
+
+            self.items = nil;
+        }
+
+        method refresh(context, warp)
+        {
+            
+        }
+    }
+}
