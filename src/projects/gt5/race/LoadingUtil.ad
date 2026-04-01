@@ -1,0 +1,264 @@
+module LoadingUtil
+{
+    function delay_thread(context, usec = 100000)
+    {
+        pdistd::DelayThread(usec);
+    }
+
+    function busy_wait(context, func, interval_usec = 100000, timeout_sec = 120)
+    {
+        var flush_func = function () {
+            return true;
+        }
+
+        pdistd::BusyWait(function (context, func, flush_func) {
+            return func();
+        }, interval_usec, timeout_sec, context, func, flush_func);
+    }
+
+    function load_sequence(context, after_coursein_func)
+    {
+        var usec_start = pdistd::GetSystemTimeMicroSecond();
+        var current_progress = 0.0;
+
+        var registered_cp_list = RaceOperator.getAccountFixedCarParameterList();
+        var loading_car_num = registered_cp_list.size;
+        var checkin_time = 0.4 * loading_car_num;
+        var carload_time = 0.5 * loading_car_num;
+
+        var total_time = 8.0 + checkin_time + carload_time + 6.0 + 12.0;
+        var time_initial_raito = 8.0 / total_time;
+
+        var time_checkin_ratio = (checkin_time > 0) ? checkin_time / total_time : 0;
+        var time_each_car_ratio = (carload_time > 0) ? (carload_time / loading_car_num) / total_time : 0;
+        var time_course_ratio = 6.0 / total_time;
+        var time_coursein_ratio = 12.0 / total_time;
+
+        if (!RaceOperator.isTheater() && !ORG.isBuildComplete())
+            return false;
+
+        var progress = nil;
+        var loading_root = context.getCursorProject().getCurrentTransitionRoot(context);
+        
+        if (loading_root != nil && loading_root["Progress"] != nil)
+            var progress = loading_root.Progress.bar.progress;
+
+        if (progress != nil)
+        {
+            var current_progress = time_initial_raito;
+            progress.value = current_progress;
+        }  
+        
+        var loading_course_priority = RaceOperator.isTheater() == false && gSequenceCondition.no_quickmenu == false;
+
+        if (loading_course_priority)
+            ORG.requestLoadingCourse();
+
+        var check_in_success = RaceOperator.checkIn(false);
+        
+        if (!check_in_success)
+            return false;
+
+        while (true)
+        {
+            var res = RaceOperator.hasEntryDone();
+
+            if (res == nil)
+                return false;
+
+            if (res)
+                break;           
+                
+            pdistd::DelayThread(1000 * 100);        
+        }
+
+        if (progress != nil)
+        {
+            current_progress += time_checkin_ratio;
+            progress.value = current_progress;
+        }
+
+        RaceOperator.processAfterCheckIn();
+
+        if (loading_course_priority == false)
+        {
+            while (!ORG.hasLoadingCarDone())
+            {
+                var loaded_num = ORG.getLoadedCarCount();
+
+                if (progress != nil)
+                    progress.value = current_progress + (time_each_car_ratio * loaded_num);
+            
+                pdistd::DelayThread(1000 * 100);
+            }
+        }
+
+        if (progress != nil)
+        {
+            current_progress += time_each_car_ratio * loading_car_num;
+            progress.value = current_progress;
+        }
+
+        ORG.requestLoadingCourse();
+        pdistd::DelayThread(0x3E8 * 0x64);
+
+        while (!ORG.canEnterCourse())
+        {
+            if (progress != nil)
+            {
+                progress.value = progress.value + ((time_course_ratio * 0.25) / (6.0 * 6.0));
+
+                if (progress.value > current_progress + time_course_ratio)
+                    progress.value = current_progress + time_course_ratio;
+            }
+
+            pdistd::DelayThread(1000 * 100);
+        }
+
+        if (progress != nil)
+        {
+            current_progress += time_course_ratio;
+            progress.value = current_progress;
+        }
+
+        var course_pathway = nil;
+
+        var track = RaceOperator.game_parameter.event.track;
+
+        if (track.course_pathway != nil)
+        {
+            busy_wait(context, ORG.canEnterCourse, 1000 * 100);
+
+            var course_pathway = gtengine::MCoursePathway();
+            course_pathway.deserialize(track.course_pathway);
+            track.course_generator_param.course_name = course_pathway.title;
+        }
+
+        else if (track.use_generator)
+        {
+            busy_wait(context, ORG.canEnterCourse, 1000 * 100);
+
+            var course_generator_param = gtengine::CourseGenerateParam();
+            var course_generator = gtengine::MCourseGenerator();
+
+            course_generator_param.seed = track.course_generator_param.seed;
+            course_generator_param.useRandomSeed = track.course_generator_param.use_random_seed;
+            course_generator_param.kind = track.course_generator_param.course_generator_kind;
+            course_generator_param.lengthType = track.course_generator_param.course_generator_length_type;
+            course_generator_param.lengthy = track.course_generator_param.lengthy;
+
+            var num = track.course_generator_param.sections.size;
+            course_generator_param.sections.resize(num);
+
+            for (var i = 0; i < num; i++)
+            {
+                course_generator_param.sections[i].width = track.course_generator_param.sections[i].width;
+                course_generator_param.sections[i].curvy = track.course_generator_param.sections[i].curvy;
+                course_generator_param.sections[i].sharpness = track.course_generator_param.sections[i].sharpness;
+                course_generator_param.sections[i].bank_angularity = track.course_generator_param.sections[i].bank_angularity;
+            }
+
+            var first_version_incompatible = track.course_generator_param.first_version_incompatible;
+
+            var course_pathway = course_generator.generate(ORG, course_generator_param, true, first_version_incompatible != 0);
+
+            while (course_pathway == nil)
+            {
+                if (course_generator_param.lengthy > 1000.0)
+                    course_generator_param.lengthy -= 1000.0;
+
+                var course_pathway = course_generator.generate(ORG, course_generator_param, true, true);    
+            }
+        }
+
+        if (course_pathway != nil)
+        {
+            var track = RaceOperator.game_parameter.event.track;
+            gSequenceCondition.ss_course_distance = course_pathway.Length;
+            RaceOperator.game_parameter.event.track.course_pathway = course_pathway.serialize();
+
+            var course_builder = gtengine::MCourseBuilder();
+            var res = course_builder.build(ORG, course_pathway);
+        }
+
+        if (loading_course_priority == false || RaceOperator.isOnline() == true)
+        {
+            while (ORG.enterCourse() == false)
+                ;
+
+            busy_wait(context, ORG.inCourse, 1000 * 100);    
+        }
+
+        if (RaceOperator.isOnline())
+        {
+            ORG.setNetworkStartSync();
+            busy_wait(context, ORG.checkReadySession, 1000 * 100);
+            ORG.setMatchingComplete();
+        }
+
+        if (after_coursein_func != nil && loading_course_priority == false)
+        {
+            after_coursein_func(context);
+            busy_wait(context, ORG.inSession, 1000 * 100);
+
+            if (loading_course_priority == false)
+            {
+                busy_wait(context, ORG.isRenderReady, 1000 * 100);
+                busy_wait(context, ORG.isFinishedFirstLoad, 1000 * 100);
+            }
+
+            if (!gSequenceCondition.is_logger_mode)
+            {
+                ORG.pauseRace = false;
+            }
+            
+            else
+            {
+                ORG.pauseRace = false;
+                pdistd::DelayThread(0x3E8 * 0x1E);
+
+                ORG.pauseRace = true;
+            }
+
+            PROJECT::setEnemySuitableTire(context);
+        }
+
+        if (progress != nil)
+        {
+            var current_progress = 1.0;
+            progress.value = current_progress;
+        }
+
+        return true;
+    }
+
+    function exec(context, after_coursein_func)
+    {
+        ORG.disableRenderingRace();
+        ORG.disableSoundingRace();
+        ORG.exitCourse();
+        var res = load_sequence(context, after_coursein_func);
+
+        return res;
+    }
+
+    function canStartRace()
+    {
+        if (ORG.isRestartSequence())
+            return false;
+
+        if (!ORG.inCourse())
+            return false;
+            
+        if (!ORG.isFinishedFirstLoad())
+            return false;
+            
+        if (!ORG.hasLoadingCarDone())
+            return false;
+            
+        if (!ORG.inCourseAllEntries())
+            return false;
+            
+        return true;
+    }
+}
