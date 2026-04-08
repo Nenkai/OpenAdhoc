@@ -838,8 +838,8 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 | option                 |    ❌    | N/A                                                                              |
 | photo                  |    ❌    | N/A                                                                              |
 | play_movie             |    ❌    | N/A                                                                              |
-| race                   |    ❌    | N/A                                                                              |
-| race_*                 |    ❌    | N/A                                                                              |
+| race                   |    ✔️    | Main race logic                                                                  |
+| race_*                 |    ❌    | Plugins for each game mode (sits on top of `race`)                               |
 | ranking                |    ❌    | N/A                                                                              |
 | rcvtst                 |    ❌    | N/A                                                                              |
 | setting                |    ❌    | N/A                                                                              |
