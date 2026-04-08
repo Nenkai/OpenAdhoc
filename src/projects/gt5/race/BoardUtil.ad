@@ -1,0 +1,458 @@
+module BoardUtil
+{
+    static sBoardList = nil;
+    static sEntryNum = nil;
+    static sGridAlphaThread = nil;
+
+    module DispResultEnum
+    {
+        static AFTER_SS = 0;
+        static AFTER_DAY = 1;
+        static FINAL = 2;
+    }
+
+    class EntryInfo
+    {
+        attribute slot_id;
+        attribute cp;
+        attribute dp;
+        attribute total_time;
+        attribute total_time_diff;
+        attribute fastest_lap_time;
+        attribute tire_f;
+        attribute tire_r;
+        attribute date;
+
+        method __init__(slot_id, cp, dp, total_time, total_time_diff, fastest_lap_time, tire_f, tire_r, date)
+        {
+            if (slot_id != nil)
+                self.slot_id = slot_id;
+
+            if (cp != nil)
+                self.cp = cp;
+                
+            if (dp != nil)
+                self.dp = dp;
+                
+            if (total_time != nil)
+                self.total_time = total_time.toString();
+                
+            if (total_time_diff != nil)
+                self.total_time_diff = total_time_diff.toString();
+                
+            if (fastest_lap_time != nil)
+                self.fastest_lap_time = fastest_lap_time.toString();
+                
+            if (tire_f != nil)
+                self.tire_f = tire_f;
+                
+            if (tire_r != nil)
+                self.tire_r = tire_r;
+                
+            if (date != nil)
+                self.date = date;    
+        }
+    }
+
+    class DriftInfo
+    {
+        attribute sector;
+        attribute score;
+        attribute grade;
+        attribute cp;
+
+        method __init__(sector, score, grade, cp)
+        {
+            if (sector != nil)
+                self.sector = sector;
+
+            if (score != nil)
+                self.score = score;
+                
+            if (grade != nil)
+                self.grade = grade;
+                
+            if (cp != nil)
+                self.cp = cp;    
+        }
+    }
+
+    function create_board(context, root, setup_entry_cb, parent, template_board, template_entry, list, num, start_rank, base_delay, delay_ratio)
+    {
+        var board = template_board.doCopy();
+
+        if (board["ScalarInterpolator"] != nil)
+        {
+            board.ScalarInterpolator.start_delay = base_delay;
+            board.x = -board.w;
+        }
+        else
+            board.x = 0;
+
+        board.y = 0;
+
+        parent.appendChild(context, board);
+        board.ListBox.setItemTemplate(context, template_entry);
+        board.ListBox.setItemCount(num);
+
+        var slotIDList = ORG.getSlotIDListOnGrid();
+        for (var i = 0; i < num; i++)
+        {
+            var item = board.ListBox.getItemWidget(i, context);
+            if (item != nil)
+            {
+                item.defineAttribute('time_active');
+                item.time_active = false;
+
+                if (gSequenceCondition.no_quickmenu == false)
+                {
+                    if (item.defined("Driver"))
+                    {
+                        if (ORG.checkInCourseSlot(slotIDList[i]) == false)
+                        {
+                            var darkAlpha = 0.3;
+                            item.Driver.label.alpha = darkAlpha;
+                            item.Driver.labela.alpha = darkAlpha;
+
+                            if (item.defined("No"))
+                                item.No.label.alpha = darkAlpha;
+
+                            if (item.defined("Car"))
+                                item.Car.label.alpha = darkAlpha;    
+                        }
+                    }
+                }
+
+                var order = i + start_rank;
+                (root.*setup_entry_cb)(context, item, order, list[order], delay_ratio);
+            }
+        }
+
+        if (template_board.getNodePath() == "RaceProject::Template::ResultBoard::Board")
+            board.ListBox.h = board.ListBox.minimum_height = template_entry.h * num;
+
+        return board;
+    }
+
+    function update_board(context, root, update_cb, board, list, num, start_rank)
+    {
+        for (var i = 0; i < num; i++)
+        {
+            var item = board.ListBox.getItemWidget(i, context);
+            if (item != nil)
+            {
+                var order = i + start_rank;
+                var info = nil;
+
+                if (order < list.size)
+                    info = list[order];
+
+                (root.*update_cb)(context, item, order, info);    
+            }
+        }
+    }
+
+    function updateGridAlpha(context)
+    {
+        var hasFinished = false;
+        var all = sEntryNum - 1;
+        var loaded1 = ORG.getLoadedCarCount();
+        var loaded2 = -1;
+
+        while (!hasFinished)
+        {
+            Thread::Sleep(0.1);
+
+            if (sBoardList == nil)
+                break;
+                
+            var cnt = ORG.getLoadedCarCount();
+            if (cnt == loaded2)
+                break;
+
+            var loaded2 = cnt;
+            if (cnt != loaded1)
+            {
+                loaded1 = cnt;
+
+                if (cnt == all)
+                    main::sound.play("ok_mid");
+            }
+
+            if (cnt >= all)
+                hasFinished = true;
+
+            var slotIDList = ORG.getSlotIDListOnGrid();
+            
+            for (var bi = 0; bi < sBoardList.size; ++bi)
+            {
+                if (sBoardList[bi] == nil)
+                    continue;
+
+                for (var i = 0; i < sEntryNum; i++)
+                {
+                    var item = sBoardList[bi].ListBox.getItemWidget(i, context);
+                    if (item == nil)
+                        continue;
+
+                    if (item.defined("Driver"))
+                    {
+                        if (hasFinished || ORG.checkInCourseSlot(slotIDList[i]))
+                        {
+                            var lightAlpha = 1.0;
+                            item.Driver.label.alpha = lightAlpha;
+                            item.Driver.labela.alpha = lightAlpha;
+
+                            if (item.defined("No"))
+                                item.No.label.alpha = lightAlpha;
+
+                            if (item.defined("Car"))
+                                item.Car.label.alpha = lightAlpha;    
+                        }
+                    }    
+                }    
+            }
+        }
+    }
+
+    function initialize(context, root, setup_entry_cb, center_frame, left_frame, right_frame, template, entry_list, result_mode, result_day)
+    {
+        sBoardList = [];
+        var template_entry = template.Entry;
+        var template_board = template.Board;
+        var num = entry_list.size;
+        sEntryNum = num;
+
+        if (left_frame != nil && right_frame != nil && num > 8)
+        {
+            sBoardList = Array(2);
+
+            var board = create_board(context, root, setup_entry_cb, left_frame, template_board, template_entry, entry_list, 8, 0, 0.0, 0.1);
+            sBoardList[0] = board;
+
+            board = create_board(context, root, setup_entry_cb, right_frame, template_board, template_entry, entry_list, num - 8, 8, 0.8, 0.1);
+            sBoardList[1] = board;
+
+            if (left_frame != nil)
+                left_frame.visible = true;
+
+            if (right_frame != nil)
+                right_frame.visible = true;
+                
+            if (center_frame != nil)
+                center_frame.visible = false;    
+        }
+        else
+        {
+            sBoardList = Array(1);
+
+            var board = create_board(context, root, setup_entry_cb, center_frame, template_board, template_entry, entry_list, num, 0, 0.0, 0.0);
+            sBoardList[0] = board;
+
+            if (left_frame != nil)
+                left_frame.visible = false;
+
+            if (right_frame != nil)
+                right_frame.visible = false;
+                
+            if (center_frame != nil)
+                center_frame.visible = true;    
+        }
+
+        for (var i = 0; i < sBoardList.size; i++)
+        {
+            if (template == Template::ResultBoard)
+            {
+                sBoardList[i].Header.label.toScreenCoord();
+                sBoardList[i].Header.label.screen_position = [0.0, 15.0];
+
+                sBoardList[i].Header.label_ss.toScreenCoord();
+                sBoardList[i].Header.label_ss.screen_position = [0.0, 15.0];
+
+                sBoardList[i].Header.label_after_ss.toScreenCoord();
+                sBoardList[i].Header.label_after_ss.screen_position = [0.0, 15.0];
+
+                sBoardList[i].Header.label_after_day.toScreenCoord();
+                sBoardList[i].Header.label_after_day.screen_position = [0.0, 15.0];
+
+                sBoardList[i].Header.label_final.toScreenCoord();
+                sBoardList[i].Header.label_final.screen_position = [0.0, 15.0];
+
+                sBoardList[i].Header.label_ss.visible = false;
+                sBoardList[i].Header.label_after_ss.visible = false;
+                sBoardList[i].Header.label_after_day.visible = false;
+                sBoardList[i].Header.label_final.visible = false;
+
+                if (result_mode != nil)
+                {
+                    sBoardList[i].Header.label.visible = false;
+
+                    switch (result_mode)
+                    {
+                        case DispResultEnum::AFTER_SS:
+                            sBoardList[i].Header.label_after_ss.visible = true;
+                            var gp = RaceOperator.game_parameter;
+                            var fmt = context.translate(Template, "AFTER_SS_RESULT");
+                            sBoardList[i].Header.label_after_ss.text = fmt.build(gp.event_index + 1);
+                            break;
+
+                        case DispResultEnum::AFTER_DAY:
+                            sBoardList[i].Header.label_after_day.visible = true;
+                            var gp = RaceOperator.game_parameter;
+                            var fmt = context.translate(Template, "AFTER_DAY_RESULT");
+                            sBoardList[i].Header.label_after_day.text = fmt.build(result_day);
+                            break;
+                            
+                        case DispResultEnum::FINAL:
+                            sBoardList[i].Header.label_final.visible = true;
+                            break;
+                            
+                        default:
+                            ;   
+                    }
+                }
+                else
+                {
+                    var gp = RaceOperator.game_parameter;
+
+                    if (gp.event.game_mode == gtengine::GameMode::EVENT_RALLY)
+                    {
+                        sBoardList[i].Header.label.visible = false;
+                        sBoardList[i].Header.label_ss.visible = true;
+
+                        var fmt = context.translate(Template, "SS_RESULT");
+                        sBoardList[i].Header.label_ss.text = fmt.build(gp.event_index + 1);
+                    }
+                }
+            }
+        }
+
+        sGridAlphaThread = Thread(updateGridAlpha, context);
+        sGridAlphaThread.start();
+    }
+
+    function finalize(context, center_frame, left_frame, right_frame)
+    {
+        if (center_frame != nil)
+        {
+            var board = center_frame.last;
+            if (board != nil && board.name == "Board")
+                center_frame.removeChild(context, board);
+        }
+
+        if (left_frame != nil)
+        {
+            var board = left_frame.last;
+            if (board != nil && board.name == "Board")
+                left_frame.removeChild(context, board);
+        }
+
+        if (right_frame != nil)
+        {
+            right_frame.clearChildren(context);
+
+            var board = right_frame.last;
+            if (board != nil && board.name == "Board")
+                right_frame.removeChild(context, board);
+        }
+
+        if (sGridAlphaThread != nil)
+        {
+            sGridAlphaThread.terminate();
+            sGridAlphaThread = nil;
+        }
+
+        sBoardList = nil;
+        sEntryNum = nil;
+    }
+    
+    function getHeaderList()
+    {
+        var list = [];
+        if (sBoardList != nil)
+        {
+            foreach (var board in sBoardList)
+            {
+                if (board.defined("Header"))
+                    list.push(board.Header);
+            }
+        }
+
+        return list;
+    }
+
+    function update(context, root, update_cb, entry_list)
+    {
+        if (sBoardList == nil)
+            return;
+
+        var num = sEntryNum;
+        if (num > 8 && sBoardList.size > 1)
+        {
+            update_board(context, root, update_cb, sBoardList[0], entry_list, 8, 0);
+            update_board(context, root, update_cb, sBoardList[1], entry_list, num - 8, 8);
+        }
+        else
+            update_board(context, root, update_cb, sBoardList[0], entry_list, num, 0);
+    }
+
+    function scrollUp(context, step, limit)
+    {
+        if (sBoardList == nil)
+            return;
+
+        if (step == nil)
+            step = 1;
+            
+        if (limit == nil)
+            limit = 8;
+            
+        foreach (var board in sBoardList)
+        {
+            var idx = board.ListBox.focus_index;
+            if (idx < board.ListBox.getItemCount() - limit)
+            {
+                main::sound.play("cursor");
+                board.ListBox.focus_index = idx + step;
+            }
+        }    
+    }
+
+    function scrollDown(context, step, limit)
+    {
+        if (sBoardList == nil)
+            return;
+
+        if (step == nil)
+            step = 1;
+            
+        if (limit == nil)
+            limit = 8;
+
+        foreach (var board in sBoardList)
+        {
+            var idx = board.ListBox.focus_index;
+
+            if (idx > 0 && board.ListBox.getItemCount() > limit)
+            {
+                main::sound.play("cursor");
+                board.ListBox.focus_index = idx - step;
+            }
+        }    
+    }
+
+    function setScrollAt(context, idx)
+    {
+        if (sBoardList == nil)
+            return;
+
+        if (idx > 8)
+            idx = 8;
+            
+        foreach (var board in sBoardList)
+        {
+            if (board.ListBox.getItemCount() > 8)
+                board.ListBox.focus_index = idx;
+        }    
+    }
+}

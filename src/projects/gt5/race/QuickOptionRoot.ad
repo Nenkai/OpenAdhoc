@@ -1,0 +1,345 @@
+
+
+
+
+
+module ROOT
+{
+    hidden.visible = false;
+    attribute sMapClip;
+    attribute sModal_page;
+
+    attribute sMinusSign;
+    attribute sWindowId = 0;
+    attribute sInitialInCarFovy;
+    attribute sAborted
+
+    method open(context, data, windowId)
+    {
+        self.sMapClip = data;
+        self.sWindowId = windowId;
+        self.sAborted = false;
+        self.FadeActor.out = true;
+        self.FadeActor.warp();
+
+        self.setFocus(Pane::ScrolledWindow::ScrollClip::space::RD_ViewMode::OptionMenu);
+        self.sModal_page = SequenceUtil::ModalPage(context, ROOT);
+        self.sModal_page.open();
+
+        return !self.sAborted;
+    }
+
+    method close(context)
+    {
+        self.setFocus(nil);
+        self.FadeActor.out = true;
+        SoundUtil::UpdateBGMVolume();
+        context.sync(0.25);
+
+        if (self.sModal_page != nil)
+        {
+            self.sModal_page.close();
+            self.sModal_page = nil;
+        }
+
+        self.sMapClip = nil;
+    }
+
+    method abort(context)
+    {
+        if (ROOT.sMapClip != nil)
+        {
+            ROOT.close(context);
+            ROOT.sMapClip = nil;
+            ROOT.sAborted = true;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        ROOT.navigate_insensitive = true;
+        Pane.minimum_height = 0;
+
+        self.sMinusSign = context.translate(ROOT, "SpecialCharacter", "EnDash");
+        Pane::ScrolledWindow::ScrollClip.initialize(context);
+    }
+
+    method onFinalize(context)
+    {
+        self.sMinusSign = nil;
+    }
+
+    method cancel(context)
+    {
+        var option = main::GAME_STATUS.user_profile.option;
+        OnboardMeterRoot::RaceDisplayFace.dispmode = option.racedisplay_view_mode;
+        self.sMapClip.mapmode = option.race_map_view_mode;
+        self.sMapClip.mapscale = MapScaleTable[option.race_map_scale - 1];
+
+        var X = (option.screen_brightness - 50.0) / 50.0;
+        pdiext::MSystemConfiguration::SetMasterRenderExposure(X);
+        ORG.setInCarFovyType(self.sWindowId, self.sInitialInCarFovy);
+        close(context);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        self.setFocus(ROOT.Pane::Button::CancelOK::Cancel);
+        return EVENTRESULT_FILTER;
+    }
+
+    method apply(context)
+    {
+        Pane::ScrolledWindow::ScrollClip.apply(context);
+    }
+
+    static sSliderValueColor = Pane::ScrolledWindow::ScrollClip::space::BGMVolume::slider::popup::Value::label.color;
+    static sSliderRedColor = menu::MColorObject(1.0, 0.2, 0.2);
+
+    function onVolumeValueChanged(context, slider)
+    {
+        slider.sliderValueChanged(context);
+        slider['popup'].Value.label.color = (slider.value > 100) ? sSliderRedColor : sSliderValueColor;
+    }
+
+    function onVolumeDecided(context, value, slider)
+    {
+        slider.label.color = (value > 100) ? sSliderRedColor : sSliderValueColor;
+    }
+
+    module Pane::Button::CancelOK::OK
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+            ROOT.apply(context);
+            ROOT.close(context);
+
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    module Pane::Button::CancelOK::Cancel
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+            ROOT.cancel(context);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onCancel(context)
+        {
+            main::sound.play("cancel");
+            ROOT.cancel(context);
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip
+    {
+        method initialize(context)
+        {
+            var option = main::GAME_STATUS.user_profile.option;
+            space.RD_ViewMode::OptionMenu.setIndex(context, option.racedisplay_view_mode);
+
+            if (gSequenceCondition.game_mode == gtengine::GameMode::EVENT_RALLY)
+            {
+                space.MapViewMode::OptionMenu::popup::vbox::Item1.visible = false;
+                space.MapViewMode::OptionMenu::popup::vbox::Item2.visible = false;
+
+                if (option.race_map_view_mode > 0)
+                    space.MapViewMode::OptionMenu.setIndex(context, 1);
+                else
+                    space.MapViewMode::OptionMenu.setIndex(context, 0);
+            }
+            else
+                space.MapViewMode::OptionMenu.setIndex(context, option.race_map_view_mode);
+
+            space::MapScale::slider.range = [1, 9];
+            space::MapScale::slider.index = option.race_map_scale;
+            space::MapScale::slider.setup(context);
+            space::Brightness::slider.value = (option.screen_brightness - 50.0) / 50.0;
+
+            space::Brightness::slider.format_callback = function (context, value) 
+            {
+                if (value == 0)
+                    return "+0";
+
+                if (value < 0)
+                    value -= 0.05;
+                
+                else if (value > 0)                
+                    value += 0.05;
+
+                var sign = (value >= 0) ? "+" : ROOT.sMinusSign;
+                
+                return sign + "%.1f".format(Math::abs(value));
+            };
+
+            space::Brightness::slider.unit_text = " EV";
+            space::Brightness::slider.setup(context);
+
+            space::CarMeter::CheckBox.active = option.carmeter_disp_mode;
+            space::Suggested::CheckBox.active = option.suggested_disp_mode;
+            space::Tire_Load::CheckBox.active = option.tireload_disp_mode;
+            space::Times::CheckBox.active = option.times_disp_mode;
+            space::RacerName::CheckBox.active = option.racername_disp_mode;
+
+            if (gSequenceCondition.is_online && RaceOperator.game_parameter.event.constraint.suggested_gear != gtengine::MGameParameter::INVALID_VALUE_INT)
+            {
+                space::Suggested::CheckBox.active = false;
+                space::Suggested::CheckBox.insensitive = true;
+            }
+
+            var d_option = main::GAME_STATUS.user_profile.context.saved_driving_option[ROOT.sWindowId];
+            space.InCarFovy::OptionMenu.setIndex(context, d_option.in_car_fovy);
+
+            var off_text = context.translate(ROOT, "Component", "Off");
+            var s = space::BGMVolume::slider;
+            s.zero_text = off_text;
+            s.decide_callback = onVolumeDecided;
+            s.value = option.race_bgm_volume;
+            s.setup(context);
+            onVolumeDecided(context, s.value, s);
+
+            var s = space::SEVolume::slider;
+            s.zero_text = off_text;
+            s.decide_callback = onVolumeDecided;
+            s.value = option.race_se_volume;
+            s.setup(context);
+            onVolumeDecided(context, s.value, s);
+
+            ROOT.sInitialInCarFovy = d_option.in_car_fovy;
+            ROOT.setFocus(space.RD_ViewMode::OptionMenu);
+        }
+
+        method finalize(context)
+        {
+
+        }
+
+        method apply(context)
+        {
+            var option = main::GAME_STATUS.user_profile.option;
+
+            option.race_map_view_mode = space.MapViewMode::OptionMenu.index;
+            option.race_map_scale = space.MapScale::slider.index;
+            option.screen_brightness = (space.Brightness::slider.value * 50) + 50;
+
+            var d_option = main::GAME_STATUS.user_profile.context.saved_driving_option[ROOT.sWindowId];
+            d_option.in_car_fovy = space.InCarFovy::OptionMenu.index;
+
+            option.racedisplay_view_mode = space.RD_ViewMode::OptionMenu.index;
+            option.carmeter_disp_mode = space::CarMeter::CheckBox.active;
+
+            if (!space::Suggested::CheckBox.insensitive)
+                option.suggested_disp_mode = space::Suggested::CheckBox.active;
+
+            option.tireload_disp_mode = space::Tire_Load::CheckBox.active;
+            option.times_disp_mode = space::Times::CheckBox.active;
+            option.racername_disp_mode = space::RacerName::CheckBox.active;
+            
+            var face = OnboardMeterRoot::RaceDisplayFace;
+            face.carmeter_disp = option.carmeter_disp_mode;
+
+            if (!space::Suggested::CheckBox.insensitive)
+                face.suggested_disp = option.suggested_disp_mode;
+
+            face.tireload_disp = option.tireload_disp_mode;
+            face.time_disp = option.times_disp_mode;
+            face.racername_disp = option.racername_disp_mode;
+            option.race_bgm_volume = space::BGMVolume::slider.value;
+            option.race_se_volume = space::SEVolume::slider.value;
+
+            SoundUtil::SetRaceSoundVolumeOption(option.race_bgm_volume, option.race_se_volume);
+            SoundUtil::ApplySoundVolumeOption();
+            SoundUtil::SetupSound(SoundUtil::SCENE_RACE, true);
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::RD_ViewMode::OptionMenu
+    {
+        function onValueChanged(context)
+        {
+            var X = Pane::ScrolledWindow::ScrollClip::space::RD_ViewMode::OptionMenu;
+            OnboardMeterRoot::RaceDisplayFace.dispmode = X.index;
+            X.pulldownValueChanged(context);
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::MapViewMode::OptionMenu
+    {
+        function onValueChanged(context)
+        {
+            var X = Pane::ScrolledWindow::ScrollClip::space::MapViewMode::OptionMenu;
+            ROOT.sMapClip.mapmode = X.index;
+            X.pulldownValueChanged(context);
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::MapScale::slider
+    {
+        method onValueChanged(context)
+        {
+            var X = Pane::ScrolledWindow::ScrollClip::space::MapScale::slider;
+            var val = MapScaleTable[X.index - 1];
+            ROOT.sMapClip.mapscale = val;
+            X.sliderValueChanged(context);
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::InCarFovy::OptionMenu
+    {
+        function onValueChanged(context)
+        {
+            var X = Pane::ScrolledWindow::ScrollClip::space::InCarFovy::OptionMenu;
+            main::ORG.setInCarFovyType(ROOT.sWindowId, X.index);
+            X.pulldownValueChanged(context);
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::Brightness::slider
+    {
+        method onValueChanged(context)
+        {
+            var X = Pane::ScrolledWindow::ScrollClip::space::Brightness::slider;
+            pdiext::MSystemConfiguration::SetMasterRenderExposure(X.value);
+            X.sliderValueChanged(context);
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::BGMVolume::slider
+    {
+        method onValueChanged(context)
+        {
+            if (self.popup)
+            {
+                onVolumeValueChanged(context, self);
+                SoundUtil::PreviewBGMVolume(self.value, GAME_STATUS.user_profile.option.user_bgm_volume);
+            }
+        }
+
+        method onPopupOpen(context)
+        {
+            SoundUtil::BGMPause(false);
+            self.sliderPopupOpen(context);
+            self.onValueChanged(context);
+        }
+
+        method onPopupClosed(context)
+        {
+            SoundUtil::BGMPause(true);
+            self.sliderPopupClosed(context);
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::SEVolume::slider
+    {
+        method onValueChanged(context)
+        {
+            onVolumeValueChanged(context, self);
+        }
+    }
+}

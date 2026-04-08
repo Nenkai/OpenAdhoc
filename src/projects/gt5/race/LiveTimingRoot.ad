@@ -1,0 +1,831 @@
+
+
+
+
+
+module ROOT
+{
+    static localized_text_page = "RaceProject::LiveTimingRoot";
+    hidden.visible = false;
+
+    attribute sInstanceWidget;
+    attribute sParentWidget;
+    attribute sPrevFrameInterval;
+
+    method isActive(context)
+    {
+        return self.sInstanceWidget != nil;
+    }
+
+    method initialize(context, parent_widget)
+    {
+        if (self.sInstanceWidget != nil)
+            return;
+
+        context.loadGpb("%{main::PROJECT_ROOT_DIR}/race", "LiveTimingRoot");
+        RaceRoot.Info.visible = false;
+        ORG.setCamera(gtengine::CameraType::SPECTATOR);
+        
+        self.sPrevFrameInterval = menu::FrameInterval;
+        menu::FrameInterval = 2;
+
+        self.sParentWidget = parent_widget;
+        self.sInstanceWidget = View.doCopy();
+        self.sInstanceWidget.MapChatPane.set_visible();
+        self.sParentWidget.appendChild(context, self.sInstanceWidget);
+        self.sInstanceWidget.initialize(context);
+        self.sInstanceWidget.refresh(context, true);
+        self.initializeTick(context);
+    }
+
+    method finalize(context)
+    {
+        if (self.sInstanceWidget != nil)
+        {
+            {
+                self.finalizeTick(context);
+                self.sInstanceWidget.finalize(context);
+                self.sParentWidget.removeChild(context, self.sInstanceWidget);
+                
+                self.sParentWidget = nil;
+                self.sInstanceWidget = nil;
+                menu::FrameInterval = self.sPrevFrameInterval;
+                self.sPrevFrameInterval = nil;
+            }
+
+            RaceRoot.Info.visible = true;
+            context.unloadGpb("%{main::PROJECT_ROOT_DIR}/race", "LiveTimingRoot");
+        }
+    }
+
+    method refresh(context)
+    {
+        if (self.sInstanceWidget != nil)
+            self.sInstanceWidget.refresh(context, true);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        return EVENTRESULT_FILTER;
+    }
+
+    method onTick(context)
+    {
+        if (self.sInstanceWidget != nil)
+            self.sInstanceWidget.refresh(context, false);
+    }
+
+    attribute sWatcher;
+
+    method initializeTick(context)
+    {
+        self.sWatcher = WatcherUtil::Create(context, onTick, 30);
+    }
+
+    method finalizeTick(context)
+    {
+        if (self.sWatcher != nil)
+        {
+            WatcherUtil::Delete(self.sWatcher);
+            self.sWatcher = nil;
+        }
+    }
+
+    module View
+    {
+        attribute base_rank_list;
+
+        method initialize(context)
+        {
+            ORG.disableRenderingRace();
+            self.MonitorPane.initialize(context);
+
+            if (gSequenceCondition.is_online && !gSequenceCondition.is_buffer_replay_mode)
+            {
+                self.MapPane.visible = false;
+                self.MapChatPane.visible = true;
+                self.MapChatPane.initialize(context);
+            }
+            else
+            {
+                self.MapPane.visible = true;
+                self.MapChatPane.visible = false;
+                self.MapPane.initialize(context);
+            }
+
+            menu::LiveTimingUtil::initialize(MainPane, context, ORG, ROOT::hidden, 
+            GAME_STATUS.user_profile.option.racer_list_car, gSequenceCondition.display_entry_name);
+
+            self.Parette::RDP.begin4bspec(ORG, Parette);
+            self.Parette::speed::Img_unit.image_path = OnboardMeterRoot::UnitImagePath();
+            ORG.enableRenderingRace();
+        }
+
+        method finalize(context)
+        {
+            self.MonitorPane.finalize(context);
+            
+            if (gSequenceCondition.is_online && !gSequenceCondition.is_buffer_replay_mode)
+                self.MapChatPane.finalize(context);
+            else
+                self.MapPane.finalize(context);
+
+            menu::LiveTimingUtil::finalize(MainPane, context);
+            self.Parette::RDP.end();
+        }
+
+        method refresh(context, warp)
+        {
+            autoSetCamera();
+            var entry_max = ORG.getCurrentRaceParameter().entry_max;
+            var sector_num = ORG.getSectorCount();
+            var report = ORG.getRaceDisplayReport(true, entry_max, sector_num);
+            var racers_list = ORG.getCarOrderList();
+            var move_index_list;
+
+            if (warp)
+            {
+                self.base_rank_list = racers_list;
+                var move_index_list = racers_list;
+            }
+            else
+            {
+                if (self.base_rank_list == nil)
+                    self.base_rank_list = racers_list;
+
+                |var new_base_rank_list, var move_index_list| = pdistd::TraceRankList(self.base_rank_list, racers_list, 16);
+                self.base_rank_list = new_base_rank_list;
+            }
+
+            menu::LiveTimingUtil::refresh(MainPane, context, ORG, RaceOperator, entry_max, report, racers_list, warp, move_index_list);
+            setWetInfoVisibleText(context, -1, [self.MapChatPane::Map::WetInfo, self.MapPane::WetInfo]);
+        }
+
+        method notifyMessageAdded()
+        {
+            View::MapChatPane.notifyAdded();
+        }
+
+        module MonitorPane
+        {
+            method initialize(context)
+            {
+                RenderControl.begin(ORG);
+            }
+
+            method finalize(context)
+            {
+                RenderControl.end(ORG);
+            }
+        }
+
+        module MapPane
+        {
+            method initialize(context)
+            {
+                MapClip.scale = [1, 1];
+
+                MapClip::CourseMapFace.begin(ORG, MapClip, MapClip::ComCar, MapMode, 
+                MapScaleTable[MapScaleIndex], 0);
+
+                MapController::HeadUp.active = (MapMode == 1);
+                MapController::NorthUp.active = (MapMode == 2);
+                MapController::Fit.active = (MapMode == 3);
+            }
+
+            method finalize(context)
+            {
+                MapClip::CourseMapFace.end();
+            }
+
+            module MapController
+            {
+                module ZoomUp
+                {
+                    method onFocusEnter(context)
+                    {
+                        RaceRoot.BalloonTip.visible = true;
+                        RaceRoot.BalloonTip.set_value(context, self, 
+                        context.translate(RaceRoot, "BALLOONTIP_MAP_ZOOMUP"), 0);
+
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    method onFocusLeave(context)
+                    {
+                        RaceRoot.BalloonTip.visible = false;
+                        RaceRoot.BalloonTip.reset_value(context);
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    method onActivate(context)
+                    {
+                        if (MapScaleIndex > 0)
+                        {
+                            main::sound.play("cursor");
+                            --MapScaleIndex;
+                            MapClip::CourseMapFace.mapscale = MapScaleTable[MapScaleIndex];                            
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module ZoomDown
+                {
+                    method onFocusEnter(context)
+                    {
+                        RaceRoot.BalloonTip.visible = true;
+                        RaceRoot.BalloonTip.set_value(context, self, 
+                        context.translate(RaceRoot, "BALLOONTIP_MAP_ZOOMDOWN"), 0);
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    method onFocusLeave(context)
+                    {
+                        RaceRoot.BalloonTip.visible = false;
+                        RaceRoot.BalloonTip.reset_value(context);
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    method onActivate(context)
+                    {
+                        if (MapScaleIndex < MapScaleTable.size - 1)
+                        {
+                            main::sound.play("cursor");
+                            ++MapScaleIndex;
+                            MapClip::CourseMapFace.mapscale = MapScaleTable[MapScaleIndex];
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module HeadUp
+                {
+                    method onFocusEnter(context)
+                    {
+                        RaceRoot.BalloonTip.visible = true;
+                        RaceRoot.BalloonTip.set_value(context, self, 
+                        context.translate(RaceRoot, "BALLOONTIP_MAP_HEADUP"), 0);
+
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    method onFocusLeave(context)
+                    {
+                        RaceRoot.BalloonTip.visible = false;
+                        RaceRoot.BalloonTip.reset_value(context);
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    method onActivate(context)
+                    {
+                        if (!self.active)
+                        {
+                            main::sound.play("cursor");
+                            MapMode = 1;
+                            MapClip::CourseMapFace.mapmode = MapMode;
+                            
+                            HeadUp.active  = (MapMode == 1);
+                            NorthUp.active = (MapMode == 2);
+                            Fit.active     = (MapMode == 3);
+                        }
+                        
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module NorthUp
+                {
+                    method onFocusEnter(context)
+                    {
+                        RaceRoot.BalloonTip.visible = true;
+                        RaceRoot.BalloonTip.set_value(context, self, 
+                        context.translate(RaceRoot, "BALLOONTIP_MAP_NORTHUP"), 0);
+
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    method onFocusLeave(context)
+                    {
+                        RaceRoot.BalloonTip.visible = false;
+                        RaceRoot.BalloonTip.reset_value(context);
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    method onActivate(context)
+                    {
+                        if (!self.active)
+                        {
+                            main::sound.play("cursor");
+                            MapMode = 2;
+                            MapClip::CourseMapFace.mapmode = MapMode;
+
+                            HeadUp.active  = (MapMode == 1);
+                            NorthUp.active = (MapMode == 2);
+                            Fit.active     = (MapMode == 3);
+                        }
+                        
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module Fit
+                {
+                    method onFocusEnter(context)
+                    {
+                        RaceRoot.BalloonTip.visible = true;
+                        RaceRoot.BalloonTip.set_value(context, self,
+                        context.translate(RaceRoot, "BALLOONTIP_MAP_FIT"), 0);
+                        
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    method onFocusLeave(context)
+                    {
+                        RaceRoot.BalloonTip.visible = false;
+                        RaceRoot.BalloonTip.reset_value(context);
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    method onActivate(context)
+                    {
+                        if (!self.active)
+                        {
+                            main::sound.play("cursor");
+                            MapMode = 3;
+                            MapClip::CourseMapFace.mapmode = MapMode;
+                            
+                            HeadUp.active  = (MapMode == 1);
+                            NorthUp.active = (MapMode == 2);
+                            Fit.active     = (MapMode == 3);
+                        }
+                        
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+            }
+        }
+
+        module MapChatPane
+        {
+            method set_visible()
+            {
+                Tab.active = MapChatTabChat;
+                Map.visible = !Tab.active;
+                Chat.visible = Tab.active;
+            }
+
+            method initialize(context)
+            {
+                Map.initialize(context);
+                Chat.initialize(context);
+                set_visible();
+                Tab::Notice::ScalarInterpolator.warp();
+            }
+
+            method finalize(context)
+            {
+                Map.finalize(context);
+                Chat.finalize(context);
+            }
+
+            method notifyAdded()
+            {
+                if (!Tab.active)
+                    Tab::Notice::ScalarInterpolator.restart();
+            }
+
+            module Map
+            {
+                method initialize(context)
+                {
+                    MapClip.scale = [1, 1];
+
+                    MapClip::CourseMapFace.begin(ORG, MapClip, MapClip::ComCar, MapMode, 
+                    MapScaleTable[MapScaleIndex], 0);
+
+                    MapController::HeadUp.active = (MapMode == 1);
+                    MapController::NorthUp.active = (MapMode == 2);
+                    MapController::Fit.active = (MapMode == 3);
+                }
+
+                method finalize(context)
+                {
+                    MapClip::CourseMapFace.end();
+                }
+
+                module MapController
+                {
+                    module ZoomUp
+                    {
+                        method onFocusEnter(context)
+                        {
+                            RaceRoot.BalloonTip.visible = true;
+                            RaceRoot.BalloonTip.set_value(context, self, 
+                            context.translate(RaceRoot, "BALLOONTIP_MAP_ZOOMUP"), 0);
+
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        method onFocusLeave(context)
+                        {
+                            RaceRoot.BalloonTip.visible = false;
+                            RaceRoot.BalloonTip.reset_value(context);
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        method onActivate(context)
+                        {
+                            if (MapScaleIndex > 0)
+                            {
+                                main::sound.play("cursor");
+                                --MapScaleIndex;
+                                MapClip::CourseMapFace.mapscale = MapScaleTable[MapScaleIndex];                            
+                            }
+
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    module ZoomDown
+                    {
+                        method onFocusEnter(context)
+                        {
+                            RaceRoot.BalloonTip.visible = true;
+                            RaceRoot.BalloonTip.set_value(context, self, 
+                            context.translate(RaceRoot, "BALLOONTIP_MAP_ZOOMDOWN"), 0);
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        method onFocusLeave(context)
+                        {
+                            RaceRoot.BalloonTip.visible = false;
+                            RaceRoot.BalloonTip.reset_value(context);
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        method onActivate(context)
+                        {
+                            if (MapScaleIndex < MapScaleTable.size - 1)
+                            {
+                                main::sound.play("cursor");
+                                ++MapScaleIndex;
+                                MapClip::CourseMapFace.mapscale = MapScaleTable[MapScaleIndex];
+                            }
+
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    module HeadUp
+                    {
+                        method onFocusEnter(context)
+                        {
+                            RaceRoot.BalloonTip.visible = true;
+                            RaceRoot.BalloonTip.set_value(context, self, 
+                            context.translate(RaceRoot, "BALLOONTIP_MAP_HEADUP"), 0);
+
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        method onFocusLeave(context)
+                        {
+                            RaceRoot.BalloonTip.visible = false;
+                            RaceRoot.BalloonTip.reset_value(context);
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        method onActivate(context)
+                        {
+                            if (!self.active)
+                            {
+                                main::sound.play("cursor");
+                                MapMode = 1;
+                                MapClip::CourseMapFace.mapmode = MapMode;
+                                
+                                HeadUp.active  = (MapMode == 1);
+                                NorthUp.active = (MapMode == 2);
+                                Fit.active     = (MapMode == 3);
+                            }
+                            
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    module NorthUp
+                    {
+                        method onFocusEnter(context)
+                        {
+                            RaceRoot.BalloonTip.visible = true;
+                            RaceRoot.BalloonTip.set_value(context, self, 
+                            context.translate(RaceRoot, "BALLOONTIP_MAP_NORTHUP"), 0);
+
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        method onFocusLeave(context)
+                        {
+                            RaceRoot.BalloonTip.visible = false;
+                            RaceRoot.BalloonTip.reset_value(context);
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        method onActivate(context)
+                        {
+                            if (!self.active)
+                            {
+                                main::sound.play("cursor");
+                                MapMode = 2;
+                                MapClip::CourseMapFace.mapmode = MapMode;
+
+                                HeadUp.active  = (MapMode == 1);
+                                NorthUp.active = (MapMode == 2);
+                                Fit.active     = (MapMode == 3);
+                            }
+                            
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    module Fit
+                    {
+                        method onFocusEnter(context)
+                        {
+                            RaceRoot.BalloonTip.visible = true;
+                            RaceRoot.BalloonTip.set_value(context, self,
+                            context.translate(RaceRoot, "BALLOONTIP_MAP_FIT"), 0);
+                            
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        method onFocusLeave(context)
+                        {
+                            RaceRoot.BalloonTip.visible = false;
+                            RaceRoot.BalloonTip.reset_value(context);
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        method onActivate(context)
+                        {
+                            if (!self.active)
+                            {
+                                main::sound.play("cursor");
+                                MapMode = 3;
+                                MapClip::CourseMapFace.mapmode = MapMode;
+                                
+                                HeadUp.active  = (MapMode == 1);
+                                NorthUp.active = (MapMode == 2);
+                                Fit.active     = (MapMode == 3);
+                            }
+                            
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+                }
+            }
+
+            module Chat
+            {
+                method initialize(context)
+                {
+                    UIKitProject::MessengerRoot.setNoticeList(sNoticeList);
+                    UIKitProject::MessengerRoot.open_cascade(context, CascadeRoot, true);
+                    UIKitProject::MessengerRoot.putLogs(context, 6);
+                    UIKitProject::MessengerRoot.enterChatMode(context);
+                }
+
+                method finalize(context)
+                {
+                    UIKitProject::MessengerRoot.close(context);
+                }
+            }
+
+            module Tab
+            {
+                module Map
+                {
+                    method onActivate(context)
+                    {
+                        if (Tab.active)
+                        {
+                            main::sound.play("cursor");
+                            MapChatTabChat = false;
+                            Tab.active = MapChatTabChat;
+
+                            MapChatPane.Map.visible = !Tab.active;
+                            MapChatPane.Chat.visible = Tab.active;
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module Chat
+                {
+                    method onActivate(context)
+                    {
+                        if (!Tab.active)
+                        {
+                            main::sound.play("cursor");
+                            MapChatTabChat = true;
+                            Tab.active = MapChatTabChat;
+
+                            MapChatPane.Map.visible = !Tab.active;
+                            MapChatPane.Chat.visible = Tab.active;
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+            }
+        }
+
+        module MainPane
+        {
+            RacerHead.UserID.label.localized_text_page = localized_text_page;
+            RacerHead.Car.label.localized_text_page = localized_text_page;
+            LapHead.LastLap.localized_text_page = localized_text_page;
+            LapHead.Gap.localized_text_page = localized_text_page;
+            LapHead.BestLap.localized_text_page = localized_text_page;
+
+            attribute fixed_items;
+            attribute items;
+            attribute sSectorCol;
+
+            method finalize(context)
+            {
+                self.items = nil;
+                self.fixed_items = nil;
+            }
+
+            method decSectorIndex()
+            {
+                var listbox = SectorHead::ListBox;
+                
+                if (listbox.focus_index > 0)
+                {
+                    main::sound.play("cursor");
+                    listbox.decIndex();
+                    
+                    for (var i = 0; i < 16; ++i)
+                        self.items[i].ScrollClip.manual_target_x = -120 * listbox.focus_index;
+                }
+            }
+
+            method incSectorIndex()
+            {
+                var listbox = SectorHead::ListBox;
+                if (listbox.focus_index < listbox.max_index)
+                {
+                    main::sound.play("cursor");
+                    listbox.incIndex();
+                    
+                    for (var i = 0; i < 16; ++i)
+                        self.items[i].ScrollClip.manual_target_x = -120 * listbox.focus_index;
+                }           
+            }
+
+            module RacerHead
+            {
+                module Car
+                {
+                    method onActivate(context)
+                    {
+                        if (!self.active)
+                        {
+                            main::sound.play("cursor");
+                            GAME_STATUS.user_profile.option.racer_list_car = true;
+                            self.active = true;
+                            UserID.active = false;
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module UserID
+                {
+                    method onActivate(context)
+                    {
+                        if (!self.active)
+                        {
+                            main::sound.play("cursor");
+                            GAME_STATUS.user_profile.option.racer_list_car = false;
+                            self.active = true;
+                            Car.active = false;
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+            }
+
+            module SectorHead::ListBox
+            {
+                attribute max_index;
+            }
+
+            module SectorHead::Left
+            {
+                method onActivate(context)
+                {
+                    MainPane.decSectorIndex();
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module SectorHead::Right
+            {
+                method onActivate(context)
+                {
+                    MainPane.incSectorIndex();
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+
+        module RaceInfo
+        {
+            method initialize(context)
+            {
+
+            }
+
+            method finalize(context)
+            {
+
+            }
+
+            method refresh(context, report)
+            {
+
+            }
+        }
+    }
+
+    module hidden
+    {
+        module SectorColumn
+        {
+            attribute items;
+        }
+
+        module MainItem
+        {
+            attribute carCode_ = gtengine::MSpecDB::NO_CODE64;
+            attribute carColorOrder_ = -1;
+            attribute carName_ = "";
+            attribute driverName_ = "";
+
+            method rideCar(context, cp, slotId)
+            {
+                var carCode  = cp.getCarCode();
+                var carColor = cp.color;
+                
+                var car_label = gtengine::MSpecDB::getCarLabel(carCode);
+                self.car.image_path = "car/thumbnail_M/" + car_label;
+                
+                var car_name = gtengine::MSpecDB::getCarName(carCode);
+                var dp = ORG.getEntriedDriverParameter(slotId);
+
+                var driver_name = (dp != nil) ? dp.display_name : "";
+            
+                self.carCode_       = carCode;
+                self.carColorOrder_ = carColor;
+                self.carName_       = car_name;
+                self.driverName_    = driver_name;
+            }
+        }
+
+        module FixedItem
+        {
+            attribute order;
+
+            method onActivate(context)
+            {
+                var racers_list = ORG.getCarOrderList();
+
+                if (racers_list.size <= self.order)
+                {
+                    main::sound.play("disable");
+                    return EVENTRESULT_FILTER;
+                }
+
+                var slot_id = racers_list[self.order];
+                if (slot_id >= 0 && ORG.getEntryState(slot_id) == gtengine::EntryLevel::RACER)
+                {
+                    main::sound.play("ok");
+                    ORG.setCameraTarget(0, slot_id);
+                    RaceRoot.Foot.refresh(context);
+                }
+                else
+                    main::sound.play("disable");
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+}
