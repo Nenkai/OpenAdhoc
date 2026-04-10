@@ -1,0 +1,773 @@
+
+
+
+
+
+module ROOT
+{
+    class Waiting : UIKitProject::ProgressRoot::ThreadData
+    {
+        method begin_message(context)
+        {
+            return context.translate(ROOT, "News", "WAIT_FOR_DATA");
+        }
+    }
+
+    attribute popup;
+    attribute closed;
+    attribute result;
+    attribute invisible_pages;
+    attribute format_date;
+
+    attribute news_id_list_cache;
+    attribute news_cache;
+    attribute news_category_name_cache;
+    attribute news_read_cache;
+    attribute update_news_cache;
+    attribute tsm_redist_size;
+
+    hidden.visible = false;
+
+    method open(context)
+    {
+        self.result = false;
+        self.closed = false;
+
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return result;
+    }
+
+    method updateDB(context)
+    {
+        self.update_news_cache = [];
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        News2.clearCallback();
+        self.closed = true;
+        updateDB(context);
+
+        if (self.invisible_pages != nil)
+        {
+            foreach (var page in self.invisible_pages)
+            {
+                page.visible = true;
+            }
+
+            self.invisible_pages = nil;
+        }
+
+        FadeActor.on_effect_end = function (context) {
+            if (nil != ROOT.popup)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+        };
+
+        FadeActor.out = true;
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        self.setFocus(Title::Close);
+        return EVENTRESULT_FILTER;
+    }
+
+    function initialize(context)
+    {
+        var root_list = [];
+
+        var updater = Waiting(function (args, progress) {
+
+            var context = args;
+
+            if (LoginUtil::isOnline())
+            {
+                var request1 = News2.requestCategoryList(function (args) {});
+
+                if (Grim2Util::__deprecated__join__(context, request1))
+                {
+                    var category_root_list = News2.decodeCategoryList(request1);
+
+                    if (request1.isUpdated() || category_root_list.size != NewsFileUtil::getCategoryCount())
+                        NewsFileUtil::updateCategoryList(category_root_list);
+                }
+
+                if (LoginUtil::isOnline())
+                {
+                    var request2 = News2.requestCategoryRoot(function (args) {});
+
+                    if (Grim2Util::__deprecated__join__(context, request2))
+                    {
+                        var category_root_list = News2.decodeCategoryRoot(request2);
+
+                        foreach (var category_root in category_root_list)
+                        {
+                            var root = 0 == category_root["category_id2"];
+
+                            if (root)
+                                root_list.push(category_root);
+                        }
+
+                        var index = 0;
+                        var news_list = [];
+                        var news_id_list_list = [];
+
+                        foreach (var category_root in category_root_list)
+                        {
+                            ++index;
+                            var category_id1 = category_root["category_id1"];
+                            var category_id2 = category_root["category_id2"];
+
+                            if (LoginUtil::isOnline())
+                            {
+                                var request3 = News2.requestNewsIdList(category_id1, category_id2, function (args) {});
+
+                                if (Grim2Util::__deprecated__join__(context, request3))
+                                {
+                                    var news_id_list = News2.decodeNewsIdList(request3);
+                                    setIdListCache(category_id1, category_id2, news_id_list);
+                                    setReadNewsCache(news_id_list);
+
+                                    if (0 != category_id2)
+                                        news_id_list_list.push([category_id1, category_id2, news_id_list]);
+
+                                    else
+                                        ;
+                                }
+                            }
+
+                            progress.value = index.toFloat() / category_root_list.size;
+                        }
+
+                        if (news_id_list_list.size > 0)
+                            NewsFileUtil::updateNewsIdListByList(news_id_list_list);
+                    }
+                }
+            }
+
+            progress.value = 1.0;
+        }, context);
+
+        updater.auto_mode = true;
+        UIKitProject::ProgressRoot.open(context, [updater]);
+
+        if (LoginUtil::isOnline())
+        {
+            Menu.initialize(context, root_list);
+        }
+
+        else
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+            context.translate(ROOT, "Network", "CANNOT_CONNECT_SERVER"));
+
+            ROOT.close();
+        }
+    }
+
+    method onInitialize(context)
+    {
+        var res = pdistd::GetTsmOptionSize("PFGMemGetRedist");
+
+        if (res[0])
+        {
+            self.tsm_redist_size = res[1];
+            pdistd::SetTsmOptionSize("PFGMemSetRedist", (10 * 1024) * 1024);
+        }
+
+        ButtonHelpGT5.set(context, [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "News", "BUTTON_HELP_OPEN")],
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "News", "BUTTON_HELP_CANCEL")]
+        ]);
+
+        ButtonHelpGT5.hide();
+
+        var adj = main::menu::MAdjustment();
+        ChannelPane::ChannelList::ListBox.v_adjustment = adj;
+        ChannelPane::ChannelList::VScrollbar.adjustment = adj;
+
+        self.invisible_pages = [];
+        var page_list = context.getPageList();
+
+        foreach (var page in page_list)
+        {
+            if (self != page && page.visible)
+            {
+                page.visible = false;
+                self.invisible_pages.push(page);
+            }
+        }
+
+        self.format_date = context.translate(ROOT, "DateTime", "FORMAT_DATE");
+        self.news_id_list_cache = Map();
+        self.news_cache = Map();
+        self.news_category_name_cache = Map();
+        self.news_read_cache = Map();
+        self.update_news_cache = [];
+
+        context.pushEvent(main::menu::MFunctionEvent(initialize, context));
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        updateDB(context);
+
+        if (nil != self.tsm_redist_size)
+        {
+            pdistd::SetTsmOptionSize("PFGMemSetRedist", self.tsm_redist_size);
+            self.tsm_redist_size = nil;
+        }
+
+        self.format_date = nil;
+        self.news_id_list_cache = nil;
+        self.news_cache = nil;
+        self.news_category_name_cache = nil;
+        self.news_read_cache = nil;
+        self.update_news_cache = nil;
+
+        return EVENTRESULT_FILTER;
+    }
+
+    function getCategoryName(category_id1, category_id2, category_id3)
+    {
+        var key = "%{category_id1}_%{category_id2}_%{category_id3}";
+        var name = ROOT.news_category_name_cache[key];
+
+        if (nil == name)
+        {
+            var name = NewsFileUtil::getCategoryName(category_id1, category_id2, category_id3);
+            ROOT.news_category_name_cache[key] = name;
+        }
+
+        return name;
+    }
+
+    function setIdListCache(category_id1, category_id2, news_id_list)
+    {
+        ROOT.news_id_list_cache["%{category_id1}_%{category_id2}"] = news_id_list;
+    }
+
+    function getIdList(category_id1, category_id2)
+    {
+        return ROOT.news_id_list_cache["%{category_id1}_%{category_id2}"];
+    }
+
+    function setReadNewsCache(news_id_list)
+    {
+        if (nil == news_id_list)
+            return;
+
+        var read_news_id_list = NewsFileUtil::getReadNewsList(news_id_list);
+
+        foreach (var news_id in read_news_id_list)
+        {
+            ROOT.news_read_cache[news_id] = true;
+        }
+    }
+
+    function isReadNews(news_id)
+    {
+        var read_news = ROOT.news_read_cache[news_id];
+
+        if (nil == read_news)
+            return false;
+
+        return true;
+    }
+
+    module Menu
+    {
+        method initialize(context, category_root_list)
+        {
+            Menu::Body::Buttons.initialize(context, category_root_list);
+        }
+
+        method setActive(context, category_id1)
+        {
+            for (var it = Body::Buttons.first; it != nil; it = it.next_widget)
+            {
+                it.active = it.category_id1 == category_id1;
+            }
+        }
+
+        module Body::Buttons
+        {
+            method initialize(context, root_list)
+            {
+                self.clearChild(context);
+                var category_root1;
+
+                foreach (var category_root in root_list)
+                {
+                    var item = hidden::ItemMenu.doCopy();
+                    self.appendChild(item);
+                    item.initialize(context, category_root);
+                    item.doInitialize(context);
+
+                    if (nil == category_root1)
+                    {
+                        var category_root1 = category_root;
+                        ROOT.setFocus(item);
+                    }
+                }
+
+                if (nil != category_root1)
+                    ChannelPane.initialize(context, category_root1["category_id1"]);
+            }
+        }
+    }
+
+    module ChannelPane
+    {
+        method initialize(context, category_id1)
+        {
+            ChannelList::ListBox.initialize(context, category_id1);
+            Menu.setActive(context, category_id1);
+        }
+
+        module ChannelList::ListBox
+        {
+            attribute category_id1;
+            attribute category2_list;
+            attribute active_index = -1;
+
+            method initialize(context, category_id1)
+            {
+                self.category_id1 = category_id1;
+                self.setItemCount(0);
+                self.setItemTemplate(context, hidden::ItemChannel);
+
+                self.category2_list = NewsFileUtil::getUsedCategory2List(self.category_id1);
+                self.category2_list.unshift(0);
+                self.setItemCount(category2_list.size);
+            }
+
+            method onVisibleNotify(context, indices)
+            {
+                var count = self.getItemCount();
+
+                foreach (var i in indices)
+                {
+                    if (self.getItemVisible(i))
+                    {
+                        var item = self.getItemWidget(i);
+
+                        if (item == nil)
+                        {
+                            var item = self.getItemWidget(i, context);
+
+                            item.initialize(context, i, self.category_id1, self.category2_list[i], i == count - 1);
+                        }
+
+                    }
+
+                    else
+                        ;
+                }
+            }
+
+            method activateImpl(context, index)
+            {
+                self.active_index = index;
+
+                for (var i = 0; i < self.category2_list.size; ++i)
+                {
+                    var item = self.getItemWidget(i);
+
+                    if (nil != item)
+                    {
+                        item.bgA.visible = i == index;
+                        item.ImageFaceA.visible = i == index;
+                        item.TextFaceA.visible = i == index;
+                        item.TextFace.visible = i != index;
+                    }
+                }
+
+                var category_id2 = self.category2_list[index];
+                ChannelPane::List.createList(context, self.category_id1, category_id2);
+            }
+
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                if (self.active_index != self.focus_index)
+                    activateImpl(context, self.focus_index);
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onCancel(context, event)
+            {
+                main::sound.play("cancel");
+
+                if (nil != self.category_id1)
+                {
+                    var item = Menu::Body::Buttons.getChild(self.category_id1 - 1);
+
+                    if (nil != item)
+                    {
+                        ROOT.setFocus(item);
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                return EVENTRESULT_CONTINUE;
+            }
+        }
+
+        module List
+        {
+            attribute finder;
+            attribute news_id_list;
+
+            function getNews(news_id)
+            {
+                return ROOT.news_cache[news_id];
+            }
+
+            function onInitItem(context, candidate_data, item_w, arg)
+            {
+                var news_id = candidate_data.value_;
+                var news = getNews(news_id);
+
+                if (nil != news)
+                {
+                    item_w.initialize(context, news);
+                }
+
+                else
+                {
+                    News2.requestNews(news_id, function (args) {
+                        |var context, var request| = args;
+
+                        if (request.isDone())
+                        {
+                            var news = News2.decodeNews(request);
+                            ROOT.update_news_cache.push(news);
+                            ROOT.news_cache[news_id] = news;
+                            item_w.initialize(context, news);
+                        }
+                    });
+                }
+            }
+
+            function onActivateItem(context, folder_data, func_close, arg)
+            {
+                if (!LoginUtil::isOnline())
+                {
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                    context.translate(ROOT, "Network", "CANNOT_CONNECT_SERVER"));
+
+                    ROOT.close();
+                    return;
+                }
+
+                ROOT.updateDB(context);
+                var candidate_data = folder_data.getItemData();
+                var result = GTNewsDetailPopup.open(context, ChannelList::ListBox.category_id1, 
+                List.news_id_list, candidate_data.item_index_);
+
+                if (result)
+                {
+                    ROOT.result = true;
+                    ROOT.close(context);
+                }
+
+                else
+                {
+                    setReadNewsCache(List.news_id_list);
+                    updateStatusForce(context);
+                }
+            }
+
+            function updateStatusForce(context)
+            {
+                var count = List.finder.getItemCount(context);
+
+                for (var i = 0; i < count; ++i)
+                {
+                    var item = List.finder.getItemWidget(i);
+
+                    if (nil != item)
+                    {
+                        var candidate_data = List.finder.getItemData(context, i);
+
+                        if (nil == candidate_data || nil == candidate_data.value_)
+                            ;
+
+                        else
+                        {
+                            var news_id = candidate_data.value_;
+
+                            if (item.new.visible)
+                                item.new.visible = !isReadNews(news_id);
+                        }
+                    }
+                }
+            }
+
+            function onFocusEnter(context, candidate_data, item_w, arg)
+            {
+                ButtonHelpGT5.appearIf();
+            }
+
+            function onFocusLeave(context, candidate_data, item_w, arg)
+            {
+                ButtonHelpGT5.hideIf();
+            }
+
+            method makeInitialData(context)
+            {
+                var Finder = UIKitProject::FinderRoot;
+                var candidates = Finder.makeCandidates(Array(0));
+                var initial_data = Finder.InitialData(candidates);
+
+                initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+                initial_data.cb_init_item_ = onInitItem;
+                initial_data.cb_on_activate_ = onActivateItem;
+                initial_data.v_scrollbar_ = VScrollbar;
+                initial_data.item_cache_ = false;
+
+                initial_data.extended_item_ = hidden::ItemList;
+                initial_data.import_iconbox_parameter_ = hidden::IconBoxChannel;
+                initial_data.cb_focus_enter_ = onFocusEnter;
+                initial_data.cb_focus_leave_ = onFocusLeave;
+
+                return initial_data;
+            }
+
+            method onInitialize(context)
+            {
+                var initial_data = makeInitialData(context);
+                self.finder = UIKitProject::FinderRoot.setCopy(context, self, initial_data, false);
+            }
+
+            method onFinalize(context)
+            {
+                if (nil != finder)
+                {
+                    self.removeChild(context, self.finder);
+                    self.finder = nil;
+                }
+            }
+
+            method createList(context, category_id1, category_id2)
+            {
+                CursorUtil::setCursor(ContextMain, "wait");
+                ROOT.updateDB(context);
+                var news_id_list = getIdList(category_id1, category_id2);
+
+                if (nil != news_id_list)
+                {
+                    self.news_id_list = news_id_list;
+                    var candidates = UIKitProject::FinderRoot.makeCandidates(self.news_id_list);
+                    self.finder.replaceCurrentFolderCandidates(context, candidates, 0);
+
+                    CursorUtil::setCursor(ContextMain, "cursor_chrome");
+                }
+
+                else
+                {
+                    var me = self;
+
+                    News2.requestNewsIdList(category_id1, category_id2, function (args) {
+                        |var context, var request| = args;
+
+                        if (request.isDone())
+                        {
+                            var news_id_list = News2.decodeNewsIdList(request);
+                            setIdListCache(category_id1, category_id2, news_id_list);
+                            me.news_id_list = news_id_list;
+
+                            if (0 != category_id2)
+                            {
+                                if (request.isUpdated() || me.news_id_list.size != NewsFileUtil::getNewsIdListCount(category_id1, category_id2))
+                                    NewsFileUtil::updateNewsIdList(category_id1, category_id2, me.news_id_list);
+                            }
+
+                            var candidates = UIKitProject::FinderRoot.makeCandidates(me.news_id_list);
+                            me.finder.replaceCurrentFolderCandidates(context, candidates, 0);
+                        }
+
+                        CursorUtil::setCursor(ContextMain, "cursor_chrome");
+                    });
+                }
+            }
+
+            method onCancel(context)
+            {
+                main::sound.play("cancel");
+                ROOT.setFocus(ChannelList::ListBox);
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module Title
+    {
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+            var localized_text = context.translate(ROOT, "MyHome", w.name.upcase());
+
+            BalloonTip.set_value(context, w, localized_text, 0);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+
+        module Close
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;
+            }
+
+            method onCancel(context)
+            {
+                main::sound.play("cancel");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module hidden
+    {
+        module ItemMenu
+        {
+            attribute category_id1;
+
+            method initialize(context, category_root)
+            {
+                self.category_id1 = category_root["category_id1"];
+                var category_id2 = category_root["category_id2"];
+                var category_id3 = 0;
+
+                self.TextFace.text = getCategoryName(category_id1, category_id2, category_id3);
+                var key = "";
+
+                switch (self.category_id1)
+                {
+                    case 1:
+                        var key = "news";
+                        break;
+
+                    case 2:
+                        var key = "makertopics";
+                        break;
+
+                    case 3:
+                        var key = "motorsports";
+                        break;
+
+                    default:
+                        var key = "information";
+                        break;
+                }
+
+                self.ImageFace.image_path = "image/gt5/news/icon_%{key}.dds";
+                self.ImageFace.doInitialize(context);
+            }
+
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                ChannelPane.initialize(context, self.category_id1);
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module ItemChannel
+        {
+            method initialize(context, index, category_id1, category_id2, is_last)
+            {
+                var text;
+                if (0 == category_id2)
+                {
+                    var text = context.translate(ROOT, "News", "WHATS_NEW");
+                }
+
+                else
+                {
+                    var text = getCategoryName(category_id1, category_id2, 0);
+                }
+
+                self.TextFace.text = text;
+                self.TextFaceA.text = text;
+                self.borderE.visible = is_last;
+
+                if (0 == index)
+                    ChannelPane::ChannelList::ListBox.activateImpl(context, index);
+            }
+        }
+
+        module ItemList
+        {
+            attribute news;
+
+            method onInitialize(context)
+            {
+                self.new.visible = false;
+                self.icon.image_path = "";
+            }
+
+            method initialize(context, news)
+            {
+                self.news = news;
+                var news_id = news["news_id"];
+
+                self.title.text = news["title"];
+                self.header2.TextFace1.text = getCategoryName(news["category_id1"], news["category_id2"], 0);
+                var news_time = news["news_time"];
+
+                self.header2.TextFace2.text = ROOT.format_date.build("%04d".format(news_time.year), 
+                "%02d".format(news_time.month), "%02d".format(news_time.day));
+
+                self.new.visible = !isReadNews(news_id);
+                var image_list = news["images"];
+
+                if (image_list.size > 0)
+                {
+                    self.ImageFace.from_disk = true;
+                    var image_id = image_list[0]["image_id"];
+                    var image_path = News2.getImagePath(news_id, image_id);
+
+                    if (pdistd::Exist(image_path))
+                    {
+                        self.ImageFace.image_path = image_path;
+                    }
+
+                    else
+                    {
+                        var me = self;
+
+                        News2.requestImage(news_id, image_id, function (args) {
+                            |var context, var request| = args;
+
+                            if (request.isDone())
+                                me.ImageFace.image_path = image_path;
+                        });
+                    }
+                }
+            }
+        }
+    }
+}

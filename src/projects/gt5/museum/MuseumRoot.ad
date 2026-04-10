@@ -1,0 +1,372 @@
+
+
+
+
+
+module ROOT
+{
+    hidden.visible = false;
+    static sDevelopment = false;
+    static sMuseumIdList = nil;
+    static sIndex = nil;
+    static sDealer = nil;
+    static sIntervalSec = nil;
+
+    function open(context, dealer, interval_sec)
+    {
+        sDealer = dealer;
+        sIntervalSec = interval_sec;
+        SequenceUtil::pushPage(context, ROOT);
+    }
+
+    function openWithDevelopment(context, dealer)
+    {
+        sDevelopment = true;
+        open(context, dealer, nil);
+    }
+
+    function close(context)
+    {
+        SequenceUtil::popPage(context, ROOT);
+    }
+
+    attribute sWatcher;
+    attribute sLastSetUSec;
+
+    method onTick(context)
+    {
+        var now = main::pdistd::GetSystemTimeMicroSecond();
+        var elasped_sec = (now - self.sLastSetUSec) / 1000000;
+
+        if (elasped_sec > sIntervalSec)
+            ROOT::random_next(context);
+    }
+
+    method onInitialize(context)
+    {
+        if (nil == sDealer)
+            sMuseumIdList = MuseumFileUtil::getMuseumIdListForRunviewer(nil);
+
+        else
+            sMuseumIdList = MuseumFileUtil::getMuseumIdListForRunviewer(sDealer);
+
+        sMuseumIdList.sort(function (id1, id2) {
+            return id1.museum_id < id2.museum_id;
+        });
+
+        if (0 == sMuseumIdList.size)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, "MUSEUM ID LIST IS EMPTY.");
+            close(context);
+            return;
+        }
+
+        ListBox.setItemTemplate(context, hidden::Item);
+        ListBox.setItemCount(sMuseumIdList.size);
+        ListBox.hide(context);
+
+        var adj = main::menu::MAdjustment();
+        ListBox.v_adjustment = adj;
+        VScrollbar.adjustment = adj;
+        ROOT.setFocus(ROOT);
+
+        if (sDevelopment)
+            head(context);
+        else
+            random_next(context);
+
+        if (sIntervalSec != nil)
+        {
+            self.sWatcher = WatcherUtil::Create(context, onTick, 60);
+        }
+    }
+
+    method onFinalize(context)
+    {
+        if (self.sWatcher != nil)
+        {
+            WatcherUtil::Delete(self.sWatcher);
+            self.sWatcher = nil;
+        }
+
+        main::Museum2.clearCallback();
+        sMuseumIdList = nil;
+        sIndex = nil;
+        sDealer = nil;
+        sDevelopment = false;
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    function onKeyPress(context, event)
+    {
+        if (event.keysym == 65494)
+            return EVENTRESULT_FILTER;
+
+        if (sIntervalSec != nil)
+        {
+            close(context);
+            return EVENTRESULT_FILTER;
+        }
+
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_SELECT:
+                select(context);
+                return EVENTRESULT_FILTER;
+
+            case CELL_PAD_CTRL_R1:
+                next(context);
+                return EVENTRESULT_FILTER;
+
+            case CELL_PAD_CTRL_L1:
+                previous(context);
+                return EVENTRESULT_FILTER;
+
+            case CELL_PAD_CTRL_L3:
+                ListBox.show(context);
+                return EVENTRESULT_FILTER;
+
+            case CELL_PAD_CTRL_R3:
+                ListBox.hide(context);
+                return EVENTRESULT_FILTER;
+
+            default:
+                ;
+        }
+
+        var state = context.getUpdateContext().getPadButtonState(0);
+
+        if ((state & 512) != 0)
+        {
+            if (CELL_PAD_CTRL_L3_LEFT == event.keysym)
+            {
+                head(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        if ((state & 4096) != 0)
+        {
+            if (CELL_PAD_CTRL_L3_RIGHT == event.keysym)
+            {
+                last(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+
+    function select(context)
+    {
+        var result = OSKUtil::open(context, "", ROOT);
+
+        if (result != nil)
+        {
+            var index = -1;
+
+            for (var i = 0; i < sMuseumIdList.size; ++i)
+            {
+                var museum_id = sMuseumIdList[i].museum_id;
+
+                if (result == museum_id)
+                {
+                    var index = i;
+                    break;
+                }
+            }
+
+            if (index < 0)
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::OK, result + " IS NOT FOUND.");
+            }
+
+            else
+            {
+                sIndex = index;
+                set(context, sIndex);
+            }
+        }
+    }
+
+    function next(context)
+    {
+        if (sIndex < sMuseumIdList.size - 1)
+            sIndex = sIndex + 1;
+        else
+            sIndex = 0;
+
+        set(context, sIndex);
+    }
+
+    function previous(context)
+    {
+        if (sIndex > 0)
+            sIndex = sIndex - 1;
+        else
+            sIndex = sMuseumIdList.size - 1;
+
+        set(context, sIndex);
+    }
+
+    function head(context)
+    {
+        sIndex = 0;
+        set(context, sIndex);
+    }
+
+    function last(context)
+    {
+        sIndex = sMuseumIdList.size - 1;
+        set(context, sIndex);
+    }
+
+    function random_next(context)
+    {
+        sIndex = main::pdistd::MRandom::GetValue(0, sMuseumIdList.size);
+        set(context, sIndex);
+    }
+
+    function set_with_requesting_image(context, museum_id, museum)
+    {
+        var request2 = main::Museum2.requestImage(museum_id, function (args) {
+            |var context, var request| = args;
+
+            if (!request.isDone())
+                return;
+
+            var image_face = Museum::Contents::VBox::SBox::ImageFace;
+            image_face.image_path = main::Museum2.getImagePath(museum_id);
+            image_face.adjustSize();
+            image_face.packable = true;
+
+            if (museum.isInstanceOf(Map))
+            {
+                Museum::Contents::VBox::TextFace.text = museum["caption"];
+                Museum::Title::Age.label.text = museum["year"];
+                Museum::Title::Dealer.label.text = museum["dealer"];
+            }
+
+            else
+            {
+                Museum::Contents::VBox::TextFace.text = museum.caption;
+                Museum::Title::Age.label.text = museum.year;
+                Museum::Title::Dealer.label.text = museum.dealer;
+            }
+
+            Museum::Title::Age.label.TransientReset();
+            ActorUtil::ResetInterpolators(Museum::Title::Age);
+            ActorUtil::ResetInterpolators(Museum::Title::Dealer);
+            ActorUtil::ResetInterpolators(Museum::Contents::VBox::SBox);
+            ActorUtil::ResetInterpolators(Museum::Contents::VBox::SBox::ImageFace);
+            ActorUtil::ResetInterpolators(Museum::Contents::VBox::TextFace);
+        });
+    }
+
+    function set_with_requesting_museum(context, museum_id)
+    {
+        var reqest1 = main::Museum2.requestMuseum(museum_id, function (args) {
+            |var context, var request| = args;
+
+            if (!request.isDone())
+                return;
+
+            var museum = main::Museum2.decodeMuseum(request);
+            MuseumFileUtil::updateMuseum(museum);
+            set_with_requesting_image(context, museum_id, museum);
+        });
+    }
+
+    function set(context, index)
+    {
+        ROOT.sLastSetUSec = main::pdistd::GetSystemTimeMicroSecond();
+        var museum_id = sMuseumIdList[index].museum_id;
+        var total;
+
+        if (sDevelopment)
+        {
+            var museum = MuseumFileUtil::getMuseum(museum_id);
+            set_with_requesting_image(context, museum_id, museum);
+            var total = sMuseumIdList.size;
+
+            info.text = "id : %d    %d/%d".format(museum_id, index + 1, total);
+        }
+
+        else
+        {
+            set_with_requesting_museum(context, museum_id);
+            info.text = "";
+        }
+    }
+
+    module ListBox
+    {
+        method show(context)
+        {
+            self.visible = true;
+            ROOT.setFocus(self);
+        }
+
+        method hide(context)
+        {
+            self.visible = false;
+            ROOT.setFocus(ROOT);
+        }
+
+        method onVisibleNotify(context, indexes)
+        {
+            foreach (var i in indexes)
+            {
+                if (self.getItemVisible(i))
+                {
+                    var item = self.getItemWidget(i);
+
+                    if (nil == item)
+                        var item = self.getItemWidget(i, context);
+
+                    if (nil != item)
+                    {
+                        var museum_id = sMuseumIdList[i].museum_id;
+                        item.TextFace.text = museum_id;
+                        item.TextFaceA.text = museum_id;
+                    }
+                }
+            }
+        }
+
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+            sIndex = self.focus_index;
+            set(context, sIndex);
+            hide(context);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onKeyPress(context, event)
+        {
+            switch (event.keysym)
+            {
+                case CELL_PAD_CTRL_L3_LEFT:
+                    self.decIndex(10);
+                    return EVENTRESULT_STOP;
+
+                case CELL_PAD_CTRL_L3_RIGHT:
+                    self.incIndex(10);
+                    return EVENTRESULT_STOP;
+
+                default:
+                    ;
+            }
+
+            return EVENTRESULT_CONTINUE;
+        }
+    }
+}
