@@ -1,0 +1,502 @@
+
+
+
+
+
+module ROOT
+{
+    attribute open_on_init = true;
+    attribute popup;
+    attribute closed = false;
+    attribute genre;
+    attribute order;
+    attribute by;
+    attribute ignore_update;
+
+    hidden.visible = false;
+
+    method open(context)
+    {
+        self.closed = false;
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+        return true;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        ContextMain.event_mask = 5;
+        ContextMain.disableInput();
+
+        Popup::FadeActor.on_effect_end = function (context) {
+            if (nil != ROOT.popup)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+            ContextMain.enableInput();
+        };
+
+        Popup::FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        initializeCommon(context);
+        self.ignore_update = false;
+        self.genre = nil;
+        self.order = "sort_key";
+        self.by = "DESC";
+
+        warpActors(Popup::Pane::Body::bg, self.open_on_init);
+        main::Pace.registerEventHandler(self);
+        self.genre = nil;
+        context.pushEvent(main::menu::MFunctionEvent(initialize, context));
+        return EVENTRESULT_FILTER;
+    }
+
+    method initializeCommon(context)
+    {
+        ButtonHelpGT5.set(context, [[ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "GTTV2", "BUTTON_HELP_OPEN")]]);
+        ButtonHelpGT5.hide();
+        var radiobox_list = [Popup::Pane::Body::Filter::VBox::Order::RadioBox, Popup::Pane::Body::Filter::VBox::By::RadioBox];
+
+        foreach (var radiobox in radiobox_list)
+        {
+            var radiobutton_list = [];
+
+            for (var it = radiobox.VBox.first; it != nil; it = it.next)
+            {
+                radiobutton_list.push([it.RadioButton, 0]);
+            }
+
+            radiobox.setup(radiobutton_list, 0);
+        }
+
+        Popup::Pane::Title::HBox::SearchSort.active = self.open_on_init;
+        warpActors(Popup::Pane::Body::Filter, self.open_on_init);
+        Popup::Pane::Body::Filter.insensitive = !self.open_on_init;
+        ROOT.setFocus(Popup::Pane::Title::HBox::Close);
+    }
+
+    method initialize(context)
+    {
+        Popup::Pane::Body::List.finalizeFinder(context);
+        Popup::Pane::Body::List.initializeFinder(context);
+    }
+
+    method onFinalize(context)
+    {
+        main::Pace.removeEventHandler(self);
+        Popup::Pane::Body::List.finalizeFinder(context);
+        OptionMenuUtil::finalize(context, Popup::Pane::Body::Filter::VBox::Search::OptionMenu);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        ButtonHelpGT5.hideIf();
+        ROOT.setFocus(Popup::Pane::Title::HBox::Close);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onDownloadBegin(context, fileinfo_hash)
+    {
+
+    }
+
+    method onDownloadProgress(context, fileinfo_hash)
+    {
+        var status = main::Pace.getFileStatus(fileinfo_hash);
+
+        if (0 == status["code"])
+        {
+            var finder = Popup::Pane::Body::List.finder;
+            onDownloadProgressCallback(context, finder, fileinfo_hash, status["value"]);
+        }
+    }
+
+    method onDownloadComplete(context, fileinfo_hash)
+    {
+        var finder = Popup::Pane::Body::List.finder;
+        onDownloadCompleteCallback(context, finder, fileinfo_hash);
+    }
+
+    method onError(context, fileinfo_hash, error)
+    {
+        var finder = Popup::Pane::Body::List.finder;
+        onErrorCallback(context, finder, fileinfo_hash, error);
+    }
+
+    module Popup::Pane
+    {
+        module Title::HBox
+        {
+            method onFocusEnter(context, event)
+            {
+                var w = event.widget;
+                var key = "";
+
+                switch (w.name)
+                {
+                    case "SearchSort":
+                        var key = "SEARCH_SORT";
+                        break;
+
+                    default:
+                        var key = w.name.upcase();
+                        break;
+                }
+
+                var localized_text = context.translate(ROOT, "MyHome", key);
+                BalloonTip.set_value(context, w, localized_text, 0);
+                return EVENTRESULT_FILTER;
+            }
+
+            method onFocusLeave(context)
+            {
+                BalloonTip.reset_value();
+                return EVENTRESULT_FILTER;
+            }
+
+            module Close
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    ROOT.close(context);
+                    return EVENTRESULT_FILTER;
+                }
+
+                method onCancel(context)
+                {
+                    main::sound.play("cancel");
+                    ROOT.close(context);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module SearchSort
+            {
+                attribute flag = true;
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    startActors(Popup::Pane::Body::Filter, self.flag);
+                    startActors(Popup::Pane::Body::bg, self.flag);
+
+                    Popup::Pane::Body::Filter.insensitive = self.flag;
+                    self.flag = !self.flag;
+                    self.active = self.flag;
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+
+        module Body
+        {
+            module Filter::VBox
+            {
+                module Search::OptionMenu
+                {
+                    method onValueChanged(context)
+                    {
+                        self.pulldownValueChanged(context);
+                        var selected_item = self.getItem();
+
+                        if (ROOT.genre != selected_item.label.text)
+                        {
+                            ROOT.genre = (0 == self.index) ? nil : selected_item.label.text;
+
+                            if (!ROOT.ignore_update)
+                                ROOT.initialize(context);
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module Order::RadioBox
+                {
+                    static TABLE = [
+                        "DateTime" : "sort_key",
+                        "Copyright" : "copyright",
+                        "Title" : "title"
+                    ];
+
+                    method onActivate(context, event)
+                    {
+                        main::sound.play("ok");
+                        var name = event.widget.parent.name;
+                        var order = TABLE[name];
+
+                        if (order != ROOT.order)
+                        {
+                            ROOT.order = order;
+                            ROOT.initialize(context);
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+
+                module By::RadioBox
+                {
+                    method onActivate(context, event)
+                    {
+                        main::sound.play("ok");
+                        var by = event.widget.parent.name.upcase();
+
+                        if (by != ROOT.by)
+                        {
+                            ROOT.by = by;
+                            ROOT.initialize(context);
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }
+            }
+
+            module List
+            {
+                attribute finder;
+                attribute my_list;
+
+                function onInitItem(context, candidate_data, item_w, arg)
+                {
+                    var data = candidate_data.value_;
+                    var tv = data["tv"];
+                    item_w.header.text = tv["title"];
+                    item_w.title.text = tv["subtitle"];
+                    var image_id_list = tv["image_ids"];
+
+                    if (image_id_list.size > 0)
+                    {
+                        item_w.ImageFace.from_disk = true;
+                        GTTV2ProjectUtil::setImage(context, image_id_list[0], item_w.ImageFace);
+                    }
+
+                    item_w.bodyR.text = tv["copyright"];
+                    item_w.new.visible = 0 != tv["new"];
+                    item_w.icon.from_disk = true;
+                    var s_image_id = tv["s_image_id"];
+
+                    GTTV2ProjectUtil::setImageS(context, s_image_id, item_w.icon);
+                    item_w.updateStatus(context, tv);
+                }
+
+                function onActivateItem(context, folder_data, func_close, arg)
+                {
+                    var candidate_data = folder_data.getItemData();
+                    var target_index = candidate_data.item_index_;
+                    var tv_id_list = Array(List.my_list.size);
+
+                    for (var i = 0; i < List.my_list.size; ++i)
+                    {
+                        tv_id_list[i] = [
+                            "type" : "movie",
+                            "tv" : List.my_list[i]["tv"]
+                        ];
+                    }
+
+                    main::Pace.removeEventHandler(ROOT);
+                    var res = GTTVDetailPopup.open(context, tv_id_list, target_index);
+
+                    if (res)
+                        ROOT.close(context);
+
+                    else
+                    {
+                        updateStatusForce(context);
+                        main::Pace.registerEventHandler(ROOT);
+                    }
+                }
+
+                function updateStatusForce(context)
+                {
+                    if (nil == List.finder)
+                        return;
+
+                    var count = List.finder.getItemCount(context);
+
+                    for (var i = 0; i < count; ++i)
+                    {
+                        var item = List.finder.getItemWidget(i);
+
+                        if (nil != item)
+                        {
+                            var candidate_data = List.finder.getItemData(context, i);
+
+                            if (nil == candidate_data || nil == candidate_data.value_)
+                                continue;
+
+                            var data = candidate_data.value_;
+
+                            if (nil != data["tv"])
+                                item.updateStatus(context, data["tv"]);
+                        }
+                    }
+                }
+
+                function onFocusEnter(context, candidate_data, item_w, arg)
+                {
+                    ButtonHelpGT5.appearIf();
+                }
+
+                function onFocusLeave(context, candidate_data, item_w, arg)
+                {
+                    BalloonTip.reset_value();
+                }
+
+                method initializeFinder(context)
+                {
+                    if (nil == self.finder)
+                    {
+                        var initial_data = makeInitialData(context);
+                        self.finder = UIKitProject::FinderRoot.setCopy(context, self, initial_data, false);
+                    }
+
+                    ignorePadEvent(true);
+                    var tv_list = TvFileUtil::getMyList(ROOT.genre, ROOT.order, ROOT.by);
+                    self.my_list = Array();
+
+                    foreach (var tv in tv_list)
+                    {
+                        var accept = false;
+                        var entitlement = tv["entitlement"];
+
+                        if ("" == entitlement)
+                        {
+                            if (GTTV2ProjectUtil::isExistMovie(tv))
+                            {
+                                if (GTTV2ProjectUtil::checkTv(tv))
+                                    var accept = true;
+                            }
+                        }
+
+                        else
+                        {
+                            if (GTTV2ProjectUtil::hasEntitlement(context, tv))
+                                var accept = true;
+                        }
+
+                        if (accept)
+                        {
+                            tv["image_ids"] = TvFileUtil::getTvImageIdList(tv["tv_id"]);
+                            self.my_list.push([
+                                "type" : "movie",
+                                "tv" : tv]);
+                        }
+                    }
+
+                    var header_text = [
+                    (nil == ROOT.genre) ? context.translate(ROOT, "MyHome", "ALL") : ROOT.genre,
+                    self.my_list.size, true];
+
+                    Popup::Pane::Header.setText(context, header_text);
+
+                    if (0 == Popup::Pane::Body::Filter::VBox::Search::OptionMenu.Count())
+                    {
+                        var genre_map = Map();
+
+                        foreach (var data in self.my_list)
+                        {
+                            var tv = data["tv"];
+                            genre_map[tv["copyright"]] = "";
+                        }
+
+                        var genre_list = [context.translate(ROOT, "MyHome", "ALL")];
+
+                        foreach (|var key, var val| in genre_map)
+                        {
+                            genre_list.push(key);
+                        }
+
+                        ROOT.ignore_update = true;
+                        OptionMenuUtil::initialize(context, ROOT, 
+                        Popup::Pane::Body::Filter::VBox::Search::OptionMenu,
+                        hidden::OptionMenuItem, genre_list);
+
+                        Popup::Pane::Body::Filter::VBox::Search::OptionMenu.setIndex(context, 0);
+                        ROOT.ignore_update = false;
+                    }
+
+                    var candidates = UIKitProject::FinderRoot.makeCandidates(self.my_list);
+                    self.finder.replaceCurrentFolderCandidates(context, candidates, 0);
+                    ignorePadEvent(false);
+                }
+
+                method makeInitialData(context)
+                {
+                    var Finder = UIKitProject::FinderRoot;
+                    var candidates = Finder.makeCandidates(Array(0));
+                    var initial_data = Finder.InitialData(candidates);
+
+                    initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+                    initial_data.cb_init_item_ = onInitItem;
+                    initial_data.cb_on_activate_ = onActivateItem;
+                    initial_data.v_scrollbar_ = Scrollbar::VScrollbar;
+                    initial_data.extended_item_ = hidden::ItemList;
+                    initial_data.cb_focus_enter_ = onFocusEnter;
+                    initial_data.cb_focus_leave_ = onFocusLeave;
+                    initial_data.import_iconbox_parameter_ = hidden::IconBox;
+                    initial_data.item_cache_ = false;
+
+                    return initial_data;
+                }
+
+                method finalizeFinder(context)
+                {
+                    if (nil != self.finder)
+                    {
+                        self.removeChild(context, self.finder);
+                        self.finder = nil;
+                    }
+
+                    BalloonTip.reset_value();
+                }
+
+                method onFinalize(context)
+                {
+                    finalizeFinder(context);
+                }
+
+                method onKeyPress(context, event)
+                {
+                    if (CELL_PAD_CTRL_L3_LEFT == event.keysym)
+                    {
+                        ButtonHelpGT5.hide();
+                        return EVENTRESULT_CONTINUE;
+                    }
+
+                    return EVENTRESULT_CONTINUE;
+                }
+            }
+        }
+    }
+
+    module hidden::ItemList
+    {
+        method updateStatus(context, tv, progress, error)
+        {
+            |var label, var price, var pace| = GTTV2ProjectUtil::getStatusTextLong(context, ROOT, tv, error);
+
+            if (nil != progress)
+            {
+                var pace = "%{pace} %s".format(context.translate(ROOT, "GTTV2", "PERCENT").build(progress));
+            }
+
+            self.body3::TextFace1.visible = "" != label;
+            self.body3::TextFace1.text = label;
+            self.body3::TextFace2.text = price;
+            self.body3::TextFace3.text = pace;
+        }
+    }
+}

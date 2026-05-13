@@ -1,0 +1,1452 @@
+
+
+#define CHECK_ONLINE_PROJECT() \
+    if (PROJECT::is_online_on_load && !LoginUtil::isOnline()) \
+    { \
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, \
+        context.translate(ROOT, "GTTV2", "GOTO_GTTV_TOP")); \
+        \
+        Grim2.setInitialize(false); \
+        SequenceUtil::startProject(context, "gttv2", main::GameSequence::getArgument()); \
+        return EVENTRESULT_FILTER; \
+    }
+
+
+
+module ROOT
+{
+    #include "projects/gt5/include/GTTVOffline.ad";
+
+    hidden.visible = false;
+
+    attribute active_pane;
+    attribute list_id_map;
+    attribute tv_id_map;
+    attribute tv_cache;
+    attribute tv_id_list_cache;
+    attribute update_tv_cache;
+    attribute update_tv_id_list_cache;
+
+    method open(context)
+    {
+        SequenceUtil::startPage(context, ROOT);
+        return true;
+    }
+
+    method close(context)
+    {
+        ROOT.updateDB(context);
+        SequenceUtil::startProject(context, main::GameSequence::getArgument());
+    }
+
+    method updateDB(context)
+    {
+        if (0 == self.update_tv_cache.size && 0 == self.update_tv_id_list_cache.size)
+            return;
+
+        ignorePadEvent(true);
+
+        if (self.update_tv_cache.size > 0)
+        {
+            TvFileUtil::updateTvByList(self.update_tv_cache);
+            self.update_tv_cache = [];
+        }
+
+        if (self.update_tv_id_list_cache.size > 0)
+        {
+            TvFileUtil::updateTvIdListByList(self.update_tv_id_list_cache);
+            self.update_tv_id_list_cache = [];
+        }
+
+        ignorePadEvent(false);
+    }
+
+    method getTv(tv_id)
+    {
+        return self.tv_cache[tv_id];
+    }
+
+    method getTvIdList(list_id)
+    {
+        return self.tv_id_list_cache[list_id];
+    }
+
+    method pushTvCache(tv, need_update)
+    {
+        var tv_id = tv["tv_id"];
+        self.tv_cache[tv_id] = tv;
+
+        if (!need_update)
+            var need_update = nil == self.tv_id_map[tv_id];
+
+        if (need_update)
+            self.update_tv_cache.push(tv);
+    }
+
+    method pushTvIdListCache(tv_id_list, need_update)
+    {
+        var list_id = tv_id_list["list_id"];
+        self.tv_id_list_cache[list_id] = tv_id_list;
+
+        if (!need_update)
+            var need_update = nil == self.list_id_map[list_id];
+
+        if (need_update)
+            self.update_tv_id_list_cache.push(tv_id_list);
+    }
+
+    method onCancel(context, event, item)
+    {
+        main::sound.play("cancel");
+        self.setFocus(Title::Exit);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            default:
+                ;           // lol??
+        }
+
+        checkOpenPaceDebugPopup(context);
+        return EVENTRESULT_CONTINUE;
+    }
+
+    function fatalError(context)
+    {
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+        context.translate(ROOT, "GTTV2", "ERROR_CANT_GET_COMMERCE_INFORMATION"));
+    }
+
+    function isFirstBoot()
+    {
+        var tv;
+        if (LoginUtil::isOnline())
+        {
+            var opening_tv = GTTVOffline::getTvId("opening");
+            var tv = TvFileUtil::getTv(opening_tv["id"]);
+
+            if (nil == tv)
+                return true;
+        }
+
+        return false;
+    }
+
+    function initializeOnFirstBoot(context)
+    {
+        StopWatchUtil::begin();
+        GTTV2ProjectUtil::updateAll(context);
+        StopWatchUtil::end();
+        Grim2Util::PUTLOG::TV::firstBoot(StopWatchUtil::result);
+
+        ROOT.list_id_map = TvFileUtil::getTvListIdAll();
+        ROOT.tv_id_map = TvFileUtil::getTvIdAll();
+        ROOT.active_pane = ChannelPane;
+        RecommendPane.open(context);
+
+        ROOT.setFocus(Menu::Body::Buttons::Recommend);
+        Menu::Body::Buttons.setActive(true, false, false, false);
+    }
+
+    function openMyList(context)
+    {
+        PROJECT::sSelectedCategory = "MYLIST";
+        MyListPopup.open(context);
+        MoviePlayerRoot.openIf(context);
+    }
+
+    function checkRemove(context)
+    {
+        if (!PROJECT::sModeOnline)
+            return;
+
+        Tv2.requestTvRemoveList(function (args) {
+            |var context, var request| = args;
+
+            if (request.isDone())
+            {
+                var tv_remove_list = Tv2.decodeTvRemoveList(request);
+                var tv_id_list = [];
+
+                foreach (var tv_remove in tv_remove_list)
+                {
+                    var tv_id = tv_remove["tv_id"];
+                    var pam_path = Tv2.getMoviePath(tv_remove["file_id"], false);
+
+                    if (pdistd::Exist(pam_path))
+                        pdistd::RemoveFile(pam_path);
+                        tv_id_list.push(tv_id);
+                }
+
+                if (tv_id_list.size > 0)
+                    TvFileUtil::removeIf(tv_id_list);
+            }
+        });
+    }
+
+    function validateCart(context)
+    {
+        var cart_list = GAME_STATUS.user_profile.shopping_cart.getList();
+
+        for (var i = 0; i < cart_list.size; ++i)
+        {
+            var bag = cart_list[i];
+            var sku_id = bag["sku"];
+            var sku = sPSNData.sku_list[sku_id];
+
+            if (nil == sku)
+            {
+                cart_list.delete(bag["tv_id"], bag["type"]);
+            }
+
+            else
+            {
+                if ("movie" == bag["type"])
+                {
+                    var tv = TvFileUtil::getTv(bag["tv_id"]);
+
+                    if (nil != tv)
+                    {
+                        if (GTTV2ProjectUtil::hasEntitlement(context, tv))
+                        {
+                            GAME_STATUS.user_profile.shopping_cart.delete(bag["tv_id"], bag["type"]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    method onInitialize(context)
+    {
+        ButtonHelpGT5.set(context, [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "GTTV2", "BUTTON_HELP_OPEN")],
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "GTTV2", "BUTTON_HELP_CANCEL")]
+        ]);
+
+        ButtonHelpGT5.hide();
+        var adj = main::menu::MAdjustment();
+        ChannelPane::ChannelList::ListBox.v_adjustment = adj;
+        ChannelPane::ChannelList::VScrollbar.adjustment = adj;
+
+        self.list_id_map = TvFileUtil::getTvListIdAll();
+        self.tv_id_map = TvFileUtil::getTvIdAll();
+        self.tv_cache = Map();
+        self.tv_id_list_cache = Map();
+        self.update_tv_cache = [];
+        self.update_tv_id_list_cache = [];
+
+        if (PROJECT::sModeOnline)
+        {
+            if (nil == sPSNData)
+            {
+                sPSNData = GTTV2ProjectUtil::PSNData();
+                sPSNData.get(context);
+
+                if (!PROJECT::sModeOnline)
+                    context.pushEvent(main::menu::MFunctionEvent(fatalError, context));
+
+                else
+                    validateCart(context);
+            }
+        }
+
+        else
+            Grim2.setInitialize(false);
+
+        Menu::Body::Buttons::Cart.updateStatus(context);
+        var category;
+        
+        if (isFirstBoot())
+            context.pushEvent(main::menu::MFunctionEvent(initializeOnFirstBoot, context));
+
+        else
+        {
+            var category = PROJECT::sSelectedCategory;
+
+            if (nil == category || "RECOMMEND" == category || "MYLIST" == category)
+            {
+                self.active_pane = ChannelPane;
+                RecommendPane.open(context);
+                self.setFocus(Menu::Body::Buttons::Recommend);
+                Menu::Body::Buttons.setActive(true, false, false, false);
+            }
+
+            else if ("PROGRAM" == category)
+            {
+                self.active_pane = RecommendPane;
+                ChannelPane.open(context);
+                self.setFocus(Menu::Body::Buttons::Channel);
+                Menu::Body::Buttons.setActive(false, true, false, false);
+            }
+
+            if (nil != category && "MYLIST" == category)
+                context.pushEvent(main::menu::MFunctionEvent(openMyList, context));
+
+            checkRemove(context);
+        }
+
+        Pace.registerEventHandler(self);
+        Store.visible = PROJECT::sModeOnline;
+        SoundUtil::MenuBGMCrossfadeGroup("menu", 3.0, 3.0);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        Tv2.clearCallback();
+        self.list_id_map = nil;
+        self.tv_id_map = nil;
+        self.tv_cache = nil;
+        self.tv_id_list_cache = nil;
+        self.update_tv_cache = nil;
+        self.update_tv_id_list_cache = nil;
+        Pace.removeEventHandler(self);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method closePane(context, pane)
+    {
+        if (nil == pane)
+            return;
+
+        pane.ScalarInterpolator.on_effect_end = function () {
+            pane.ScalarInterpolator.on_effect_end = nil;
+            pane.visible = false;
+        };
+
+        pane.ScalarInterpolator.out = false;
+    }
+
+    method openPane(context, pane)
+    {
+        pane.visible = true;
+        pane.ScalarInterpolator.on_effect_end = nil;
+        pane.ScalarInterpolator.out = true;
+        self.active_pane = pane;
+    }
+
+    method onDownloadBegin(context, fileinfo_hash)
+    {
+        if (nil != self.active_pane)
+            ;
+    }
+
+    method onDownloadProgress(context, fileinfo_hash)
+    {
+        var status;
+        var finder;
+        if (nil != self.active_pane)
+        {
+            var status = Pace.getFileStatus(fileinfo_hash);
+
+            if (0 == status["code"])
+            {
+                var finder = self.active_pane.finder;
+                onDownloadProgressCallback(context, finder, fileinfo_hash, status["value"]);
+            }
+        }
+    }
+
+    method onDownloadComplete(context, fileinfo_hash)
+    {
+        var finder;
+        if (nil != self.active_pane)
+        {
+            var finder = self.active_pane.finder;
+            onDownloadCompleteCallback(context, finder, fileinfo_hash);
+        }
+    }
+
+    method onError(context, fileinfo_hash, error)
+    {
+        var finder;
+        if (nil != self.active_pane)
+        {
+            var finder = self.active_pane.finder;
+            onErrorCallback(context, finder, fileinfo_hash, error);
+        }
+    }
+
+    module RecommendPane
+    {
+        attribute finder;
+        attribute initialized = false;
+
+        method open(context)
+        {
+            PROJECT::sSelectedCategory = "RECOMMEND";
+            ROOT.closePane(context, ROOT.active_pane);
+            ROOT.openPane(context, self);
+
+            if (self.initialized)
+                RecommendPane.updateStatusForce(context);
+
+            else
+            {
+                if (PROJECT::sModeOnline)
+                {
+                    var list_id = 0;
+                    var me = self;
+
+                    Tv2.requestTvIdList(list_id, function (args) {
+                        |var context, var request| = args;
+                        var tv_ids = [];
+
+                        if (request.isDone())
+                        {
+                            var tv_id_list = Tv2.decodeTvIdList(request);
+                            ROOT.pushTvIdListCache(tv_id_list, request.isUpdated());
+                            var tv_ids = tv_id_list["tv_ids"];
+                        }
+
+                        var data_list = Array();
+
+                        foreach (var tv_id in tv_ids)
+                        {
+                            if (GTTV2ProjectUtil::checkTv(tv_id))
+                                data_list.push(tv_id);
+                        }
+
+                        var candidates = UIKitProject::FinderRoot.makeCandidates(data_list);
+                        me.finder.replaceCurrentFolderCandidates(context, candidates, 0);
+                        me.initialized = true;
+                    });
+                }
+
+                else
+                {
+                    var tvids = [];
+                    tvids.push(GTTVOffline::getTvId("opening"));
+
+                    if (GAME_STATUS.user_profile.game_flags.getFlag("GTTV_PLAYABLE_MOVIES", "ENDING1"))
+                        tvids.push(GTTVOffline::getTvId("ending1"));
+
+                    if (GAME_STATUS.user_profile.game_flags.getFlag("GTTV_PLAYABLE_MOVIES", "ENDING2"))
+                        tvids.push(GTTVOffline::getTvId("ending2"));
+
+                    var candidates = UIKitProject::FinderRoot.makeCandidates(tvids);
+                    self.finder.replaceCurrentFolderCandidates(context, candidates, 0);
+                    self.initialized = true;
+                }
+            }
+        }
+
+        function onInitItem(context, candidate_data, item_w, arg)
+        {
+            var tvid = candidate_data.value_;
+            item_w.initialize(context, tvid);
+        }
+
+        function onActivateItem(context, folder_data, func_close, arg)
+        {
+            CHECK_ONLINE_PROJECT();
+
+            var candidate_data = folder_data.getItemData();
+            var tvid = candidate_data.value_;
+            var target_tv = tvid["tv"];
+            var tv_id_list = [];
+            var index = 0;
+            var target_index = 0;
+
+            foreach (var cd in folder_data.candidates_)
+            {
+                var data2 = cd.value_;
+
+                if ("movie" == data2["type"])
+                {
+                    tv_id_list.push(data2);
+
+                    if (target_tv == data2["tv"])
+                        var target_index = index;
+
+                    ++index;
+                }
+            }
+
+            Pace.removeEventHandler(ROOT);
+            ROOT.updateDB(context);
+            var res = GTTVDetailPopup.open(context, tv_id_list, target_index);
+            Pace.registerEventHandler(ROOT);
+
+            if (res)
+                MoviePlayerRoot.openIf(context);
+            else
+                updateStatusForce(context);
+        }
+
+        function updateStatusForce(context)
+        {
+            if (nil == RecommendPane.finder)
+                return;
+
+            var count = RecommendPane.finder.getItemCount(context);
+
+            for (var i = 0; i < count; ++i)
+            {
+                var item = RecommendPane.finder.getItemWidget(i);
+
+                if (nil != item)
+                {
+                    var candidate_data = RecommendPane.finder.getItemData(context, i);
+
+                    if (nil == candidate_data || nil == candidate_data.value_)
+                        continue;
+
+                    var data = candidate_data.value_;
+
+                    if (nil != data["tv"])
+                        item.updateStatus(context, data["tv"]);
+                }
+            }
+
+            Menu::Body::Buttons::Cart.updateStatus(context);
+        }
+
+        function onFocusEnter(context, candidate_data, item_w, arg)
+        {
+            ButtonHelpGT5.appearIf();
+        }
+
+        function onFocusLeave(context, candidate_data, item_w, arg)
+        {
+            ButtonHelpGT5.hideIf();
+        }
+
+        method makeInitialData(context)
+        {
+            var Finder = UIKitProject::FinderRoot;
+            var candidates = Finder.makeCandidates(Array(0));
+            var initial_data = Finder.InitialData(candidates);
+
+            initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+            initial_data.cb_init_item_ = onInitItem;
+            initial_data.cb_on_activate_ = onActivateItem;
+            initial_data.v_scrollbar_ = VScrollbar;
+            initial_data.extended_item_ = hidden::ItemRecommend;
+            initial_data.h_item_count_ = 3;
+            initial_data.import_iconbox_parameter_ = hidden::IconBoxRecommend;
+            initial_data.cb_focus_enter_ = onFocusEnter;
+            initial_data.cb_focus_leave_ = onFocusLeave;
+
+            return initial_data;
+        }
+
+        method onInitialize(context)
+        {
+            var initial_data = makeInitialData(context);
+            self.finder = UIKitProject::FinderRoot.setCopy(context, self.List, initial_data, false);
+        }
+
+        method onFinalize(context)
+        {
+            if (nil != self.finder)
+            {
+                self.List.removeChild(context, self.finder);
+                self.finder = nil;
+            }
+        }
+
+        module List
+        {
+            method onCancel(context, event)
+            {
+                main::sound.play("cancel");
+                ROOT.setFocus(Menu::Body::Buttons::Recommend);
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module ChannelPane
+    {
+        attribute finder;
+        attribute initialized = false;
+
+        method open(context)
+        {
+            PROJECT::sSelectedCategory = "PROGRAM";
+            ROOT.closePane(context, ROOT.active_pane);
+            ROOT.openPane(context, self);
+
+            if (self.initialized)
+                return;
+
+            var me = self;
+
+            Tv2.requestCategoryRoot(function (args) 
+            {
+                |var context, var request| = args;
+
+                if (!request.isDone())
+                    return;
+
+                var category_root_list = Tv2.decodeCategoryRoot(request);
+                var list_id_list = Array();
+
+                foreach (var category_root in category_root_list)
+                {
+                    var root = category_root["root"];
+
+                    if (0 == root)
+                        continue;
+
+                    var list_id = category_root["category_id1"];
+                    list_id_list.push(list_id);
+                }
+
+                me.ChannelList::ListBox.initialize(context, list_id_list);
+                me.initialized = true;
+            });
+        }
+
+        function onInitItem(context, candidate_data, item_w, arg)
+        {
+            var tvid = candidate_data.value_;
+            var type = tvid["type"];
+
+            if ("list" == type)
+                item_w.initializeAsList(context, tvid);
+
+            else if ("set" == type)
+                item_w.initializeAsSet(context, tvid);
+
+            else if ("movie" == type)
+                item_w.initializeAsMovie(context, tvid);
+        }
+
+        function onActivateItem(context, folder_data, func_close, arg)
+        {
+            CHECK_ONLINE_PROJECT();
+
+            var candidate_data = folder_data.getItemData();
+            var tvid = candidate_data.value_;
+            var type = tvid["type"];
+
+            if ("list" == type)
+            {
+                ROOT.updateDB(context);
+                var list_id = tvid["id"];
+                var tv_id_list = ROOT.getTvIdList(list_id);
+
+                if (nil != tv_id_list)
+                {
+                    ChannelPane::List.list_id_stack[ChannelPane::List.list_id_stack.size - 1][1] = candidate_data.item_index_;
+                    ChannelPane::List.list_id_stack.push([list_id, 0]);
+                    ChannelPane::List.createList(context, true);
+                }
+
+                else
+                {
+                    Tv2.requestTvIdList(list_id, function (args) 
+                    {
+                        |var context, var request| = args;
+
+                        if (!request.isDone())
+                            return;
+
+                        var tv_id_list = Tv2.decodeTvIdList(request);
+                        ROOT.pushTvIdListCache(tv_id_list, request.isUpdated());
+
+                        ChannelPane::List.list_id_stack[ChannelPane::List.list_id_stack.size - 1][1] = candidate_data.item_index_;
+                        ChannelPane::List.list_id_stack.push([list_id, 0]);
+                        ChannelPane::List.createList(context, true);
+                    });
+                }
+            }
+
+            else if ("set" == type)
+            {
+                Pace.removeEventHandler(ROOT);
+                GTTVDetailPopup.open(context, [tvid], 0);
+                updateStatusForce(context);
+                Pace.registerEventHandler(ROOT);
+            }
+
+            else if ("movie" == type)
+            {
+                var target_tv_id = tvid["id"];
+                var tv_id_list = [];
+                var index = 0;
+                var target_index = 0;
+
+                foreach (var cd in folder_data.candidates_)
+                {
+                    var data2 = cd.value_;
+
+                    if ("movie" == data2["type"])
+                    {
+                        tv_id_list.push(data2);
+
+                        if (target_tv_id == data2["id"])
+                            var target_index = index;
+
+                        ++index;
+                    }
+                }
+
+                Pace.removeEventHandler(ROOT);
+                ROOT.updateDB(context);
+                var res = GTTVDetailPopup.open(context, tv_id_list, target_index);
+                Pace.registerEventHandler(ROOT);
+
+                if (res)
+                    MoviePlayerRoot.openIf(context);
+
+                else
+                    updateStatusForce(context);
+            }
+        }
+
+        function updateStatusForce(context)
+        {
+            if (nil == ChannelPane.finder)
+                return;
+
+            var count = ChannelPane.finder.getItemCount(context);
+
+            for (var i = 0; i < count; ++i)
+            {
+                var item = ChannelPane.finder.getItemWidget(i);
+
+                if (nil != item)
+                {
+                    var candidate_data = ChannelPane.finder.getItemData(context, i);
+
+                    if (nil == candidate_data || nil == candidate_data.value_)
+                        continue;
+
+                    var data = candidate_data.value_;
+
+                    if (nil != data["tv"])
+                        item.updateStatus(context, data["tv"]);
+                }
+            }
+
+            Menu::Body::Buttons::Cart.updateStatus(context);
+        }
+
+        function onFocusEnter(context, candidate_data, item_w, arg)
+        {
+            ButtonHelpGT5.appearIf();
+        }
+
+        function onFocusLeave(context, candidate_data, item_w, arg)
+        {
+            ButtonHelpGT5.hideIf();
+        }
+
+        method makeInitialData(context)
+        {
+            var Finder = UIKitProject::FinderRoot;
+            var candidates = Finder.makeCandidates(Array(0));
+            var initial_data = Finder.InitialData(candidates);
+
+            initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+            initial_data.cb_init_item_ = onInitItem;
+            initial_data.cb_on_activate_ = onActivateItem;
+            initial_data.v_scrollbar_ = VScrollbar;
+            initial_data.extended_item_ = hidden::ItemList;
+            initial_data.import_iconbox_parameter_ = hidden::IconBoxChannel;
+            initial_data.cb_focus_enter_ = onFocusEnter;
+            initial_data.cb_focus_leave_ = onFocusLeave;
+
+            return initial_data;
+        }
+
+        method onInitialize(context)
+        {
+            var initial_data = makeInitialData(context);
+            self.finder = UIKitProject::FinderRoot.setCopy(context, self.List, initial_data, false);
+        }
+
+        method onFinalize(context)
+        {
+            if (nil != finder)
+            {
+                self.List.removeChild(context, self.finder);
+                self.finder = nil;
+            }
+        }
+
+        module ChannelList::ListBox
+        {
+            attribute list_id_list;
+            attribute active_index = -1;
+
+            method initialize(context, list_id_list)
+            {
+                self.setItemCount(0);
+                self.setItemTemplate(context, hidden::ItemChannel);
+                self.list_id_list = list_id_list;
+                self.setItemCount(list_id_list.size);
+
+                if (nil == PROJECT::sSelectedChannel)
+                    PROJECT::sSelectedChannel = 0;
+            }
+
+            method onVisibleNotify(context, indices)
+            {
+                var item;
+                foreach (var i in indices)
+                {
+                    if (self.getItemVisible(i))
+                    {
+                        var item = self.getItemWidget(i);
+
+                        if (item == nil)
+                        {
+                            var item = self.getItemWidget(i, context);
+                            item.initialize(context, i, self.list_id_list[i]);
+                        }
+
+                        else
+                            ;
+                    }
+                }
+            }
+
+            method activateImpl(context, index)
+            {
+                self.active_index = index;
+                PROJECT::sSelectedChannel = index;
+
+                for (var i = 0; i < self.list_id_list.size; ++i)
+                {
+                    var item = self.getItemWidget(i);
+
+                    if (nil != item)
+                    {
+                        item.bgA.visible = i == index;
+                        item.ImageFaceA.visible = i == index;
+                    }
+                }
+
+                var list_id = self.list_id_list[index];
+                ChannelPane::List.list_id_stack = [[list_id, 0]];
+                ChannelPane::List.createList(context, false);
+            }
+
+            method onActivate(context)
+            {
+                if (PROJECT::is_online_on_load && !LoginUtil::isOnline())
+                {
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                    context.translate(ROOT, "GTTV2", "GOTO_GTTV_TOP"));
+
+                    Grim2.setInitialize(false);
+                    SequenceUtil::startProject(context, "gttv2", main::GameSequence::getArgument());
+                    return EVENTRESULT_FILTER;
+                }
+
+                main::sound.play("ok");
+                ROOT.updateDB(context);
+                activateImpl(context, self.focus_index);
+                return EVENTRESULT_FILTER;
+            }
+
+            method onCancel(context, event)
+            {
+                main::sound.play("cancel");
+                ROOT.setFocus(Menu::Body::Buttons::Channel);
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module List
+        {
+            attribute list_id_stack = [];
+
+            method getCurrentListId()
+            {
+                return self.list_id_stack[self.list_id_stack.size - 1];
+            }
+
+            method createList(context, on_focus)
+            {
+                |var list_id, var focus_index| = getCurrentListId();
+                var data_list = Array();
+                var tv_id_list = ROOT.getTvIdList(list_id);
+
+                if (nil != tv_id_list)
+                {
+                    var tv_ids = tv_id_list["tv_ids"];
+
+                    foreach (var tv_id in tv_ids)
+                    {
+                        if ("movie" == tv_id["type"])
+                        {
+                            if (GTTV2ProjectUtil::checkTv(tv_id))
+                                data_list.push(tv_id);
+                        }
+
+                        else
+                            data_list.push(tv_id);
+                    }
+                }
+
+                var candidates = UIKitProject::FinderRoot.makeCandidates(data_list);
+                ChannelPane.finder.replaceCurrentFolderCandidates(context, candidates, focus_index);
+
+                if (on_focus)
+                    ChannelPane.finder.onFocus(context);
+
+                if (self.list_id_stack.size > 1)
+                {
+                    ButtonHelpGT5.setLabel(context, ButtonHelpGT5.getCancelButtonName(), 
+                    context.translate(ROOT, "GTTV2", "BUTTON_HELP_BACK"));
+                }
+
+                else
+                {
+                    ButtonHelpGT5.setLabel(context, ButtonHelpGT5.getCancelButtonName(), 
+                    context.translate(ROOT, "GTTV2", "BUTTON_HELP_CANCEL"));
+                }
+            }
+
+            method onCancel(context)
+            {
+                main::sound.play("cancel");
+
+                if (self.List.list_id_stack.size > 1)
+                {
+                    self.list_id_stack.pop();
+                    self.createList(context, true);
+                }
+
+                else
+                    ROOT.setFocus(ChannelList::ListBox);
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module Title
+    {
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+            var localized_text = context.translate(ROOT, "MyHome", w.name.upcase());
+            BalloonTip.set_value(context, w, localized_text, 0);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+
+        module Manual
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                ManualProject::ManualDetailPopup.open(context, 
+                ["GTTV_01", "GTTV_02", "GTTV_03", "GTTV_04", "GTTV_06"], 0);
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module Exit
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module Menu
+    {
+        attribute lastupdate;
+
+        method onInitialize(context)
+        {
+            Body::LastUpdate::Date::TextFaceDate.text = "";
+        }
+
+        method setLastUpdate(context, begin_date)
+        {
+            if (nil == self.lastupdate || self.lastupdate.getBySecond() < begin_date.getBySecond())
+            {
+                Body::LastUpdate::Date::TextFaceDate.text = context.translate(
+                ROOT, "DateTime", "FORMAT_DATE").build("%04d".format(begin_date.year), 
+                "%02d".format(begin_date.month), "%02d".format(begin_date.day));
+
+                self.lastupdate = begin_date;
+            }
+        }
+
+        module Body::Buttons
+        {
+            method setActive(recommend, channel, cart, mylist)
+            {
+                Recommend.active = recommend;
+                Channel.active = channel;
+                Cart.active = cart;
+                MyList.active = mylist;
+            }
+
+            module Recommend
+            {
+                method onActivate(context)
+                {
+                    if (PROJECT::is_online_on_load && !LoginUtil::isOnline())
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                        context.translate(ROOT, "GTTV2", "GOTO_GTTV_TOP"));
+
+                        Grim2.setInitialize(false);
+                        SequenceUtil::startProject(context, "gttv2", main::GameSequence::getArgument());
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    main::sound.play("ok");
+                    setActive(true, false, false, false);
+
+                    if (ROOT.active_pane != RecommendPane)
+                        RecommendPane.open(context);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Channel
+            {
+                method onActivate(context)
+                {
+                    if (PROJECT::is_online_on_load && !LoginUtil::isOnline())
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                        context.translate(ROOT, "GTTV2", "GOTO_GTTV_TOP"));
+
+                        Grim2.setInitialize(false);
+                        SequenceUtil::startProject(context, "gttv2", main::GameSequence::getArgument());
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    if (!PROJECT::sModeOnline)
+                    {
+                        main::sound.play("disable");
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                        context.translate(ROOT, "Network", "ERROR_ONLINE_FUNCTION"));
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    main::sound.play("ok");
+                    setActive(false, true, false, false);
+
+                    if (ROOT.active_pane != ChannelPane)
+                        ChannelPane.open(context);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Cart
+            {
+                method onInitialize(context)
+                {
+
+                }
+
+                method updateStatus(context)
+                {
+                    var count = GAME_STATUS.user_profile.shopping_cart.getCount();
+                    New.visible = count > 0 && LoginUtil::isOnline();
+                    New::TextFace.text = count;
+                }
+
+                method onActivate(context)
+                {
+                    if (PROJECT::is_online_on_load && !LoginUtil::isOnline())
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                        context.translate(ROOT, "GTTV2", "GOTO_GTTV_TOP"));
+
+                        Grim2.setInitialize(false);
+                        SequenceUtil::startProject(context, "gttv2", main::GameSequence::getArgument());
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    if (!PROJECT::sModeOnline)
+                    {
+                        main::sound.play("disable");
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                        context.translate(ROOT, "Network", "ERROR_ONLINE_FUNCTION"));
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    main::sound.play("ok");
+                    |var is_buy, var is_delete| = onCart(context, ROOT);
+                    
+                    if (is_buy)
+                    {
+                        var count = ROOT.active_pane.finder.getItemCount(context);
+
+                        for (var index = 0; index < count; ++index)
+                        {
+                            var item_w = ROOT.active_pane.finder.getItemWidget(index);
+
+                            if (nil == item_w)
+                                continue;
+
+                            var candidate_data = ROOT.active_pane.finder.getItemData(context, index);
+                            var data = candidate_data.value_;
+                            item_w.updateStatus(context, data["tv"]);
+                        }
+                    }
+
+                    updateStatus(context);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module MyList
+            {
+                method onActivate(context)
+                {
+                    if (PROJECT::is_online_on_load && !LoginUtil::isOnline())
+                    {
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                        context.translate(ROOT, "GTTV2", "GOTO_GTTV_TOP"));
+
+                        Grim2.setInitialize(false);
+                        SequenceUtil::startProject(context, "gttv2", main::GameSequence::getArgument());
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    if (!PROJECT::sModeOnline)
+                    {
+                        main::sound.play("disable");
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                        context.translate(ROOT, "Network", "ERROR_ONLINE_FUNCTION"));
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    main::sound.play("ok");
+                    openMyList(context);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+    }
+
+    module hidden
+    {
+        module ItemRecommend
+        {
+            method onInitialize(context)
+            {
+                Pace.visible = false;
+                Body::HBox::Status::Price::TextFaceLabel.visible = false;
+            }
+
+            method initialize(context, tvid)
+            {
+                if (PROJECT::sModeOnline)
+                {
+                    var me = self;
+                    var tv_id = tvid["id"];
+                    var tv = ROOT.getTv(tv_id);
+
+                    if (nil == tv)
+                    {
+                        Tv2.requestTv(tv_id, function (args) 
+                        {
+                            |var context, var request| = args;
+
+                            if (!request.isDone())
+                                return;
+
+                            tv = Tv2.decodeTv(request);
+                            ROOT.pushTvCache(tv, request.isUpdated());
+                            tvid["tv"] = tv;
+                            me.initialize2(context, tv);
+                        });
+                    }
+
+                    else
+                    {
+                        tvid["tv"] = tv;
+                        initialize2(context, tv);
+                    }
+                }
+
+                else
+                {
+                    var tv = tvid["tv"];
+                    initialize2(context, tv);
+                }
+            }
+
+            method initialize2(context, tv)
+            {
+                if (PROJECT::sModeOnline)
+                {
+                    self.Body::Title::TextFace.text = pdistd::TextConv(tv["title"]);
+                    self.Body::SubTitle::TextFace.text = pdistd::TextConv(tv["subtitle"]);
+                    self.Body::HBox::TextFaceCopyright.text = tv["copyright"];
+
+                    var image_id_list = tv["image_ids"];
+
+                    if (image_id_list.size > 0)
+                        GTTV2ProjectUtil::setImage(context, image_id_list[0], self.Body::ImageFace);
+
+                    var m_image_id = tv["m_image_id"];
+                    GTTV2ProjectUtil::setImageM(context, m_image_id, self.Body::ImageFaceCopyright);
+                    ROOT::Menu::Body::LastUpdate.visible = true;
+                    ROOT::Menu::Body::Offline.visible = false;
+                    ROOT::Menu.setLastUpdate(context, tv["begin_date"]);
+                }
+
+                else
+                {
+                    self.Body::Title::TextFace.text = context.translate(ROOT, "GTTVOffline", tv["title"]);
+                    self.Body::SubTitle::TextFace.text = "";
+                    self.Body::HBox::TextFaceCopyright.text = context.translate(ROOT, "GTTVOffline", tv["copyright"]);
+                    var image_id_list = tv["image_ids"];
+
+                    if (image_id_list.size > 0)
+                        self.Body::ImageFace.image_path = "piece/gttv_offline/tv2_%d.img".format(image_id_list[0]);
+
+                    var m_image_id = tv["m_image_id"];
+                    self.Body::ImageFaceCopyright.image_path = "piece/gttv_offline/tv2_l_m_%d.img".format(m_image_id);
+                    ROOT::Menu::Body::Offline.visible = true;
+                    ROOT::Menu::Body::LastUpdate.visible = false;
+                }
+
+                self.New.visible = 0 != tv["new"];
+                self.updateStatus(context, tv);
+            }
+
+            method updateStatus(context, tv, progress, error)
+            {
+                |var label, var price, var pace| = GTTV2ProjectUtil::getStatusText(context, ROOT, tv, error);
+
+                if (nil != progress)
+                    var pace = "%{progress} %";
+
+                self.Body::HBox::Status::Price::TextFaceLabel.visible = "" != label;
+                self.Body::HBox::Status::Price::TextFace.text = price;
+                self.Pace.visible = "" != pace;
+                self.Pace::TextFace.text = pace;
+            }
+        }
+
+        module ItemChannel
+        {
+            method initialize(context, index, list_id)
+            {
+                bgA.visible = index == PROJECT::sSelectedChannel;
+                ImageFaceA.visible = index == PROJECT::sSelectedChannel;
+                var aaa = ROOT.getTvIdList(list_id);
+
+                if (nil != aaa)
+                    ;
+
+                var me = self;
+
+                Tv2.requestTvIdList(list_id, function (args) 
+                {
+                    |var context, var request| = args;
+
+                    if (!request.isDone())
+                        return;
+
+                    var tv_id_list = Tv2.decodeTvIdList(request);
+                    ROOT.pushTvIdListCache(tv_id_list, request.isUpdated());
+                    var image_id = tv_id_list["m_image_id"];
+                    var image_path = Tv2.getListImageMPath(image_id);
+                    me; //Force Variable Capture
+
+                    Tv2.requestListImageM(image_id, function (args) 
+                    {
+                        |var context, var request| = args;
+
+                        if (request.isDone())
+                            me.ImageFace.image_path = image_path;
+                    });
+
+                    if (index == PROJECT::sSelectedChannel)
+                        ChannelPane::ChannelList::ListBox.activateImpl(context, index);
+                });
+            }
+        }
+
+        module ItemList
+        {
+            method onInitialize(context)
+            {
+                self.new.visible = false;
+                self.icon.image_path = "";
+            }
+
+            method initializeAsList2(context, tv_id_list)
+            {
+                self.header.text = tv_id_list["name"];
+                self.title.text = tv_id_list["description"];
+                self.body.text = context.translate(ROOT, "GTTV2", "FOLDER");
+                self.bodyR.text = tv_id_list["copyright"];
+
+                self.new.visible = 0 != tv_id_list["new"];
+                self.icon.from_disk = true;
+                GTTV2ProjectUtil::setImageS(context, tv_id_list["s_image_id"], self.icon);
+            }
+
+            method initializeAsList(context, tvid)
+            {
+                var me = self;
+                var list_id = tvid["id"];
+                self.ImageFace.from_disk = false;
+                self.ImageFace.image_path = "image/common/finder_folder_m.dds";
+                var tv_id_list = ROOT.getTvIdList(list_id);
+
+                if (nil != tv_id_list)
+                    initializeAsList2(context, tv_id_list);
+
+                else
+                {
+                    Tv2.requestTvIdList(list_id, function (args) 
+                    {
+                        |var context, var request| = args;
+
+                        if (!request.isDone())
+                            return;
+
+                        var tv_id_list = Tv2.decodeTvIdList(request);
+                        ROOT.pushTvIdListCache(tv_id_list, request.isUpdated());
+                        me.initializeAsList2(context, tv_id_list);
+                    });
+                }
+            }
+
+            method initializeAsSet(context, tvid)
+            {
+                var me = self;
+                var set_id = tvid["id"];
+
+                Tv2.requestTvSet(set_id, function (args) 
+                {
+                    |var context, var request| = args;
+
+                    if (!request.isDone())
+                        return;
+
+                    var tv_set = Tv2.decodeTvSet(request);
+
+                    if (request.isUpdated() || nil == TvFileUtil::getTvSet(set_id))
+                        TvFileUtil::updateTvSet(tv_set);
+
+                    tvid["tv_set"] = tv_set;
+                    me.bodyR.text = tv_set["copyright"];
+                    me.header2.TextFace1.text = context.translate(ROOT, "GTTV2", "SET");
+                    me.header2.TextFace2.text = pdistd::TextConv(tv_set["title"]);
+                    me.title.text = pdistd::TextConv(tv_set["description"]);
+
+                    me.new.visible = 0 != tv_set["new"];
+                    var image_id_list = tv_set["image_ids"];
+
+                    if (image_id_list.size > 0)
+                    {
+                        me.ImageFace.from_disk = true;
+                        GTTV2ProjectUtil::setImage(context, image_id_list[0], me.ImageFace);
+                    }
+
+                    me.icon.from_disk = true;
+                    var s_image_id = tv_set["s_image_id"];
+                    GTTV2ProjectUtil::setImageS(context, s_image_id, me.icon);
+                    me.updateStatus(context, tv_set);
+                });
+            }
+
+            method initializeAsMovie2(context, tv)
+            {
+                self.header.text = pdistd::TextConv(tv["title"]);
+                self.title.text = pdistd::TextConv(tv["subtitle"]);
+                self.bodyR.text = tv["copyright"];
+                self.new.visible = 0 != tv["new"];
+                var image_id_list = tv["image_ids"];
+
+                if (image_id_list.size > 0)
+                {
+                    self.ImageFace.from_disk = true;
+                    GTTV2ProjectUtil::setImage(context, image_id_list[0], self.ImageFace);
+                }
+
+                self.icon.from_disk = true;
+                var s_image_id = tv["s_image_id"];
+                GTTV2ProjectUtil::setImageS(context, s_image_id, self.icon);
+                self.updateStatus(context, tv);
+            }
+
+            method initializeAsMovie(context, tvid)
+            {
+                var me = self;
+                var tv_id = tvid["id"];
+                var tv = ROOT.getTv(tv_id);
+
+                if (nil != tv)
+                    initializeAsMovie2(context, tv);
+
+                else
+                {
+                    Tv2.requestTv(tv_id, function (args) 
+                    {
+                        |var context, var request| = args;
+
+                        if (!request.isDone())
+                            return;
+
+                        var tv = Tv2.decodeTv(request);
+                        ROOT.pushTvCache(tv, request.isUpdated());
+                        tvid["tv"] = tv;
+                        me.initializeAsMovie2(context, tv);
+                    });
+                }
+            }
+
+            method updateStatus(context, tv, progress, error)
+            {
+                if (nil == tv)
+                    return;
+
+                var label = "";
+                var price = "";
+                var pace = "";
+
+                if (nil != tv["entitlement"])
+                {
+                    |var label, var price, var pace| = GTTV2ProjectUtil::getStatusTextLong(context, ROOT, tv, error);
+
+                    if (nil != progress)
+                        var pace = "%{pace} %s".format(context.translate(ROOT, "GTTV2", "PERCENT").build(progress));
+                }
+
+                else
+                {
+                    var sku = sPSNData.sku_list[tv["sku"]];
+
+                    if (nil != sku)
+                    {
+                        var label = context.translate(context.getRootWindow(), "GTTV2", "PRICE");
+                        var price = sku["price_text"];
+                    }
+                }
+
+                self.body3::TextFace1.visible = "" != label;
+                self.body3::TextFace1.text = label;
+                self.body3::TextFace2.text = price;
+                self.body3::TextFace3.text = pace;
+            }
+        }
+    }
+}

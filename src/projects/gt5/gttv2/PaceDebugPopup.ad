@@ -1,0 +1,502 @@
+
+
+
+
+
+module ROOT
+{
+    static popup = nil;
+    static fileinfo_hash;
+
+    function open(context, fileinfohash)
+    {
+        var default_debug_popup = 1;
+        var disable_popup = main::Grim2.getServerOptionToInt("pace", "Support.PaceDebugPopup.enable", default_debug_popup);
+
+        if (disable_popup != default_debug_popup)
+            return;
+
+        fileinfo_hash = fileinfohash;
+        Pane::initialize(context);
+        appear(context);
+        popup = SequenceUtil::ModalPage(context, ROOT);
+        popup.open();
+    }
+
+    function close(context)
+    {
+        hide(context);
+        context.wait(0.1);
+        Pane::finalize(context);
+        fileinfo_hash = nil;
+
+        if (popup != nil)
+        {
+            popup.close();
+            popup = nil;
+        }
+    }
+
+    function appear(context)
+    {
+        Pane.actor.out = true;
+        Pane.actor.warp();
+        Pane.actor.out = false;
+    }
+
+    function hide(context)
+    {
+        Pane.actor.out = true;
+    }
+
+    function onRealize(manager)
+    {
+        var actor = main::menu::MFadeActor(Pane, 1.0);
+        actor.period = 0.25;
+        actor.repeat = false;
+        Pane.actor = actor;
+    }
+
+    method onKeyPress(context, event)
+    {
+        var button_state = context.getUpdateContext().getPadButtonState(0);
+
+        if ((button_state & 256) != 0 && (button_state & 2048) != 0)
+        {
+            main::sound.play("cancel");
+            close(context);
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+
+    function onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return EVENTRESULT_FILTER;
+    }
+}
+
+module ROOT::Pane
+{
+    static watcher = nil;
+
+    function initialize(context)
+    {
+        if (watcher == nil)
+        {
+            update(context);
+            watcher = WatcherUtil::Create(context, onTick, 60 * 5,);
+        }
+    }
+
+    function finalize(context)
+    {
+        if (watcher != nil)
+        {
+            WatcherUtil::Delete(watcher);
+            watcher = nil;
+        }
+    }
+
+    function onTick(context)
+    {
+        update(context);
+    }
+
+    function update(context)
+    {
+        update_status(context);
+        update_statistics(context);
+        update_file_status(context);
+        update_file_statistics(context);
+    }
+
+    function formatDuration(duration_sec)
+    {
+        if (duration_sec == nil)
+            return "";
+
+        var sec = duration_sec % 60;
+        duration_sec /= 60;
+
+        var minute = duration_sec % 60;
+        duration_sec /= 60;
+
+        var hour = duration_sec % 60;
+        return "%02d:%02d:%02d".format(hour, minute, sec);
+    }
+
+    function formatKbps(byte)
+    {
+        if (byte == nil || byte == 0U)
+            return 0U;
+
+        return (byte * 8U) / 1024U;
+    }
+
+    function formatByteSize(byte)
+    {
+        if (byte == nil)
+            return "0 B";
+
+        var unit = 1024U;
+        var form = "%d %s";
+
+        if (byte < unit)
+            return form.format(byte, "B");
+
+        var form = "%.2f %s";
+
+        if (byte < unit * unit)
+            return form.format(byte.toFloat() / unit, "KB");
+
+        if (byte < (unit * unit) * unit)
+            return form.format(byte.toFloat() / (unit * unit), "MB");
+
+        return form.format(byte.toFloat() / ((unit * unit) * unit), "GB");
+    }
+
+    function formatTime(microsec)
+    {
+        var epoch = main::pdistd::MTime();
+        epoch.year = 1970;
+        epoch.month = 1;
+        epoch.day = 1;
+        epoch.hour = 0;
+        epoch.minute = 0;
+        epoch.second = 0;
+        var epoch_second = epoch.getBySecond();
+
+        var src_second = (microsec / 1000) / 1000;
+        var dist_second = epoch_second + src_second;
+        var dist = main::pdistd::MTime();
+        dist.setBySecond(dist_second);
+        var dist = dist.toLocal();
+
+        return dist.toString();
+    }
+
+    function update_status(context)
+    {
+        var status = main::Pace.getStatus();
+
+        if (status == nil || status["code"] != 0 || status.empty())
+            return;
+
+        var status = status["value"];
+
+        var txt1 = "%{"createdTime : %s "}
+                    %{"state : %u "}
+                    %{"lastError : 0x%08x "}
+                    %{"natType : %u "}
+                    %{"upnpStatus : %u "}
+                    %{"localIPAddress : %s "}
+                    %{"externalIPAddress : %s "}
+                    %{"onlineId : %s "}
+                    %{"p2pState : %d "}
+                    %{"uploadRatioExceeded : %d "}
+                    %{"uploadSizeExceeded : %d "}
+                    %{"seedUrlBase : %s "}".format(
+        formatTime(status["createdTime"]),
+        status["state"], status["lastError"], status["natType"], status["upnpStatus"],
+        status["localIPAddress"], status["externalIPAddress"], status["onlineId"], status["p2pState"],
+        status["uploadRatioExceeded"], status["uploadSizeExceeded"], status["seedUrlBase"]
+        );
+
+        Client::msg1.text = txt1;
+    }
+
+    function update_statistics(context)
+    {
+        var statistics = main::Pace.getStatistics();
+
+        if (statistics == nil || statistics["code"] != 0 || statistics.empty())
+            return;
+
+        var statistics = statistics["value"];
+
+        var txt2 = "
+        %{"since : %s "}
+        %{"cumulativePeerUploadedBytes : %s "}
+        %{"cumulativePeerDownloadedBytes : %s "}
+        %{"cumulativeCdnDownloadedBytes : %s "}
+        %{"currentTcpConnections : %u "}
+        %{"totalPeerUploadedBytes  : %s "}
+        %{"totalPeerDownloadedBytes : %s "}
+        %{"totalCdnDownloadedBytes : %s "}
+        %{"peerUploadRate : %u  kbps "}
+        %{"peerDownloadRate : %u kbps "}
+        %{"cdnDownloadRate : %u kbps "}
+        %{"totalInboundPeerConnections : %u "}
+        %{"totalOutboundPeerConnections : %u "}
+        %{"totalFailedPeerConnections : %u "}
+        %{"currentPeerConnections : %u "}
+        %{"totalCdnConnections : %u "}
+        %{"totalFailedCdnConnections : %u "}
+        %{"totalTrackerConnections : %u "}
+        %{"totalFailedTrackerConnections : %u "}".format(
+
+            formatTime(statistics["since"]),
+            formatByteSize(statistics["cumulativePeerUploadedBytes"]),
+            formatByteSize(statistics["cumulativePeerDownloadedBytes"]),
+            formatByteSize(statistics["cumulativeCdnDownloadedBytes"]),
+            statistics["currentTcpConnections"],
+            formatByteSize(statistics["totalPeerUploadedBytes"]),
+            formatByteSize(statistics["totalPeerDownloadedBytes"]),
+            formatByteSize(statistics["totalCdnDownloadedBytes"]),
+            formatKbps(statistics["peerUploadRate"]),
+            formatKbps(statistics["peerDownloadRate"]),
+            formatKbps(statistics["cdnDownloadRate"]),
+            statistics["totalInboundPeerConnections"],
+            statistics["totalOutboundPeerConnections"],
+            statistics["totalFailedPeerConnections"],
+            statistics["currentPeerConnections"],
+            statistics["totalCdnConnections"],
+            statistics["totalFailedCdnConnections"],
+            statistics["totalTrackerConnections"],
+            statistics["totalFailedTrackerConnections"]
+        );
+
+        var txt3 = "
+        %{"totalGrimConnections : %u "}
+        %{"totalFailedGrimConnections : %u "}
+        %{"numFiles : %u "}
+        %{"numFileInfoRequesting : %u "}
+        %{"numAssignCandidateFiles : %u "}
+        %{"numAssignErrorFiles : %u "}
+        %{"numAssignFiles : %u "}
+        %{"numHibernatedFiles : %u "}
+        %{"numSuspendedFiles : %u "}
+        %{"numActiveFiles : %u "}
+        %{"numInactiveFiles : %u "}
+        %{"sizeRemaining : %s "}
+        %{"numPieces : %u "}
+        %{"numPiecesRemaining : %u "}
+        %{"numUploadSlotsUsed : %u "}
+        %{"totalNumPeerEnobufs : %u "}
+        %{"totalNumHttpEnobufs : %u "}
+        %{"memoryAllocations : %u "}
+        %{"memoryFrees : %u "}".format(
+
+            statistics["totalGrimConnections"], statistics["totalFailedGrimConnections"],
+            statistics["numFiles"], statistics["numFileInfoRequesting"], statistics["numAssignCandidateFiles"],
+            statistics["numAssigErrorFilesn"], statistics["numAssignFiles"],
+            statistics["numHibernatedFiles"], statistics["numSuspendedFiles"],
+            statistics["numActiveFiles"], statistics["numInactiveFiles"],
+            formatByteSize(statistics["sizeRemaining"]), statistics["numPieces"],
+            statistics["numPiecesRemaining"], statistics["numUploadSlotsUsed"],
+            statistics["totalNumPeerEnobufs"], statistics["totalNumHttpEnobufs"],
+            statistics["memoryAllocations"], statistics["memoryFrees"]
+        );
+
+        var http_statistics = Grim2.getHttpStatistics();
+
+        var txt4 = "
+        %{"currentMemoryUsage: %s "}
+        %{"peakMemoryUsage : %s "}
+        %{"metadataDiskUsage : %s "}
+        %{"contentDiskUsage : %s "}
+        %{"numHttpSocketsOpened : %u "}
+        %{"numHttpSocketsClosed : %u "}
+        %{"peakNumHttpSockets : %u "}
+        %{"numHttpTransactionsCreated : %u "}
+        %{"numHttpTransactionsDestroyed : %u "}
+        %{"peakNumHttpTransactions : %u "}
+        %{"numHttpEnobufs : %u "}
+        %{"----- grim2 http statistics -----"}
+        %{"numSocketsOpened : %u "}
+        %{"numSocketsClosed : %u "}
+        %{"peakNumSockets : %u "}
+        %{"numTransactionsCreated : %u "}
+        %{"numTransactionsDestroyed : %u "}
+        %{"peakNumTransactions : %u "}
+        %{"numEnobufs : %u "}".format(
+
+            formatByteSize(statistics["currentMemoryUsage"]), formatByteSize(statistics["peakMemoryUsage"]),
+            formatByteSize(statistics["metadataDiskUsage"]), formatByteSize(statistics["contentDiskUsage"]),
+            statistics["numHttpSocketsOpened"], statistics["numHttpSocketsClosed"],
+            statistics["peakNumHttpSockets"], statistics["numHttpTransactionsCreated"],
+            statistics["numHttpTransactionsDestroyed"], statistics["peakNumHttpTransactions"],
+            statistics["numHttpEnobufs"], http_statistics["numSocketsOpened"],
+            http_statistics["numSocketsClosed"], http_statistics["peakNumSockets"],
+            http_statistics["numTransactionsCreated"], http_statistics["numTransactionsDestroyed"],
+            http_statistics["peakNumTransactions"], http_statistics["numEnobufs"]
+        );
+
+        var txt5 = "name, state, rtt, packet loss";
+
+        statistics["conns"].sort(function (a, b) 
+        {
+            return a["onlineId"] < b["onlineId"];
+        });
+
+        foreach (var conn in statistics["conns"])
+        {
+            txt5 += "%s, %u, %u micro sec, %0.2f %%".format(
+                conn["onlineId"], conn["state"], conn["rtt"], conn["packetLossRatio"]
+            );
+
+            txt5 += " ";
+        }
+
+        Client::msg2.text = txt2;
+        Client::msg3.text = txt3;
+        Client::msg4.text = txt4;
+        Client::msg5.text = txt5;
+    }
+
+    function update_file_status(context)
+    {
+        if (fileinfo_hash == nil)
+        {
+            File::msg1.text = "";
+            return;
+        }
+
+        var status = main::Pace.getFileStatus(fileinfo_hash);
+
+        if (status == nil || status.empty() || status["code"] != 0)
+            return;
+
+        var status = status["value"];
+        var tp = main::Pace.getTransferParams(fileinfo_hash);
+
+        if (tp == nil || tp.empty() || tp["code"] != 0)
+            return;
+
+        var tp = tp["value"];
+
+        var txt1 = "
+        %{"fileinfohash: %s "}
+        %{"createdTime : %s "}
+        %{"name : %s "}
+        %{"targetPath : %s "}
+        %{"localPath : %s "}
+        %{"numPieces : %u "}
+        %{"numPiecesRemaining : %u "}
+        %{"size : %s "}
+        %{"sizeRemaining : %s "}
+        %{"state : 0x%08x "}
+        %{"lastError : 0x%08x "}
+        %{"trackerUrl : %s "}
+        %{"seedUrl : %s "}
+        %{"metadataSize : %s "}
+        %{"contiguousSize : %s "}
+        %{" "}
+        %{"maxUploadRate : %u kbps minDownloadRate : %u kbps "}
+        %{"maxDownloadRate : %u kbps maxPeers : %d "}
+        %{"maxCdnDownloadRate : %u kbps maxPeerDownloadRate : %u kbps "}
+        %{"uploadSizeRatio : %0.2f uploadSizeLimit : %s "}
+        %{"targetCdnOffloadRate : %d interestThreshold : %d "}
+        %{"options : 0x%08x multiplicity : %d "}".format(
+
+            fileinfo_hash, formatTime(status["createdTime"]), status["name"],
+            status["targetPath"], status["localPath"], status["numPieces"],
+            status["numPiecesRemaining"], formatByteSize(status["size"]),
+            formatByteSize(status["sizeRemaining"]), status["state"],
+            status["lastError"], status["trackerUrl"], status["seedUrl"],
+            formatByteSize(status["metadataSize"]), formatByteSize(status["contiguousSize"]),
+            formatKbps(tp["maxUploadRate"]), formatKbps(tp["minDownloadRate"]),
+            formatKbps(tp["maxDownloadRate"]), tp["maxPeers"],
+            formatKbps(tp["maxCdnDownloadRate"]), formatKbps(tp["maxPeerDownloadRate"]),
+            tp["uploadSizeRatio"], formatByteSize(tp["uploadSizeLimit"]),
+            tp["targetCdnOffloadRate"], tp["interestThreshold"],
+            tp["options"], tp["multiplicity"]
+        );
+
+        File::msg1.text = txt1;
+    }
+
+    function update_file_statistics(context)
+    {
+        if (fileinfo_hash == nil)
+        {
+            File::msg2.text = "";
+            File::msg3.text = "";
+            File::msg4.text = "";
+            File::msg5.text = "";
+            return;
+        }
+
+        var statistics = main::Pace.getFileStatistics(fileinfo_hash);
+
+        if (statistics == nil || statistics.empty() || statistics["code"] != 0)
+            return;
+
+        var statistics = statistics["value"];
+        var txt2 = "";
+
+        var txt3 = "
+        %{"since : %s "}
+        %{"cumulativePeerUploadedBytes : %s "}
+        %{"cumulativePeerDownloadedBytes : %s "}
+        %{"cumulativeCdnDownloadedBytes : %s "}
+        %{"peerUploadRate : %u kbps "}
+        %{"peerDownloadRate : %u kbps "}
+        %{"cdnDownloadRate : %u kbps "}
+        %{"totalCdnConnections : %u "}
+        %{"totalFailedCdnConnections : %u "}
+        %{"consecutiveFailedCdnConnections : %u "}
+        %{"totalTrackerConnections : %u "}
+        %{"totalFailedTrackerConnections : %u "}
+        %{"consecutiveFailedTrackerConnections : %u "}
+        %{"totalGrimConnections : %u "}
+        %{"totalFailedGrimConnections : %u "}
+        %{"consecutiveFailedGrimConnections : %u "}
+        %{"estimatedCdnDownloadRate : %u kbps "}
+        %{"numUploadSlotsUsed : %u "}
+        %{"numPeers : %u"}
+        %{"lastCdnStatusCode : %d "}
+        %{"lastTrkStatusCode : %d "}
+        %{"lastGrimStatusCode : %d "}
+        %{"cdnConcurrency : %d "}
+        %{"cdnPeakConcurrency : %d "}".format(
+
+            formatTime(statistics["since"]), formatByteSize(statistics["cumulativePeerUploadedBytes"]),
+            formatByteSize(statistics["cumulativePeerDownloadedBytes"]),
+            formatByteSize(statistics["cumulativeCdnDownloadedBytes"]),
+            formatKbps(statistics["peerUploadRate"]), formatKbps(statistics["peerDownloadRate"]), 
+            formatKbps(statistics["cdnDownloadRate"]), statistics["totalCdnConnections"], 
+            statistics["totalFailedCdnConnections"],
+            statistics["consecutiveFailedCdnConnections"],
+            statistics["totalTrackerConnections"], 
+            statistics["totalFailedTrackerConnections"],
+            statistics["consecutiveFailedTrackerConnections"],
+            statistics["totalGrimConnections"],
+            statistics["totalFailedGrimConnections"],
+            statistics["consecutiveFailedGrimConnections"],
+            formatKbps(statistics["estimatedCdnDownloadRate"]),
+            statistics["numUploadSlotsUsed"], statistics["numPeers"], statistics["lastCdnStatusCode"],
+            statistics["lastTrkStatusCode"], statistics["lastGrimStatusCode"],
+            statistics["cdnConcurrency"], statistics["cdnPeakConcurrency"]
+        );
+
+        var txt4 = "name, state, rtt, packet loss, uprate, upbytes, downrate, downbytes, piece counts, duration";
+
+        statistics["peers"].sort(function (a, b) 
+        {
+            return a["connInfo"]["onlineId"] < b["connInfo"]["onlineId"];
+        });
+
+        foreach (var peer in statistics["peers"])
+        {
+            var ci = peer["connInfo"];
+
+            txt4 += "%s, %u, %u micro sec, %0.2f %%, %u kbps, %s, %u kbps %s, %u, %s".format(
+                ci["onlineId"], ci["state"], ci["rtt"], ci["packetLossRatio"],
+                formatKbps(peer["uploadRate"]), formatByteSize(peer["uploadedBytes"]),
+                formatKbps(peer["downloadRate"]), formatByteSize(peer["downloadedBytes"]),
+                peer["pieceCount"], formatDuration(peer["duration"])
+            );
+
+            txt4 += " ";
+        }
+
+        File::msg2.text = txt2;
+        File::msg3.text = txt3;
+        File::msg4.text = txt4;
+        File::msg5.text = "";
+    }
+}

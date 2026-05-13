@@ -1,0 +1,1265 @@
+
+
+module ROOT
+{
+    attribute tv_id_list;
+    attribute current_index;
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute use_npcommerce;
+
+    module __BalloonTarget__
+    {
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+            BalloonTip.set_value(context, w, context.translate(ROOT, "GTTV2", w.name.upcase()), 0);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    method open(context, tv_id_list, index)
+    {
+        self.use_npcommerce = false;
+        self.result = false;
+        self.tv_id_list = tv_id_list;
+        self.current_index = index;
+        self.closed = false;
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return self.result;
+    }
+
+    method open2(context)
+    {
+        self.use_npcommerce = false;
+        self.result = false;
+        self.current_index = 0;
+        SequenceUtil::startPage(context, ROOT);
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        if (nil == self.popup)
+        {
+            if (self.result)
+                MoviePlayerRoot.openIf(context);
+            else
+                GTTVRoot.open(context);
+        }
+
+        else
+        {
+            ContextMain.event_mask = 5;
+            ContextMain.disableInput();
+
+            FadeActor.on_effect_end = function (context) {
+                if (nil != ROOT.popup)
+                {
+                    ROOT.popup.close();
+                    ROOT.popup = nil;
+                }
+                ContextMain.enableInput();
+            };
+
+            FadeActor.out = true;
+        }
+    }
+
+    method onInitialize(context)
+    {
+        ignorePadEvent(true);
+        Store.visible = false;
+
+        if (PROJECT::sModeOnline)
+        {
+            if (nil == sPSNData)
+            {
+                sPSNData = GTTV2ProjectUtil::PSNData();
+                sPSNData.get(context);
+            }
+        }
+
+        Footer::Buttons::CommandB::Play.visible = false;
+        Footer::Buttons::CommandB::Export.visible = false;
+        Footer::Buttons::CommandB::Delete.visible = false;
+
+        foreach (var name in [
+            "AddCart",
+            "ViewCart",
+            "Download",
+            "PaceDownloading",
+            "PaceSuspend",
+            "PaceNotReady",
+            "PaceError"
+        ])
+        {
+            Footer::Buttons::CommandC[name].visible = false;
+        }
+
+        if (nil == self.tv_id_list)
+        {
+            var tv_id = GAME_STATUS.user_profile.context.gttv_id;
+            Tv2.requestTv(tv_id, function (args) 
+            {
+                |var context, var request| = args;
+
+                if (request.isError())
+                {
+                    ROOT.close(context);
+                    return;
+                }
+
+                var tv = Tv2.decodeTv(request);
+
+                if (request.isUpdated() || nil == TvFileUtil::getTv(tv_id))
+                    TvFileUtil::updateTv(tv);
+
+                var data = [
+                    "id" : tv_id,
+                    "type" : "movie",
+                    "tv" : tv
+                ];
+
+                ROOT.tv_id_list = [data];
+                ROOT.reload(context);
+            });
+
+            GAME_STATUS.user_profile.context.gttv_id = -1;
+        }
+
+        else
+            reload(context);
+
+        var adj = main::menu::MAdjustment();
+        Right::Scrollbar::VScrollbar.adjustment = adj;
+        Right::ScrolledWindow::ScrollClip.v_adjustment = adj;
+        ROOT.setFocus(Footer::Buttons::CommandC::Exit);
+
+        Pace.registerEventHandler(self);
+        ignorePadEvent(false);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        if (self.use_npcommerce)
+        {
+            NPCommerceUtil::end(context);
+            self.use_npcommerce = nil;
+        }
+
+        Pace.removeEventHandler(self);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    method getTvId()
+    {
+        return ROOT.tv_id_list[ROOT.current_index];
+    }
+
+    method getTv()
+    {
+        var tv_id = getTvId();
+        return tv_id["tv"];
+    }
+
+    method reload(context)
+    {
+        var me = self;
+
+        foreach (var widget in [Left::Thumbnail, Left::Status, Right])
+        {
+            widget.ScalarInterpolator.reset();
+            widget.visible = false;
+        }
+
+        var tv_id = ROOT.getTvId();
+        var type = tv_id["type"];
+
+        if ("movie" == type)
+        {
+            var tv = tv_id["tv"];
+
+            if (nil != tv)
+                reloadAsTv(context, tv);
+
+            else
+            {
+                var request = Tv2.requestTv(tv_id["id"], function (args) {});
+
+                if (Grim2Util::__deprecated__join__(context, request))
+                {
+                    var tv2 = Tv2.decodeTv(request);
+
+                    if (request.isUpdated() || nil == TvFileUtil::getTv(tv_id["id"]))
+                        TvFileUtil::updateTv(tv2);
+
+                    tv_id["tv"] = tv2;
+                    reloadAsTv(context, tv2);
+                }
+            }
+        }
+
+        else if ("set" == type)
+        {
+            var tv_set = tv_id["tv_set"];
+            reloadAsTvSet(context, tv_set);
+        }
+    }
+
+    method setLogo(context, m_image_id)
+    {
+        if (PROJECT::sModeOnline)
+        {
+            if (Tv2.isExistListImageM(m_image_id))
+                Left::ImageFaceLogo.image_path = Tv2.getListImageMPath(m_image_id);
+
+            else
+            {
+                Tv2.requestListImageM(m_image_id, function (args) 
+                {
+                    |var context, var request| = args;
+
+                    if (request.isDone())
+                        Left::ImageFaceLogo.image_path = Tv2.getListImageMPath(m_image_id);
+                });
+            }
+        }
+
+        else
+            Left::ImageFaceLogo.image_path = "piece/gttv_offline/tv2_l_m_%d.img".format(m_image_id);
+    }
+
+    method setPankuzu(context, pankuzu_list)
+    {
+        Right::Title::channel.text = "";
+        Right::Title::folder.text = "";
+
+        if (pankuzu_list.size > 0)
+            Right::Title::channel.text = pankuzu_list[0];
+
+        Right::Title::folder.text = "";
+        var pankuzu = [];
+
+        for (var i = 1; i < pankuzu_list.size; ++i)
+        {
+            pankuzu.push(pankuzu_list[i]);
+        }
+
+        if (pankuzu.size > 0)
+            Right::Title::folder.text = "> " + pankuzu.join(" > ");
+    }
+
+    method setRatingImage(rating_image)
+    {
+        if (0 == rating_image)
+            return;
+
+        var image_path = Tv2.getRatingImagePath(rating_image);
+
+        if (pdistd::Exist(image_path))
+        {
+            Left::Thumbnail::Rating::ImageFace.image_path = image_path;
+            Left::Thumbnail::Rating::ImageFace.adjustSize();
+        }
+
+        else
+        {
+            Tv2.requestRatingImage(rating_image, function (args) 
+            {
+                |var context, var request| = args;
+
+                if (request.isDone())
+                {
+                    Left::Thumbnail::Rating::ImageFace.image_path = image_path;
+                    Left::Thumbnail::Rating::ImageFace.adjustSize();
+                }
+            });
+        }
+    }
+
+    method createDescription(context, data)
+    {
+        var description = pdistd::TextConv(data["description"]);
+
+        if (nil != data["sku"] && nil != sPSNData)
+        {
+            var sku_info = sPSNData.sku_list[data["sku"]];
+
+            if (nil != sku_info)
+            {
+                CursorUtil::setCursor(ContextMain, "wait");
+
+                if (!ROOT.use_npcommerce)
+                {
+                    var res = NPCommerceUtil::begin(context);
+                    ROOT.use_npcommerce = true;
+
+                    if (!res)
+                    {
+                        ignorePadEvent(false);
+                        DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+                        context.translate(ROOT, "Network", "CANNOT_CONNECT_SERVER"));
+                        ROOT.close(context);
+                        return;
+                    }
+                }
+
+                var product_info = NPCommerceUtil::getProduct(sku_info["category_id"], sku_info["product_id"]);
+
+                if (nil != product_info)
+                {
+                    var long_description = product_info["productLongDescription"];
+                    long_description.replaceAll("<br>", " ");
+
+                    var description = "%{description} %{long_description}";
+                }
+
+                CursorUtil::setCursor(ContextMain, "cursor_chrome");
+            }
+        }
+
+        return description;
+    }
+
+    method reloadCommon(context, data)
+    {
+        Store.visible = PROJECT::sModeOnline && nil != data["sku"] && "" != data["sku"];
+        Right::ScrolledWindow::ScrollClip.manual_target_y = 0.0;
+        var space = Right::ScrolledWindow::ScrollClip::space;
+
+        if (PROJECT::sModeOnline)
+        {
+            space.title.text = pdistd::TextConv(data["title"]);
+            space.subtitle.text = pdistd::TextConv(data["subtitle"]);
+            space.description.text = createDescription(context, data);
+        }
+
+        else
+        {
+            space.title.text = context.translate(ROOT, "GTTVOffline", data["title"]);
+            space.subtitle.text = "";
+            space.description.text = context.translate(ROOT, "GTTVOffline", data["description"]);
+        }
+
+        space.y = 0.0;
+        Left::Status::Expire::HBox::TextFace.text = data["expire"];
+        Left::Status::Expire.visible = "" != data["expire"];
+        var region = pdiext::MProductInformation::GetGameRegionCode();
+
+        if ("us" == region)
+        {
+            setRatingImage(data["rating_image_us"]);
+            Left::Thumbnail::Rating::TextFace.visible = false;
+            Left::Thumbnail::Rating.visible = true;
+        }
+
+        else if ("uk" == region)
+        {
+            setRatingImage(data["rating_image_eu"]);
+            Left::Thumbnail::Rating::TextFace.visible = 0 != data["recommend"];
+            Left::Thumbnail::Rating.visible = true;
+        }
+
+        else
+            Left::Thumbnail::Rating.visible = false;
+
+        Left::Status::Size::HBox::TextFace.text = data["size"];
+        Left::Status::Duration::HBox::TextFace.text = data["duration"];
+        Left::Status::Format::HBox::TextFace.text = data["format"];
+        Left::Status::Export::HBox::TextFace.text = data["export"];
+
+        if (PROJECT::sModeOnline)
+            Left::Status::Copyright::HBox::TextFace.text = data["copyright"];
+
+        else
+            Left::Status::Copyright::HBox::TextFace.text = context.translate(ROOT, "GTTVOffline", data["copyright"]);
+
+        Left::Status::BD::HBox::TextFace.text = data["bd_only"];
+        Left::Status::BD.visible = false;
+        var begin_date = data["begin_date"];
+
+        Right::Title::date.text = context.translate(ROOT, "DateTime", "FORMAT_DATE").build(
+        "%04d".format(begin_date.year), "%02d".format(begin_date.month), "%02d".format(begin_date.day));
+
+        setPankuzu(context, data["pankuzu_list"]);
+        Footer::Buttons::CommandC::TrailerPlay.visible = 0 != data["trailer_file_id"];
+        setLogo(context, data["m_image_id"]);
+
+        {
+            var insensitive = 0 == ROOT.current_index;
+            Footer::Buttons::CommandA::Previous::Image.visible = !insensitive;
+            Footer::Buttons::CommandA::Previous::ImageI.visible = insensitive;
+        }
+
+        {
+            var insensitive = ROOT.current_index == ROOT.tv_id_list.size - 1;
+            Footer::Buttons::CommandA::Next::Image.visible = !insensitive;
+            Footer::Buttons::CommandA::Next::ImageI.visible = insensitive;
+        }
+
+        updateStatus(context);
+    }
+
+    method fire(context, image_id_list)
+    {
+        Left::Thumbnail::ImageFaceA.image_path = "";
+        Left::Thumbnail::ImageFaceB.image_path = "";
+
+        foreach (var widget in [Left::Thumbnail, Left::Status, Right])
+        {
+            widget.visible = true;
+            widget.ScalarInterpolator.start();
+        }
+
+        Left::Thumbnail.setImageIdList(context, image_id_list);
+    }
+
+    method reloadAsTv(context, tv)
+    {
+        var begin_date;
+
+        if (tv["begin_date"].isInstanceOf(pdistd::MTime))
+            var begin_date = tv["begin_date"];
+
+        else
+        {
+            var begin_date = pdistd::MTime();
+            begin_date.setBySecond(tv["begin_date"]);
+        }
+
+        var pankuzu_list = [];
+
+        if (PROJECT::sModeOnline)
+            var pankuzu_list = TvFileUtil::getPankuzuList(tv["tv_id"], "movie");
+
+        var expire = "";
+        var entitlement = GTTV2ProjectUtil::getEntitlement(context, tv);
+
+        if (nil != entitlement)
+            var expire = entitlement["expire_date"].toLocal();
+
+        else
+        {
+            if (0 != tv["days"])
+                var expire = context.translate(ROOT, "GTTV2", "EXPIRE_DAY_FORMAT").build(tv["days"]);
+        }
+
+        reloadCommon(context, [
+            "title" : tv["title"],
+            "subtitle" : tv["subtitle"],
+            "description" : tv["description"],
+            "expire" : expire,
+            "rating" : tv["rating"],
+            "size" : GTTV2ProjectUtil::getSizeText(context, tv["contents_size"]),
+            "duration" : GTTV2ProjectUtil::getDurationText(context, tv["duration"]),
+            "format" : ((0 == tv["hd"]) ? "SD" : "HD"),
+            "export" : context.translate(ROOT, "GTTV2", (0 == tv["psp_export"]) ? "NOT_AVAILABLE" : "AVAILABLE"),
+            "copyright" : tv["copyright"],
+            "begin_date" : begin_date,
+            "pankuzu_list" : pankuzu_list,
+            "trailer_file_id" : tv["trailer_file_id"],
+            "m_image_id" : tv["m_image_id"],
+            "rating_image_us" : tv["rating_image_us"],
+            "rating_image_eu" : tv["rating_image_eu"],
+            "recommend" : tv["recommend"],
+            "bd_only" : tv["bd_only"],
+            "sku" : tv["sku"]
+        ]);
+
+        fire(context, tv["image_ids"]);
+    }
+
+    method reloadAsTvSet(context, tv_set)
+    {
+        var sku = sPSNData.sku_list[tv_set["sku"]];
+
+        if (nil != sku)
+        {
+            Left::Status::Price::HBox::TextFace.text = "%s %s".format(
+            context.translate(ROOT, "GTTV2", "SET"), sku["price_text"]);
+        }
+
+        else
+            ;
+
+        var pankuzu_list = TvFileUtil::getPankuzuList(tv_set["tv_set_id"], "set");
+        var in_cart = GAME_STATUS.user_profile.shopping_cart.isExist(tv_set["tv_set_id"], "set", tv_set["sku"]);
+
+        reloadCommon(context, [
+            "title" : tv_set["title"],
+            "subtitle" : tv_set["subtitle"],
+            "description" : tv_set["description"],
+            "expire" : "---",
+            "rating" : "---",
+            "size" : "---",
+            "duration" : "---",
+            "format" : "---",
+            "export" : "---",
+            "copyright" : tv_set["copyright"],
+            "begin_date" : tv_set["begin_date"],
+            "pankuzu_list" : pankuzu_list,
+            "trailer_file_id" : 0,
+            "m_image_id" : tv_set["m_image_id"],
+            "rating_image_us" : -1,
+            "rating_image_eu" : -1,
+            "recommend" : 0,
+            "bd_only" : 0,
+            "sku" : tv_set["sku"]
+        ]);
+
+        fire(context, tv_set["image_ids"]);
+    }
+
+    method updateStatus(context, error)
+    {
+        var tv_id = ROOT.getTvId();
+        var tv = tv_id["tv"];
+        var tv_set = tv_id["tv_set"];
+        var label;
+        var price;
+        var pace;
+        var status;
+
+        if (nil != tv)
+        {
+            if (nil != tv["tv_id"])
+            {
+                |var label, var price, var pace| = GTTV2ProjectUtil::getStatusTextLong(context, ROOT, tv, error);
+                Left::Status::Price::HBox::TextFace.text = price;
+
+                if ("" == pace)
+                {
+                    Left::Status::Status::HBox::TextFace.visible = false;
+                    Left::Status::Status::HBox::TextFaceI.visible = true;
+                    var status = "";
+
+                    if (GAME_STATUS.user_profile.shopping_cart.isExist(tv["tv_id"], "movie", tv["sku"]))
+                        var status = "IN_CART";
+
+                    else
+                        var status = "NOT_BUY";
+
+                    Left::Status::Status::HBox::TextFaceI.text = context.translate(ROOT, "GTTV2", status);
+                }
+
+                else
+                {
+                    Left::Status::Status::HBox::TextFace.visible = true;
+                    Left::Status::Status::HBox::TextFaceI.visible = false;
+                    Left::Status::Status::HBox::TextFace.text = pace;
+                }
+            }
+        }
+
+        if (nil != tv_set)
+        {
+            if (nil != tv_set["tv_set_id"])
+            {
+                Left::Status::Status::HBox::TextFace.visible = false;
+                Left::Status::Status::HBox::TextFaceI.visible = true;
+                var status = "";
+
+                if (GAME_STATUS.user_profile.shopping_cart.isExist(tv_set["tv_set_id"], "set", tv_set["sku"]))
+                    var status = "IN_CART";
+                else
+                    var status = "---";
+
+                Left::Status::Status::HBox::TextFaceI.text = context.translate(ROOT, "GTTV2", status);
+            }
+        }
+
+        Footer::Buttons.updateStatus(context);
+    }
+
+    method onDownloadBegin(context, fileinfo_hash)
+    {
+        var tv = ROOT.getTv();
+
+        if (nil == tv || nil == tv["tv_id"])
+            return;
+
+        if (tv["fileinfo_hash"] != fileinfo_hash)
+            return;
+
+        updateStatus(context);
+    }
+
+    method onDownloadProgress(context, fileinfo_hash)
+    {
+        var tv = ROOT.getTv();
+
+        if (nil == tv || nil == tv["tv_id"])
+            return;
+
+        if (tv["fileinfo_hash"] != fileinfo_hash)
+            return;
+
+        var status = Pace.getFileStatus(fileinfo_hash);
+
+        if (0 != status["code"])
+            return;
+
+        var value = status["value"];
+        var progress = 0;
+        var size = value["size"];
+
+        if (size > 0)
+            var progress = (100 * (value["size"] - value["sizeRemaining"])) / value["size"];
+
+        Left::Status::Status::HBox::TextFace.text = "%s %s".format(
+        context.translate(ROOT, "GTTV2", "PACEDOWNLOADING_LONG"),
+        context.translate(ROOT, "GTTV2", "PERCENT").build(progress));
+    }
+
+    method onDownloadComplete(context, fileinfo_hash)
+    {
+        var tv = ROOT.getTv();
+
+        if (nil == tv || nil == tv["tv_id"])
+            return;
+
+        if (tv["fileinfo_hash"] != fileinfo_hash)
+            return;
+
+        updateStatus(context);
+    }
+
+    method onError(context, fileinfo_hash, error)
+    {
+        var tv = ROOT.getTv();
+
+        if (nil == tv || nil == tv["tv_id"])
+            return;
+
+        if (tv["fileinfo_hash"] != fileinfo_hash)
+            return;
+
+        updateStatus(context, error);
+    }
+
+    module Right::ScrolledWindow::ScrollClip::space
+    {
+        SCALE_WIDGET_SDTV(title, 2.6);
+        SCALE_WIDGET_SDTV(subtitle, 2.6);
+        SCALE_WIDGET_SDTV(description, 2.6);
+    }
+
+    module Left::Thumbnail
+    {
+        attribute watcher;
+        attribute image_id_list;
+        attribute suspender;
+        attribute counter;
+
+        method onInitialize(context)
+        {
+            if (nil == self.watcher)
+                self.watcher = WatcherUtil::Create(context, onTick, 5 * 60);
+
+            self.suspender = WatcherUtil::Suspender();
+        }
+
+        method onFinalize(context)
+        {
+            if (nil != self.watcher)
+            {
+                WatcherUtil::Delete(self.watcher);
+                self.watcher = nil;
+            }
+        }
+
+        method setImageIdList(context, image_id_list)
+        {
+            ImageFaceA::ScalarInterpolator.on_effect_end = nil;
+            ImageFaceA::ScalarInterpolator.out = false;
+            ImageFaceB::ScalarInterpolator.out = true;
+            self.image_id_list = image_id_list;
+            self.counter = 0;
+
+            if (image_id_list.size > 1)
+            {
+                if (self.suspender.isSuspend())
+                    self.suspender.Resume();
+            }
+
+            else
+                self.suspender.Suspend();
+
+            if (image_id_list.size > 0)
+            {
+                var image_id = image_id_list[0];
+                changeImage(context, ImageFaceA, image_id, true);
+            }
+        }
+
+        method fire(context, out)
+        {
+            ImageFaceA::ScalarInterpolator.out = out;
+            ImageFaceB::ScalarInterpolator.out = !out;
+        }
+
+        method onTick(context)
+        {
+            if (nil == self.watcher || nil == self.counter)
+                return;
+
+            if (self.suspender.isSuspend())
+                return;
+
+            var hide_index = self.counter;
+            var show_index = ++self.counter;
+
+            ImageFaceA::ScalarInterpolator.on_effect_end = function (context) 
+            {
+                ImageFaceA::ScalarInterpolator.on_effect_end = nil;
+
+                if (0 == hide_index % 2)
+                    ImageFaceA.image_path = "";
+
+                else
+                    ImageFaceB.image_path = "";
+            };
+
+            var out = 0 == show_index % 2;
+            var image_face = out ? ImageFaceA : ImageFaceB;
+            var image_id = self.image_id_list[show_index % self.image_id_list.size];
+            changeImage(context, image_face, image_id, out);
+        }
+
+        method changeImage(context, image_face, image_id, out)
+        {
+            if (PROJECT::sModeOnline)
+            {
+                var image_path = Tv2.getImagePath(image_id);
+
+                if (Tv2.isExistImage(image_id))
+                {
+                    image_face.image_path = image_path;
+                    fire(context, out);
+                }
+
+                else
+                {
+                    var me = self;
+                    Tv2.requestImage(image_id, function (args) 
+                    {
+                        |var context, var request| = args;
+
+                        if (request.isDone())
+                        {
+                            image_face.image_path = image_path;
+                            me.fire(context, out);
+                        }
+                    });
+                }
+            }
+
+            else
+            {
+                image_face.image_path = "piece/gttv_offline/tv2_%d.img".format(image_id);
+                fire(context, out);
+            }
+        }
+    }
+
+    module Footer::Buttons
+    {
+        attribute table = [
+            "AddCart" : [true, false, false, false, false, false, false, false, false, false],
+            "ViewCart" : [false, true, false, false, false, false, false, false, false, false],
+            "Download" : [false, false, true, false, false, false, false, false, false, false],
+            "PaceDownloading" : [false, false, false, true, false, false, false, true, false, false],
+            "PaceSuspend" : [false, false, false, false, true, false, false, false, false, false],
+            "PaceNotReady" : [false, false, false, false, false, true, false, false, false, false],
+            "PaceError" : [false, false, false, false, false, false, true, false, false, false],
+            "Play" : [false, false, false, false, false, false, false, true, true, true]
+        ];
+
+        method updateStatus(context)
+        {
+            var tv_id = ROOT.getTvId();
+            var tv = tv_id["tv"];
+
+            if (nil != tv && nil != tv["tv_id"])
+            {
+                var status = GTTV2ProjectUtil::getTvStatus(context, tv);
+                var buttonsB = ["Play"];
+
+                for (var i = 0; i < buttonsB.size; ++i)
+                {
+                    CommandB[buttonsB[i]].visible = self.table[status][i + 7];
+                }
+
+                var bd_only = tv["bd_only"];
+
+                if (bd_only && Tv2.isExistMovie(tv["file_id"], bd_only))
+                {
+                    CommandB["Delete"].visible = false;
+                    CommandB["Export"].visible = 0 != tv["psp_export"];
+                }
+
+                else
+                {
+                    var exist = GTTV2ProjectUtil::isExistMovie(tv);
+                    CommandB["Delete"].visible = exist;
+                    CommandB["Export"].visible = exist && 0 != tv["psp_export"];
+                }
+
+                var buttonsC = ["AddCart", "ViewCart", "Download", "PaceDownloading", "PaceSuspend", "PaceNotReady", "PaceError"];
+
+                for (var i = 0; i < buttonsC.size; ++i)
+                {
+                    CommandC[buttonsC[i]].visible = self.table[status][i];
+                    CommandC[buttonsC[i]].insensitive = !self.table[status][i];
+                }
+            }
+
+            else
+            {
+                var buttonsB = ["Play", "Delete", "Export"];
+
+                for (var i = 0; i < buttonsB.size; ++i)
+                {
+                    CommandB[buttonsB[i]].visible = false;
+                }
+
+                var buttonsC = ["Download", "PaceDownloading", "PaceSuspend", "PaceNotReady", "PaceError"];
+
+                for (var i = 0; i < buttonsC.size; ++i)
+                {
+                    CommandC[buttonsC[i]].visible = false;
+                }
+
+                var tv_set = tv_id["tv_set"];
+                var in_cart = GAME_STATUS.user_profile.shopping_cart.isExist(tv_set["tv_set_id"], "set", tv_set["sku"]);
+                CommandC::ViewCart.visible = in_cart;
+                CommandC::AddCart.visible = !in_cart;
+            }
+        }
+
+        method onKeyPress(context, event)
+        {
+            var line_height = ROOT::Right::ScrolledWindow::ScrollClip::space::description.line_height;
+            var status = 0;
+
+            if (event.keysym == CELL_PAD_CTRL_L3_UP)
+            {
+                if (ROOT::Right::ScrolledWindow::ScrollClip.manualTargetIncY(line_height))
+                    var status = 1;
+            }
+
+            else if (event.keysym == CELL_PAD_CTRL_L3_DOWN)
+            {
+                if (ROOT::Right::ScrolledWindow::ScrollClip.manualTargetIncY(-line_height))
+                    var status = 1;
+            }
+
+            else
+            {
+                var tv = ROOT.getTv();
+
+                if (nil != tv && nil != tv["tv_id"])
+                    checkOpenPaceDebugPopup(context, tv["fileinfo_hash"]);
+            }
+
+            return status;
+        }
+
+        module CommandA
+        {
+            import __BalloonTarget__::*;
+
+            module Previous
+            {
+                method onActivate(context)
+                {
+                    CHECK_ONLINE_PROJECT();
+
+                    if (ROOT.current_index > 0)
+                    {
+                        main::sound.play("ok");
+                        --ROOT.current_index;
+                        ROOT.reload(context);
+                    }
+
+                    else
+                        main::sound.play("disable");
+                        
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Next
+            {
+                method onActivate(context)
+                {
+                    CHECK_ONLINE_PROJECT();
+
+                    if (ROOT.current_index < ROOT.tv_id_list.size - 1)
+                    {
+                        main::sound.play("ok");
+                        ++ROOT.current_index;
+                        ROOT.reload(context, true, false);
+                    }
+
+                    else
+                        main::sound.play("disable");
+                        
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+
+        module CommandB
+        {
+            import __BalloonTarget__::*;
+
+            module Play
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    var tv = ROOT.getTv();
+
+                    if (nil == tv["chapters"])
+                        tv["chapters"] = TvFileUtil::getTvChapterList(tv["tv_id"]);
+
+                    if (nil == tv["captions"])
+                        tv["captions"] = TvFileUtil::getTvCaptionList(tv["tv_id"]);
+
+                    MoviePlayerRoot.open(context, tv);
+                    ROOT.result = true;
+                    ROOT.close(context);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Export
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    var tv = ROOT.getTv();
+
+                    var size_f = (tv["duration"] * 1.5) / 8;
+                    var need_size = 500 + size_f.toInt();
+                    var text = context.translate(context.getRootWindow(), "GTTV2", "QUERY_PSP_EXPORT").build(need_size);
+
+                    if (!DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, text))
+                        return EVENTRESULT_FILTER;
+
+                    if (!GTTV2ProjectUtil::isExistMovie(tv))
+                    {
+                        main::sound.play("disable");
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    if (nil == tv["captions"])
+                        tv["captions"] = TvFileUtil::getTvCaptionList(tv["tv_id"]);
+
+                    var tmp_output_file = "/APP_CACHE/tmp.mp4";
+                    var data1 = GTTV2ProjectUtil::TranscodeObject(context, tv, tmp_output_file);
+                    var data2 = GTTV2ProjectUtil::ExportObject(tv, tmp_output_file, PROJECT::sModeOnline);
+                    UIKitProject::ProgressRoot.open(context, [data1, data2]);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Delete
+            {
+                method onActivate(context)
+                {
+                    var tv = ROOT.getTv();
+                    var bd_only = tv["bd_only"];
+
+                    if (bd_only && Tv2.isExistMovie(tv["file_id"], bd_only))
+                    {
+                        main::sound.play("ok");
+                        var text = context.translate(ROOT, "GTTV", "CANT_DELETE_THIS");
+                        DialogUtil::openConfirmDialog(context, DialogUtil::OK, text);
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    if (!GTTV2ProjectUtil::isExistMovie(tv))
+                    {
+                        main::sound.play("disable");
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    main::sound.play("ok");
+                    var text = context.translate(ROOT, "GTTV", "DO_YOU_DELETE");
+
+                    if (!DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, text))
+                        return EVENTRESULT_FILTER;
+
+                    Tv2.deleteFileInfo(tv["tv_id"]);
+                    Pace.removeFile(tv["fileinfo_hash"]);
+                    Tv2.deleteMovie(tv["file_id"]);
+                    ROOT.updateStatus(context);
+                    ROOT.setFocus(CommandC::Download);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+
+        module CommandC
+        {
+            module AddCart
+            {
+                method onActivate(context)
+                {
+                    CHECK_ONLINE_PROJECT();
+
+                    var result = 0;
+                    var tv_id = ROOT.getTvId();
+
+                    if (nil != tv_id["tv"])
+                    {
+                        var tv = tv_id["tv"];
+                        var sku = sPSNData.sku_list[tv["sku"]];
+
+                        if (nil == sku)
+                        {
+                            DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+                            context.translate(ROOT, "GTTV2", "ERROR_SUSPEND_SALE"));
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        var result = GAME_STATUS.user_profile.shopping_cart.add(tv["tv_id"], "movie", tv["sku"]);
+                    }
+
+                    else if (nil != tv_id["tv_set"])
+                    {
+                        var tv_set = tv_id["tv_set"];
+                        var sku = sPSNData.sku_list[tv_set["sku"]];
+
+                        if (nil == sku)
+                        {
+                            DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+                            context.translate(ROOT, "GTTV2", "ERROR_SUSPEND_SALE"));
+                            return EVENTRESULT_FILTER;
+                        }
+
+                        var result = GAME_STATUS.user_profile.shopping_cart.add(tv_set["tv_set_id"], "set", tv_set["sku"]);
+                    }
+                    
+                    if (GameShoppingCart::ERROR_SUCCESS == result)
+                    {
+                        Buttons.updateStatus(context);
+                        ROOT.setFocus(CommandC::ViewCart);
+                        return ViewCart.onActivate(context);
+                    }
+
+                    else
+                    {
+                        main::sound.play("ok");
+
+                        if (GameShoppingCart::ERROR_CART_FULL == result)
+                        {
+                            DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+                            context.translate(ROOT, "GTTV", "CART_IS_FULL"));
+                        }
+
+                        else
+                            ;
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module ViewCart
+            {
+                method onActivate(context)
+                {
+                    CHECK_ONLINE_PROJECT();
+
+                    main::sound.play("ok");
+
+                    if (ROOT.use_npcommerce)
+                    {
+                        NPCommerceUtil::end(context);
+                        ROOT.use_npcommerce = false;
+                    }
+
+                    |var is_buy, var is_delete| = onCart(context, ROOT);
+
+                    if (is_buy)
+                    {
+                        var tv_id = ROOT.getTvId();
+                        var offline = (nil != tv_id["tv"]) ? tv_id["tv"]["offline"] : tv_id["tv_set"]["offline"];
+
+                        if (GTTV2ProjectUtil::shouldReturn(context, offline, ROOT))
+                        {
+                            sNeedRequestTicket = true;
+                            ROOT.close(context);
+                            return EVENTRESULT_FILTER;
+                        }
+                    }
+
+                    if (is_buy || is_delete)
+                    {
+                        ROOT.updateStatus(context);
+                        ROOT.setFocus(CommandC::Exit);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Download
+            {
+                method onActivate(context)
+                {
+                    CHECK_ONLINE_PROJECT();
+
+                    main::sound.play("ok");
+                    var text = context.translate(ROOT, "GTTV", "DO_YOU_DOWNLOAD");
+
+                    if (!DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, text))
+                        return EVENTRESULT_FILTER;
+
+                    var tv = ROOT.getTv();
+                    var download_list = [tv];
+                    PaceUtil::Tv::indexAdd(context, ROOT, download_list);
+                    ROOT.updateStatus(context);
+                    ROOT.setFocus(CommandC::Exit);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module PaceDownloading
+            {
+                method onActivate(context)
+                {
+                    CHECK_ONLINE_PROJECT();
+
+                    main::sound.play("ok");
+                    var strategy = PaceUtil::Tv::OnSuspend(context, ROOT, ROOT.getTv());
+                    var result = strategy.execute();
+
+                    if (PaceUtil::Tv::OnButtonPace::CANCEL != result)
+                    {
+                        ROOT.updateStatus(context);
+                        ROOT.setFocus(CommandC::Exit);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module PaceSuspend
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    var strategy = PaceUtil::Tv::OnResume(context, ROOT, ROOT.getTv());
+                    var result = strategy.execute();
+
+                    if (PaceUtil::Tv::OnButtonPace::CANCEL != result)
+                    {
+                        ROOT.updateStatus(context);
+                        ROOT.setFocus(CommandC::Exit);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module PaceNotReady
+            {
+                method onActivate(context)
+                {
+                    CHECK_ONLINE_PROJECT();
+
+                    main::sound.play("ok");
+                    var strategy = PaceUtil::Tv::OnNotReady(context, ROOT, ROOT.getTv());
+                    var result = strategy.execute();
+
+                    if (PaceUtil::Tv::OnButtonPace::CANCEL != result)
+                    {
+                        ROOT.updateStatus(context);
+                        ROOT.setFocus(CommandC::Exit);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module PaceError
+            {
+                method onActivate(context)
+                {
+                    CHECK_ONLINE_PROJECT();
+
+                    main::sound.play("ok");
+                    var tv = ROOT.getTv();
+                    var status = Pace.getFileStatus(tv["fileinfo_hash"]);
+                    var error = status["code"];
+
+                    if (0 == error)
+                        var error = status["value"]["lastError"];
+
+                    var strategy = nil;
+
+                    if (PaceUtil::Tv::isServerConnectionFailed(status["value"]))
+                        var strategy = PaceUtil::Tv::OnWait(context, ROOT, tv, error);
+                    else
+                        var strategy = PaceUtil::Tv::OnRetry(context, ROOT, tv, error);
+
+                    var result = strategy.execute();
+
+                    if (PaceUtil::Tv::OnButtonPace::CANCEL != result)
+                    {
+                        ROOT.updateStatus(context);
+                        ROOT.setFocus(CommandC::Exit);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module TrailerPlay
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("disable");
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Exit
+            {
+                import __BalloonTarget__::*;
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    ROOT.close(context);
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+    }
+}

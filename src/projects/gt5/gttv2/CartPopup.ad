@@ -1,0 +1,266 @@
+
+
+
+
+
+module ROOT
+{
+    attribute popup;
+    attribute closed;
+    attribute result;
+    attribute cart_list;
+
+    method open(context)
+    {
+        self.result = false;
+        self.cart_list = nil;
+        self.closed = false;
+        self.popup = SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+        return self.result;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        if (nil == self.popup)
+            GTTVRoot.open(context);
+
+        else
+        {
+            FadeActor.on_effect_end = function (context) 
+            {
+                if (nil != ROOT.popup)
+                {
+                    ROOT.popup.close();
+                    ROOT.popup = nil;
+                }
+            };
+
+            FadeActor.out = true;
+        }   
+    }
+
+    method onInitialize(context)
+    {
+        Grim2Util::PUTLOG::TV::access(Grim2Util::PUTLOG::TV::CART);
+        hidden.visible = false;
+        Pane::Body::ScrollBar.adjustment = Pane::Body::ScrollBox.adjustment;
+
+        initializeList(context);
+        ROOT.setFocus(Pane::Footer::Buttons::OK);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        return EVENTRESULT_FILTER;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        ROOT.setFocus(Pane::Footer::Buttons::Cancel);
+        return EVENTRESULT_FILTER;
+    }
+
+    method initializeList(context)
+    {
+        var listbox = Pane::Body::ScrollBox::ListBox;
+        listbox.setItemCount(0);
+        self.cart_list = GAME_STATUS.user_profile.shopping_cart.getList();
+        listbox.setItemTemplate(context, hidden::Item);
+        listbox.setItemCount(self.cart_list.size);
+
+        var priced_count = 0;
+        var total_price = 0;
+
+        for (var i = 0; i < self.cart_list.size; ++i)
+        {
+            var bag = ROOT.cart_list[i];
+            var sku_id = bag["sku"];
+            var sku = sPSNData.sku_list[sku_id];
+
+            if (nil != sku)
+            {
+                ++priced_count;
+                total_price += sku["price"];
+                bag["price"] = sku["price_text"];
+            }
+
+            var item = listbox.getItemWidget(i, context);
+            item.initialize(context, i + 1, bag);
+        }
+
+        CursorUtil::setCursor(ContextMain, "wait");
+        var res = NPCommerceUtil::begin(context);
+        var total_price_str = NPCommerceUtil::getPrice(total_price);
+        NPCommerceUtil::end(context);
+        CursorUtil::setCursor(ContextMain, "cursor_chrome");
+
+        if (!res)
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+            context.translate(ROOT, "Network", "CANNOT_CONNECT_SERVER"));
+            ROOT.close(context);
+            return;
+        }
+
+        Pane::Body::Info::count.text = priced_count;
+        Pane::Body::Info::price.text = total_price_str;
+
+        if (self.cart_list.size > 0)
+            listbox.focus_index = ROOT.cart_list.size - 1;
+        else
+            listbox.focus_index = -1;
+
+        listbox.insensitive = 0 == self.cart_list.size;
+        Pane::Footer::Buttons::OK.insensitive = 0 == self.cart_list.size;
+
+        if (0 == self.cart_list.size)
+            ROOT.setFocus(Pane::Footer::Buttons::Cancel);
+    }
+
+    module Pane::Body::ScrollBox::ListBox
+    {
+        attribute skip;
+
+        method onInitialize(context)
+        {
+            self.skip = true;
+        }
+
+        method onFocusNotify(context, new_index, old_index)
+        {
+            if (self.skip)
+                self.skip = false;
+                return EVENTRESULT_FILTER;
+
+            var new_item = self.getItemWidget(new_index, context);
+
+            if (nil != new_item)
+            {
+                ROOT.setFocus(new_item);
+                new_item.Trash.active = true;
+                new_item.Trash::ImageFaceF::FaceColorInterpolator.restart();
+            }
+
+            var old_item = self.getItemWidget(old_index, context);
+
+            if (nil != old_item)
+            {
+                old_item.Trash.active = false;
+                old_item.Trash::ImageFaceF::FaceColorInterpolator.reset();
+            }
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusEnter(context, event)
+        {
+            var item = self.getItemWidget(self.focus_index, context);
+
+            if (nil != item)
+            {
+                ROOT.setFocus(item);
+                item.Trash.active = true;
+                item.Trash::ImageFaceF::FaceColorInterpolator.restart();
+            }
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+            BalloonTip.reset_value();
+
+            var item = self.getItemWidget(self.focus_index, context);
+            var bag = item.bag;
+
+            GAME_STATUS.user_profile.shopping_cart.delete(bag["tv_id"], bag["type"]);
+            ROOT.initializeList(context);
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    module Pane::Footer::Buttons
+    {
+        module OK
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                if (0 == ROOT.cart_list.size)
+                    DialogUtil::openConfirmDialog(context, DialogUtil::OK, 
+                    context.translate(ROOT, "GTTV", "CART_IS_EMPTY"));
+
+                else
+                    ROOT.result = true;
+                    ROOT.close(context);
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module Cancel
+        {
+            method onActivate(context)
+            {
+                main::sound.play("cancel");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;
+            }
+
+            method onCancel(context)
+            {
+                main::sound.play("cancel");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module hidden::Item
+    {
+        attribute bag;
+
+        method initialize(context, index, bag)
+        {
+            self.bag = bag;
+
+            if ("movie" == self.bag["type"])
+            {
+                var tv = TvFileUtil::getTv(self.bag["tv_id"]);
+                self.Info.copyright.text = tv["copyright"];
+                self.Info.title.text = pdistd::TextConv(tv["title"]);
+            }
+
+            else
+            {
+                var tv_set = TvFileUtil::getTvSet(self.bag["tv_id"]);
+                self.Info.copyright.text = tv_set["copyright"];
+                self.Info.title.text = pdistd::TextConv(tv_set["title"]);
+            }
+
+            self.Info.price.text = bag["price"];
+        }
+
+        method onFocusEnter(context, event)
+        {
+            BalloonTip.set_value(context, Trash, context.translate(ROOT, "GTTV2", "DELETE"), 0);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+    }
+}

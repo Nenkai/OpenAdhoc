@@ -1,0 +1,1099 @@
+
+
+
+
+
+module ROOT
+{
+    attribute progress_watcher;
+    attribute menu_watcher;
+    attribute menu_active = false;
+    attribute finish_movie = false;
+    attribute progress;
+    attribute download_progress;
+    attribute movie_info;
+    attribute movie_info_list;
+    attribute state = "";
+    attribute latin = false;
+    attribute closed = false;
+    attribute credit_height;
+    attribute show_credit;
+    attribute open_flag = false;
+
+    class MovieInfo : System::Object
+    {
+        attribute controlable;
+        attribute movie;
+        attribute width;
+        attribute height;
+        attribute key;
+        attribute captions1;
+        attribute captions2;
+        attribute chapters;
+        attribute audio_index;
+        attribute belt_top;
+        attribute belt_bottom;
+        attribute belt_left;
+        attribute belt_right;
+        attribute is_complete_file;
+        attribute fileinfo_hash;
+        attribute pam;
+
+        method __init__(tv, controlable)
+        {
+            self.controlable = controlable;
+            self.belt_top = tv["belt_top"];
+            self.belt_bottom = tv["belt_bottom"];
+            self.belt_left = tv["belt_left"];
+            self.belt_right = tv["belt_right"];
+            var movie_file = GTTV2ProjectUtil::getMoviePath(tv);
+            self.pam = movie_file;
+
+            self.is_complete_file = true;
+            self.fileinfo_hash = tv["fileinfo_hash"];
+
+            if (!GTTV2ProjectUtil::isExistMovie(tv))
+            {
+                self.is_complete_file = false;
+                var status = main::Pace.getFileStatus(self.fileinfo_hash);
+
+                if (status != nil && status["code"] == 0)
+                {
+                    var local_path = status["value"]["localPath"];
+                    var movie_file = local_path;
+                }
+            }
+
+            if (movie_file.endWith(".pam"))
+                var movie_file = movie_file.substr(0, movie_file.size - ".pam".size);
+
+            self.movie = movie_file;
+            self.width = tv["width"].toInt();
+            self.height = tv["height"].toInt();
+
+            if (640 == self.width && 480 == self.height)
+            {
+                self.width = 1440;
+                self.height = 1080;
+            }
+
+            self.key = tv["contents_key"];
+            self.audio_index = tv["audio"];
+            var captions1 = Array();
+            var captions2 = Array();
+
+            foreach (var caption in tv["captions"])
+            {
+                if (1 == caption["scroll"])
+                    captions1.push(caption);
+                else
+                    captions2.push(caption);
+            }
+
+            self.captions1 = CaptionUtil::Caption(captions1);
+            self.captions2 = CaptionUtil::Caption(captions2);
+            self.chapters = tv["chapters"];
+        }
+
+        method setupProgressHandler()
+        {
+            if (!self.is_complete_file)
+            {
+                var map = Map();
+                map["options"] = main::pdiext::PaceTransferOption::ProgressiveDownload;
+                map["options"] |= main::pdiext::PaceTransferOption::KeepHibernation;
+
+                main::Pace.setTransferParams(self.fileinfo_hash, map);
+                var handler = main::pdiext::MProgressiveFileHandler();
+                handler.setFileId(self.fileinfo_hash);
+                ROOT::MovieFace.setProgressiveFileHandler(handler);
+                ROOT::MovieFace.appendExt(0);
+            }
+
+            else
+            {
+                ROOT::MovieFace.setProgressiveFileHandler(nil);
+                ROOT::MovieFace.appendExt(1);
+            }
+        }
+
+        method resetProgressiveDownload()
+        {
+            if (self.fileinfo_hash == nil)
+                return;
+
+            var map = Map();
+            map["options"] = 0;
+            main::Pace.setTransferParams(self.fileinfo_hash, map);
+        }
+
+        method isSD()
+        {
+            return 1440 == self.width && 1080 == self.height;
+        }
+
+        method resetCaption()
+        {
+            self.captions1.reset();
+            self.captions2.reset();
+        }
+
+        method findPreviousChapter(current_ms)
+        {
+            if (nil == self.chapters || 0 == self.chapters.size)
+                return current_ms;
+
+            var yutori = 1000;
+            var time_ms = 0;
+
+            foreach (var chapter in self.chapters)
+            {
+                if (chapter["time"] + yutori > current_ms)
+                    break;
+
+                var time_ms = chapter["time"];
+            }
+
+            var result = min(time_ms, current_ms);
+            return result;
+        }
+
+        method findNextChapter(current_ms)
+        {
+            if (nil == self.chapters || 0 == self.chapters.size)
+                return current_ms;
+
+            var yutori = 1000;
+            var time_ms = 0;
+
+            foreach (var chapter in self.chapters)
+            {
+                var time_ms = chapter["time"];
+
+                if (time_ms > current_ms + yutori)
+                    break;
+            }
+
+            var result = max(time_ms, current_ms);
+            return result;
+        }
+
+        method max(a, b)
+        {
+            return (a > b) ? a : b;
+        }
+
+        method min(a, b)
+        {
+            return (a < b) ? a : b;
+        }
+    }
+
+    method open(context, tv)
+    {
+        self.movie_info_list = Array();
+        var movie_info = MovieInfo(tv, true);
+        self.movie_info_list.push(movie_info);
+        var title = tv["title"];
+        var copyright = tv["copyright"];
+
+        if (!PROJECT::sModeOnline)
+        {
+            var title = context.translate(ROOT, "GTTVOffline", title);
+            var copyright = context.translate(ROOT, "GTTVOffline", copyright);
+        }
+
+        self.show_credit = false;
+        MoviePlayerTransition::setInfo(pdistd::TextConv(title), copyright);
+        SequenceUtil::setupTransition(context, MoviePlayerTransition);
+        context.pageOutRootTransition();
+        context.syncOutRootTransition();
+        self.open_flag = true;
+        ignorePadEvent(true);
+    }
+
+    method openIf(context)
+    {
+        if (nil != self.open_flag && self.open_flag)
+        {
+            SequenceUtil::startPageDirect(context, ROOT);
+            context.pageInRootTransition();
+            self.open_flag = false;
+            ignorePadEvent(false);
+        }
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        if (!self.closed)
+            self.closed = true;
+
+        ActorUtil::ResetActors(MovieFace, true, true);
+        ActorUtil::ResetActors(WaterMark_SD, true, true);
+        Belt.visible = false;
+        main::pdiext::SetFrameModeLetterBox(true);
+        GTTVRoot.open(context);
+    }
+
+    method isSD(width, height)
+    {
+        return 640 == width && 480 == height;
+    }
+
+    method canControlMovie()
+    {
+        if (nil == self.movie_info)
+            return false;
+
+        return self.movie_info.controlable;
+    }
+
+    method onInitialize(context)
+    {
+        SoundUtil::BGMFadeout(1.0);
+        self.menu_active = false;
+        self.finish_movie = false;
+        self.state = "";
+        self.closed = false;
+        var language = pdistd::MLocale::getLanguage();
+        self.latin = "JP" != language && "KR" != language && "TW" != language;
+        MovieFace.visible = true;
+
+        foreach (var w in [WaterMark_HD, WaterMark_SD, Belt, Buffering, Error])
+        {
+            w.visible = false;
+        }
+
+        Logo::FadeActor.on_effect_end = nil;
+        Logo::FlashFace.flash_path = "";
+        Logo::FlashFace.stop();
+
+        ActorUtil::ResetActors(Logo, true, true);
+        Caption.tip.remove();
+        Caption.tip.action_type = 5;
+        Caption.tip.value = "";
+        Caption.tipLatin.remove();
+
+        Caption.tipLatin.action_type = 5;
+        Caption.tipLatin.value = "";
+        Caption2.TextFace.text = "";
+        Caption2.TextFaceLatin.text = "";
+
+        if (nil == self.progress_watcher)
+            self.progress_watcher = WatcherUtil::Create(context, onTickProgress, 1);
+
+        if (nil == self.menu_watcher)
+        {
+            self.menu_watcher = WatcherUtil::Create(context, onTickMenu, 60);
+            self.menu_active = false;
+        }
+
+        self.progress = main::pdistd::MProgress();
+        Menu::Progress::Bar::progress.progress = self.progress;
+        Menu::Progress::Bar::progress.raw_mode = true;
+        Menu::Progress::Bar::progress.linear_mode = true;
+        Menu::Progress::Bar::progress.decreasable = true;
+        Menu::Progress::current.text = "";
+        Menu::Progress::total.text = "";
+
+        self.download_progress = pdistd::MProgress();
+        Menu::Progress::Bar::download_progress.progress = self.download_progress;
+        Menu::Progress::Bar::download_progress.raw_mode = true;
+        Menu::Progress::Bar::download_progress.linear_mode = true;
+        Menu::Progress::Bar::download_progress.decreasable = true;
+        context.wait(1.0);
+
+        context.pushEvent(main::menu::MFunctionEvent(playMovie1st, context));
+        ActorUtil::ResetActors(Menu, true, true);
+        ROOT.setFocus(Menu::Command::Play);
+        self.credit_height = 0;
+
+        if (self.show_credit)
+        {
+            Credit::ScrollClip.scroll_mode = 2;
+            Credit::ScrollClip.space.y = 0.0;
+            Credit::ScrollClip.manual_target_y = 0.0;
+            Credit::ScrollClip.v_adjustment = menu::MAdjustment();
+            Credit::ScrollClip::space.clearChild(context);
+
+            var dummy1_count = 1;
+            var count = 71;
+            var dummy2_count = 0;
+
+            for (var i = 0; i < dummy1_count; ++i)
+            {
+                Credit::ScrollClip::space.appendChild(context, Credit::hidden::Dummy.doCopy());
+            }
+
+            for (var i = 0; i < count; ++i)
+            {
+                var item = Credit::hidden::ImageFace.doCopy();
+                item.path = "piece/credit_gt5/credit_%02d.img".format(i + 1);
+                Credit::ScrollClip::space.appendChild(context, item);
+            }
+
+            for (var i = 0; i < dummy2_count; ++i)
+            {
+                Credit::ScrollClip::space.appendChild(context, Credit::hidden::Dummy.doCopy());
+            }
+
+            self.credit_height = ((dummy1_count + dummy2_count) * 1080) + (count * Credit::hidden::ImageFace.h);
+            Credit::ScrollClip.updateGeometry();
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        Pace.removeEventHandler(self);
+        context.getUpdateContext().zoom_for_SD = true;
+
+        if (nil != self.menu_watcher)
+        {
+            WatcherUtil::Delete(self.menu_watcher);
+            self.menu_watcher = nil;
+        }
+
+        if (nil != self.progress_watcher)
+        {
+            WatcherUtil::Delete(self.progress_watcher);
+            self.progress_watcher = nil;
+        }
+
+        MovieFace.unload();
+        Logo::FlashFace.flash_path = "";
+        Credit::ScrollClip::space.clearChild(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onCancel(context)
+    {
+        if (self.menu_active)
+            hideMenu(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onDownloadProgress(context, fileinfo_hash)
+    {
+        if (nil == self.movie_info || self.movie_info.fileinfo_hash != fileinfo_hash)
+            return;
+
+        var status = main::Pace.getFileStatus(fileinfo_hash);
+
+        if (0 != status["code"])
+            return;
+
+        var value = status["value"];
+        var progress = 0;
+        var size = value["size"];
+
+        if (size > 0)
+            self.download_progress.value = (value["size"] - value["sizeRemaining"]).toFloat() / value["size"];
+
+        Error.visible = false;
+    }
+
+    method onDownloadComplete(context, fileinfo_hash)
+    {
+        if (nil == self.movie_info || self.movie_info.fileinfo_hash != fileinfo_hash)
+            return;
+
+        self.download_progress.value = 0.0;
+        Pace.removeEventHandler(self);
+    }
+
+    method onError(context, fileinfo_hash, error)
+    {
+        if (nil == self.movie_info || self.movie_info.fileinfo_hash != fileinfo_hash)
+            return;
+
+        Error.visible = true;
+    }
+
+    method onKeyPress(context, event)
+    {
+        if (event.keysym == XK_F25)
+            return EVENTRESULT_FILTER;
+
+        if (!canControlMovie())
+            return EVENTRESULT_FILTER;
+
+        var is4x3 = main::pdiext::MSystemConfiguration::is4x3();
+        var isSDZ = context.getUpdateContext().zoom_for_SD;
+
+        if (is4x3 && isSDZ)
+        {
+            switch (event.keysym)
+            {
+                case XK_KP_4:
+                case XK_KP_7:
+                case XK_KP_8:
+                case XK_KP_9:
+                case XK_KP_6:
+                case XK_KP_3:
+                case XK_KP_2:
+                case XK_KP_1:
+                case XK_F31:
+                    context.time_after_last_input = main::StaticConfig::movie_player_time_to_inactive;
+                    return EVENTRESULT_FILTER;
+
+                default:
+                    ;
+            }
+        }
+
+        if (!self.menu_active)
+        {
+            self.menu_active = true;
+            context.time_after_last_input = 0.0;
+            context.cursor_visible = true;
+            showMenu(context);
+            return EVENTRESULT_FILTER;
+        }
+
+        var movie_info = self.movie_info;
+        var fileinfo_hash;
+
+        if (movie_info != nil)
+            var fileinfo_hash = movie_info.fileinfo_hash;
+
+        checkOpenPaceDebugPopup(context, fileinfo_hash);
+        return EVENTRESULT_CONTINUE;
+    }
+
+    method pts2time(pts)
+    {
+        if (pts < 0)
+            return "";
+
+        var sec = (pts / 90) / 1000;
+        var hh = sec / 3600;
+        var mm = (sec % 3600) / 60;
+        var ss = sec % 60;
+        var time = "%02d:%02d".format(mm, ss);
+
+        if (hh > 0)
+            var time = "%d:%s".format(hh, time);
+
+        return time;
+    }
+
+    method onTickProgress(context)
+    {
+        if (self.finish_movie)
+            return;
+
+        var start = MovieFace.getStartPts();
+        var end = MovieFace.getEndPts();
+        var current = MovieFace.getCurrentPts() - start;
+        var total = end - start;
+
+        if (total > 0)
+        {
+            progress.value = current.toFloat() / total;
+            Menu::Progress::current.text = pts2time(current);
+
+            if ("" == Menu::Progress::total.text)
+            {
+                var total = end - start;
+                Menu::Progress::total.text = pts2time(total);
+            }
+        }
+
+        var ms = current / 90;
+
+        if (ms > 0)
+            setCaption(context, ms);
+
+        Buffering.visible = MovieFace.isBuffering();
+
+        if (self.show_credit && "" == self.state)
+        {
+            for (var it = Credit::ScrollClip.space.first; it != nil; it = it.next_widget)
+            {
+                it.update(context);
+            }
+
+            var real_current = current - (19 * 90000);
+            var real_total = (end - start) - ((19 + 13) * 90000);
+
+            if (real_total > 0 && real_current > 0)
+            {
+                var y = (self.credit_height * real_current) / real_total;
+                Credit::ScrollClip.manual_target_y = -y;
+            }
+        }
+    }
+
+    method beginSeek(context)
+    {
+        Credit::ScalarInterpolator.on_effect_end = function (context)
+        {
+            Credit::ScalarInterpolator.on_effect_end = nil;
+
+            for (var it = Credit::ScrollClip.space.first; it != nil; it = it.next_widget)
+            {
+                it.clear(context);
+            }
+        }
+
+        Credit::ScalarInterpolator.out = false;
+    }
+
+    method onTickMenu(context)
+    {
+        if (!self.menu_active)
+            return;
+
+        var last_input = context.time_after_last_input;
+        var inactive_sec = main::StaticConfig::movie_player_time_to_inactive;
+
+        if (last_input > inactive_sec && inactive_sec > 0)
+            hideMenu(context);
+    }
+
+    method playMovie1st(context)
+    {
+        context.cursor_visible = false;
+        context.wait(2.0);
+        playMovie(context);
+    }
+
+    method playMovie(context)
+    {
+        if (self.menu_active)
+            hideMenu(context);
+
+        self.state = "";
+        self.movie_info = self.movie_info_list.pop();
+
+        if (!self.movie_info.is_complete_file)
+        {
+            Pace.registerEventHandler(self);
+            Menu::Command::PreviousChapter.insensitive = true;
+            Menu::Command::NextChapter.insensitive = true;
+        }
+
+        else
+        {
+            Menu::Command::PreviousChapter.insensitive = false;
+            Menu::Command::NextChapter.insensitive = false;
+        }
+
+        self.movie_info.resetCaption();
+        WaterMark_HD.visible = true;
+        WaterMark_SD.visible = false;
+
+        if (self.movie_info.isSD())
+        {
+            if (main::pdiext::MSystemConfiguration::is4x3())
+            {
+                context.getUpdateContext().zoom_for_SD = false;
+                main::pdiext::SetFrameModeLetterBox(false);
+                WaterMark_HD.visible = false;
+                WaterMark_SD.visible = true;
+            }
+        }
+
+        clearCaption1(context);
+        clearCaption2(context);
+        MovieFace.unload();
+        Belt.visible = false;
+
+        Belt::ColorFace_top.h = self.movie_info.belt_top;
+        Belt::ColorFace_bottom.y = 1080 - self.movie_info.belt_bottom;
+        Belt::ColorFace_bottom.h = self.movie_info.belt_bottom;
+
+        var x = (1920 - self.movie_info.width) / 2;
+        Belt::ColorFace_left.x = x;
+        Belt::ColorFace_left.w = self.movie_info.belt_left;
+        Belt::ColorFace_right.x = (x + self.movie_info.width) - self.movie_info.belt_right;
+        Belt::ColorFace_right.w = self.movie_info.belt_right;
+        Belt.visible = true;
+
+        MovieFace.setVideoSize(self.movie_info.width, self.movie_info.height);
+        MovieFace.audio_level = SoundUtil::GetMovieVolume();
+
+        if (nil != self.movie_info.key)
+        {
+            if (self.movie_info.key.isInstanceOf(System::ByteData))
+                MovieFace.setKey(self.movie_info.key)
+
+            else
+            {
+                var key = Tv2.decodeContentsKey(self.movie_info.key);
+                MovieFace.setKey(key);
+            }
+        }
+
+        else
+            MovieFace.clearKey();
+
+        self.movie_info.setupProgressHandler();
+        MovieFace.audio_track = self.movie_info.audio_index;
+        MovieFace.load(context, self.movie_info.movie);
+        MovieFace.setAudioIndex(self.movie_info.audio_index);
+        MovieFace.audio_level = SoundUtil::GetMovieVolume();
+    }
+
+    method reset(context)
+    {
+        MovieFace.unload();
+        context.sync(1.0);
+        var pam = self.movie_info.pam;
+        var pam = pam.substr(0, pam.size - ".pam".size);
+
+        if (self.movie_info.movie != pam)
+        {
+            if (main::pdistd::Exist(self.movie_info.pam))
+            {
+                Pace.removeEventHandler(self);
+                self.movie_info.resetProgressiveDownload();
+                self.movie_info.movie = pam;
+                self.movie_info.is_complete_file = true;
+
+                Menu::Command::PreviousChapter.insensitive = false;
+                Menu::Command::NextChapter.insensitive = false;
+                self.movie_info.setupProgressHandler();
+            }
+        }
+
+        MovieFace.audio_track = self.movie_info.audio_index;
+        MovieFace.load(context, self.movie_info.movie);
+        MovieFace.setAudioIndex(self.movie_info.audio_index);
+        MovieFace.audio_level = SoundUtil::GetMovieVolume();
+        self.finish_movie = false;
+        self.movie_info.resetCaption();
+        self.state = "";
+    }
+
+    method hideMenu(context)
+    {
+        context.cursor_visible = false;
+        BalloonTip.reset_value();
+        ROOT::Menu::FadeActor.out = true;
+        self.menu_active = false;
+    }
+
+    method showMenu(context)
+    {
+        context.cursor_visible = true;
+        ROOT::Menu::FadeActor.out = false;
+        self.menu_active = true;
+    }
+
+    method clearCaption1(context)
+    {
+        Caption.FadeActor.on_effect_end = function (context) 
+        {
+            if (ROOT.latin)
+                Caption.tipLatin.value = "";
+            else
+                Caption.tip.value = "";
+        }
+
+        ActorUtil::ResetActors(ROOT::Caption, true);
+    }
+
+    method clearCaption2(context)
+    {
+        Caption2.FadeActor.on_effect_end = function (context) 
+        {
+            if (ROOT.latin)
+                Caption2.TextFaceLatin.text = "";
+            else
+                Caption2.TextFace.text = "";
+        }
+
+        ActorUtil::ResetActors(ROOT::Caption2, true);
+    }
+
+    method setCaption(context, ms)
+    {
+        if (self.movie_info.captions1.isNeedUpdate(ms))
+        {
+            var text = self.movie_info.captions1.getCaption(ms);
+
+            if (text == "")
+                clearCaption1(context);
+
+            else
+            {
+                if (self.latin)
+                    Caption.tipLatin.value = text;
+                else
+                    Caption.tip.value = text;
+
+                Caption.FadeActor.on_effect_end = nil;
+                ActorUtil::ResetActors(ROOT::Caption, false);
+            }
+        }
+
+        if (self.movie_info.captions2.isNeedUpdate(ms))
+        {
+            var text = self.movie_info.captions2.getCaption(ms);
+
+            if (text == "")
+                clearCaption2(context);
+
+            else
+            {
+                if (self.latin)
+                    Caption2.TextFaceLatin.text = text;
+                else
+                    Caption2.TextFace.text = text;
+
+                ROOT::Caption2.FadeActor.on_effect_end = nil;
+                ActorUtil::ResetActors(ROOT::Caption2, false);
+            }
+        }
+    }
+
+    module MovieFace
+    {
+        method onMovieFinish(context)
+        {
+            if (ROOT.closed)
+                return;
+
+            if (ROOT.finish_movie)
+                return;
+
+            ROOT.finish_movie = true;
+
+            if (ROOT.movie_info_list.size > 0)
+            {
+                ROOT.playMovie(context);
+                ROOT.finish_movie = false;
+            }
+
+            else
+            {
+                ROOT.finish_movie = true;
+                ROOT::Logo.visible = true;
+                ROOT.movie_info.resetProgressiveDownload();
+
+                ROOT::Logo.FadeActor.on_effect_end = function (context)
+                {
+                    if (ROOT.finish_movie)
+                        ROOT::Logo.FlashFace.flash_path = "image/gt5p/strobe/logo_gttv.swf";
+
+                    else
+                        ActorUtil::ResetActors(ROOT::Logo, true, true);
+                };
+
+                ActorUtil::ResetActors(ROOT::Logo, false);
+            }
+        }
+
+        method onMovieSeeked(context)
+        {
+            if (ROOT.finish_movie)
+            {
+                ROOT.state = "";
+                return;
+            }
+
+            if ("FF" == ROOT.state)
+                fastforward(1);
+            else if ("REW" == ROOT.state)
+                rewind(1);
+        }
+
+        method paused(context)
+        {
+            self.pause(1);
+        }
+
+        method unpaused(context)
+        {
+            self.pause(0);
+            ROOT.state = "";
+            ROOT.movie_info.resetCaption();
+        }
+
+        method rewind(sec)
+        {
+            var pts = self.getCurrentPts();
+            var current = pts;
+
+            pts -= (sec * 90) * 1000;
+            var start = self.getStartPts();
+
+            if (pts < start)
+                var pts = start;
+
+            if (current != pts)
+            {
+                if (!self.setSeekPts(pts))
+                {
+                    ROOT.state = "";
+                    ROOT.movie_info.resetCaption();
+                }
+            }
+        }
+
+        method fastforward(sec)
+        {
+            var pts = self.getCurrentPts();
+            var current = pts;
+
+            pts += (sec * 90) * 1000;
+            var end = self.getEndPts();
+
+            if (end < pts)
+                var pts = end;
+
+            if (current != pts)
+            {
+                if (!self.setSeekPts(pts))
+                    ROOT.state = "";
+            }
+        }
+    }
+
+    module Logo::FlashFace
+    {
+        method onLoopEnd(context)
+        {
+            if (ROOT.finish_movie)
+            {
+                ROOT::Logo.FlashFace.flash_path = "";
+                ROOT.close(context);
+            }
+
+            else
+                ActorUtil::ResetActors(ROOT::Logo, true, true);
+        }
+    }
+
+    module Menu::Command
+    {
+        method onFocusEnter(context, event)
+        {
+            if (ROOT.menu_active)
+            {
+                var w = event.widget;
+                BalloonTip.set_value(context, w, context.translate(ROOT, "GTTV2", w.name.upcase()), 0);
+            }
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+
+        method onKeyRelease(context, event)
+        {
+            if (("FF" == ROOT.state || "REW" == ROOT.state) && (CELL_PAD_CTRL_CROSS == event.keysym || CELL_PAD_CTRL_START == event.keysym))
+            {
+                MovieFace.unpaused(context);
+                Credit::ScalarInterpolator.on_effect_end = nil;
+                Credit::ScalarInterpolator.out = true;
+            }
+
+            return EVENTRESULT_CONTINUE;
+        }
+
+        module Play
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                if (ROOT.finish_movie)
+                {
+                    ActorUtil::ResetActors(ROOT::Logo, true);
+                    context.sync(1.0);
+                    ROOT.reset(context);
+                }
+
+                else
+                {
+                    if (MovieFace.isPause())
+                        MovieFace.unpaused(context);
+                }
+
+                ROOT.hideMenu(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module Pause
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                if (!MovieFace.isPause())
+                    MovieFace.paused(context);
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module Head
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                var diff_pts = MovieFace.getEndPts() - MovieFace.getCurrentPts();
+
+                if (diff_pts < (3 * 90000))
+                    return EVENTRESULT_FILTER;
+
+                if (ROOT.finish_movie)
+                    ROOT::Logo.visible = false;
+
+                context.sync(1.0);
+                ROOT.reset(context);
+                ROOT.clearCaption1(context);
+                ROOT.clearCaption2(context);
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module Rew
+        {
+            method onActivate(context)
+            {
+                ROOT.beginSeek(context);
+                MovieFace.paused(context);
+                clearCaption1(context);
+                clearCaption2(context);
+                MovieFace.rewind(1);
+                ROOT.state = "REW";
+
+                return EVENTRESULT_CONTINUE;
+            }
+        }
+
+        module FF
+        {
+            method onActivate(context)
+            {
+                ROOT.beginSeek(context);
+                MovieFace.paused(context);
+                MovieFace.fastforward(1);
+                ROOT.state = "FF";
+
+                return EVENTRESULT_CONTINUE;
+            }
+        }
+
+        module PreviousChapter
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                var start_pts = MovieFace.getStartPts();
+                var current_ms = (MovieFace.getCurrentPts() - start_pts) / 90;
+                var chapter = ROOT.movie_info.findPreviousChapter(current_ms);
+
+                if (chapter < current_ms)
+                {
+                    var pts = (chapter * 90) + start_pts;
+
+                    if (!MovieFace.setSeekPts(pts))
+                        ;
+
+                    else
+                        ROOT.movie_info.resetCaption();
+                }
+
+                else
+                    ;
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module NextChapter
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                var start_pts = MovieFace.getStartPts();
+                var current_ms = (MovieFace.getCurrentPts() - start_pts) / 90;
+                var chapter = ROOT.movie_info.findNextChapter(current_ms);
+
+                if (chapter > current_ms)
+                {
+                    var pts = (chapter * 90) + start_pts;
+
+                    if (!MovieFace.setSeekPts(pts))
+                        ;
+
+                    else
+                        ;
+                }
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module Exit
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                ROOT.movie_info.resetProgressiveDownload();
+                MovieFace.setAudioFadeOut(0.8);
+                ROOT.close(context);
+                main::sound.fadeOutMusic(3.0);
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module Credit::hidden
+    {
+        module Dummy
+        {
+            method update(context)
+            {
+
+            }
+
+            method clear(context)
+            {
+
+            }
+        }
+
+        module ImageFace
+        {
+            attribute path;
+
+            method update(context)
+            {
+                if (self.sy < -self.h)
+                {
+                    if ("" != self.image_path)
+                        self.image_path = "";
+                }
+
+                else if (self.sy < 1080 + 100)
+                {
+                    if ("" == self.image_path)
+                        self.image_path = path;
+                }
+            }
+
+            method clear(context)
+            {
+                if ("" != self.image_path)
+                    self.image_path = "";
+            }
+        }
+    }
+}
