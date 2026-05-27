@@ -1,0 +1,1020 @@
+
+
+
+
+
+static sWatcher = nil;
+static sGameParameter = nil;
+static sRaceParameter = main::gtengine::MRaceParameter();
+static sDemoParameter = main::gtengine::MRaceParameter();
+static sMyAccountID = nil;
+
+static sIsSpectatorMode = false;
+static sMatchingError = false;
+static sFirstSession = true;
+static sGrimEnterGame = false;
+
+function onLoad(update_context)
+{
+    var context = update_context.getRenderContext();
+    sIsSpectatorMode = false;
+    sFirstSession = true;
+    sGrimEnterGame = false;
+
+    RaceProject::setCurrentRootForNetworkEvent(RaceRoot);
+    OnlineSession.setNetworkEventCallback(context, RaceProject);
+    OnlineSession.setHeartbeatEvent(true, 60 * 1000);
+    gSequenceCondition.quick_root = PROJECT::QuickRoot;
+    PROJECT::QuickRoot::permitRace = false;
+
+    sGameParameter = main::gtengine::MGameParameter();
+    sGameParameter.deepCopy(main::RaceOperator.game_parameter);
+    sRaceParameter.deepCopy(sGameParameter.event.race_parameter);
+    initializeRace(context);
+    var success = LoadingUtil::exec(context, PROJECT::QuickRoot::on_coursein_done);
+
+    if (!success)
+    {
+        goToMenuSequence(context);
+        return;
+    }
+
+    gSequenceCondition.quick_root.open(context);
+}
+
+function onGrimLeaveGame(args)
+{
+    |var context, var request| = args;
+
+    if (request.isError())
+        return;
+
+    var res = main::Matching2.decodeResult(request);
+    sGrimEnterGame = false;
+}
+
+function onUnload(update_context)
+{
+    main::RaceOperator.checkOut();
+    main::ORG.exitCourse();
+    main::RaceOperator.destroyRace();
+    main::RaceOperator.clearResource();
+    OnlineSession.setHeartbeatEvent(false);
+    OnlineSession.clearNetworkEventCallback();
+    OnlineUtility.endSession();
+
+    if (main::Lobby.isJoinedRoom())
+        main::Lobby.leaveRoom();
+
+    OnlineUtility.finalizeLobby();
+    RaceOperator.clear();
+    sGameParameter = nil;
+    sMyAccountID = nil;
+}
+
+function leaveGrimGame()
+{
+    if (sGrimEnterGame == true)
+        main::Matching2.requestLeaveGame(sGameParameter.game_id, onGrimLeaveGame);
+}
+
+function createReplaySaveDataDescription(context)
+{
+    var root = context.getCurrentPage();
+    var cp = getPlayerCar();
+    var dp = getPlayerDriver();
+    var carname = main::gtengine::MSpecDB::getCarName(cp.getCarCode());
+    var course = main::gtengine::MSpecDB::getCourseLabel(getCurrentCourse());
+    var coursename = context.translate(root, "CourseName", course);
+
+    var sim_str = context.translate(root, "TrialSetting", dp.physics_pro ? "PhysicsPro" : "PhysicsNormal");
+    |var tire_f, var tire_r| = cp.getTireCategories();
+
+    var tire_str = (getTireString(context, tire_f) + "/") + getTireString(context, tire_r);
+    var subtitle = context.translate(root, SaveDataUtilGT5::getLocalizePage(), "REPLAY_SUBTITLE_WITHIN_128BYTES") + context.translate(root, "GameModeName", "SINGLE_RACE");
+    var description = context.translate(root, SaveDataUtilGT5::getLocalizePage(), "REPLAY_DESCRIPTION_WITHIN_1024BYTES");
+    var description = description.build(coursename, carname, sim_str, tire_str);
+
+    description += "\n" + main::GetDisplayVersionString();
+
+    return [subtitle, description];
+}
+
+function initializeRace(context)
+{
+    var gp = changeToFreeRun();
+    gp.event.race_parameter.online_on = false;
+    main::RaceOperator.game_parameter = gp;
+    RaceOperator.buildRace();
+
+    main::ORG.setBackRaceParameter(gp.event.race_parameter);
+    createDemoParameter();
+    main::RaceOperator.allocateResource();
+    gSequenceCondition.enable_restart = false;
+    gSequenceCondition.disable_end_session = true;
+}
+
+function changeToFreeRun()
+{
+    var gp = main::gtengine::MGameParameter();
+    gp.deepCopy(main::RaceOperator.game_parameter);
+    gp.event.race_parameter.race_limit_laps = 0;
+    gp.event.race_parameter.race_type = main::gtengine::RaceType::TIMEATTACK;
+    gp.event.race_parameter.start_type = main::gtengine::StartType::ROLLING;
+
+    return gp;
+}
+
+function createDemoParameter()
+{
+    sDemoParameter.deepCopy(main::ORG.getBackRaceParameter());
+    sDemoParameter.race_type = main::gtengine::RaceType::DEMO;
+    sDemoParameter.start_type = main::gtengine::StartType::ROLLING;
+    sDemoParameter.race_limit_laps = 0;
+    sDemoParameter.race_limit_minute = 0;
+    sDemoParameter.start_type = main::gtengine::StartType::DISPERSED;
+}
+
+function entryMyCar(account_id, check_state)
+{
+    if (check_state)
+    {
+        var room_state = OnlineSession.getRoomSharedState();
+
+        if (room_state == main::gtengine::RoomState::PrepareRaceCountDown)
+        {
+            sIsSpectatorMode = true;
+            return nil;
+        }
+
+        if (main::ORG.canEntryRacer() == false)
+        {
+            sIsSpectatorMode = true;
+            return nil;
+        }
+    }
+
+    sIsSpectatorMode = false;
+    var cp = main::RaceOperator.reentryAccount(account_id);
+
+    return cp;
+}
+
+function createRoom(context)
+{
+    var gp = sGameParameter;
+    var createLobbyRoomParam = nil;
+    var createLobbyRoomParam = OnlineUtil::getCreateLobbyRoomParam(sGameParameter.online_room);
+
+    main::PDINetwork.clearUserList();
+    OnlineSession.initializeRoomMemberInfo(GAME_STATUS.user_profile.garage.getRidingCar());
+    var ret = main::Lobby.createRoom(createLobbyRoomParam);
+
+    if (ret < 0)
+    {
+        OnlineUtility.endSession();
+        ErrorUtil::openDialog(context, "Failed to create room", ret);
+        return false;
+    }
+
+    var roomInfo = Map();
+    roomInfo["voiceChatActivity"] = createLobbyRoomParam["voiceChatActivity"];
+    roomInfo["comment"] = createLobbyRoomParam["comment"];
+    roomInfo["roomType"] = gtengine::RoomType::QUICK_MATCH;
+    roomInfo["eventId"] = Lobby.getCurrentRoomId();
+
+    OnlineSession.setRoomType(roomInfo["roomType"]);
+    OnlineSession.setRoomInformation(roomInfo);
+    OnlineSession.setRoomSharedState(main::gtengine::RoomState::Creating);
+}
+
+function joinRoom(context, room_id)
+{
+    main::PDINetwork.clearUserList();
+    OnlineSession.initializeRoomMemberInfo(GAME_STATUS.user_profile.garage.getRidingCar());
+    var param = Map();
+    param["roomId"] = room_id;
+    var ret = main::Lobby.joinRoom(param);
+
+    if (ret < 0)
+    {
+        OnlineUtility.endSession();
+        main::Lobby.leaveRoom();
+        ErrorUtil::openDialog(context, "Failed to join room.", ret);
+        return false;
+    }
+
+    OnlineSession.setRoomType(gtengine::RoomType::QUICK_MATCH);
+    OnlineSession.clearGameInformation();
+    var check_start = 0;
+
+    do
+    {
+        if (check_start == 0)
+        {
+            if (!OnlineSession.requestGameInformation())
+            {
+                OnlineUtility.endSession();
+                main::Lobby.leaveRoom();
+                ErrorUtil::openDialog(context, "Failed to request a game information.", ret);
+                return false;
+            }
+
+            var check_start = main::pdistd::GetSystemTimeMicroSecond() / 1000;
+        }
+
+        else
+        {
+            var now = main::pdistd::GetSystemTimeMicroSecond() / 1000;
+
+            if ((now - check_start) > (10 * 1000))
+                var check_start = 0;
+
+            yield false;
+        }
+    } while (!OnlineSession.hasValidGameInformation());
+
+    OnlineSession.setRoomSharedState(main::gtengine::RoomState::Creating);
+    return true;
+}
+
+static sSequence = nil;
+static sMatchingState = "on_load";
+static sPrevMatchingCheck = 0;
+static sJoinRoomID = nil;
+static sTopologyType = pdistd::TopologyType::Mesh;
+static sUsersList = nil;
+
+function initializeMatching(context)
+{
+    sUsersList = nil;
+    sIsSpectatorMode = false;
+    sMatchingError = false;
+    sFirstSession = true;
+    main::ORG.enableSingleOnlineRace();
+
+    sSequence = exec_matching.generator(context);
+    sWatcher = WatcherUtil::Create(context, onTick, 30);
+}
+
+function rematchingRace(context)
+{
+    main::Matching2.requestLeaveGame(sGameParameter.game_id, onGrimLeaveGame);
+    var gp = changeToFreeRun();
+    main::ORG.setBackRaceParameter(gp.event.race_parameter);
+    main::RaceOperator.startRebuildRaceSequence();
+
+    do
+    {
+        
+    } while (main::RaceOperator.checkCompleteRebuildSequence() == 0);
+
+    OnlineUtility.endSession();
+    main::Lobby.leaveRoom();
+    entryMyCar(0, false);
+    initializeMatching(context);
+    SequenceUtil::startPage(context, OnboardMeterRoot, RaceRoot);
+}
+
+function onCreateGrimGame(args)
+{
+    |var context, var request| = args;
+
+    if (request.isError())
+    {
+        sMatchingState = "error";
+        return;
+    }
+
+    var result = main::Matching2.decodeCreateGame(request);
+
+    switch (result["state"])
+    {
+        case "join":
+            sMatchingState = "matching";
+            break;
+
+        case "create":
+            sMatchingState = "host";
+            break;
+
+        default:
+            sMatchingState = "error";
+            break;
+    }
+}
+
+function setUsersList(users)
+{
+    if (users != nil)
+    {
+        PROJECT::QuickRoot::matchingNum = users.size;
+        sUsersList = users;
+    }
+
+    else
+        ;
+}
+
+function onJoinGrimGame(args)
+{
+    |var context, var request| = args;
+
+    if (request.isError())
+    {
+        sMatchingState = "error";
+        return;
+    }
+
+    var result = main::Matching2.decodeJoinGame(request);
+    sMatchingState = result["state"];
+
+    switch (sMatchingState)
+    {
+        case "matching":
+            break;
+
+        case "create":
+            setUsersList(result["users"]);
+            sTopologyType = result["network_topology"];
+            break;
+
+        case "join":
+            sJoinRoomID = result["room_id"];
+            setUsersList(result["users"]);
+            break;
+
+        case "nohost":
+            sMatchingState = "error";
+            break;
+
+        default:
+            ;
+    }
+}
+
+function onRequestEnterGrimGame(args)
+{
+    |var context, var request| = args;
+
+    if (request.isError())
+    {
+        sMatchingState = "error";
+        return;
+    }
+
+    var result = main::Matching2.decodeEnterGame(request);
+    sMatchingState = "matching";
+}
+
+function waitMatching(context)
+{
+    var loop_done = false;
+    var host_name = nil;
+    sJoinRoomID = nil;
+
+    while (loop_done == false)
+    {
+        switch (sMatchingState)
+        {
+            case "matching":
+                {
+                    var now = main::pdistd::GetSystemTimeMicroSecond() / 1000;
+
+                    if (sPrevMatchingCheck == 0 || now - sPrevMatchingCheck > 5000)
+                    {
+                        var join_req = main::Matching2.requestJoinGame(sGameParameter.game_id, onJoinGrimGame);
+                        sPrevMatchingCheck = now;
+                    }
+
+                    break;
+                }
+
+            case "create":
+                var loop_done = true;
+                break;
+
+            case "host":
+                break;
+
+            case "join":
+                {
+                    if (sJoinRoomID != nil)
+                        var loop_done = true;
+
+                    break;
+                }
+
+            case "error":
+                var loop_done = true;
+                break;
+
+            default:
+                ;
+        }
+
+        yield false;
+    }
+}
+
+function onFinishSetBand(args)
+{
+    |var context, var request| = args;
+
+    if (request.isError())
+        return;
+}
+
+function probeBandwidth(context)
+{
+    if (OnlineUtil::probeBandwidth(context))
+    {
+        var res = OnlineUtility.getProbedBandwidth();
+
+        if (res != nil)
+        {
+            |var up_bps, var down_bps| = res;
+            Grim2.requestSetBand(up_bps.toInt(), down_bps.toInt(), onFinishSetBand);
+        }
+
+        else
+            ;
+    }
+
+    else
+        ;
+}
+
+function moveToQuickForEnteringRoom(context)
+{
+    var now_freerun_running = PROJECT::QuickRoot::unsharedState == 2;
+    PROJECT::QuickRoot::unsharedState = 3;
+
+    if (now_freerun_running)
+    {
+        gSequenceCondition.quick_root.open(context);
+        yield false;
+
+        while (context.getCurrentPage().name != "QuickRoot")
+        {
+            yield false;
+        }
+    }
+
+    else
+        RaceMenuUtil::execIconAll(context, Template::RaceMenu::Item::canPress, false);
+        
+    for (var i = 0; i < 4; i++)
+    {
+        yield false;
+    }
+}
+
+function exec_matching(context)
+{
+    var isLanMode = false;
+
+    if (!OnlineUtility.beginSession(isLanMode))
+    {
+        main::sound.play("disable");
+        var root = context.getCurrentPage();
+        var text = context.translate(root, "OnlineMessage", "NOT_INITIALIZE_NETWORK");
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+        sMatchingError = true;
+
+        yield true;
+    }
+
+    yield false;
+    sMatchingState = "enter";
+    var natInfo = main::pdistd::MNetworkInterface::getNatInfo();
+    var nat_type = 0;
+
+    if (natInfo != nil)
+        var nat_type = natInfo["nat"];
+
+    var matching_num = sGameParameter.event.race_parameter.racers_max;
+
+    if (main::AppOpt.defined("matching_num"))
+        var matching_num = main::AppOpt["matching_num"].toInt();
+
+    yield false;
+
+    while (!main::ORG.inSession())
+    {
+        yield false;
+    }
+
+    var start_wait_time = main::PDINetwork.getNetworkTime();
+
+    do
+    {
+        yield false;
+        var now_wait_time = main::PDINetwork.getNetworkTime();
+
+        if ((now_wait_time - start_wait_time) > (15 * 1000))
+            break;
+    } while (1);
+
+    do
+    {
+        sPrevMatchingCheck = 0;
+        var packet_interval = 250;
+
+        var mat_req = main::Matching2.requestEnterGame(sGameParameter.game_id, matching_num, nat_type, 
+        main::PDINetwork.getMyUserId(), packet_interval, onRequestEnterGrimGame);
+
+        sGrimEnterGame = true;
+        yield false;
+        waitMatching(context);
+    } while (sMatchingState == "retry");
+
+    if (sMatchingState == "error")
+    {
+        main::sound.play("disable");
+        var root = context.getCurrentPage();
+        var text = context.translate(root, "OnlineMessage", "MATCHING_ERROR");
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+        sMatchingError = true;
+        yield true;
+    }
+
+    moveToQuickForEnteringRoom(context);
+    yield false;
+
+    if (!OnlineUtil::initializeLobby(context, true))
+    {
+        sMatchingError = true;
+        yield true;
+    }
+
+    yield false;
+    var room_id = -1;
+    var is_host = sMatchingState == "create";
+
+    if (is_host)
+    {
+        sGameParameter.online_room.topology = sTopologyType;
+        RaceOperator.game_parameter = sGameParameter;
+        RaceOperator.useRaceBuildParameter();
+        createRoom(context);
+        var room_id = main::Lobby.getCurrentRoomId();
+    }
+
+    else
+    {
+        if (sJoinRoomID != nil)
+        {
+            var room_id = sJoinRoomID;
+
+            if (joinRoom(context, room_id) == false)
+            {
+                sMatchingError = true;
+                yield true;
+            }
+        }
+
+        else
+        {
+            main::sound.play("disable");
+            var root = context.getCurrentPage();
+            var text = context.translate(root, "OnlineMessage", "NOT_JOINED");
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+            sMatchingError = true;
+            yield true;
+        }
+    }
+
+    OnlineSession.updateSpectator(true);
+    yield false;
+    var account_id = 0;
+
+    RaceOperator.setAccountOwnerInfo(account_id, PDINetwork.getClientName(), PDINetwork.getRegionName());
+    main::RaceOperator.startRebuildRaceSequence(true, is_host);
+
+    while (main::RaceOperator.checkCompleteRebuildSequence() == 0)
+    {
+        yield false;
+    }
+
+    var rebuild_result = main::RaceOperator.checkCompleteRebuildSequence();
+
+    if (rebuild_result == -1)
+    {
+        main::sound.play("disable");
+        var root = context.getCurrentPage();
+        var text = context.translate(root, "OnlineMessage", "ENTRY_FAILED");
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+        sMatchingError = true;
+        yield true;
+    }
+
+    var blob;
+    var cr_req;
+
+    if (is_host)
+    {
+        var blob = main::pdistd::MBlob(main::PDINetwork.getMyUserId());
+        var cr_req = main::Matching2.requestCreateGame(sGameParameter.game_id, room_id, onCreateGrimGame);
+    }
+
+    sIsSpectatorMode = false;
+    var cp = entryMyCar(account_id, true);
+
+    if (cp == nil)
+    {
+        if (!sIsSpectatorMode)
+        {
+            main::sound.play("disable");
+            var root = context.getCurrentPage();
+            var text = context.translate(root, "OnlineMessage", "ENTRY_FAILED");
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+            sMatchingError = true;
+            yield true;
+        }
+    }
+
+    yield false;
+
+    if (!sIsSpectatorMode)
+        OnlineSession.setSelectedCar(cp);
+
+    OnlineSession.setParameter(gtengine::SessionParameter::EntrySlotId, RaceOperator.getAccountSlotID(account_id));
+    OnlineSession.updateParameter(gtengine::SessionParameter::CommunicatorIndex, PDINetwork.getCommunicatorIndex());
+    OnlineSession.setRoomSharedState(main::gtengine::RoomState::Idle);
+
+    main::ORG.pauseRace = false;
+    main::ORG.pauseAvailable = false;
+    gSequenceCondition.quick_root.startBattleSequence(context);
+    setJoinable(false);
+
+    PROJECT::QuickRoot::unsharedState = 4;
+    PROJECT::QuickRoot::permitRace = true;
+    yield true;
+}
+
+function onTick(context)
+{
+    if (sSequence != nil)
+    {
+        var finished = sSequence();
+
+        if (finished)
+        {
+            sSequence = nil;
+
+            if (sMatchingError)
+            {
+                SequenceUtil::startSequence(context, main::GameSequence::MENU);
+                SoundUtil::BGMFadeout(1.0);
+                main::ORG.getRaceSound().start = false;
+            }
+        }
+    }
+}
+
+static sJoinableState = true;
+static sJoinableStateRequest = true;
+
+function onSetJoinable(args)
+{
+    |var context, var request| = args;
+
+    if (request.isError())
+        return;
+
+    var res = main::Matching2.decodeResult(request);
+
+    if (res == nil || res == false)
+    {
+        sJoinableStateRequest = sJoinableState;
+        return;
+    }
+
+    sJoinableState = sJoinableStateRequest;
+}
+
+function setJoinable(joinable)
+{
+    if (!main::PDINetwork.isOnline() || !main::Lobby.isJoinedRoom() || !main::ORG.isOnline())
+        return;
+
+    if (sJoinableStateRequest == joinable)
+        return;
+
+    if (main::Lobby.isRoomOwner())
+    {
+        var event_id = sGameParameter.game_id;
+        sJoinableStateRequest = joinable;
+        main::Matching2.requestSetJoinable(event_id, joinable, onSetJoinable);
+    }
+}
+
+function make_users_list()
+{
+    if (PROJECT::QuickRoot::permitRace == true)
+    {
+        var user_list = [];
+        var members = Lobby.getRoomMemberList();
+
+        foreach (var member in members)
+        {
+            var info = Map();
+
+            info["pdi_user_id"] = member["userId"];
+            info["user_id"] = member["userId"];
+            info["eligible_migration"] = 0;
+            info["user_no"] = 0;
+            info["grid_order"] = 0;
+            user_list.push(info);
+        }
+
+        sUsersList = user_list;
+    }
+}
+
+function onRoomMemberJoinedForRace(context, name, roomMemberId, teamId)
+{
+    var quick_root = gSequenceCondition.quick_root;
+
+    if (quick_root != nil)
+        PROJECT::QuickRoot.updateBoard(context, name, roomMemberId, teamId);
+
+    make_users_list();
+}
+
+method onRoomMemberLeftForRace(context, name, roomMemberId, teamId, cause)
+{
+    var quick_root = gSequenceCondition.quick_root;
+
+    if (quick_root != nil)
+        PROJECT::QuickRoot.updateBoard(context, name, roomMemberId, teamId);
+
+    make_users_list();
+}
+
+static sWatcherWaitRace = nil;
+static sCurrentState = -1;
+static sPermitStart = false;
+
+function onWaitRace(context)
+{
+    if (!main::PDINetwork.isOnline() || !main::Lobby.isJoinedRoom())
+        return;
+
+    var arg0;
+    var arg1;
+    var arg2;
+    var root = context.getCurrentPage();
+    var prev_state = sCurrentState;
+    var state = OnlineSession.getRoomSharedState(&arg0, &arg1, &arg2);
+    var state_changed = prev_state != state;
+    sCurrentState = state;
+
+    if (state_changed)
+    {
+        switch (state)
+        {
+            case main::gtengine::RoomState::Creating:
+                break;
+
+            case main::gtengine::RoomState::Idle:
+                break;
+
+            case main::gtengine::RoomState::VoteCourseCountDown:
+                {
+                    sCurrentState = prev_state;
+                    RaceRoot.quit(context);
+                    return;
+                    break;
+                }
+
+            case gtengine::RoomState::WaitingParticipantCountDown:
+                break;
+
+            case main::gtengine::RoomState::PrepareRaceCountDown:
+                {
+                    SoundUtil::BGMPlayGroup(SoundUtil::SCENE_MENU, "before_race", SoundUtil::REPEAT_OFF);
+                    sPermitStart = true;
+                    break;
+                }
+
+            default:
+                ;
+        }
+    }
+
+    if (sPermitStart == true && OnlineSession.hasTimeoutLimit())
+    {
+        var rest = OnlineSession.getRemainUntilTimeoutLimit();
+
+        if (rest <= 0)
+        {
+            if (main::ORG.is_host)
+            {
+                main::ORG.setBackRaceParameter(sRaceParameter);
+                main::ORG.restartNetworkRace(nil, 3);
+                OnlineSession.setRoomSharedState(main::gtengine::RoomState::Idle);
+
+                if (sRaceParameter.race_limit_laps == 1)
+                    setJoinable(true);
+
+                else if (sRaceParameter.race_limit_minute > 0 && sRaceParameter.race_limit_minute < 5)
+                    setJoinable(true);
+            }
+
+            OnlineSession.updateMemberState(gtengine::RoomMemberState::VoteOnSkip, false);
+            DialogUtil::sayYesConfirmDialog(context);
+
+            do
+            {
+                
+            } while (main::ORG.inSession());
+
+            WatcherUtil::Delete(PROJECT::QuickRoot::sTimeoutWatcher);
+            PROJECT::QuickRoot::sTimeoutWatcher = nil;
+
+            sPermitStart = false;
+            SequenceUtil::startPage(context, OnboardMeterRoot, RaceRoot);
+        }
+    }
+}
+
+function onPrepareRaceNotification(context)
+{
+    sCurrentState = -1;
+    sPermitStart = false;
+    sWatcherWaitRace = WatcherUtil::Create(context, onWaitRace, 30);
+}
+
+static sWatcherJoin = nil;
+
+function onRaceRootInitialize(context)
+{
+    var slot_id = main::RaceOperator.getAccountSlotID(0);
+    var target_slot_id = main::ORG.getRidingSlotID(slot_id);
+    RaceRoot.setTarget(target_slot_id, 0);
+    ORG.setCameraWindowControllerPort(0, 0);
+
+    pdistd::MGamePort::SetWheelAssignMode(pdistd::WheelAssignMode::SDK);
+    SoundUtil::RaceBGMPlayGroup("racing", false);
+    main::ORG.setReadyEntry(slot_id, true);
+    main::ORG.setCamera(main::gtengine::CameraType::WAIT_RACER);
+    main::ORG.setCameraTarget(0, target_slot_id);
+
+    if (sWatcherWaitRace != nil)
+    {
+        WatcherUtil::Delete(sWatcherWaitRace);
+        sWatcherWaitRace = nil;
+    }
+}
+
+function onGoToNextSequence(context)
+{
+    var quick_root = gSequenceCondition.quick_root;
+
+    if (quick_root != nil && main::ORG.isOnline())
+    {
+        main::ORG.setSyncManagementAtSession();
+        quick_root.open(context);
+    }
+
+    else
+        goToMenuSequence(context);
+}
+
+function onFinishRace(context, condition_satisfied, buggy_result)
+{
+    var show_result = false;
+    setJoinable(false);
+
+    if (condition_satisfied)
+    {
+        var target = main::RaceOperator.representative_slot_id;
+        gSequenceCondition.finish_result = ORG.getEnsuredCarOrder(target);
+        var show_result = true;
+
+        if (PROJECT::QuickRoot::permitRace == true)
+            OnlineSession.updateSpectator(true);
+    }
+
+    else
+        var show_result = false;
+
+    if (show_result)
+        ResultRoot.open(context, true);
+    else
+        SoundUtil::BGMFadeout(1.0);
+}
+
+function onLapCount(context, slot_id, laps, laptime, is_penalty_lap)
+{
+    var race_limit_laps = ORG.getCurrentRaceParameter().race_limit_laps;
+
+    if (race_limit_laps >= 2 && race_limit_laps - laps == 0)
+        setJoinable(true);
+}
+
+function onPlayMusicWhenComplete(context, result)
+{
+    var finish_bgm_table = [
+        main::gtengine::FinishResult::RANK_1 : "finish_1",
+        main::gtengine::FinishResult::RANK_2 : "finish_2",
+        main::gtengine::FinishResult::RANK_3 : "finish_3",
+        main::gtengine::FinishResult::RANK_4 : "finish_4",
+        main::gtengine::FinishResult::RANK_5 : "finish_5",
+        main::gtengine::FinishResult::RANK_6 : "finish_6"
+    ];
+
+    var group = finish_bgm_table.find(result);
+
+    if (group == nil)
+        var group = "finish_other";
+    else
+        var group = group[1];
+
+    SoundUtil::RaceBGMPlayGroup(group, gSequenceCondition.isDemo(), false);
+}
+
+function onComplete(context, slot_id, result, is_forced, is_target)
+{
+    if (!is_forced && !gSequenceCondition.isDemo() && is_target && main::ORG.getEntryDriverControlType(slot_id) == main::gtengine::ControlType::LOCAL)
+    {
+        var finishVisible = true;
+
+        if (is_target && main::ORG.getEntryControlType(slot_id) == main::gtengine::ControlType::LOCAL)
+            RaceRoot.playMusicWhenComplete(context, result);
+
+        RaceRoot.GoalMessage(finishVisible, false, false, false, false);
+    }
+
+    if (!is_forced)
+        ResultRoot.updateBoard(context);
+}
+
+function onPitOut(context, slot_id)
+{
+
+}
+
+function onExit(context)
+{
+    if (!RaceMenuUtil::activated())
+    {
+        main::sound.play("disable");
+        return;
+    }
+
+    if (ORG.isOnline() && !ORG.isFreeRun())
+    {
+        main::sound.play("disable");
+        var root = context.getCurrentPage();
+        var text = context.translate(root, "OnlineMessage", "YOU_CANNOT_QUIT_RACE");
+
+        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+        return;
+    }
+
+    main::sound.play("ok");
+    OnboardMeterRoot::RaceDisplayFace.toStop();
+    RaceMenuUtil::closeAction(context);
+    RaceRoot.quit(context);
+}
+
+function onPitIn(context, slot_id, stop_pit, pit_strategy)
+{
+    if (stop_pit == false)
+        return;
+    if (gSequenceCondition.is_buffer_replay_mode)
+        return;
+
+    if (main::ORG.getEntryDriverControlType(slot_id) == main::gtengine::ControlType::LOCAL)
+    {
+        var rp = ORG.getCurrentRaceParameter();
+        var enable_pitmenu = ORG.setPitMode(slot_id, true, rp.enable_pit);
+
+        if (enable_pitmenu)
+        {
+            var my_slot_id = RaceOperator.getPlayerSlot(0);
+            determinatePitWork(context, slot_id, my_slot_id == slot_id, pit_strategy);
+        }
+
+        else
+            ORG.startVehiclePitWork(slot_id, pit_strategy);
+    }
+}
+
+function onPitWorkFinish(context, slot_id)
+{
+    if (main::ORG.getEntryDriverControlType(slot_id) == main::gtengine::ControlType::LOCAL)
+        main::ORG.releasePitVehicle(slot_id);
+}
+
+function onPitStop(context, slot_id)
+{
+    
+}
