@@ -1,0 +1,1152 @@
+
+
+
+
+
+module OnlineRankingUpload
+{
+    static sRankingProgress = main::pdistd::MProgress();
+
+    function currentRaceType()
+    {
+        return gSequenceCondition.gp.event.race_parameter.race_type;
+    }
+
+    function getMyBoardID()
+    {
+        if (getPlayerSlot() >= 0)
+        {
+            var course_code = getCurrentCourse();
+            var cp = getPlayerCar();
+            var dp = getPlayerDriver();
+            var drift = 0;
+
+            if (currentRaceType() == gtengine::RaceType::DRIFTATTACK)
+                var drift = 1;
+
+            var sim = dp.physics_pro;
+            var car_code = cp.getCarCode();
+            var car_board = RankingUtil::getArcadeRankingBoardID(course_code, car_code, drift, sim);
+            var all_board = RankingUtil::getArcadeRankingBoardID(course_code, nil, drift, sim);
+
+            return [car_board, all_board];
+        }
+
+        return [0L, 0L];
+    }
+
+    function makeStatsData(controller)
+    {
+        var cp = getPlayerCar();
+        var dp = getPlayerDriver();
+        var car_code = cp.getCarCode();
+        var user_id = NP.getOnlineId();
+
+        |var tireidx_f, var tireidx_r| = cp.getTireCategories();
+        var stats = Grim2Util::Ranking::CreateRankingStats();
+        stats.car_code = car_code;
+        stats.color = cp.color;
+        stats.transmission = dp.manual;
+        stats.professional = dp.physics_pro;
+        stats.asm = dp.assist_asm;
+
+        if (main::GetVersionBranch() == "academy" && controller >= 4)
+            stats.tcs = 0;
+        else
+            stats.tcs = cp.quicktune_tcs;
+
+        if (stats.version >= 2)
+        {
+            stats.painted = (cp.getPaintColorCount() >= 1) && (cp.getPaintColor(0) >= 0);
+
+            if (stats.painted)
+                stats.color = cp.getPaintColor(0);
+
+            stats.abs = cp.ABSCorneringControlLevel;
+            stats.active_steering = dp.active_steering;
+        }
+
+        stats.front_tire = tireidx_f;
+        stats.rear_tire = tireidx_r;
+        stats.country_code = NP.getRegionName();
+
+        if (controller == nil)
+            stats.controller_type = 0;
+        else
+            stats.controller_type = controller;
+
+        var special_guest_name = main::GAME_STATUS.user_profile.option.special_guest_name;
+
+        if (special_guest_name != "")
+        {
+            stats.special_guest = true;
+            stats.special_guest_name = special_guest_name;
+        }
+
+        else
+            stats.special_guest = false;
+
+        var blob = Grim2Util::Ranking::SerializeRankingStats(stats);
+
+        return blob.getByteData();
+    }
+
+    function getStartEndTimeStr(context, event, ROOT)
+    {
+        var begin_time = event.ranking.begin_date_mtime;
+        var begin_time_str;
+
+        if (begin_time != nil)
+        {
+            var begin_time = begin_time.toLocal();
+            var begin_time_str = main::pdiext::GetDateTimeStringShort(begin_time.getBySecond());
+        }
+
+        else
+            var begin_time_str = "--";
+
+        var end_time = event.ranking.end_date_mtime;
+        var end_time_str;
+
+        if (end_time != nil)
+        {
+            var end_time = end_time.toLocal();
+            var end_time_str = main::pdiext::GetDateTimeStringShort(end_time.getBySecond());
+        }
+
+        else
+            var end_time_str = "--";
+
+        var return_text = "%s: %s - %s".format(context.translate(ROOT, "Network", "PERIOD_OF_TIME"), begin_time_str, end_time_str);
+
+        return return_text;  
+    }
+
+    function checkHDD(context, abort_ref)
+    {
+        LeaveDetectUtil::suspend(context);
+        var space = pdistd::GetDiskFreeSize("/APP_DATA");
+
+        if (space < (32 * 1024) * 1024)
+        {
+            main::sound.play("disable");
+            var need_mb = ((((32 * 1024) * 1024) - space) / (1024 * 1024)) + 1;
+            var format = context.translate(PROJECT, "Network", "RANKING_HDD_ERROR").build(need_mb);
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, format);
+            *abort_ref = true;
+        }
+
+        LeaveDetectUtil::resume(context);
+    }
+
+    function checkEndTimePreStart(context, end_date, abort, confirmed, remain_time, is_event_end)
+    {
+        LeaveDetectUtil::suspend(context);
+        var current_gmt = main::pdiext::getBetterTime();
+        var diff = current_gmt.getBySecond() - end_date.getBySecond();
+        var disp_time = end_date.toLocal();
+
+        if (diff >= -30 && is_event_end)
+        {
+            main::sound.play("disable");
+            var format = context.translate(PROJECT, "Network", "RANKING_EVENT_WAS_END");
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, format.build(main::pdiext::GetDateTimeStringShort(disp_time.getBySecond())));
+            *abort = true;
+        }
+
+        else if (diff >= 0 && !is_event_end)
+        {
+            main::sound.play("disable");
+            var format = context.translate(PROJECT, "Network", "RANKING_EVENT_UPDATE_WAS_END");
+
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, format.build(main::pdiext::GetDateTimeStringShort(disp_time.getBySecond())));
+        }
+
+        else if (diff >= (-60 * 60))
+        {
+            main::sound.play("ok");
+            var format = context.translate(PROJECT, "Network", "RANKING_EVENT_END_REMAIN_WARNING");
+
+            var result = DialogUtil::openConfirmDialog(context, DialogUtil::OK, format.build(main::pdiext::GetDateTimeStringShort(disp_time.getBySecond())));
+            *confirmed = true;
+        }
+
+        var current_gmt = main::pdiext::getBetterTime();
+        var diff = current_gmt.getBySecond() - end_date.getBySecond();
+        var time = main::pdiext::GetDateTimeStringShort(current_gmt.getBySecond());
+
+        if (diff < 0)
+            *remain_time = -diff;
+        
+        if (diff >= -30)
+        {
+            if (is_event_end)
+                *abort = true;
+        }
+
+        else
+            ;
+
+        LeaveDetectUtil::resume(context);
+    }
+
+    function checkEndTime(context, end_time, additional_time, is_event_end)
+    {
+        var current_gmt = main::pdiext::getBetterTime();
+        var diff = current_gmt.getBySecond() - end_time.getBySecond();
+        var format;
+
+        if (diff >= additional_time)
+        {
+            main::sound.play("disable");
+
+            if (is_event_end != nil)
+                var format = context.translate(PROJECT, "Network", "RANKING_EVENT_WAS_END");
+
+            else
+                var format = context.translate(PROJECT, "Network", "RANKING_EVENT_UPDATE_WAS_END");
+
+            var end_time = end_time.toLocal();
+            var result = DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, format.build(main::pdiext::GetDateTimeStringShort(end_time.getBySecond())));
+
+            return true;
+        }
+
+        return false;
+    }
+
+    function setEventRankingCashAsync(context)
+    {
+        var user_id = NP.getOnlineId();
+        var board_id = getEventBoardID(context);
+        var e;
+
+        if (sEveRank.empty())
+        {
+            Ranking2.requestRanking(board_id, user_id, function (args) 
+            {
+                |var context, var request| = args;
+
+                if (request.isError())
+                    return;
+                if (!request.isDone())
+                    return;
+
+                e; //HACK: Force variable capture
+                e = Ranking2.decodeRanking(request);
+
+                if (e == nil)
+                    return;
+
+                var map = [ : ];
+
+                map['board_id'] = e["board_id"];
+                map['user_id'] = e["user_id"];
+                map['score'] = e["score"];
+                map['stats'] = e["stats"];
+                map['create_time'] = e["create_time"];
+                map['replay_id'] = e["replay_id"];
+                map['comment'] = e["comment"];
+                map['rank'] = -1;
+
+                sEveRank = map;
+                return map;
+            });
+        }
+    }
+
+    function clearEventRankingCash(context)
+    {
+        sEveRank = [ : ];
+    }
+
+    function setupFullLapGhost()
+    {
+        if (!gSequenceCondition.is_buffer_replay_mode && 
+        gSequenceCondition.gp.event.race_parameter.ghost_type == gtengine::GhostType::FULL 
+        && PluginModule::canStartReplay())
+        {
+            var head_buf = ORG.getReplayHeaderFromWorkPath();
+            var info = gtengine::MReplayInfo();
+            var success = info.initialize(head_buf);
+            var renamed_path = ORG.replay_onelap_record_org_path;
+
+            if (ORG.replay_work_path != ORG.replay_org_path)
+                var renamed_path = ORG.replay_work_path;
+
+            else
+            {
+                var st = main::pdistd::GetFileStatus(renamed_path);
+
+                if (st["result"] == 0)
+                    pdistd::RemoveFile(renamed_path);
+
+                pdistd::RenameFile(ORG.replay_work_path, renamed_path);
+            }
+
+            ORG.replay_work_path = renamed_path;
+            RaceOperator.attachLoadGhostFile(renamed_path, 1);
+        }
+    }
+
+    function recordOnlineRankingCheck(context)
+    {
+        if (gSequenceCondition.is_buffer_replay_mode)
+            return;
+
+        var event = gSequenceCondition.gp.event;
+
+        if (event.ranking.is_local)
+            return;
+
+        LoginUtil::makeSureLogin(context);
+
+        while (!LoginUtil::isOnline())
+        {
+            var retry = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY, 
+            context.translate(PROJECT, "Network", "RANKING_LOGIN_FAILED_RETRY"), nil, 
+            context.translate(PROJECT, "Component", "Retry"));
+
+            if (retry)
+                LoginUtil::makeSureLogin(context);
+            else
+                return;
+        }
+
+        var request = main::Grim2.requestExtendSession(function (args) {});
+
+        if (!Grim2Util::__deprecated__join__(context, request))
+            return;
+
+        if (!main::Grim2.decodeResult(request))
+            return;
+
+        if (!Grim2Util::Ranking::isEnable())
+            return;
+
+        if (sRankingRequested)
+            ;
+
+        else
+        {
+            if (sRankingRequestResult == 1)
+                return;
+        }
+
+        if (event.end_date != 0)
+        {
+            if (checkEndTime(context, event.end_date_mtime, 15 * 60, true))
+                return;
+        }
+
+        if (event.ranking.end_date != 0)
+        {
+            if (checkEndTime(context, event.ranking.end_date_mtime, 60))
+                return;
+        }
+
+        main::ORG.fetchRaceDisplay();
+        var state = main::ORG.getRaceDisplayState(0);
+        var report = main::ORG.getRaceDisplayReport(0);
+        var score = nil;
+        var contoller = 0;
+        var slot_id = getPlayerSlot();
+
+        if (currentRaceType() == gtengine::RaceType::TIMEATTACK)
+        {
+            if (PluginModule::canSaveGhost())
+            {
+                var path = ORG.replay_onelap_play_org_path;
+                var buf = ORG.getReplayHeaderFromPath(path);
+
+                if (buf != nil)
+                {
+                    var info = main::gtengine::MReplayInfo();
+                    var success = info.initialize(buf);
+
+                    if (success)
+                    {
+                        var time = info.getBestTime();
+
+                        if (time != main::pdiext::MAX_LAPTIME1000)
+                            var score = time;
+
+                        var contoller = info.getControllerType();
+                    }
+                }
+            }
+        }
+
+        else if (currentRaceType() == gtengine::RaceType::DRIFTATTACK)
+        {
+            var endless = PluginModule::getEndless();
+
+            if (endless)
+            {
+                var path = ORG.replay_onelap_play_org_path;
+                var buf = ORG.getReplayHeaderFromPath(path);
+
+                if (buf != nil)
+                {
+                    var info = main::gtengine::MReplayInfo();
+                    var success = info.initialize(buf);
+
+                    if (success)
+                    {
+                        var temp_score = info.getScore();
+
+                        if (PluginModule::getBestDriftScore() >= 0 && temp_score != 0 && temp_score >= PluginModule::getBestDriftScore())
+                            var score = main::OnlineRanking::MAX_DRIFT_SCORE - temp_score;
+
+                        var contoller = info.getControllerType();
+                    }
+                }
+            }
+
+            else
+            {
+                var info = PluginModule::getReplayInfo();
+
+                if (info != nil)
+                {
+                    var temp_score = info.getScore();
+
+                    if (state.drift_best_score != 0 && temp_score >= state.drift_best_score)
+                        var score = main::OnlineRanking::MAX_DRIFT_SCORE - temp_score;
+
+                    var contoller = info.getControllerType();
+                }
+            }
+        }
+
+        else if (currentRaceType() == gtengine::RaceType::COMPETITION)
+        {
+            gSequenceCondition.gp.event.race_parameter.ghost_type != gtengine::GhostType::FULL;
+            setupFullLapGhost();
+
+            if (PluginModule::canSaveGhost())
+            {
+                var path = ORG.replay_onelap_play_org_path;
+                var buf = ORG.getReplayHeaderFromPath(path);
+
+                if (buf != nil)
+                {
+                    var info = main::gtengine::MReplayInfo();
+                    var success = info.initialize(buf);
+
+                    if (success)
+                    {
+                        var time = info.getBestTime();
+
+                        if (time != main::pdiext::MAX_LAPTIME1000)
+                            var score = time;
+
+                        var contoller = info.getControllerType();
+                    }
+                }
+            }
+        }
+
+        else
+            return;
+
+        var course_code = getCurrentCourse();
+        var cp = getPlayerCar();
+        var dp = getPlayerDriver();
+
+        if (score != nil)
+        {
+            if (!event.ranking.is_local)
+            {
+                var event_cache = sEveRank;
+
+                if (!event_cache.empty() && score >= event_cache['score'])
+                    return;
+            }
+
+            recordOnlineRanking(context, course_code, cp, dp, score, contoller);
+        }
+    }
+
+    function recordOnlineRanking(context, course_code, car_parameter, driver_parameter, score, contoller)
+    {
+        var comment = "";
+        var retry = false;
+
+        do
+        {
+            if (main::PDINetwork.isOnline() && LoginUtil::isPatchExist())
+            {
+                DialogUtil::openConfirmDialog(context, 2, context.translate(PROJECT, "Network", "RANKING_UPDATE_SERVER_ERROR"));
+                return;
+            }
+
+            sRankingProgress.value = 0.0;
+            DialogUtil::setProgress(context, sRankingProgress);
+            DialogUtil::setProgressOKButton(context);
+
+            var res = DialogUtil::openProgressDialog(context, context.translate(PROJECT, "Network", "RANKING_UPDATE"), 
+            nil, nil, _recordOnlineRanking, [course_code, car_parameter, driver_parameter, score, comment, retry, contoller]);
+
+            if (res.isInstanceOf(Array))
+            {
+                if (main::PDINetwork.isOnline())
+                {
+                    var extend_session = false;
+                    var request = main::Grim2.requestExtendSession(function (args) {});
+
+                    if (Grim2Util::__deprecated__join__(context, request))
+                        var extend_session = main::Grim2.decodeResult(request) == 1;
+
+                    if (!extend_session)
+                    {
+                        DialogUtil::openConfirmDialog(context, 2, context.translate(PROJECT, "Network", "RANKING_UPDATE_SERVER_ERROR"));
+                        return;
+                    }
+                }
+
+                if (res.size == 6)
+                {
+                    var retry = !res[0];
+                    var car_error = res[2];
+                    var car_replay_error = res[3];
+                    var all_error = res[4];
+                    var all_replay_error = res[5];
+
+                    if (car_error == 0 && all_error == 0)
+                    {
+                        var retry = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY, 
+                        context.translate(PROJECT, "Network", "RANKING_REPLAY_UPLOAD_FAILED_AND_RETRY").build(car_replay_error, all_replay_error), 
+                        nil, context.translate(PROJECT, "Component", "Retry"));
+                    }
+
+                    else
+                    {
+                        var retry = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY, 
+                        context.translate(PROJECT, "Network", "RANKING_UPDATE_FAILED_AND_RETRY").build(car_error, car_replay_error, all_error, all_replay_error), 
+                        nil, context.translate(PROJECT, "Component", "Retry"));
+                    }
+                }
+
+                else
+                {
+                    var retry = !res[0];
+                    var eve_error = res[2];
+                    var eve_replay_error = res[3];
+
+                    if (eve_error == 0)
+                    {
+                        var retry = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY, 
+                        context.translate(PROJECT, "Network", "RANKING_EVENT_REPLAY_UPLOAD_FAILED_AND_RETRY").build(eve_replay_error), 
+                        nil, context.translate(PROJECT, "Component", "Retry"));
+                    }
+
+                    else
+                    {
+                        var retry = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY, 
+                        context.translate(PROJECT, "Network", "RANKING_EVENT_UPDATE_FAILED_AND_RETRY").build(eve_error, eve_replay_error), 
+                        nil, context.translate(PROJECT, "Component", "Retry"));
+                    }
+                }
+            }
+
+            else
+                var retry = false;
+
+            if (retry)
+                LoginUtil::makeSureLoginWithExtendSessionError(context);
+        } while (retry);
+    }
+
+    function _recordOnlineRanking(context, args)
+    {
+        |var course_code, var car_parameter, var driver_parameter, var score, var comment, var retry, var contoller| = args;
+
+        var user_id = NP.getOnlineId();
+        var progress = DialogUtil::getProgress(context);
+        var stats_bytedata = makeStatsData(contoller);
+        progress.value = 1.0 / 5.0;
+
+        return recoredOnlineEventRanking(context, user_id, score, comment, stats_bytedata, progress, retry);
+    }
+
+    function getEventBoardID(context)
+    {
+        var eve_board_id = gSequenceCondition.gp.event.ranking.board_id;
+
+        if (eve_board_id == 0)
+            return EVENTRESULT_CONTINUE;
+
+        if (gSequenceCondition.gp.event.ranking.registration > 0)
+            eve_board_id += GAME_STATUS.user_profile.ranking_registration;
+
+        return eve_board_id;
+    }
+
+    static sRegistrationValue = nil;
+
+    function setRankingBoardRegistration(context, registration)
+    {
+        var change_registration = false;
+
+        if (sRegistrationValue == nil || registration != sRegistrationValue)
+        {
+            var change_registration = true;
+            sRegistrationValue = registration;
+        }
+
+        if (GAME_STATUS.user_profile.ranking_registration == 0 || change_registration)
+        {
+            var request = UserProfile2.requestSpecialStatus(registration, function (args) {});
+
+            if (Grim2Util::__deprecated__join__(context, request))
+            {
+                var res = UserProfile2.decodeResult(request);
+
+                if (res > 0)
+                {
+                    GAME_STATUS.user_profile.ranking_registration = res;
+                    return true;
+                }
+
+                else
+                {
+                    GAME_STATUS.user_profile.ranking_registration = 0;
+                    return false;
+                }
+            }
+
+            else
+            {
+                GAME_STATUS.user_profile.ranking_registration = 0;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    function recoredOnlineEventRanking(context, user_id, time, comment, stats_bytedata, progress, retry)
+    {
+        var eve_rank_error = 0;
+        var eve_rank_update = false;
+        var my_eve_rank = -1;
+        var event = gSequenceCondition.gp.event;
+        var eve_board_id = gSequenceCondition.gp.event.ranking.board_id;
+
+        if (eve_board_id == 0)
+            return [true, true];
+
+        var eve_board_id = getEventBoardID(context);
+        var myEve = RankingUtil::getMyRanking(context, eve_board_id);
+        var regulation = event.regulation;
+
+        if (regulation.limit_pp > 0.0)
+        {
+            var cp = getPlayerCar();
+
+            if (cp == nil)
+                return [true, true];
+
+            cp.beginInfo();
+            var pp = cp.getGTPerformanceIndex();
+            cp.endInfo();
+
+            if (!PerformancePointUtil::checkOK(pp, regulation.limit_pp))
+            {
+                var ep = PerformancePointUtil::getValue(regulation.limit_pp);
+                var ec = PerformancePointUtil::getValue(pp);
+                var strlog = "EP=%d:EC=%d:EA=%s:EB=%d".format(ep, ec, user_id, eve_board_id);
+                main::Grim2.requestPutLog(strlog);
+
+                return [true, true];
+            }
+        }
+
+        if (myEve.empty() || time < myEve['score'])
+        {
+            var eve_rank_error = -1;
+            var request = main::Ranking2.requestUpdateRanking(eve_board_id, time, comment, stats_bytedata, function (args) {});
+
+            if (Grim2Util::__deprecated__join__(context, request))
+            {
+                if (main::Ranking2.decodeResult(request))
+                    var eve_rank_error = 0;
+            }
+
+            if (eve_rank_error == 0)
+            {
+                var eve_rank_update = true;
+                var my_eve_rank = -1;
+                var request1 = main::Ranking2.requestCalcRanking(eve_board_id, user_id, function (args) {});
+
+                if (Grim2Util::__deprecated__join__(context, request1))
+                    var my_eve_rank = main::Ranking2.decodeResult(request1);
+
+                if (my_eve_rank == nil || my_eve_rank == -1)
+                    var eve_rank_error = -1;
+            }
+
+            if (myEve.empty() && eve_rank_error == main::pdiext::GrimError::GRIM_ERROR_FAILED_RESULT)
+                var eve_rank_error = 0;
+        }
+
+        progress.value = 3.0 / 5.0;
+        var is_replay_upload_rank = false;
+        var everank_replay_upload_error = 0;
+        var ranking = event.ranking;
+
+        if (my_eve_rank <= ranking.replay_rank_limit && my_eve_rank != -1)
+            var is_replay_upload_rank = true;
+
+        else
+        {
+            if (retry && !myEve.empty() && myEve["rank"] <= ranking.replay_rank_limit)
+                var is_replay_upload_rank = true;
+        }
+
+        if (ranking.replay_rank_limit < 0)
+            var is_replay_upload_rank = true;
+
+        if ((eve_rank_error == 0 && is_replay_upload_rank && my_eve_rank != -1) || (retry && is_replay_upload_rank))
+            var everank_replay_upload_error = uploadReplay(context, eve_board_id, user_id, time);
+
+        progress.value = 5.0 / 5.0;
+
+        if (eve_rank_update)
+            RankingUtil::invalidateRankingCache(eve_board_id);
+
+        if (eve_rank_error != 0 || everank_replay_upload_error != 0)
+        {
+            return [false, true, eve_rank_error, everank_replay_upload_error];
+        }
+
+        if (eve_rank_update)
+        {
+            sEveRank['score'] = time;
+
+            if (my_eve_rank == 1)
+            {
+                DialogUtil::setProgressMessage(context, context.translate(PROJECT, "Network", "RANKING_UPDATE_DONE_EVENT_FIRST"));
+            }
+
+            else
+            {
+                var position_event = OrdinalUtil::getOrdinalNumber(context, PROJECT, my_eve_rank);
+                DialogUtil::setProgressMessage(context, context.translate(PROJECT, "Network", "RANKING_UPDATE_DONE_EVENT").build(position_event));
+            }
+
+            return true;
+        }
+
+        return [true, true];
+    }
+
+    function uploadReplay(context, board_id, user_id, time)
+    {
+        var replay_ok = false;
+        var info;
+        var path;
+
+        if (currentRaceType() == gtengine::RaceType::DRIFTATTACK)
+        {
+            if (PluginModule.defined("getEndless"))
+            {
+                var endless = PluginModule::getEndless();
+
+                if (endless && PluginModule::canSaveGhost())
+                {
+                    var replay_ok = true;
+                    var path = ORG.replay_onelap_play_org_path;
+                    var buf = ORG.getReplayHeaderFromPath(path);
+                    var info = main::gtengine::MReplayInfo();
+                    info.initialize(buf);
+                }
+
+                else if (PluginModule::canSaveReplay())
+                {
+                    var replay_ok = true;
+                    var info = PluginModule::getReplayInfo();
+                    var path = ORG.replay_work_path;
+                }
+            }
+        }
+
+        if (currentRaceType() == gtengine::RaceType::TIMEATTACK && PluginModule::canSaveGhost())
+        {
+            var replay_ok = true;
+            var path = ORG.replay_onelap_play_org_path;
+            var tmpbuf = ORG.getReplayHeaderFromPath(path);
+            var info = main::gtengine::MReplayInfo();
+            info.initialize(tmpbuf);
+        }
+
+        if (currentRaceType() == gtengine::RaceType::COMPETITION && PluginModule::canSaveGhost())
+        {
+            var replay_ok = true;
+            var path = ORG.replay_onelap_play_org_path;
+            var buf = ORG.getReplayHeaderFromPath(path);
+            var info = main::gtengine::MReplayInfo();
+            info.initialize(buf);
+        }
+
+        if (replay_ok)
+        {
+            if (currentRaceType() == gtengine::RaceType::TIMEATTACK && time != info.getBestTime())
+            {
+                var best_time_str = main::pdiext::GetRaceTimeString(time);
+                var repl_time_str = main::pdiext::GetRaceTimeString(info.getBestTime());
+                var strlog = "ET=%s:ER=%s:EB=%d:SN=%s".format(best_time_str, repl_time_str, board_id, user_id);
+                main::Grim2.requestPutLog(strlog);
+
+                return -3;
+            }
+
+            var fst = main::pdistd::GetFileStatus(path);
+
+            if (fst["size"] > (5 * 1024) * 1024)
+                return EVENTRESULT_CONTINUE;
+
+            var st = pdistd::ReadFile(path, true);
+            var buf = st["buffer"];
+            var buf = pdistd::Deflate(buf, true);
+            var buf = pdistd::MCipher::encrypt(buf, true);
+
+            var error = -1;
+            var request = main::Replay2.requestUpdateReplay(board_id, buf, function (args) {});
+
+            if (Grim2Util::__deprecated__join__(context, request))
+            {
+                if (main::Replay2.decodeResult(request))
+                    var error = 0;
+            }
+
+            return error;
+        }
+
+        else
+            return -1;
+    }
+
+    static sRankingRequested = false;
+    static sRankingRequestResult = -1;
+    static sRankingRequestResultCar = -1;
+    static sRankingRequestResultAll = -1;
+    static sRankingRequestResultEve = -1;
+
+    static sCarRank = [ : ];
+    static sAllRank = [ : ];
+    static sEveRank = [ : ];
+    static sTopRank = [];
+
+    function checkTempOnlineRank(context, slot_id, laptime)
+    {
+        if (!LoginUtil::isOnline())
+            return;
+
+        if (!Grim2Util::Ranking::isEnable())
+            return;
+
+        if (main::PDINetwork.isOnline() && LoginUtil::isPatchExist())
+            return;
+
+        if (slot_id == getPlayerSlot())
+        {
+            var event = gSequenceCondition.gp.event;
+
+            if (!event.ranking.is_local && event.ranking.board_id != 0)
+            {
+                var event_cache = sEveRank;
+
+                if (!event_cache.empty() && laptime > event_cache['score'])
+                    return;
+
+                if (laptime <= main::ORG.getFastestLapTime(slot_id))
+                {
+                    var request1 = main::Ranking2.requestCalcTemporaryRanking(getEventBoardID(context), laptime, function (args) 
+                    {
+                        |var context, var request| = args;
+
+                        if (request.isDone())
+                        {
+                            var rank = main::Ranking2.decodeResult(request);
+                            RaceRoot::onTempRankingUpdate(context, 0, 0, rank);
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    function updateOnlineRankRequest(context, slot_id, laptime)
+    {
+        if (!LoginUtil::isOnline())
+            return;
+
+        if (slot_id == getPlayerSlot())
+        {
+            var event = gSequenceCondition.gp.event;
+
+            if (!event.ranking.is_local && event.ranking.board_id != 0)
+            {
+                var event_cache = sEveRank;
+
+                if (!event_cache.empty() && laptime > event_cache['score'])
+                    return;
+
+                if (laptime <= main::ORG.getFastestLapTime(slot_id))
+                {
+                    if (PluginModule::canSaveGhost())
+                    {
+                        var header = ORG.getReplayHeaderFromGhostPath();
+                        var info = gtengine::MReplayInfo();
+                        var success = info.initialize(header);
+
+                        if (success)
+                        {
+                            var time = info.getBestTime();
+
+                            if (time != laptime)
+                                ;
+
+                            var stats = makeStatsData(info.getControllerType());
+                            var path = ORG.getReplayHeaderFromGhostPath();
+                            var st = pdistd::ReadFile(path, true);
+                            var buf = st["buffer"];
+                            var buf = pdistd::Deflate(buf);
+                            var buf = pdistd::MCipher::encrypt(buf);
+
+                            var user_id = NP.getOnlineId();
+
+                            sRankingRequested = true;
+                            sRankingRequestResult = -1;
+                            sRankingRequestResultCar = -1;
+                            sRankingRequestResultAll = -1;
+                            sRankingRequestResultEve = -1;
+
+                            main::Grim.rankingUpdateRequest(laptime, 0, 0, getEventBoardID(context), 
+                            user_id, event.ranking.replay_rank_limit, stats, buf);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    class RankingCheckBase : System::Object
+    {
+        attribute ROOT;
+        attribute progress = main::pdistd::MProgress();
+        attribute aborted;
+        attribute canceling;
+        attribute complete;
+        attribute watcher;
+        attribute success;
+        attribute ignore_progress;
+        attribute auto_next = false;
+        attribute args;
+        attribute return_val;
+        attribute appear_count = 3;
+
+        method __init__(ROOT)
+        {
+            self.ROOT = ROOT;
+        }
+
+        method start(args)
+        {
+
+        }
+
+        method check()
+        {
+
+        }
+
+        method begin_message()
+        {
+
+        }
+
+        method success_message()
+        {
+
+        }
+
+        method failed_message()
+        {
+
+        }
+
+        method error_message()
+        {
+
+        }
+
+        method closeWatcher()
+        {
+            if (self.watcher != nil)
+            {
+                WatcherUtil::Delete(self.watcher);
+                self.watcher = nil;
+            }
+        }
+
+        method OnProgress(context)
+        {
+            if (self.ignore_progress)
+                return;
+
+            var end = false;
+            var val = check();
+
+            if (self.appear_count > 0)
+            {
+                self.appear_count--;
+
+                if (self.appear_count <= 0)
+                    DialogUtil::appearProgressDialog(context);
+            }
+
+            if (val >= 0)
+            {
+                self.progress.value = val.toFloat() * 0.01;
+                DialogUtil::setRemainSecond(context, self.progress.getRemainSecond());
+
+                if (val == 100)
+                    self.complete = true;
+                    var end = true;
+
+                if (self.aborted)
+                {
+                    self.complete = false;
+                    var end = true;
+                }
+            }
+
+            else
+            {
+                if (!self.canceling)
+                {
+                    self.ignore_progress = true;
+                    var text = context.translate(self.ROOT, "Network", error_message());
+                    var text = text.build(val);
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+                    var end = true;
+                }
+            }
+
+            if (end)
+            {
+                if (!self.canceling)
+                {
+                    self.ignore_progress = true;
+                    DialogUtil::setProgressCancelCB(context, nil);
+                    context.leaveEventLoop();
+                }
+            }
+        }
+
+        method OnCancel(context)
+        {
+            if (self.appear_count > 0)
+            {
+                self.appear_count = 0;
+                DialogUtil::appearProgressDialog(context);
+            }
+
+            self.canceling = true;
+            var text = context.translate(self.ROOT, "Network", "DO_YOU_ABORT_RANKING");
+            var res = DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, text);
+
+            if (res)
+                self.aborted = true;
+
+            self.canceling = false;
+        }
+
+        method executeImpl(context, args)
+        {
+            self.complete = false;
+            self.args = args;
+            start(args);
+            self.watcher = WatcherUtil::Create(context, OnProgress, 60);
+            context.enterEventLoop();
+            closeWatcher();
+
+            if (self.aborted)
+                self.complete = false;
+
+            return [self.complete, self.complete && self.auto_next, self.return_val];
+        }
+
+        method execute(context, cancelable, args)
+        {
+            self.ignore_progress = false;
+            self.progress.value = 0.0;
+            DialogUtil::setProgress(context, self.progress);
+            self.aborted = false;
+            self.canceling = false;
+
+            if (cancelable)
+                DialogUtil::setProgressCancelCB(context, OnCancel);
+
+            else
+                DialogUtil::setProgressCancelCB(context, nil);
+
+            var res = DialogUtil::openProgressDialog(context, 
+            context.translate(self.ROOT, "Network", begin_message()), 
+            context.translate(self.ROOT, "Network", success_message()), 
+            context.translate(self.ROOT, "Network", failed_message()), 
+            executeImpl, args, nil, true);
+
+            self.success = res;
+            return self.success;
+        }
+    }
+
+    class getRankingDataForDispayAsync : RankingCheckBase
+    {
+        method start(args)
+        {
+            self.auto_next = true;
+            |var car_board, var all_board, var eve_board, var user_id| = self.args;
+
+            main::Grim.dispRankingRequest(car_board.toLong(), all_board.toLong(), eve_board.toLong(), user_id);
+        }
+
+        method check()
+        {
+            var ret = main::Grim.dispRankingRequestCheck(self.aborted);
+
+            if (!ret[0])
+                return EVENTRESULT_CONTINUE;
+            else    
+            {
+                self.return_val = ret;
+                return 100;
+            }    
+        }
+
+        method begin_message()
+        {
+            return "RANKING_UPDATE";
+        }
+
+        method success_message()
+        {
+            return "DOWNLOAD_COPLETED";
+        }
+
+        method failed_message()
+        {
+            return "DOWNLOAD_FAILED";
+        }
+
+        method error_message()
+        {
+            return "DOWNLOAD_ERROR";
+        }
+    }
+}
