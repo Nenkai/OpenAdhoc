@@ -1,0 +1,443 @@
+
+
+
+
+
+module ROOT
+{
+    hidden.visible = false;
+    attribute sRP;
+    attribute sModal_page;
+    attribute sAborted;
+    attribute sReturn;
+
+    method open(context, rp)
+    {
+        self.sRP = gtengine::MRaceParameter();
+        self.sRP.deepCopy(rp);
+        self.sReturn = nil;
+        self.FadeActor.out = true;
+        self.FadeActor.warp();
+
+        self.sModal_page = SequenceUtil::ModalPage(context, ROOT);
+        self.sModal_page.open();
+        return self.sReturn;
+    }
+
+    method close(context)
+    {
+        self.setFocus(nil);
+        self.FadeActor.out = true;
+        context.sync(0.25);
+
+        if (self.sModal_page != nil)
+        {
+            self.sModal_page.close();
+            self.sModal_page = nil;
+        }
+    }
+
+    method abort(context)
+    {
+        self.close(context);
+        self.sReturn = nil;
+    }
+
+    method onInitialize(context)
+    {
+        var course_info = CourseData::getCourseInfo(RaceProject::getCurrentCourse());
+        var snow_situation = course_info.rain_situation && course_info.celsius_base0 < 0;
+        var time_changeable = course_info.basetime_min < course_info.basetime_max;
+        var weather_changeable = course_info.rain_situation || snow_situation;
+
+        if (self.sRP.decisive_weather == gtengine::DecisiveWeather::RAINY 
+        || self.sRP.decisive_weather == gtengine::DecisiveWeather::SNOWY 
+        || self.sRP.decisive_weather == gtengine::DecisiveWeather::SUNNY)
+        {
+            var weather_changeable = false;
+        }
+
+        var cp = getPlayerCar();
+        var is_racing_kart = gtengine::MSpecDB::checkGenericFlag("is_racing_kart", cp.getCarCode());
+
+        if (is_racing_kart)
+            var weather_changeable = false;
+
+        var min = (course_info.basetime_min / 60) / 10;
+        var max = (course_info.basetime_max / 60) / 10;
+
+        {
+            var slider = Pane::ScrolledWindow::ScrollClip::space::Time::BaseTime::slider;
+            slider.range = [min, max];
+
+            slider.format_function = function (value, scale, range, format, zero_text) 
+            {
+                var v = value.toInt() * 10;
+                var minute = v % 60;
+                var hour = v / 60;
+
+                if (24 <= hour)
+                    hour -= 24;
+
+                return "%d:%02d".format(hour, minute);
+            };
+
+            slider.setup(context, 10, nil, "", true, 4);
+            var hour = self.sRP.datetime.hour;
+            var _24h_sec = 24 * 3600;
+
+            if (_24h_sec <= course_info.basetime_max)
+            {
+                var datetime_sec = (self.sRP.datetime.hour * 3600) + (self.sRP.datetime.minute * 60);
+
+                if (datetime_sec < course_info.basetime_min)
+                    hour += 24;
+            }
+
+            slider.index = (hour * 6) + (self.sRP.datetime.minute / 10);
+            slider.reflect(context);
+            slider.insensitive = !time_changeable;
+        }
+
+        {
+            var slider = Pane::ScrolledWindow::ScrollClip::space::Time::TimeScale::slider;
+            slider.range = [1, 60];
+            slider.setup(context, 1, nil, "", true, 2);
+            slider.index = self.sRP.time_progress_speed;
+            slider.reflect(context);
+            slider.insensitive = !time_changeable;
+        }
+
+        {
+            var slider = Pane::ScrolledWindow::ScrollClip::space::Weather::Probability::slider;
+            slider.range = [0, 4];
+            slider.setup(context, 25, nil, nil, true, 1);
+
+            slider.format_function = function (value, scale, range, format, zero_text) 
+            {
+                return context.translate(ROOT, "Unit", "PERCENT").build(value * scale);
+            }
+
+            var value0 = self.sRP.weather_value0 * 10.0;
+            var index = 0;
+
+            if (value0 > 0.0)
+                var index = (value0 + 0.4).toInt();
+
+            if (value0 < 0.0)
+                var index = (value0 - 0.4).toInt();
+
+            switch (index)
+            {
+                case 10:
+                case 9:
+                case 8:
+                case 7:
+                case 6:
+                    slider.index = 0;
+                    break;
+
+                case 5:
+                case 4:
+                case 3:
+                case 2:
+                case 1:
+                    slider.index = 1;
+                    break;
+
+                case 0:
+                    slider.index = 2;
+                    break;
+
+                case -1:
+                case -2:
+                case -3:
+                case -4:
+                case -5:
+                    slider.index = 3;
+                    break;
+
+                case -6:
+                case -7:
+                case -8:
+                case -9:
+                case -10:
+                    slider.index = 4;
+                    break;
+
+                default:
+                    ;
+            }
+
+            slider.reflect(context);
+            slider.insensitive = !weather_changeable;
+        }
+
+        {
+            var slider = Pane::ScrolledWindow::ScrollClip::space::Weather::WeatherAccel::slider;
+            slider.range = [0, 10];
+            slider.setup(context, 1, nil, "", true, 1);
+
+            if (self.sRP.weather_accel100 >= 100)
+                slider.index = self.sRP.weather_accel100 / 100;
+            else
+                slider.index = 0;
+
+            slider.reflect(context);
+            slider.insensitive = !weather_changeable;
+        }
+
+        {
+            var slider = Pane::ScrolledWindow::ScrollClip::space::Weather2::InitialRetention::slider;
+            slider.range = [0, 10];
+            slider.setup(context, 10, nil, nil, true, 1);
+
+            slider.format_function = function (value, scale, range, format, zero_text) 
+            {
+                return context.translate(ROOT, "Unit", "PERCENT").build(value * scale);
+            };
+
+            slider.index = self.sRP.initial_retention10;
+            slider.reflect(context);
+            slider.insensitive = !weather_changeable || snow_situation;
+        }
+
+        OptionMenuUtil::initialize(context, self, Pane::ScrolledWindow::ScrollClip::space::Weather2::LowMuType::OptionMenu, 
+        hidden::Item, ["LOW_MU_TYPE_MODERATE", "LOW_MU_TYPE_REAL"], "TrialSetting");
+
+        Pane::ScrolledWindow::ScrollClip::space::Weather2::LowMuType::OptionMenu.setIndex(
+        context, 
+        (self.sRP.low_mu_type == gtengine::LowMuType::MODERATE) ? 0 : 1);
+
+        HDToolTip::tip.remove();
+    }
+
+    method onFinalize(context)
+    {
+        OptionMenuUtil::finalize(context, 
+        Pane::ScrolledWindow::ScrollClip::space::Weather::Weather::OptionMenu);
+
+        OptionMenuUtil::finalize(context, 
+        Pane::ScrolledWindow::ScrollClip::space::Weather2::LowMuType::OptionMenu);
+    }
+
+    method onCancel(context)
+    {
+        self.setFocus(Pane::Button::CancelOK::Cancel);
+        return EVENTRESULT_FILTER;
+    }
+
+    method apply(context)
+    {
+        {
+            var minutes = Pane::ScrolledWindow::ScrollClip::space::Time::BaseTime::slider.index * 10;
+            var time = pdistd::MTime();
+
+            time.minute = minutes % 60;
+            var hour = (minutes - time.minute) / 60;
+
+            if (24 <= hour)
+                hour -= 24;
+
+            time.hour = hour;
+            self.sRP.datetime = time;
+        }
+
+        {
+            self.sRP.time_progress_speed = Pane::ScrolledWindow::ScrollClip::space::Time::TimeScale::slider.index;
+        }
+
+        {
+            self.sRP.decisive_weather = gtengine::DecisiveWeather::NONE;
+            self.sRP.weather_no_schedule = false;
+            self.sRP.weather_random = true;
+
+            var index = Pane::ScrolledWindow::ScrollClip::space::Weather::Probability::slider.index;
+            var weather_value = 0.0;
+
+            switch (index)
+            {
+                case 0:
+                    var weather_value = 1.0;
+                    break;
+
+                case 1:
+                    var weather_value = 0.5;
+                    break;
+
+                case 2:
+                    var weather_value = 0.0;
+                    break;
+
+                case 3:
+                    var weather_value = -0.5;
+                    break;
+
+                case 4:
+                    var weather_value = -1.0;
+                    break;
+
+                default:
+                    ;
+            }
+
+            self.sRP.weather_point_num = 4;
+            self.sRP.weather_value0 = weather_value;
+            self.sRP.weather_value1 = 0.0;
+            self.sRP.weather_value2 = 0.0;
+            self.sRP.weather_value3 = 0.0;
+            self.sRP.weather_rate_sec1 = 180;
+            self.sRP.weather_rate_sec2 = 240;
+            self.sRP.weather_total_sec = 300;
+        }
+
+        {
+            var slider = Pane::ScrolledWindow::ScrollClip::space::Weather::WeatherAccel::slider;
+
+            if (slider.index > 0)
+                self.sRP.weather_accel100 = slider.index * 100;
+
+            else
+            {
+                self.sRP.weather_accel100 = 0;
+                self.sRP.weather_value1 = self.sRP.weather_value0;
+                self.sRP.weather_value2 = self.sRP.weather_value0;
+                self.sRP.weather_value3 = self.sRP.weather_value0;
+                self.sRP.weather_rate_sec1 = 0;
+                self.sRP.weather_rate_sec2 = 0;
+                self.sRP.weather_total_sec = 0;
+            }
+        }
+
+        {
+            self.sRP.initial_retention10 = Pane::ScrolledWindow::ScrollClip::space::Weather2::InitialRetention::slider.index;
+        }
+
+        self.sRP.low_mu_type = Pane::ScrolledWindow::ScrollClip::space::Weather2::LowMuType::OptionMenu.index == 0 ? gtengine::LowMuType::MODERATE : gtengine::LowMuType::REAL;
+        self.sReturn = self.sRP;
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method cancel(context)
+    {
+        self.close(context);
+        self.sReturn = nil;
+    }
+
+    module Pane::Button::CancelOK::OK
+    {
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+            ROOT.apply(context);
+            ROOT.close(context);
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    module Pane::Button::CancelOK::Cancel
+    {
+        method onActivate(context)
+        {
+            main::sound.play("cancel");
+            ROOT.close(context);
+            return EVENTRESULT_FILTER;
+        }
+
+        method onCancel(context)
+        {
+            return onActivate(context);
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::Time::BaseTime::slider
+    {
+        method onFocusEnter(context, event)
+        {
+            HDToolTip::tip.value = context.translate(ROOT, "CourseCondition", "TOOLTIP|BASE_TIME");
+            return EVENTRESULT_STOP;
+        }
+
+        method onFocusLeave(context, event)
+        {
+            HDToolTip::tip.value = "";
+            return EVENTRESULT_STOP;
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::Time::TimeScale::slider
+    {
+        method onFocusEnter(context, event)
+        {
+            HDToolTip::tip.value = context.translate(ROOT, "CourseCondition", "TOOLTIP|TIME_SCALE");
+            return EVENTRESULT_STOP;
+        }
+
+        method onFocusLeave(context, event)
+        {
+            HDToolTip::tip.value = "";
+            return EVENTRESULT_STOP;
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::Weather::Probability::slider
+    {
+        method onFocusEnter(context, event)
+        {
+            HDToolTip::tip.value = context.translate(ROOT, "CourseCondition", "TOOLTIP|PROBABILITY");
+            return EVENTRESULT_STOP;
+        }
+
+        method onFocusLeave(context, event)
+        {
+            HDToolTip::tip.value = "";
+            return EVENTRESULT_STOP;
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::Weather::WeatherAccel::slider
+    {
+        method onFocusEnter(context, event)
+        {
+            HDToolTip::tip.value = context.translate(ROOT, "CourseCondition", "TOOLTIP|WEATHER_ACCEL");
+            return EVENTRESULT_STOP;
+        }
+
+        method onFocusLeave(context, event)
+        {
+            HDToolTip::tip.value = "";
+            return EVENTRESULT_STOP;
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::Weather2::InitialRetention::slider
+    {
+        method onFocusEnter(context, event)
+        {
+            HDToolTip::tip.value = context.translate(ROOT, "CourseCondition", "TOOLTIP|INITIAL_RETENTION");
+            return EVENTRESULT_STOP;
+        }
+
+        method onFocusLeave(context, event)
+        {
+            HDToolTip::tip.value = "";
+            return EVENTRESULT_STOP;
+        }
+    }
+
+    module Pane::ScrolledWindow::ScrollClip::space::Weather2::LowMuType::OptionMenu
+    {
+        method onFocusEnter(context, event)
+        {
+            HDToolTip::tip.value = context.translate(ROOT, "TrialSetting", "TOOLTIP|LowMuType");
+            return EVENTRESULT_STOP;
+        }
+
+        method onFocusLeave(context, event)
+        {
+            HDToolTip::tip.value = "";
+            return EVENTRESULT_STOP;
+        }
+    }
+}
