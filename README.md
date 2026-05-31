@@ -1,5 +1,8 @@
 
 # OpenAdhoc
+
+> **Minimum required GTAdhocToolchain version: [1.3.7](https://github.com/Nenkai/GTAdhocToolchain/releases/tag/1.3.7)**
+
 OpenAdhoc is an open-source re-implementation of the proprietary "Adhoc" scripting language used in Gran Turismo games. OpenAdhoc allows logic-based modding as seen on the [GT6 Spec II Mod](https://www.gtplanet.net/forum/threads/beta6-gt6-spec-ii-mod.399796/) and [GT4 Randomizer/Spec II](https://twitter.com/TheAdmiester/status/1658179881186779144), among other fan projects currently in development.
 
 This repository contains compilable game scripts re-created from originally compiled ones. This allows source-code level editing for scripts that have been successfully reverse-engineered in Adhoc-based GT games.<br>
@@ -933,7 +936,7 @@ Out of scope. GT7 no longer uses Adhoc language and instead uses Swift (custom p
 
 ## ⚙️ Compilation
 
-[Adhoc Toolchain](https://github.com/Nenkai/GTAdhocToolchain) **version 1.3.5** is required to compile game scripts. 
+[Adhoc Toolchain](https://github.com/Nenkai/GTAdhocToolchain) **version 1.3.7** is required to compile game scripts. 
 The tool itself is command line-based without a native GUI, however it does have a VS Code Extension, and a Python GUI wrapper for streamlined usage / workflow.
 > [!TIP]
 Adhoc Toolchain (i.e `adhoc.exe`) can be added to your **PATH** (Optional)
