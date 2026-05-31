@@ -1,0 +1,916 @@
+
+
+
+
+
+module ROOT
+{
+    hidden.visible = false;
+    attribute edit_course_data;
+    attribute edit_course_ranking_id;
+    static sFirstRace = true;
+    static sAfterRace = false;
+    static sBeforeResult = -1;
+
+    method checkPPOK()
+    {
+        var regulation = gSequenceCondition.gp.event.regulation;
+
+        if (regulation.limit_pp != gtengine::MGameParameter::INVALID_VALUE_INT)
+        {
+            var pp = 0.0;
+
+            {
+                var cp = getPlayerCar();
+                cp.beginInfo();
+                pp = cp.getGTPerformanceIndex();
+                cp.endInfo();
+            }
+
+            var pp100 = PerformancePointUtil::getValue(pp);
+            return pp100 <= regulation.limit_pp;
+        }
+    }
+
+    method onStartTimeAttack(context)
+    {
+        if (!LoadingUtil::canStartRace())
+        {
+            if (openVehicleLoadingProgress(context) == false)
+                return EVENTRESULT_FILTER;
+        }
+
+        var event = gSequenceCondition.gp.event;
+        var abort = false;
+        var confirmed = false;
+        var cp = getPlayerCar();
+        var dp = getPlayerDriver();
+
+        |var qualified, var should_be, var current| = event.regulation.checkIfQualified(cp, dp);
+        if (!qualified)
+        {
+            main::sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "REGULATION_DISQUALIFIED"));
+            return EVENTRESULT_FILTER;
+        }
+
+        if (!event.ranking.is_local && LoginUtil::isOnline())
+        {
+            if ((event.ranking.board_id != 0) ? !Grim2Util::OnlineRace::isEnable() : !Grim2Util::Ranking::isEnable())
+            {
+                main::sound.play("ok");
+                var result = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY, 
+                context.translate(ROOT, "Network", "RANKING_SERVICE_NOT_AVAILABLE_QUERY"));
+
+                if (result == false)
+                    abort = true;
+
+                confirmed = true;
+            }
+            else
+            {
+                var mtime = Grim2Util::getNextMaintenanceDatetime();
+
+                if (mtime != nil)
+                {
+                    main::sound.play("ok");
+                    var mtime = mtime.toLocal();
+                    var format = context.translate(ROOT, "Network", "RANKING_SERVER_MAINTENANCE_NOTICE");
+
+                    var result = DialogUtil::openConfirmDialog(context, DialogUtil::QUERY, 
+                    format.build(pdiext::GetDateTimeStringShort(mtime.getBySecond())));
+
+                    if (result == false)
+                        abort = true;
+
+                    confirmed = true;
+                }
+            }
+        }
+
+        if (abort)
+        {
+            RaceMenuUtil::resetCloseAction(context, true);
+            return EVENTRESULT_FILTER;
+        }
+
+        var remain_time = nil;
+
+        if (!event.ranking.is_local && event.ranking.board_id != 0)
+        {
+            if (event.end_date != 0)
+                OnlineRankingUpload::checkEndTimePreStart(context, event.end_date_mtime, &abort, &confirmed, &remain_time, true);
+
+            if (event.ranking.end_date != 0 && !abort)
+                OnlineRankingUpload::checkEndTimePreStart(context, event.ranking.end_date_mtime, &abort, &confirmed, &remain_time, false);
+
+            if (!abort)
+                OnlineRankingUpload::checkHDD(context, &abort);
+        }
+
+        if (!abort)
+        {
+            if (!confirmed)
+                main::sound.play("ok");
+                
+            ORG.checkGhostFileBeforeRace();
+
+            if (remain_time != nil)
+                ORG.setApplicationTimeLimitNoStopAtPause(1);
+            else
+                ORG.setApplicationTimeLimitNoStopAtPause(0);
+
+            sAfterRace = true;
+            doStartRace(context, remain_time);
+        }
+        else
+            RaceMenuUtil::resetCloseAction(context, true);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onStartReplay(context)
+    {
+        PluginModule::doStartReplay(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onSaveReplay(context)
+    {
+        if (gSequenceCondition.gp.event.race_parameter.ghost_type == gtengine::GhostType::ONELAP)
+        {
+            if (!ReplayFileUtil::canSave())
+            {
+                main::sound.play("disable");
+                LeaveDetectUtil::suspend(context);
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                context.translate(ROOT, "QuickMenu", "YOUVE_ALREADY_SAVED"));
+                LeaveDetectUtil::resume(context);
+                return EVENTRESULT_FILTER;
+            }
+
+            LeaveDetectUtil::suspend(context);
+            PluginModule::doSaveReplay(context);
+            LeaveDetectUtil::resume(context);
+        }
+        else
+        {
+            if (!ReplayFileUtil::canSave(2))
+            {
+                main::sound.play("disable");
+                LeaveDetectUtil::suspend(context);
+
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                context.translate(ROOT, "QuickMenu", "YOUVE_ALREADY_SAVED"));
+                LeaveDetectUtil::resume(context);
+                return EVENTRESULT_FILTER;
+            }
+
+            LeaveDetectUtil::suspend(context);
+            PluginModule::doSaveAttachReplay(context);
+            LeaveDetectUtil::resume(context);
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onSaveGhostReplay(context)
+    {
+        UIKitProject::FileSelectRoot.open(context, UIKitProject::FileSelectRoot::REPLAY_SAVE_ONE_LAP);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onLoadGhostReplay(context)
+    {
+        if (!LoadingUtil::canStartRace())
+        {
+            main::sound.play("disable");
+            return EVENTRESULT_FILTER;
+        }
+
+        var rp = main::ORG.getCurrentRaceParameter();
+        LeaveDetectUtil::suspend(context);
+        var track = gSequenceCondition.gp.event.track;
+        var crc32 = 0;
+        
+        if (gSequenceCondition.gp.event.race_parameter.ghost_type == gtengine::GhostType::ONELAP)
+        {
+            var file_list;
+            if (track.course_pathway == nil)
+                file_list = ReplayFileUtil::getListGhostOneLap(rp.course_code);
+            else
+            {
+                crc32 = pdistd::CRC32(track.course_pathway);
+                file_list = ReplayFileUtil::getListGhostOneLapCourseMaker(rp.course_code, crc32);
+            }
+
+            if (file_list.size == 0)
+            {
+                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                context.translate(ROOT, "RaceTimeAttackProject::QuickRoot", "GHOST_DATA_IS_NOT_AVAILABLE"));
+            }
+            else
+                UIKitProject::FileSelectRoot.open(context, UIKitProject::FileSelectRoot::REPLAY_LOAD_GHOST_ONE_LAP, crc32);
+        }
+        else
+        {
+            UIKitProject::FileSelectRoot.open(context, UIKitProject::FileSelectRoot::REPLAY_LOAD_GHOST, 
+            nil, gSequenceCondition.gp.game_id);
+        }
+
+        LeaveDetectUtil::resume(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onDrivingOption(context)
+    {
+        main::sound.play("ok");
+        ROOT.hideAction(context);
+        var rp = gSequenceCondition.gp.event.race_parameter;
+        var constraint = gSequenceCondition.gp.event.constraint;
+
+        var data = SettingProject::DrivingOptionRoot::Data(getPlayerCar(), getPlayerDriver(), rp, constraint);
+        SettingProject::DrivingOptionRoot.open(context, data);
+        ROOT.appearAction(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onSetting(context)
+    {
+        main::sound.play("ok");
+        var event = gSequenceCondition.gp.event;
+        var regulation = event.regulation;
+        var constraint = event.constraint;
+        var rp = gSequenceCondition.gp.event.race_parameter;
+        var cp = getPlayerCar();
+
+        SettingProject::SettingPopup.openPage(context, cp, regulation, constraint, ROOT, rp);
+        return EVENTRESULT_FILTER;
+    }
+
+    function begin_osd(context)
+    {
+        DialogUtil::openDimmerDialog(context);
+    }
+
+    function end_osd(context)
+    {
+        DialogUtil::closeDimmerDialog(context);
+    }
+
+    function exchange_car(cp)
+    {
+        var enabled_rendering = ORG.isEnableRenderingRace();
+        if (enabled_rendering)
+        {
+            ORG.disableRenderingRace();
+            ORG.disableSoundingRace();
+        }
+
+        var entried_cp = ORG.leaveRace(0);
+        while (!ORG.checkLeaveRace(0))
+        {
+            pdistd::DelayThread(100 * 1000);
+        }
+
+        ORG.entryRace(0, cp);
+        ORG.waitEntryRace(0);
+
+        while (!ORG.hasLoadingCarDone())
+        {
+            pdistd::DelayThread(100 * 1000);
+        }
+
+        pdistd::DelayThread(1000 * 1000);
+
+        if (enabled_rendering)
+        {
+            ORG.enableRenderingRace();
+            ORG.enableSoundingRace();
+        }
+
+        return entried_cp;
+    }
+
+    static entried_cp = nil;
+    static prev_replay_work_path = nil;
+
+    function on_view_replay(context, path)
+    {
+        prev_replay_work_path = ORG.replay_work_path;
+        ORG.replay_work_path = path;
+
+        var info = gtengine::MReplayInfo();
+        var buf = ORG.getReplayHeaderFromPath(path);
+
+        var success = info.initialize(buf);
+        if (!success)
+            return;
+
+        var cp_on_replay = info.getCarParameter(0);
+        if (cp_on_replay == nil)
+            return;
+
+        entried_cp = exchange_car(cp_on_replay);
+        return PluginModule::doStartReplay(context);
+    }
+
+    method onOnlineRanking(context)
+    {
+        main::sound.play("ok");
+        CursorUtil::setCursor(context, "wait");
+
+        self finally
+        {
+            CursorUtil::setCursor(context, "cursor_chrome");
+        }
+
+        var event = gSequenceCondition.gp.event;
+        |var result, var ignore_error| = LoginUtil::makeSureLogin(context, begin_osd, end_osd);
+
+        if (!result)
+            return EVENTRESULT_FILTER;
+
+        if (LoginUtil::isPatchExist())
+        {
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+            context.translate(ROOT, "Network", "CANNOT_CONNECT_SERVER"));
+
+            main::GameSequence::setPrevPage("");
+            onExit(context);
+            return EVENTRESULT_FILTER;
+        }
+
+        if ((event.ranking.board_id != 0) ? !Grim2Util::OnlineRace::isEnable() : !Grim2Util::Ranking::isEnable())
+        {
+            main::sound.play("disable");
+            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+            context.translate(ROOT, "Network", "RANKING_SERVICE_NOT_AVAILABLE"));
+
+            return EVENTRESULT_FILTER;
+        }
+
+        if (!__projects__.defined("RankingProject"))
+            gSequenceCondition.loadProject("ranking");
+
+        var course_list = [gtengine::MSpecDB::getCourseLabel(getCurrentCourse())];
+
+        if (event.ranking.board_id == 0)
+            ;
+
+        else
+        {
+            var car_list = nil;
+
+            var first_focus = [
+                'course' : nil,
+                'car' : nil,
+                'simulation' : (getPlayerDriver().physics_pro == 1) ? 1 : 0,
+                'mode' : 0
+            ];
+
+            var option = [
+                'popup' : true,
+                'view_replay' : false,
+                'save_replay' : true,
+                'load_ghost_enable' : true,
+                'is_event_ranking' : true,
+                'replay_rank_limit' : (event != nil) ? event.ranking.replay_rank_limit : nil,
+                'view_replay_func' : on_view_replay,
+                'board_list' : [[event.ranking.board_id, event.information.one_line_title.getText(), gSequenceCondition.gp]]
+            ];
+
+            RankingProject::RankingPopup.open(context, nil, course_list, car_list, first_focus, option);
+        }
+
+        gSequenceCondition.unloadProject("ranking");
+        return EVENTRESULT_FILTER;
+    }
+
+    method onExit(context)
+    {
+        if (!LoadingUtil::canStartRace())
+        {
+            main::sound.play("disable");
+            return EVENTRESULT_FILTER;
+        }
+
+        main::sound.play("ok");
+        main::GameSequence::setResult("exit");
+
+        var extra_ghost_slot_id = 2;
+        ORG.leaveEntry(extra_ghost_slot_id);
+
+        RaceMenuUtil::closeAction(context);
+        SequenceUtil::startSequence(context, main::GameSequence::MENU);
+        SoundUtil::BGMFadeout(1.0);
+        ORG.getRaceSound().start = false;
+        SaveDataUtilGT5::saveEveryWhere(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method setup_entry(context, item, order, data, delay_ratio)
+    {
+        item.No.label.text = "%d".format(order + 1);
+        item.Time.label.text = pdiext::GetRaceTimeString(data.best_time);
+        item.Time.labela.text = item.Time.label.text;
+
+        if (data.datetime > 0)
+        {
+            var mtime = pdistd::MTime();
+            mtime.setBySecond(data.datetime);
+            mtime = mtime.toLocal();
+            item.Date.label.text = mtime.toString();
+        }
+        else
+            item.Date.label.text = "";
+
+        item.Date.labela.text = item.Date.label.text;
+
+        if (data.car_code != gtengine::MSpecDB::NO_CODE64)
+            item.Car.label.text = gtengine::MSpecDB::getCarShortName(data.car_code);
+        else
+            item.Car.label.text = "";
+
+        if (data.car_color >= 0)
+        {
+            item.Car.Chip.color.setColor(ColorChipUtil::getColor(data.car_code, data.car_color));
+            item.Car.Chip.visible = true;
+        }
+
+        else
+            item.Car.Chip.visible = false;
+
+        var flg = false;
+        item.No.active = flg;
+        item.Time.active = flg;
+        item.Date.active = flg;
+    }
+
+    method open(context)
+    {
+        ORG.pauseAvailable = false;
+        SequenceUtil::startPage(context, ROOT);
+    }
+
+    method on_leave_detect(context)
+    {
+        SequenceUtil::startSequence(context, main::GameSequence::MENU);
+        SoundUtil::BGMFadeout(1.0);
+        ORG.getRaceSound().start = false;
+    }
+
+    method on_initialize_info(context)
+    {
+        var normal_courselabel = CourseData::getNormalLabel(getCurrentCourse());
+        var course_info = CourseData::getCourseInfo(getCurrentCourse());
+
+        if (self.edit_course_data != nil)
+        {
+            Map::bg.image_path = self.edit_course_data.thumbnail_L_filename;
+            Info.initialize_edit_course(context, self.edit_course_data);
+        }
+        else if (course_info != nil)
+        {
+            Map::bg.image_path = ("/piece/course_map_LL/" + course_info.map) + ".img";
+            Info.initialize(context, course_info);
+        }
+
+        var course_code = getCurrentCourse();
+        Event.visible = false;
+        Ranking.visible = false;
+        Header.visible = false;
+
+        if (gSequenceCondition.gp.event.eval_condition.type == main::gtengine::EvalType::TIME)
+        {
+            var event_id = gSequenceCondition.gp.event.event_id;
+            var record_result = GLOBAL_STATUS.user_profile.record.seasonal_event.getResult(event_id);
+            initializeHeader(context, ROOT, Header, record_result[0]);
+            Header.visible = true;
+        }
+
+        beginUpdateWetInfo(context, Info.WetInfo, course_info);
+    }
+
+    method initialize_icons(context)
+    {
+        if (GAME_STATUS.config.reset_setting_at_quick)
+            resetPlayerSettings();
+
+        var icons = [];
+
+        icons.push(RaceMenuUtil::Icon("START", "icon_Q_timeTrial.dds", onStartTimeAttack));
+
+        var has_replay = PluginModule::canStartReplay();
+        icons.push(RaceMenuUtil::Icon("REPLAY", "icon_Q_replay.dds", onStartReplay, nil, has_replay));
+        icons.push(RaceMenuUtil::Icon("REPLAYSAVE", "icon_Q_replaysave.dds", onSaveReplay, nil, has_replay));
+
+        var event = gSequenceCondition.gp.event;
+        var has_ghostload = GetVersionBranch() != "demo" && event.eval_condition.ghost_data_path == "";
+        icons.push(RaceMenuUtil::Icon("GHOSTLOAD", "icon_Q_ghostload.dds", onLoadGhostReplay, nil, has_ghostload));
+
+        if (gSequenceCondition.gp.event.race_parameter.ghost_type == gtengine::GhostType::ONELAP)
+        {
+            var has_ghostsave = PluginModule.defined("canSaveGhost") && PluginModule::canSaveGhost();
+            icons.push(RaceMenuUtil::Icon("GHOSTSAVE", "icon_Q_ghostsave.dds", onSaveGhostReplay, nil, has_ghostsave));
+        }
+
+        icons.push(RaceMenuUtil::Icon("DRIVING_OPTION", "icon_Q_DrivingOption.dds", onDrivingOption));
+
+        var cp = getPlayerCar();
+        if (!cp.rentacar)
+            icons.push(RaceMenuUtil::Icon("TUNE", "icon_Q_Setting.dds", onSetting));
+
+        icons.push(RaceMenuUtil::Icon("ONLINE_RANKING", "icon_Q_online_ranking.dds", onOnlineRanking));
+        icons.push(RaceMenuUtil::Icon("EXIT", "icon_Q_exit.dds", onExit));
+
+        RaceMenuUtil::create(context, ROOT, Template::QuickMenu, icons, "QuickMenu", nil, icons.size);
+        RaceMenuUtil::setFocus(context);
+    }
+
+    method on_initialize_online_info(context)
+    {
+        if (!Grim2Util::Ranking::isEnable())
+            return;
+
+        var event = gSequenceCondition.gp.event;
+        var board_id = OnlineRankingUpload::getEventBoardID(context);
+
+        if (event.ranking.is_local)
+            return;
+
+        if (board_id == 0)
+            return;
+
+        if (!LoginUtil::isOnline())
+            return;
+
+        var request = main::Grim2.requestExtendSession(function (args) {});
+        Event.visible = true;
+        Event::OnlineRecord.visible = false;
+        Event::MyOnlineRecord.visible = false;
+        Event::MyOnlineRecord.my_rank.visible = false;
+
+        OnlineRankingUpload::sTopRank = [ : ];
+
+        var request1 = main::Ranking2.requestRankingList(board_id, 1, 1, function (args) 
+        {
+            |var context, var request| = args;
+            var top_user_id = "--";
+            var top_score = pdiext::MAX_LAPTIME1000;
+
+            if (request.isDone())
+            {
+                var list = main::Ranking2.decodeRankingList(request);
+
+                if (list.size > 0)
+                {
+                    top_user_id = list[0]['user_id'];
+                    top_score = list[0]['score'];
+                    OnlineRankingUpload::sTopRank = list;
+                }
+            }
+
+            Event::OnlineRecord::world_record_user.text = top_user_id;
+            Event::OnlineRecord::world_record.text = pdiext::GetRaceTimeString(top_score);
+            Event::OnlineRecord.visible = true;
+            Event::OnlineRecord.ScalarInterpolator.restart();
+        });
+
+        OnlineRankingUpload::sEveRank = [ : ];
+        var my_user_id = NP.getOnlineId();
+
+        var request2 = main::Ranking2.requestRanking(board_id, my_user_id, function (args) 
+        {
+            |var context, var request| = args;
+            var my_score = pdiext::MAX_LAPTIME1000;
+
+            if (request.isDone())
+            {
+                var rank = main::Ranking2.decodeRanking(request);
+                if (rank != nil)
+                {
+                    my_score = rank['score'];
+                    OnlineRankingUpload::sEveRank = rank;
+                }
+            }
+
+            Event::MyOnlineRecord::my_record.text = pdiext::GetRaceTimeString(my_score);
+            Event::MyOnlineRecord.visible = true;
+            Event::MyOnlineRecord.ScalarInterpolator.restart();
+        });
+
+        var request3 = main::Ranking2.requestCalcRanking(board_id, my_user_id, function (args) 
+        {
+            |var context, var request| = args;
+            var rank_text = "";
+
+            if (request.isDone())
+            {
+                var rank = main::Ranking2.decodeResult(request);
+                if (rank > 0)
+                {
+                    var position = OrdinalUtil::getOrdinalNumber(context, ROOT, rank);
+                    rank_text = context.translate(ROOT, "Network", "RANKING_FOOTER").build(position);
+                }
+            }
+
+            Event::MyOnlineRecord::my_rank.text = rank_text;
+            Event::MyOnlineRecord.my_rank.visible = true;
+            Event::MyOnlineRecord.my_rank.ScalarInterpolator.restart();
+        });
+    }
+
+    method on_initialize_ranking_ranking_check(context)
+    {
+        CursorUtil::setCursor(context, "wait");
+        OnlineRankingUpload::recordOnlineRankingCheck(context);
+        self.on_initialize_online_info(context);
+        check_reward(context);
+        self.initialize_icons(context);
+        CursorUtil::setCursor(context, "cursor_chrome");
+    }
+
+    function isSeasonalEvent(gp)
+    {
+        return gp.game_id >= 1000000;
+    }
+
+    method check_reward(context)
+    {
+        if (!gSequenceCondition.is_buffer_replay_mode)
+        {
+            if (gSequenceCondition.trial_result == nil || gSequenceCondition.trial_result < 0)
+                return;
+
+            var gp = gSequenceCondition.gp;
+            if (isSeasonalEvent(gp))
+            {
+                var strlog = "GK=%d:GR=%d:GU=%s".format(gp.game_id, gSequenceCondition.trial_result, main::PDINetwork.getClientName());
+                main::Grim2.requestPutLog(strlog);
+            }
+
+            var msg;
+            if (gSequenceCondition.trial_result < sBeforeResult || sBeforeResult == -1)
+            {
+                if (gSequenceCondition.trial_result == 0)
+                    msg = context.translate(RaceRoot, "TRIAL_GET_GOLD");
+
+                else if (gSequenceCondition.trial_result == 1)
+                    msg = context.translate(RaceRoot, "TRIAL_GET_SILVER");
+
+                else if (gSequenceCondition.trial_result == 2)
+                    msg = context.translate(RaceRoot, "TRIAL_GET_BRONZ");
+
+                if (msg != nil)
+                    DialogUtil::openConfirmDialog(context, DialogUtil::OK, msg);
+            }
+
+            RewardUtil::checkABspecEventReward(context, gSequenceCondition.gp, gSequenceCondition.trial_result, 1.0, nil, sBeforeResult, getPlayerCar());
+
+            var event_id = gSequenceCondition.gp.event.event_id;
+            var record_result = GLOBAL_STATUS.user_profile.record.seasonal_event.getResult(event_id);
+            sBeforeResult = record_result[0];
+        }
+    }
+
+    function on_initialize_demo(context)
+    {
+        var rp = gtengine::MRaceParameter();
+        rp.deepCopy(ORG.getBackRaceParameter());
+        rp.race_type = gtengine::RaceType::DEMO;
+        rp.start_type = gtengine::StartType::DISPERSED;
+        ORG.startSession(rp, false, gtengine::StartSessionCameraType::SPECTATOR, true);
+
+        ORG.pauseRace = false;
+        ORG.pauseAvailable = false;
+        ORG.enableRenderingRace();
+        ORG.enableSoundingRace();
+    }
+
+    method load_ghost(context, path)
+    {
+
+    }
+
+    function on_coursein_done(context)
+    {
+        on_initialize_demo(context);
+    }
+
+    function onLoadingCourseDone(context)
+    {
+        ORG.enterCourse();
+        RaceProject::setEnemySuitableTire(context);
+        on_coursein_done(context);
+    }
+
+    function initializeHeader(context, root, header, result)
+    {
+        var gp = gSequenceCondition.gp;
+        var event = gp.event;
+        var eval_condition = gp.event.eval_condition;
+
+        if (eval_condition.type == gtengine::EvalType::TIME)
+        {
+            header.Gold.target.text = pdiext::GetRaceTimeString(eval_condition.gold);
+            header.Silver.target.text = pdiext::GetRaceTimeString(eval_condition.silver);
+            header.Bronze.target.text = pdiext::GetRaceTimeString(eval_condition.bronze);
+        }
+
+        else if (eval_condition.type == gtengine::EvalType::ORDER)
+        {
+            header.Gold.target.text = eval_condition.gold + pdistd::MLocale::getOrdinalSuffix(eval_condition.gold);
+            header.Gold.target.text = OrdinalUtil::getOrdinalNumber(context, root, eval_condition.gold);
+
+            header.Silver.target.text = eval_condition.silver + pdistd::MLocale::getOrdinalSuffix(eval_condition.silver);
+            header.Silver.target.text = OrdinalUtil::getOrdinalNumber(context, root, eval_condition.silver);
+
+            header.Bronze.target.text = eval_condition.bronze + pdistd::MLocale::getOrdinalSuffix(eval_condition.bronze);
+            header.Bronze.target.text = OrdinalUtil::getOrdinalNumber(context, root, eval_condition.bronze);
+        }
+
+        else if (eval_condition.type == gtengine::EvalType::DRIFT)
+        {
+            header.Gold.target.text = eval_condition.gold;
+            header.Silver.target.text = eval_condition.silver;
+            header.Bronze.target.text = eval_condition.bronze;
+        }
+
+        header.Gold.target_clear.text = header.Gold.target.text;
+        header.Silver.target_clear.text = header.Silver.target.text;
+        header.Bronze.target_clear.text = header.Bronze.target.text;
+        header.Gold.active = result == 0;
+        header.Silver.active = header.Gold.active || result == 1;
+        header.Bronze.active = header.Silver.active || result == 2;
+    }
+
+    method onInitialize(context)
+    {
+        gSequenceCondition.setup();
+        restrictRTA(false);
+        var track = gSequenceCondition.gp.event.track;
+
+        if (track.course_pathway != nil)
+        {
+            self.edit_course_ranking_id = pdistd::CRC32(track.course_pathway);
+            PluginModule::sEditCourseRankingId = self.edit_course_ranking_id;
+            var edit_course_data_id = main::GAME_STATUS.user_profile.option.edit_course_data_id;
+
+            if (edit_course_data_id > 0)
+                self.edit_course_data = CourseFileUtil::getCourse(edit_course_data_id);
+        }
+
+        if (!sAfterRace)
+        {
+            var event_id = gSequenceCondition.gp.event.event_id;
+            var record_result = GLOBAL_STATUS.user_profile.record.seasonal_event.getResult(event_id);
+            sBeforeResult = record_result[0];
+        }
+
+        if (sFirstRace == false && !ORG.inSession())
+        {
+            on_initialize_demo(context);
+
+            if (prev_replay_work_path != nil)
+            {
+                ORG.replay_work_path = prev_replay_work_path;
+                prev_replay_work_path = nil;
+            }
+
+            if (entried_cp != nil)
+            {
+                while (!ORG.inSession())
+                {
+                    pdistd::DelayThread(100 * 1000);
+                }
+
+                exchange_car(entried_cp);
+                entried_cp = nil;
+            }
+        }
+
+        sFirstRace = false;
+        self.on_initialize_info(context);
+        SoundUtil::SetupSound(SoundUtil::SCENE_MENU);
+
+        bg::ScalarInterpolator.reverse = false;
+        bg::ScalarInterpolator.restart();
+        SoundUtil::MenuBGMCrossfadeGroup("quick_before", 0.0, 3.0, true);
+
+        if (main::GAME_STATUS.config.reset_setting_at_quick)
+            resetPlayerSettings();
+
+        context.pushEvent(menu::MScriptEvent(context, self, "on_initialize_ranking_ranking_check"));
+    }
+
+    method onFinalize(context)
+    {
+        Ranking2.clearCallback();
+        self.edit_course_data = nil;
+        self.edit_course_ranking_id = nil;
+        endUpdateWetInfo(context);
+        RaceMenuUtil::remove(context);
+        ORG.endSession();
+        ORG.pauseAvailable = true;
+        ORG.disableRenderingRace();
+        ORG.disableSoundingRace();
+    }
+
+    method onCancel(context)
+    {
+        if (RaceProject::onCancel_for_progress(context))
+            return EVENTRESULT_FILTER;
+
+        main::sound.play("cancel");
+        RaceMenuUtil::setFocusLast(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_START:
+                if (RaceMenuUtil::activated())
+                {
+                    RaceMenuUtil::setFocus(context, 0, true);
+                    onStartTimeAttack(context);
+                }
+
+                return EVENTRESULT_FILTER;
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+
+    method hideAction(context)
+    {
+        RaceMenuUtil::hideAction();
+    }
+
+    method hideActionWithVeil(context)
+    {
+        RaceMenuUtil::hideAction();
+    }
+
+    method appearAction(context)
+    {
+        RaceMenuUtil::appearAction();
+    }
+
+    module Info
+    {
+        method initialize(context, course_info)
+        {
+            if (course_info != nil)
+            {
+                var gp = gSequenceCondition.gp;
+                var event = gp.event;
+                var rp = event.race_parameter;
+
+                Course::Type.text = getCourseCategoryStr(context, course_info) + getCourseCountryStr(context, course_info);
+                Course::Name.text = getCourseName(context, course_info);
+                CourseLength::Value.text = CourseData::getCourseLengthText(context, ROOT, course_info);
+                StraightLength::Value.text = CourseData::getCourseLongestStraightText(context, ROOT, course_info);
+                HeightDiff::Value.text = CourseData::getCourseHeightText(context, ROOT, course_info);
+                Race::Type.visible = gp.arcade;
+                Race::Name.text = event.information.one_line_title.getText();
+
+                Race::start_end_time.visible = (event.ranking.board_id != 0) ? true : false;
+                Race::start_end_time.text = OnlineRankingUpload::getStartEndTimeStr(context, event, ROOT);
+                StartType::Value.text = getRaceTypeName(context, gtengine::StartType, rp.start_type);
+
+                Distance::Value.text = "---.- " + context.translate(ROOT, "Unit", pdiext::MUnit::GetUnitKeywordOfCourseLength());
+            }
+        }
+
+        method initialize_edit_course(context, edit_course_data)
+        {
+            if (edit_course_data != nil)
+            {
+                var gp = gSequenceCondition.gp;
+                var event = gp.event;
+                var rp = event.race_parameter;
+                var course_label = edit_course_data.genre;
+
+                Course::Type.text = context.translate(PROJECT, "CourseName", course_label);
+                Course::Name.text = edit_course_data.title;
+                CourseLength::Value.text = pdiext::MUnit::GetCourseLengthString(edit_course_data.length, true);
+                StraightLength::Value.text = pdiext::MUnit::GetCourseLengthString(edit_course_data.straight, true);
+                HeightDiff::Value.text = pdiext::MUnit::GetCourseHeightString(edit_course_data.elevation, true);
+
+                Race::Type.visible = gp.arcade;
+                Race::Name.text = event.information.one_line_title.getText();
+                StartType::Value.text = getRaceTypeName(context, gtengine::StartType, rp.start_type);
+                Distance::Value.text = "---.- " + context.translate(ROOT, "Unit", pdiext::MUnit::GetUnitKeywordOfCourseLength());
+
+                Race::start_end_time.visible = (event.ranking.board_id != 0) ? true : false;
+                Race::start_end_time.text = OnlineRankingUpload::getStartEndTimeStr(context, event, ROOT);
+            }
+        }
+    }
+}

@@ -1,0 +1,215 @@
+
+
+
+
+
+static sFastestLapTime = main::pdiext::MAX_LAPTIME1000;
+static sLastRank = -1;
+static sEditCourseRankingId;
+
+function rememberFastestLapTime(time)
+{
+    if (time < sFastestLapTime)
+        sFastestLapTime = time;
+}
+
+function recordFastestLapTime()
+{
+    var slot_id = getPlayerSlot();
+
+    if (slot_id < 0)
+        return;
+
+    var time = ORG.getFastestLapTime(slot_id);
+    if (main::pdiext::MAX_LAPTIME1000 == time)
+        return;
+
+    rememberFastestLapTime(time);
+    var course_code = getCurrentCourse();
+    var cp = ORG.getEntriedCarParameter(slot_id);
+    var dp = ORG.getEntriedDriverParameter(slot_id);
+}
+
+function onLoad(update_context)
+{
+    var context = update_context.getRenderContext();
+    RaceOperator.allocateResource();
+    gSequenceCondition.quick_root = PROJECT::QuickRoot;
+    gSequenceCondition.loadProject("ranking");
+    gSequenceCondition.gp.event.ranking.is_local = false;
+    sEditCourseRankingId = nil;
+
+    var success = LoadingUtil::exec(context, PROJECT::QuickRoot::on_coursein_done);
+    if (!success)
+    {
+        goToMenuSequence(context);
+        return;
+    }
+
+    gSequenceCondition.quick_root.open(context);
+}
+
+function onUnload(update_context)
+{
+    sEditCourseRankingId = nil;
+    main::RaceOperator.checkOut();
+    main::ORG.exitCourse();
+    main::RaceOperator.destroyRace();
+    main::RaceOperator.clearResource();
+    RaceOperator.clear();
+}
+
+function onRaceRootInitialize(context)
+{
+    var slot_id = RaceOperator.getPlayerSlot();
+    var window_id = 0;
+    var port = 0;
+    RaceRoot.setTarget(slot_id, window_id);
+    ORG.setCameraWindowControllerPort(window_id, port);
+    pdistd::MGamePort::SetWheelAssignMode(pdistd::WheelAssignMode::SDK);
+}
+
+function onAfterSession(context)
+{
+    if (!gSequenceCondition.is_buffer_replay_mode)
+    {
+        recordFastestLapTime();
+
+        var slot_id = getPlayerSlot();
+        if (slot_id < 0)
+            return;
+
+        var time = ORG.getFastestLapTime(slot_id);
+        checkClearTrial(time);
+    }
+}
+
+function onAfterRace(context)
+{
+
+}
+
+method onLapCount(context, slot_id, laps, laptime, is_penalty_lap)
+{
+    var user_slot_id = RaceOperator.getPlayerSlot();
+    if (user_slot_id == slot_id && !gSequenceCondition.is_buffer_replay_mode && !is_penalty_lap && laps > 1)
+    {
+        OnlineRankingUpload::checkTempOnlineRank(context, slot_id, laptime);
+        RaceRoot.checkTrophyGetMessage(context, laptime);
+    }
+}
+
+function onDisqualify(context, slot_id, result, is_forced, is_target, goal_time)
+{
+    if (!is_forced && !gSequenceCondition.isDemo() && is_target)
+    {
+        ORG.pauseHandleAvailable = false;
+        ORG.pauseAvailable = false;
+        OnboardMeterRoot.visible = false;
+        RaceRoot.visible = false;
+        SoundUtil::RaceBGMPlayGroup("license_failed", gSequenceCondition.isDemo(), false);
+        PROJECT::DisqualifiedRoot.open(context, goal_time);
+    }
+}
+
+function onComplete(context, slot_id, result, is_forced, is_target)
+{
+    if (!is_forced && !gSequenceCondition.isDemo() && is_target)
+    {
+        var win = result == main::gtengine::FinishResult::WIN;
+        var lose = result == main::gtengine::FinishResult::LOSE;
+
+        if (win || lose)
+            RaceRoot.GoalMessage(false, win, lose, false, false);
+        else
+            RaceRoot.GoalMessage(true, false, false, false, false);
+
+        if (is_target && main::ORG.getEntryControlType(slot_id) == main::gtengine::ControlType::LOCAL)
+            RaceRoot.playMusicWhenComplete(context, result);
+    }
+
+    if (!is_forced)
+        ResultRoot.updateBoard(context);
+}
+
+function onPlayMusicWhenComplete(context, result)
+{
+    var finish_bgm_table = [
+        main::gtengine::FinishResult::WIN : "finish_drift_1",
+        main::gtengine::FinishResult::LOSE : "finish_3"
+    ];
+
+    var group = finish_bgm_table.find(result);
+    if (group == nil)
+        group = "finish_other";
+    else
+        group = group[1];
+
+    SoundUtil::RaceBGMPlayGroup(group, gSequenceCondition.isDemo(), false);
+}
+
+method onFinishRace(context, condition_satisfied, buggy_result)
+{
+    var show_result = false;
+
+    if (buggy_result == main::gtengine::FinishResult::DSQ)
+        return;
+
+    if (gSequenceCondition.is_buffer_replay_mode)
+        show_result = false;
+    else
+    {
+        if (condition_satisfied)
+        {
+            var target = main::RaceOperator.representative_slot_id;
+            gSequenceCondition.finish_result = ORG.getEnsuredCarOrder(target);
+            show_result = true;
+        }
+        else
+            show_result = false;
+    }
+
+    if (show_result)
+        ResultRoot.open(context, false);
+    else
+        SoundUtil::BGMFadeout(1.0);
+}
+
+function onExit(context)
+{
+    if (!RaceMenuUtil::activated())
+    {
+        main::sound.play("disable");
+        return;
+    }
+
+    main::sound.play("ok");
+    OnboardMeterRoot::RaceDisplayFace.toStop();
+    RaceMenuUtil::closeAction(context);
+    RaceRoot.quit(context);
+}
+
+function createReplaySaveDataDescription(context)
+{
+    var root = context.getCurrentPage();
+    var cp = getPlayerCar();
+    var dp = getPlayerDriver();
+    var carname = main::gtengine::MSpecDB::getCarName(cp.getCarCode());
+    var course = main::gtengine::MSpecDB::getCourseLabel(getCurrentCourse());
+    var coursename = context.translate(root, "CourseNameLong", course);
+    var sim_str = context.translate(root, "TrialSetting", dp.physics_pro ? "PhysicsPro" : "PhysicsNormal");
+
+    |var tire_f, var tire_r| = cp.getTireCategories();
+    var tire_str = (getTireString(context, tire_f) + "/") + getTireString(context, tire_r);
+    var subtitle = context.translate(root, SaveDataUtilGT5::getLocalizePage(), "REPLAY_SUBTITLE_WITHIN_128BYTES") + context.translate(root, "GameModeName", "TIME_ATTACK");
+    var description = context.translate(root, SaveDataUtilGT5::getLocalizePage(), "REPLAY_DESCRIPTION_WITHIN_1024BYTES");
+    description = description.build(coursename, carname, sim_str, tire_str);
+
+    description += "\n" + main::GetDisplayVersionString();
+    return [subtitle, description];
+}
+
+function onRankingUpdateResult(context, result, car_rank, all_rank, eve_rank)
+{
+    
+}
