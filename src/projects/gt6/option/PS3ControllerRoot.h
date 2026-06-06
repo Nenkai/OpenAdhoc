@@ -62,11 +62,11 @@ static sActionList_L2_R2 = [
 
     0x400 | main::gtengine::ButtonCode["WIPER"],
 
-    0x400 | main::gtengine::ButtonCode["RTA_OPEN"],
-    0x400 | main::gtengine::ButtonCode["RTA_PLUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_MINUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_INC"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_DEC"],
+
+
+
+
+
 
     0x800 | main::gtengine::AnalogCode["INVALID"],
 ];
@@ -96,11 +96,11 @@ static sActionList_OnlyButton = [
 
     0x400 | main::gtengine::ButtonCode["WIPER"],
 
-    0x400 | main::gtengine::ButtonCode["RTA_OPEN"],
-    0x400 | main::gtengine::ButtonCode["RTA_PLUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_MINUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_INC"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_DEC"],
+
+
+
+
+
 
     0x400 | main::gtengine::ButtonCode["INVALID"],
 ];
@@ -130,11 +130,11 @@ static sActionList_Standard = [
 
     0x400 | main::gtengine::ButtonCode["WIPER"],
 
-    0x400 | main::gtengine::ButtonCode["RTA_OPEN"],
-    0x400 | main::gtengine::ButtonCode["RTA_PLUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_MINUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_INC"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_DEC"],
+
+
+
+
+
 
     0x800 | main::gtengine::AnalogCode["INVALID"],
 ];
@@ -163,11 +163,11 @@ static sActionList_UpDownKey = [
 
     0x400 | main::gtengine::ButtonCode["WIPER"],
 
-    0x400 | main::gtengine::ButtonCode["RTA_OPEN"],
-    0x400 | main::gtengine::ButtonCode["RTA_PLUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_MINUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_INC"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_DEC"],
+
+
+
+
+
 
     0x800 | main::gtengine::AnalogCode["INVALID"],
 ];
@@ -231,11 +231,11 @@ static sActionList_LeftKey = [
 
     0x400 | main::gtengine::ButtonCode["WIPER"],
 
-    0x400 | main::gtengine::ButtonCode["RTA_OPEN"],
-    0x400 | main::gtengine::ButtonCode["RTA_PLUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_MINUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_INC"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_DEC"],
+
+
+
+
+
 
     0x800 | main::gtengine::AnalogCode["INVALID"],
 ];
@@ -271,11 +271,11 @@ static sActionList_WithSteerR = [
 
     0x400 | main::gtengine::ButtonCode["WIPER"],
 
-    0x400 | main::gtengine::ButtonCode["RTA_OPEN"],
-    0x400 | main::gtengine::ButtonCode["RTA_PLUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_MINUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_INC"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_DEC"],
+
+
+
+
+
 
     0x800 | main::gtengine::AnalogCode["INVALID"],
 ];
@@ -305,11 +305,11 @@ static sActionList_WithSteerL = [
 
     0x400 | main::gtengine::ButtonCode["WIPER"],
 
-    0x400 | main::gtengine::ButtonCode["RTA_OPEN"],
-    0x400 | main::gtengine::ButtonCode["RTA_PLUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_MINUS"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_INC"],
-    0x400 | main::gtengine::ButtonCode["RTA_DIAL_DEC"],
+
+
+
+
+
 
     0x800 | main::gtengine::AnalogCode["INVALID"],
 ];
