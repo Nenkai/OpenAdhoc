@@ -2,7 +2,9 @@
 # OpenAdhoc
 
 > **Minimum required GTAdhocToolchain version: [1.4.0](https://github.com/Nenkai/GTAdhocToolchain/releases/tag/1.4.0)**
-> **NOTE: AS OF 1.4.0, please rebase your work on the latest OpenAdhoc. Major compiler accuracy fixes have been made that required the current source to be altered.
+
+> [!WARNING]
+> **NOTE: AS OF 1.4.0**, please rebase your work on the latest OpenAdhoc. Major compiler accuracy fixes have been made that required the current source to be altered.
 
 OpenAdhoc is an open-source re-implementation of the proprietary "Adhoc" scripting language used in Gran Turismo games. OpenAdhoc allows logic-based modding as seen on the [GT6 Spec II Mod](https://www.gtplanet.net/forum/threads/beta6-gt6-spec-ii-mod.399796/) and [GT4 Randomizer/Spec II](https://twitter.com/TheAdmiester/status/1658179881186779144), among other fan projects currently in development.
 
