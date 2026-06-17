@@ -968,8 +968,7 @@ For more details refer to the [Adhoc Page](https://nenkai.github.io/gt-modding-h
 * Play around with adhoc first. [Learn the basics](https://nenkai.github.io/gt-modding-hub/concepts/adhoc/adhoc), [the language](https://nenkai.github.io/gt-modding-hub/concepts/adhoc/language/), [and more](https://github.com/Nenkai/GTAdhocToolchain/wiki). Compile basic code, investigate the disassembly, [optionally have GT6 run your code using TinyWeb, through RPCS3](https://nenkai.github.io/gt-modding-hub/concepts/adhoc/tinyweb/)
 * Refer to the repository for examples of matching code.
 * Translating by hand is a time-consuming and a somewhat steep process, but it is still far easier than decompiling matching assembly language.
-* **Once you understand Adhoc well to the point where you know the bytecode, can reverse projects manually yourself and know general compilation process inside-out**, you may train an AI model to translate the disassembly for you by having it help you edit code that's already translated,
-and attempt to have it decompile disassembly every so often. The key to training it is providing a lot of adhoc source code, and over many separate chats over time. It needs to learn the format of adhoc much moreso than the disassembly. This can take a very long time before it gets any good, but if it does it can make short work of even the largest scripts.<br>
+<br>
 <details>
   <summary> 📝 Translation example (Expand to view)</summary>
 
