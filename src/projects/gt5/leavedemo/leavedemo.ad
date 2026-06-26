@@ -1,0 +1,182 @@
+module PROJECT
+{
+    PROJECT.load("/scripts/gt5/util/DLCUtil");
+    static sDemoCount = 0;
+
+    function onLoad(context)
+    {
+        ORG.window_max = 1;
+        var render_context = context.getRenderContext(0);
+        CommandAlias::begin();
+        SequenceUtil::startPageDirect(render_context, RaceDemoRoot);
+    }
+
+    function onUnload(context)
+    {
+        CommandAlias::end();
+    }
+
+    function getNextGameParameter(context, time_out_limit_ref)
+    {
+        var get_leavedemo_course = function () 
+        {
+            var ldc;
+            var ldc_list = LeaveDemoUtil::getCourseList();
+            var idx = GAME_STATUS.user_profile.context.leavedemo_course_index;
+            idx = idx % ldc_list.size;
+
+            ldc = ldc_list[idx];
+            GAME_STATUS.user_profile.context.leavedemo_course_index++;
+
+            if (ldc_list.size <= GAME_STATUS.user_profile.context.leavedemo_course_index)
+            {
+                GAME_STATUS.user_profile.context.leavedemo_course_index = 0;
+            }
+
+            return ldc;
+        };
+
+        var ldc = get_leavedemo_course(context);
+
+        var race_code;
+        {
+            var is_dirtsnow = gtengine::MSpecDB::isDirtSnow(ldc.course_code);
+
+            if (is_dirtsnow && GAME_STATUS.user_profile.option.limit_enemies_to_favorite_car_only)
+            {
+                var cars = main::GAME_STATUS.user_profile.option.getFavoriteEnemies();
+                var has_dirtsnow_cars = false;
+
+                foreach (var car in cars)
+                {
+                    var car_code = main::gtengine::MSpecDB::getCarCode(car);
+                    if (gtengine::MSpecDB::checkGenericFlag("have_dirt_tire", car_code))
+                    {
+                        has_dirtsnow_cars = true;
+                        break;
+                    }
+                }
+
+                if (!has_dirtsnow_cars)
+                {
+                    var giveup_cnt = 10;
+
+                    do
+                    {
+                        if (giveup_cnt == 0)
+                        {
+                            ldc = StaticConfig::LeaveDemoCourse(49, "suzuka", 150);
+                            break;
+                        }
+
+                        ldc = get_leavedemo_course(context);
+                        giveup_cnt--;
+                    } while (gtengine::MSpecDB::isDirtSnow(ldc.course_code));
+                }
+            }
+
+            if (is_dirtsnow)
+            {
+                var race_list = LeaveDemoUtil::getRaceDirtList();
+                var idx = GAME_STATUS.user_profile.context.leavedemo_race_dirt_index;
+
+                idx = idx % race_list.size;
+                race_code = race_list[idx][1];
+                GAME_STATUS.user_profile.context.leavedemo_race_dirt_index++;
+
+                if (race_list.size <= GAME_STATUS.user_profile.context.leavedemo_race_dirt_index)
+                    GAME_STATUS.user_profile.context.leavedemo_race_dirt_index = 0;
+            }
+            else
+            {
+                var race_list = LeaveDemoUtil::getRaceTarmacList();
+                var idx = GAME_STATUS.user_profile.context.leavedemo_race_tarmac_index;
+
+                idx = idx % race_list.size;
+                race_code = race_list[idx][1];
+                GAME_STATUS.user_profile.context.leavedemo_race_tarmac_index++;
+
+                if (race_list.size <= GAME_STATUS.user_profile.context.leavedemo_race_tarmac_index)
+                    GAME_STATUS.user_profile.context.leavedemo_race_tarmac_index = 0;
+
+                if (!ldc.canNascar())
+                {
+                    var race_label = gtengine::MSpecDB::getRaceLabel(race_code);
+
+                    if (race_label.endsWith("nascar"))
+                    {
+                        ++idx;
+                        idx = idx % race_list.size;
+                        race_code = race_list[idx][1];
+                    }
+                }
+            }
+        }
+
+        var TIME_SCALE = 10;
+        var entry_num = ldc.entry_num;
+        var gp = GameParameterUtil::createLeaveDemo(ldc.course_code, race_code, entry_num);
+
+        var rp = gp.event.race_parameter;
+        rp.weather_no_schedule = false;
+        rp.weather_no_precipitation = false;
+        rp.weather_no_wind = false;
+        rp.weather_prec_rain_only = false;
+        rp.weather_prec_snow_only = false;
+        rp.weather_random = true;
+        rp.weather_accel100 = 100 * TIME_SCALE;
+        rp.weather_total_sec = ldc.timeout_sec;
+        rp.weather_rate_sec1 = ldc.weather_rate_sec1;
+        rp.weather_rate_sec2 = ldc.weather_rate_sec2;
+        rp.weather_value0 = ldc.weather_value0;
+        rp.weather_value1 = ldc.weather_value1;
+        rp.weather_value2 = ldc.weather_value2;
+        rp.weather_value3 = ldc.weather_value3;
+        rp.weather_min_celsius = 3;
+        rp.weather_max_celsius = 3;
+        rp.weather_base_celsius = ldc.weather_base_celsius;
+
+        var mtime = pdistd::MTime();
+        mtime.year = 2010;
+        mtime.month = 11;
+        mtime.day = 27;
+        mtime.hour = ldc.hour.toInt();
+        mtime.minute = (ldc.hour - ldc.hour.toInt()) * 60;
+        mtime.second = 0;
+        rp.datetime = mtime;
+
+        rp.time_progress_speed = ldc.time_progress_speed;
+        rp.weather_base_celsius = ldc.weather_base_celsius;
+
+        if (time_out_limit_ref != nil)
+        {
+            var limit = GAME_STATUS.user_profile.option.autodemo_time_limit;
+            if (limit > ldc.timeout_sec || limit == 0)
+                limit = ldc.timeout_sec;
+
+            *time_out_limit_ref = limit;
+        }
+
+        return [gp, ldc];
+    }
+
+    function doNext(context)
+    {
+        if (RaceDemoRoot::sPlayingCarDemo && !RaceDemoRoot::sSkipCarDemoRequest)
+            RaceDemoRoot::sSkipCarDemoRequest = true;
+
+        if (RaceDemoRoot::sCloseFlg || RaceDemoRoot::sDuringLoad)
+            return;
+
+        sDemoCount++;
+
+        if (sDemoCount > GAME_STATUS.user_profile.option.demo_returning_to_menu_interval && GAME_STATUS.user_profile.option.demo_returning_to_menu_interval != 0)
+        {
+            if (RaceDemoRoot::sPlaying)
+                RaceDemoRoot.close(context);
+
+        }
+        else
+            RaceDemoRoot.doRaceNext(context);
+    }
+}

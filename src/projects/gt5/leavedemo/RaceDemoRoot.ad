@@ -1,0 +1,457 @@
+module ROOT
+{
+    DebugInfo.visible = false;
+    SceneFace.visible = false;
+
+    static sWatcher;
+    static sPlaying = false;
+    static sPlayingCarDemo = false;
+    static sStartTime = nil;
+    static sTimeOutLimit = GAME_STATUS.user_profile.option.autodemo_time_limit;
+
+    static sCurrentLDC = nil;
+    static sDuringLoad = false;
+    static sCloseFlg = false;
+    static sSkipCarDemoRequest = false;
+    static sCarDemoMode = GAME_STATUS.user_profile.option.visible_demo_carshow;
+    static sCarDemoShortestTime = 60000000;
+
+    method close(context)
+    {
+        if (!sCloseFlg)
+        {
+            sCloseFlg = true;
+            SequenceUtil::setupTransition(context, context.getCursorProject().GTLogoTransition);
+            context.pageOutRootTransition();
+            context.syncOutRootTransition();
+
+            if (sDuringLoad)
+            {
+                context.disableInput();
+                context.filterKeyEvent();
+                return;
+            }
+        }
+
+        ORG.getRaceSound().start = false;
+        SequenceUtil::startProjectDirect(context, "gttop");
+    }
+
+    method onTick(context)
+    {
+        if (sStartTime != nil)
+        {
+            var now = pdistd::GetSystemTimeMicroSecond();
+            var diff = (now - sStartTime) / 1000000;
+
+            if (diff > sTimeOutLimit)
+                doNext(context);
+        }
+    }
+
+    method onInitialize(context)
+    {
+        PaceUtil::deactivate();
+        sWatcher = WatcherUtil::Create(context, onTick, 60);
+        context.pushEvent(menu::MScriptEvent(context, self, "on_initialize"));
+    }
+
+    method on_initialize(context)
+    {
+        if (sCarDemoMode)
+            self.start_cardemo(context);
+
+        self.start_race(context);
+    }
+
+    function before_build_cb(gp)
+    {
+        var rp = gp.event.race_parameter;
+        var meter = sCurrentLDC.gap_meter;
+
+        for (var i = 0; i < rp.racers_max; ++i)
+        {
+            rp.setStartTypeSlot(i, gtengine::StartType::ROLLING3);
+            rp.setLaunchPosition(i, (i == 0) ? -1 : -meter * i);
+            rp.setLaunchSpeed(i, 100);
+        }
+
+        rp.useLaunchData(true);
+    }
+
+    function delay_thread(context, usec = 100000)
+    {
+        context.flushEvent(function (e) 
+        {
+            return true;
+        });
+
+        pdistd::DelayThread(usec);
+    }
+
+    function busy_wait(context, func, interval_usec = 100000, timeout_sec = 120)
+    {
+        var flush_func = function () {
+            return true;
+        };
+
+        pdistd::BusyWait(function (context, func, flush_func) 
+        {
+            context.flushEvent(flush_func);
+            return func();
+        }, interval_usec, timeout_sec, context, func, flush_func);
+    }
+
+    method start_race(context)
+    {
+        self.end_race(context);
+        sPlaying = true;
+        sDuringLoad = true;
+
+        if (!sCarDemoMode)
+        {
+            context.event_mask = 5;
+            context.disableInput();
+            context.filterKeyEvent();
+        }
+
+        |var gp, var ldc| = getNextGameParameter(context, &sTimeOutLimit);
+        sCurrentLDC = ldc;
+        GameParameterUtil::setupRaceOperator(gp, nil, nil, nil, before_build_cb);
+
+        RaceOperator.allocateResource(4);
+        ORG.disableRenderingRace();
+        ORG.disableSoundingRace();
+        ORG.exitCourse();
+        RaceOperator.checkIn();
+        context.sync(1.0);
+
+        busy_wait(context, ORG.hasLoadingCarDone, 10000, 120);
+        ORG.requestLoadingCourse();
+        context.sync(1.0);
+
+        busy_wait(context, ORG.canEnterCourse, 10000, 120);
+        ORG.enterCourse();
+        busy_wait(context, ORG.inCourse, 10000, 120);
+        ORG.startSession(gp.event.race_parameter, false, gtengine::StartSessionCameraType::DISABLE_INPUT_WITHOUT_ZOOM, false);
+
+        ORG.pauseHandleAvailable = false;
+        ORG.pauseAvailable = false;
+
+        {
+            var target = (RaceOperator.checked_in_car_num - 1) / 2;
+            for (var i = 0; i < RaceOperator.checked_in_car_num; ++i)
+            {
+                var cp = ORG.getEntriedCarParameter(i);
+
+                if (cp != nil && cp.target)
+                {
+                    target = i;
+                    break;
+                }
+            }
+
+            ORG.setCameraTarget(0, target);
+            ORG.setRaceDisplayTarget(0, target);
+        }
+        
+        {
+            busy_wait(context, ORG.inSession, 10000, 120);
+            ORG.enableRenderingRace();
+            var stream_progress = -1;
+
+            while (!ORG.isFinishedFirstLoad())
+            {
+                delay_thread(context);
+            }
+        }
+
+        busy_wait(context, ORG.isRenderReady, 10000, 120);
+        ORG.pauseRace = true;
+        sSkipCarDemoRequest = false;
+
+        if (sCarDemoMode)
+        {
+            ORG.disableRenderingRace();
+
+            while (pdistd
+                ::GetSystemTimeMicroSecond() - sStartTime < sCarDemoShortestTime)
+            {
+                if (sSkipCarDemoRequest)
+                    break;
+
+                if (sCloseFlg)
+                    break;
+
+                delay_thread(context);
+                ORG.pauseRace = true;
+            }
+
+            if (sCloseFlg)
+            {
+                ORG.pauseRace = false;
+                ORG.enableRenderingRace();
+                end_cardemo(context, true);
+                close(context);
+                sCloseFlg = false;
+            }
+
+            else
+            {
+                end_cardemo(context);
+                context.wait(1.0);
+                SoundUtil::BGMPlayGroup(SoundUtil::SCENE_REPLAY, "racing", nil, 0.0, 3.0);
+
+                ORG.pauseRace = false;
+                context.pageInRootTransition();
+                ORG.enableRenderingRace();
+                ORG.enableSoundingRace();
+            }
+        }
+
+        else
+        {
+            SoundUtil::BGMPlayGroup(SoundUtil::SCENE_REPLAY, "racing", nil, 0.0, 3.0);
+            ORG.pauseRace = false;
+            context.pageInRootTransition();
+            context.enableInput();
+            ORG.enableSoundingRace();
+        }
+
+        sStartTime = pdistd::GetSystemTimeMicroSecond();
+        sDuringLoad = false;
+        DebugInfo.visible = false;
+    }
+
+    method end_race(context, without_transition)
+    {
+        if (!sPlaying)
+            return;
+
+        ORG.getRaceSound().start = false;
+        sStartTime = nil;
+
+        if (without_transition == nil || !without_transition)
+        {
+            SequenceUtil::setupTransition(context, context.getCursorProject().GTLogoTransition);
+            context.pageOutRootTransition();
+            context.syncOutRootTransition();
+        }
+
+        ORG.disableRenderingRace();
+        ORG.disableSoundingRace();
+        ORG.endSession();
+        RaceOperator.checkOut();
+        ORG.exitCourse();
+        RaceOperator.destroyRace();
+        sPlaying = false;
+        RaceOperator.clearResource();
+        RaceOperator.clear();
+    }
+
+    method doRaceNext(context)
+    {
+        end_race(context);
+
+        if (sCarDemoMode)
+            start_cardemo(context);
+
+        start_race(context);
+    }
+
+    static sXesList = [
+        ["color_select_white", "black"],
+        ["color_select_day", "white"],
+        ["color_select_morning", "white"],
+        ["color_select_night", "white"]
+    ];
+
+    method loadSceneFace(context, car_code, car_color)
+    {
+        var cp;
+        var favorite_car_only = GAME_STATUS.user_profile.option.limit_favorite_car_only && GAME_STATUS.user_profile.option.hasFavoriteCar();
+        
+        if (favorite_car_only)
+        {
+            var cars = [];
+            var favorite_cars = main::GAME_STATUS.user_profile.option.favorite_cars;
+
+            for (var i = 0; i < favorite_cars.size; i++)
+            {
+                var car_code = favorite_cars[i];
+
+                if (car_code == main::gtengine::MSpecDB::NO_CODE64)
+                    break;
+
+                cars.push(car_code);
+            }
+
+            cars.randomShuffle();
+            var i = pdistd::MRandom::GetValue(0, cars.size);
+            var car_code = cars[i];
+            var col_num = gtengine::MSpecDB::getCarVariation(car_code);
+
+            cp = gtengine::MCarParameter(car_code);
+            cp.color = pdistd::MRandom::GetValue(0, col_num);
+        }
+
+        else
+        {
+            var aspec_lv = GAME_STATUS.user_profile.getAspecLevel();
+            var bspec_lv = GAME_STATUS.user_profile.getBspecLevel();
+            var purchase_level = (aspec_lv > bspec_lv) ? aspec_lv : bspec_lv;
+
+            if (purchase_level < 30)
+                purchase_level = 39;
+            else
+                purchase_level = 40;
+
+            var cars = CarData::RandomPickup(1, "WHERE purchase_level <= %{purchase_level} AND car_dealer = 1");
+            car_code = (cars != nil && cars.size > 0) ? cars[0] : gtengine::MSpecDB::getCarCode("gtr_07");
+
+            if (gtengine::MSpecDB::getCarLabel(car_code) == "corvette_c7_proto_13_bm")
+            {
+                var c7_proto_bm_enable = Grim2.getServerOptionToInt("gt5", "c7_proto_bm.enable", 0).toBool();
+                var c7_proto_bm_installed = DLCUtil::isInstalled(DLCUtil::TYPE::CAR_008);
+
+                if (!c7_proto_bm_enable && !c7_proto_bm_installed)
+                    car_code = gtengine::MSpecDB::getCarCode("gtr_07");
+            }
+
+            if (gtengine::MSpecDB::getCarLabel(car_code) == "corvette_c7_proto_13")
+            {
+                var c7_proto_enable = Grim2.getServerOptionToInt("gt5", "c7_proto.enable", 0).toBool();
+                var c7_proto_installed = DLCUtil::isInstalled(DLCUtil::TYPE::CAR_009);
+
+                if (!c7_proto_enable && !c7_proto_installed)
+                    car_code = gtengine::MSpecDB::getCarCode("gtr_07");
+            }
+
+            var col_num = gtengine::MSpecDB::getCarVariation(car_code);
+            cp = gtengine::MCarParameter(car_code);
+            cp.color = pdistd::MRandom::GetValue(0, col_num);
+        }
+
+        if (cp == nil)
+        {
+            if (car_code == nil)
+                car_code = gtengine::MSpecDB::getCarCode("gtr_07");
+
+            if (car_color == nil)
+                car_color = 0;
+
+            cp = gtengine::MCarParameter();
+            cp.setCarCode(car_code);
+            cp.color = car_color;
+        }
+
+        var scene_alias = "color_select";
+        SceneFaceUtil::loadScene(SceneFace, scene_alias, cp, nil, true);
+
+        if (scene_alias == "color_select")
+        {
+            var i = pdistd::MRandom::GetValue(0, sXesList.size);
+            SceneFaceUtil::loadScene(SceneFace, sXesList[i][0]);
+        }
+    }
+
+    method start_cardemo(context)
+    {
+        self.end_cardemo(context);
+
+        if (sCloseFlg)
+            return;
+
+        sPlayingCarDemo = true;
+        sSkipCarDemoRequest = false;
+        SoundUtil::MenuBGMCrossfadeGroup("menu", 0.0, 3.0);
+
+        context.event_mask = 5;
+        context.disableInput();
+        context.filterKeyEvent();
+        loadSceneFace(context, nil, nil);
+        SceneFaceUtil::SetSignalHandler(SceneFace, SceneFaceUtil::HandleType::EVENT_MASK_OFF);
+        main::menu::FrameInterval = 2;
+        SceneFace.visible = true;
+
+        for (var i = 0; i < 30; i++)
+            delay_thread(context, 100000);
+
+        context.pageInRootTransition();
+        sStartTime = pdistd::GetSystemTimeMicroSecond();
+        context.enableInput();
+    }
+
+    method end_cardemo(context, without_transition)
+    {
+        if (!sPlayingCarDemo)
+            return;
+
+        if (without_transition == nil || !without_transition)
+        {
+            SequenceUtil::setupTransition(context, context.getCursorProject().GTLogoTransition);
+            context.pageOutRootTransition();
+            context.syncOutRootTransition();
+        }
+
+        SceneFace.execCommand("clearAllModel");
+        context.wait(0.3);
+        SceneFace.visible = false;
+        sPlayingCarDemo = false;
+        sSkipCarDemoRequest = false;
+    }
+
+    method onFinalize(context)
+    {
+        if (sCarDemoMode)
+            end_cardemo(context, true);
+
+        SceneFaceUtil::SetWaitSceneFace(context, nil);
+        end_race(context, true);
+
+        if (sWatcher != nil)
+        {
+            WatcherUtil::Delete(sWatcher);
+            sWatcher = nil;
+        }
+
+        PaceUtil::activate();
+        context.enableInput();
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        ROOT.close(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            case CELL_PAD_CTRL_L1:
+            case CELL_PAD_CTRL_R1:
+                main::sound.play("cursor");
+                doNext(context);
+                return EVENTRESULT_FILTER;
+
+            case CELL_PAD_CTRL_CIRCLE:
+                main::sound.play("cancel");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;
+
+            case CELL_PAD_CTRL_CROSS:
+                main::sound.play("ok");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;
+
+            case CELL_PAD_CTRL_START:
+                main::sound.play("ok");
+                ROOT.close(context);
+                return EVENTRESULT_FILTER;
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+}
