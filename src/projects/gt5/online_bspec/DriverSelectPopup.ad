@@ -1,0 +1,287 @@
+module ROOT
+{
+    module Mode
+    {
+        static SINGLE = 1;
+        static MULTI = 2;
+    }
+
+    hidden.visible = false;
+    hidden::Item::Body::check.visible = false;
+
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute user_id;
+    attribute position_x;
+    attribute position_y;
+    attribute driver_list;
+    attribute mode;
+    attribute select_list;
+    attribute select_max;
+
+    method open(context, user_id, x, y, driver_list, mode, select_max)
+    {
+        x = 754; // ?
+
+        self.position_x = x;
+        self.position_y = y;
+        self.user_id = user_id;
+        self.driver_list = driver_list;
+        self.mode = mode;
+        self.select_max = select_max;
+        self.result = nil;
+        self.closed = false;
+
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        var res = self.result;
+        self.result = nil;
+
+        return res;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        FadeActor.on_effect_end = function (context) 
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+        };
+
+        FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        Popup.sx = self.position_x;
+        Popup.sy = self.position_y;
+
+        Popup::Body::TitleRow::label.text = self.user_id;
+
+        Popup::Body::FootRow.visible = Mode::MULTI == self.mode;
+        Popup::Body::FootRow::oval.insensitive = true;
+
+        Popup::Body::ListBox.initialize(context);
+        ROOT.setFocus(Popup::Body::ListBox);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        self.select_list = nil;
+        Popup::Body::ListBox.finalize(context);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+    
+        return EVENTRESULT_FILTER;
+    }
+
+    module Popup::Body
+    {
+        module ListBox
+        {
+            method initialize(context)
+            {
+                self.setItemCount(0);
+                self.setItemTemplate(context, hidden::Item);
+
+                foreach (var driver in ROOT.driver_list)
+                {
+                    if (driver["dp"] != nil)
+                        continue;
+
+                    var dp = gtengine::MCarDriverParameter();
+                    var blob = pdistd::MBlob(driver["driver_parameter"]);
+                    blob = pdistd::Inflate(blob);
+                    dp.deserialize(blob);
+                    driver["dp"] = dp;
+                }
+
+                self.setItemCount(ROOT.driver_list.size);
+
+                ROOT.select_list = Array(ROOT.driver_list.size);
+                for (var i = 0; i < ROOT.select_list.size; ++i)
+                    ROOT.select_list[i] = false;
+
+                var size = ROOT.driver_list.size;
+                var height = hidden::Item.h * size;
+                if (!Popup::Body::FootRow.visible)
+                    height += 20;
+
+                ListBox.h = height;
+
+                var header_h = Popup::Body::TitleRow.h;
+                var footer_h = Popup::Body::FootRow.visible ? Popup::Body::FootRow.h : 0;
+
+                if ((height + ListBox.sy) + footer_h > 1054)
+                    Popup.sy = ((1054 - height) - header_h) - footer_h;
+            }
+
+            method finalize(context)
+            {
+                self.setItemCount(0);
+            }
+
+            method onVisibleNotify(context, indices)
+            {
+                foreach (var i in indices)
+                {
+                    if (self.getItemVisible(i))
+                    {
+                        var item = self.getItemWidget(i);
+                        if (item == nil)
+                        {
+                            item = self.getItemWidget(i, context);
+                            item.initialize(context, i, ROOT.driver_list[i], i == self.getItemCount() - 1);
+                        }
+                    }
+                    else
+                        self.setItemWidget(i, context, nil);
+                }
+            }
+
+            method onActivate(context)
+            {
+                var item = self.getItemWidget(self.focus_index);
+                if (item == nil)
+                    return EVENTRESULT_FILTER;
+
+                main::sound.play("ok");
+                var driver = item.driver;
+
+                if (driver["status"] != 1)
+                {
+                    ERROR(context, ROOT, "ERROR_DRIVER_IN_USE");
+                }
+                else
+                {
+                    if (ROOT.mode == Mode::SINGLE)
+                    {
+                        ROOT.result = [item.driver];
+                        ROOT.close(context);
+                    }
+                    else
+                    {
+                        if (!item.Body::check.visible)
+                        {
+                            var select_count = 0;
+                            foreach (var selected in ROOT.select_list)
+                            {
+                                if (selected)
+                                    ++select_count;
+                            }
+
+                            if (ROOT.select_max <= select_count)
+                            {
+                                ERROR(context, ROOT, "ERROR_ENTRY_MAX_OVER");
+                                return EVENTRESULT_FILTER;
+                            }
+                        }
+
+                        item.Body::check.visible = !item.Body::check.visible;
+                        ROOT.select_list[self.focus_index] = item.Body::check.visible;
+
+                        var has_select = false;
+                        foreach (var selected in ROOT.select_list)
+                        {
+                            if (selected)
+                            {
+                                has_select = true;
+                                break;
+                            }
+                        }
+
+                        FootRow::oval.insensitive = !has_select;
+                    }
+                }
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module FootRow
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                var driver_list = [];
+                var count = ListBox.getItemCount();
+                for (var i = 0; i < count; ++i)
+                {
+                    if (ROOT.select_list[i])
+                        driver_list.push(ROOT.driver_list[i]);
+                }
+
+                ROOT.result = driver_list;
+                ROOT.close(context);
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module hidden
+    {
+        module Item
+        {
+            attribute driver;
+
+            method initialize(context, index, driver, is_last)
+            {
+                self.driver = driver;
+                self.Body::check.visible = ROOT.select_list[index];
+                self.Body::Info::TextFace.text = driver["name"];
+
+                self.Body::Icon::ImageFace.image_path = ThumbnailUtil::Avatar::getImagePath(
+                    ThumbnailUtil::Avatar::Genre::SIMPLE, 
+                    ThumbnailUtil::Avatar::Type::MET, 
+                    "M", 
+                    driver["helmet"], driver["helmet_color"], 
+                    driver["wear"], driver["wear_color"]
+                );
+
+                self.breakline.visible = !is_last;
+
+                var dp = driver["dp"];
+                var condition = dp.growth_parameter.condition;
+                var condition_id = 2;
+                if (condition > 8)
+                    condition_id = 1;
+                else if (condition < -8)
+                    condition_id = 3;
+
+                self.Body::Icon::ImageFaceCondition.image_path = "";
+                self.Body::Icon::ImageFaceCondition.image_path = "piece/driver_condition/%{condition_id}.img";
+
+                self.Body::Icon::Slash.visible = 1 != driver["status"];
+                self.Body::Info::Level::Value::Credit.setCredit(context, driver["online_credit"]);
+
+                var current_level = dp.growth_parameter.lv;
+                self.Body::Info::Level::Value::TextFace.text = current_level;
+
+                var current_point = GAME_STATUS.user_profile.getCurrentPoint(dp.growth_parameter.experience);
+                var need_exp_for_next = GAME_STATUS.user_profile.getPointForNextLevel(current_level);
+
+                var width = self.Body::Info::Level::Bar::Progress::bar::ColorFace.w;
+                self.Body::Info::Level::Bar::Progress::bar::ScalarInterpolator.setEndValue(0, (width * current_point.toFloat()) / need_exp_for_next);
+                self.Body::Info::Level::Bar::Progress::bar::ScalarInterpolator.restart();
+            }
+        }
+    }
+}

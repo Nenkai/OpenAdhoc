@@ -1,0 +1,223 @@
+module ROOT
+{
+    attribute waiting_watcher;
+    attribute plan_watcher;
+    attribute start_race;
+    attribute gp_list;
+    attribute extend_watcher;
+
+    method open(context, gp_list)
+    {
+        self.gp_list = gp_list;
+        self.start_race = false;
+        SequenceUtil::startPage(context, ROOT);
+    }
+
+    method close(context)
+    {
+        SequenceUtil::startPage(context, OnlineBSpecRoot);
+    }
+
+    method onInitialize(context)
+    {
+        OnlineBSpec.requestBeginRemoteMode(function (args) {});
+
+        if (nil == self.waiting_watcher)
+            self.waiting_watcher = WatcherUtil::Create(context, onTickWaiting, 6 * 60);
+
+        if (nil == self.plan_watcher)
+            self.plan_watcher = WatcherUtil::Create(context, onTickPlan, 30 * 60);
+
+        if (nil == self.extend_watcher)
+            self.extend_watcher = WatcherUtil::Create(context, onTickExtend, (10 * 60) * 60);
+
+        HDToolTip::tip.remove();
+        HDToolTip::tip.action_type = 4;
+        HDToolTip::tip.value = context.translate(ROOT, "RemoteRace", "GTCOM_DESCRIPTION");
+
+        ROOT.setFocus(ROOT);
+    }
+
+    method onFinalize(context)
+    {
+        Grim2.clearCallback();
+        OnlineBSpec.clearCallback();
+
+        if (!self.start_race)
+            OnlineBSpec.requestEndRemoteMode(function (args) {});
+
+        if (nil != self.waiting_watcher)
+        {
+            WatcherUtil::Delete(self.waiting_watcher);
+            self.waiting_watcher = nil;
+        }
+        if (nil != self.plan_watcher)
+        {
+            WatcherUtil::Delete(self.plan_watcher);
+            self.plan_watcher = nil;
+        }
+        if (nil != self.extend_watcher)
+        {
+            WatcherUtil::Delete(self.extend_watcher);
+            self.extend_watcher = nil;
+        }
+
+        self.gp_list = nil;
+        OnlineBSpec.clearCallback();
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        PROJECT.history['waiting_mode'] = false;
+        ROOT.close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onTickWaiting(context)
+    {
+        if (nil == self.waiting_watcher)
+            return;
+
+        Waiting::ScalarInterpolator.on_effect_end = function (context) 
+        {
+            Waiting::ScalarInterpolator.on_effect_end = nil;
+            Waiting.x = pdistd::MRandom::GetValue(0, 1920 - Waiting.w);
+            Waiting.y = pdistd::MRandom::GetValue(0, (1080 - Waiting.h) - HDToolTip.h);
+            resetActors(Waiting, false, false);
+        }
+
+        resetActors(Waiting, true, false);
+    }
+
+    method onTickPlan(context)
+    {
+        if (nil == self.plan_watcher)
+            return;
+
+        OnlineBSpec.requestPlan(function (args) 
+        {
+            |var context, var request| = args;
+            if (request.isDone())
+            {
+                var plan = OnlineBSpec.decodePlan(request);
+                var drivers = plan["drivers"];
+
+                foreach (var driver in drivers)
+                {
+
+                }
+
+                if (0 != plan["plan_id"] && 2 == plan["status"])
+                    startBSpecRace(context, plan);
+            }
+        });
+    }
+
+    method onTickExtend(context)
+    {
+        if (nil == self.extend_watcher)
+            return;
+
+        if (Grim2.isInitialize())
+        {
+            Grim2.requestExtendSession(function (args) 
+            {
+                |var context, var request| = args;
+                if (request.isError() || 0 == Grim2.decodeResult(request))
+                    Grim2.setInitialize(false);
+            })
+        }
+        else
+            LoginUtil::tryLogin(context);
+    }
+
+    function getGpList(context)
+    {
+        if (nil != ROOT.gp_list)
+            return ROOT.gp_list;
+
+        var gp_list = [];
+        var request = EventRace2.requestOnlineEventList(function (args) {});
+        if (Grim2Util::__deprecated__join__(context, request))
+        {
+            var xml = EventRace2.getOnlineEventList();
+            var event_list = OnlineEventUtil::parse(xml);
+
+            foreach (var event in event_list)
+            {
+                if (!OnlineEventUtil::isRemoteRaceEvent(event))
+                    continue;
+
+                var event_id = event["id"];
+                var request2 = EventRace2.requestGameParameterList(event_id, function (args) {});
+                if (Grim2Util::__deprecated__join__(context, request2))
+                {
+                    var xml = EventRace2.getGameParameterList(event_id);
+                    var gp_list0 = GameParameterUtil::parseXML(xml);
+                    gp_list += gp_list0;
+                }
+            }
+        }
+
+        return gp_list;
+    }
+
+    function startBSpecRace(context, plan)
+    {
+        var gp0 = nil;
+        var gp_list = getGpList(context);
+
+        foreach (var gp in gp_list)
+        {
+            if (gp.game_id == plan["game_id"])
+            {
+                gp0 = gp;
+                break;
+            }
+        }
+
+        if (nil == gp0)
+        {
+            OnlineBSpec.requestBeginRemoteMode(function (args) {});
+            return;
+        }
+
+        ROOT.start_race = true;
+        var driver_list = plan["drivers"];
+        var reordered_driver_list = Array(driver_list.size);
+        var j = 1;
+        var my_idx = -1;
+
+        for (var i = 0; i < driver_list.size; ++i)
+        {
+            var driver = driver_list[i];
+            var buf_dp = pdistd::Inflate(driver["driver_parameter"]);
+            var dp = gtengine::MCarDriverParameter();
+            dp.deserialize(buf_dp);
+            driver["dp"] = dp;
+
+            var request = UserProfile2.requestUserProfile(driver["user_id"], function (args) {});
+            if (Grim2Util::__deprecated__join__(context, request))
+            {
+                var u = UserProfile2.decodeUserProfile(request);
+                driver["user_number"] = u["user_number"];
+            }
+
+            if (my_idx == -1 && driver["user_id"] == Grim2.getLoginUserId())
+            {
+                reordered_driver_list[0] = driver;
+                my_idx = i;
+            }
+            else
+            {
+                reordered_driver_list[j] = driver;
+                ++j;
+            }
+        }
+
+        var auto_save = 0 != plan["replay_save"];
+        startRemoteRace(context, gp0, reordered_driver_list, auto_save, plan["plan_id"]);
+    }
+}

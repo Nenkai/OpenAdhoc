@@ -1,0 +1,795 @@
+module ROOT
+{
+    hidden.visible = false;
+    attribute watcher;
+
+    module __BalloonTarget__
+    {
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+            var localized_text = context.translate(ROOT, "RemoteRace", w.name.upcase());
+            BalloonTip.set_value(context, w, localized_text, 0);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    function beginEntry(context, driver)
+    {
+        var request = OnlineBSpec.requestBeginEntry(driver["driver_id"], function (args) {});
+
+        if (Grim2Util::__deprecated__join__(context, request) && OnlineBSpec.decodeResult(request) != 0)
+            return true;
+        else
+            return false;
+    }
+
+    function endEntry(context, driver)
+    {
+        var request = OnlineBSpec.requestEndEntry(driver["driver_id"], function (args) {});
+
+        if (Grim2Util::__deprecated__join__(context, request) && OnlineBSpec.decodeResult(request) != 0)
+            return true;
+        else
+            return false;
+    }
+
+    function startRace(context, auto_save)
+    {
+        |var my_driver_list, var your_driver_list| = getEntryDriverList(context);
+        if (my_driver_list.size == 0)
+        {
+            ERROR(context, ROOT, "ERROR_NO_ENTRY_MYSELF");
+            return;
+        }
+        if (your_driver_list.size == 0)
+        {
+            ERROR(context, ROOT, "ERROR_NO_ENTRY_FRIENDS");
+            return;
+        }
+
+        var gp0 = RaceEntry.gp;
+        var driver_list = my_driver_list + your_driver_list;
+        startRemoteRace(context, gp0, driver_list, auto_save);
+    }
+
+    function getEntryDriverList(context)
+    {
+        var list = RaceEntry::List::Body;
+        var index = 0;
+        var my_driver_list = [];
+        var your_driver_list = [];
+
+        for (var it = list.first; it != nil; it = it.next_widget)
+        {
+            var item_w = it;
+            if (item_w.driver != nil)
+            {
+                if (item_w.OnlineId::Button::Me.visible)
+                    my_driver_list.push(item_w.driver);
+                else
+                    your_driver_list.push(item_w.driver);
+            }
+        }
+
+        return [my_driver_list, your_driver_list];
+    }
+
+    function getEstimateMinute(gp)
+    {
+        var race_info_minute = gp.event.information.race_info_minute;
+        return OnlineEventUtil::getEstimateMinute(race_info_minute);
+    }
+
+    method open(context)
+    {
+        SequenceUtil::startPage(context, ROOT);
+    }
+
+    method close(context)
+    {
+        SequenceUtil::startProject(context, "gtmode");
+    }
+
+    method onInitialize(context)
+    {
+        ButtonHelpGT5.set(context, [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")], 
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+        ]);
+
+        EventSelect.gp_list = nil;
+        if (PROJECT.history['waiting_mode'])
+        {
+            context.pushEvent(menu::MFunctionEvent(forceRemoteMode, context));
+        }
+        else
+        {
+            EventSelect.initialize(context);
+            EventSelect.show(context, true);
+            RaceEntry.show(context, false);
+            ROOT.setFocus(EventSelect::Bar::Exit);
+        }
+
+        if (self.watcher == nil)
+            self.watcher = WatcherUtil::Create(context, onTick, (60 * 60) * 10);
+
+        SoundUtil::MenuBGMCrossfadeGroup("menu", 0.0, 3.0, true);
+    }
+
+    method forceRemoteMode(context)
+    {
+        RemoteModeRoot.open(context);
+    }
+
+    method onTick(context)
+    {
+        if (self.watcher == nil)
+            return;
+
+        Grim2.requestExtendSession(function (args) {});
+    }
+
+    method onFinalize(context)
+    {
+        if (self.watcher != nil)
+        {
+            WatcherUtil::Delete(self.watcher);
+            self.watcher = nil;
+        }
+
+        OnlineBSpec.clearCallback();
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        ROOT.setFocus(EventSelect::Bar::Exit);
+        return EVENTRESULT_FILTER;
+    }
+
+    method onKeyPress(context, event)
+    {
+        switch (event.keysym)
+        {
+            default:
+                ;
+        }
+
+        return EVENTRESULT_CONTINUE;
+    }
+
+    module EventSelect
+    {
+        attribute gp_list;
+
+        method initialize(context)
+        {
+            var adj = menu::MAdjustment();
+            ListBox.h_adjustment = adj;
+            HScrollbar.adjustment = adj;
+
+            ListBox.setItemCount(0);
+            ListBox.setItemTemplate(context, hidden::ItemEvent);
+            self.gp_list = [];
+
+            var request = EventRace2.requestOnlineEventList(function (args) {});
+            if (Grim2Util::__deprecated__join__(context, request))
+            {
+                var xml = EventRace2.getOnlineEventList();
+                var event_list = OnlineEventUtil::parse(xml);
+
+                foreach (var event in event_list)
+                {
+                    if (!OnlineEventUtil::isRemoteRaceEvent(event))
+                        continue;
+
+                    var event_id = event["id"];
+                    var request2 = EventRace2.requestGameParameterList(event_id, function (args) {});
+                    if (Grim2Util::__deprecated__join__(context, request2))
+                    {
+                        var xml = EventRace2.getGameParameterList(event_id);
+                        var gp_list0 = GameParameterUtil::parseXML(xml);
+                        self.gp_list += gp_list0;
+                    }
+                }
+            }
+
+            ListBox.setItemCount(self.gp_list.size);
+            Bspec.initialize(context);
+
+            if (self.gp_list.size == 0)
+            {
+                context.pushEvent(menu::MFunctionEvent(function (context) 
+                {
+                    ERROR(context, ROOT, "ERROR_EVENT_NOT_FOUND");
+                }, context));
+            }
+        }
+
+        method show(context, _show)
+        {
+            self.ScalarInterpolator.reverse = _show;
+            self.ScalarInterpolator.restart();
+            self.insensitive = !_show;
+        }
+
+        module Bspec
+        {
+            method initialize(context)
+            {
+                HBox.clearWindow(context);
+                var driver_list = GLOBAL_STATUS.user_profile.residence.getContractDriverList();
+
+                foreach (var driver in driver_list)
+                {
+                    var item_w = hidden::ItemDriver.doCopy();
+                    item_w.initialize(context, driver);
+                    HBox.appendChild(context, item_w);
+                }
+            }
+
+            method onFinalize(context)
+            {
+                HBox.clearWindow(context);
+            }
+        }
+
+        module ListBox
+        {
+            method onVisibleNotify(context, indices)
+            {
+                foreach (var i in indices)
+                {
+                    if (self.getItemVisible(i))
+                    {
+                        var item = self.getItemWidget(i);
+                        if (item == nil)
+                        {
+                            item = self.getItemWidget(i, context);
+                            item.initialize(context, EventSelect.gp_list[i]);
+                        }
+                    }
+                    else
+                        self.setItemWidget(i, context, nil);
+                }
+            }
+
+            method onActivate(context)
+            {
+                var item = self.getItemWidget(self.focus_index);
+                if (item != nil)
+                {
+                    main::sound.play("ok");
+                    EventSelect.show(context, false);
+                    RaceEntry.initialize(context, item.gp, item.course_info);
+                    RaceEntry.show(context, true);
+                    ROOT.setFocus(RaceEntry::Buttons::Close);
+                }
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module Bar
+        {
+            import __BalloonTarget__::*;
+
+            module Manual
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    loadManualProject(context);
+                    ManualProject::ManualDetailPopup.open(context, ["Community_03"], 0);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Exit
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("return");
+                    ROOT.close(context);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+
+        module DriverList
+        {
+            import __BalloonTarget__::*;
+
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                var mode = UserProfileProject::DriverPopup::Mode::FINDER;
+                var mode_params = Map();
+                var res = UserProfileProject::DriverPopup.open(context, mode, mode_params);
+                EventSelect::Bspec.initialize(context);
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module Buttons::HBox
+        {
+            method onFocusEnter(context, event)
+            {
+                var w = event.widget;
+                var label = "";
+
+                if (w.name == "RemoteMode")
+                    label = "START_WAITING";
+                else if (w.name == "Result")
+                    label = "SHOW_RESULT";
+
+                var localized_text = context.translate(ROOT, "RemoteRace", label);
+                BalloonTip.set_value(context, w, localized_text, 0);
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onFocusLeave(context)
+            {
+                BalloonTip.reset_value();
+                return EVENTRESULT_FILTER;
+            }
+
+            module RemoteMode
+            {
+                method onActivate(context)
+                {
+                    if (EventSelect.gp_list == nil || EventSelect.gp_list.size == 0)
+                    {
+                        main::sound.play("disable");
+                        ERROR(context, ROOT, "ERROR_EVENT_NOT_FOUND");
+                    }
+                    else
+                    {
+                        main::sound.play("ok");
+                        PROJECT.history['waiting_mode'] = true;
+                        RemoteModeRoot.open(context, EventSelect.gp_list);
+                    }
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Result
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    var user_id = Grim2.getLoginUserId();
+
+                    var request = OnlineBSpec.requestRaceResultSummaryList(user_id, function (args) {});
+
+                    if (Grim2Util::__deprecated__join__(context, request))
+                    {
+                        var summary_list = OnlineBSpec.decodeResultSummaryList(request);
+                        if (summary_list.size > 0)
+                            UserProfileProject::RemoteRaceResultListPopup.open(context, summary_list, user_id);
+                        else
+                            OK(context, ROOT, "NO_RESULT_LIST");
+                    }
+                    else
+                        ERROR(context, ROOT, "NO_RESULT_LIST");
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+    }
+
+    module RaceEntry
+    {
+        attribute gp;
+        attribute course_info;
+
+        method initialize(context, gp, course_info)
+        {
+            self.gp = gp;
+            self.course_info = course_info;
+            var event = gp.event;
+            var estimate_minute = getEstimateMinute(gp);
+
+            Menu::Info::ImageFaceLogo.image_path = "piece/course_logo_S/%{course_info.logo}.img";
+            Menu::Info::ImageFaceMap.image_path = "piece/course_map_M/%{course_info.map}.img";
+            Menu::Info::ImageFaceTime.image_path = "image/gt5/online_bspec/time_%{estimate_minute}.dds";
+            Menu::Course::TextFace.text = context.translate(ROOT, "CourseName", course_info.name);
+            Menu::Lap::TextFace.text = "%d %s".format(event.race_parameter.race_limit_laps, context.translate(ROOT, "RemoteRace", "FORMAT_ESTIMATE_MINUTES").build(estimate_minute));
+            Menu::EntryMax::TextFace.text = event.race_parameter.entry_max;
+
+            if (event.entry_set.entry_generate.cars.size > 0)
+            {
+                var main_car = event.entry_set.entry_generate.cars[0];
+
+                Menu::Car::TextFaceCar.text = gtengine::MSpecDB::getCarShortName(main_car.label);
+                Menu::Car::TextFaceDealer.text = context.translate(ROOT, "TunerName", gtengine::MSpecDB::getTunerLabel(main_car.label));
+
+                var cp = gtengine::MCarParameter(main_car.label);
+                var color = gtengine::MSpecDB::getCarVariationFlag(main_car.label, 1);
+                Menu::Info::ImageFaceCar.image_path = "car/thumbnail_M/%s_%02d".format(cp.getCarLabel(), color);
+            }
+
+            self.List.initialize(context);
+            self.updateStatus(context);
+            self.Menu::Waiting::CheckBox.active = PROJECT.history['waiting_mode'];
+        }
+
+        method show(context, _show)
+        {
+            self.ScalarInterpolator.reverse = !_show;
+            self.ScalarInterpolator.restart();
+            self.insensitive = !_show;
+
+            OnlineBSpec.requestClear(function (args) {});
+        }
+
+        method updateStatus(context)
+        {
+            |var my_driver_list, var your_driver_list| = getEntryDriverList(context);
+            self.Buttons::StartRace.active = my_driver_list.size > 0 && your_driver_list.size > 0;
+            self.List::Counter::TextFace.text = "%d / %s".format(my_driver_list.size + your_driver_list.size, self.Menu::EntryMax::TextFace.text);
+
+            var entry_max = self.gp.event.race_parameter.entry_max;
+            if (your_driver_list.size == entry_max - 1)
+                self.List::Body.last.visible = false;
+            else
+                self.List::Body.last.visible = true;
+
+            if (entry_max == my_driver_list.size + your_driver_list.size)
+                ROOT.setFocus(self.Buttons::StartRace);
+        }
+
+        method onCancel(context)
+        {
+            main::sound.play("cancel");
+            ROOT.setFocus(Buttons::Close);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        module Menu
+        {
+            module CarList
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    UserProfileProject::EnemyCarListPopup.open(context, RaceEntry.gp.event, context.translate(ROOT, "RemoteRace", "CAR_LIST"));
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+
+        module List
+        {
+            method initialize(context)
+            {
+                self.Body.clearChild(context);
+                var item0 = hidden::ItemEntry.doCopy();
+                item0.initialize(context, Grim2.getLoginUserId(), "");
+
+                var item1 = hidden::ItemEntry.doCopy();
+                item1.initialize(context, "", "");
+
+                self.Body.appendChild(context, item0);
+                self.Body.appendChild(context, item1);
+            }
+
+            method onFinalize(context)
+            {
+                self.Body.clearChild(context);
+            }
+        }
+
+        module Buttons
+        {
+            module StartRace
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("next");
+                    PROJECT.history['waiting_mode'] = RaceEntry::Menu::Waiting::CheckBox.active;
+                    var auto_save = ROOT::RaceEntry::Menu::Replay::CheckBox.active;
+                    startRace(context, auto_save);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+
+            module Close
+            {
+                import __BalloonTarget__::*;
+
+                method close0(context)
+                {
+                    |var my_driver_list, var your_driver_list| = getEntryDriverList(context);
+                    if (my_driver_list.size > 0 || your_driver_list.size > 0)
+                    {
+                        if (!QUERY(context, ROOT, "QUERY_DELETE_DRIVER"))
+                            return EVENTRESULT_FILTER;
+
+                        foreach (var driver in my_driver_list)
+                            endEntry(context, driver);
+
+                        foreach (var driver in your_driver_list)
+                            endEntry(context, driver);
+                    }
+
+                    EventSelect.show(context, true);
+                    RaceEntry.show(context, false);
+                    ROOT.setFocus(EventSelect::Bar::Exit);
+                }
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    close0(context);
+
+                    return EVENTRESULT_FILTER;
+                }
+
+                method onCancel(context)
+                {
+                    main::sound.play("cancel");
+                    close0(context);
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+    }
+
+    module hidden
+    {
+        module ItemEvent
+        {
+            attribute course_info;
+            attribute gp;
+
+            method initialize(context, gp)
+            {
+                var event = gp.event;
+                var course_code = event.track.course_code;
+                var course_info = CourseData::getCourseInfo(course_code);
+                var estimate_minute = getEstimateMinute(gp);
+
+                Body::Info::ImageFaceLogo.image_path = "piece/course_logo_S/%{course_info.logo}.img";
+                Body::Info::ImageFaceMap.image_path = "piece/course_map_M/%{course_info.map}.img";
+                Body::Info::ImageFaceTime.image_path = "image/gt5/online_bspec/time_%{estimate_minute}.dds";
+                Body::Course::TextFace.text = context.translate(ROOT, "CourseName", course_info.name);
+                Body::Lap::TextFace.text = event.race_parameter.race_limit_laps;
+                Body::Lap::TextFace.text = "%d %s".format(event.race_parameter.race_limit_laps, context.translate(ROOT, "RemoteRace", "FORMAT_ESTIMATE_MINUTES").build(estimate_minute));
+                Body::EntryMax::TextFace.text = event.race_parameter.entry_max;
+
+                if (event.entry_set.entry_generate.cars.size > 0)
+                {
+                    var main_car = event.entry_set.entry_generate.cars[0];
+
+                    Body::Car::TextFaceCar.text = gtengine::MSpecDB::getCarShortName(main_car.label);
+                    Body::Car::TextFaceDealer.text = context.translate(ROOT, "TunerName", gtengine::MSpecDB::getTunerLabel(main_car.label));
+
+                    var cp = gtengine::MCarParameter(main_car.label);
+                    var color = gtengine::MSpecDB::getCarVariationFlag(main_car.label, 1);
+                    Body::Info::ImageFaceCar.image_path = "car/thumbnail_M/%s_%02d".format(cp.getCarLabel(), color);
+                }
+
+                self.gp = gp;
+                self.course_info = course_info;
+            }
+        }
+
+        module ItemDriver
+        {
+            method initialize(context, driver)
+            {
+                |var residence_id, var dp, var riding, var online, var online_grim_id| = driver;
+
+                self.Online.visible = online;
+                self.TextFace.text = dp.display_name;
+                var avatar_helmet_id = dp.head_color_code;
+
+                self.ImageFace.image_path = ThumbnailUtil::Avatar::getImagePath(
+                    ThumbnailUtil::Avatar::Genre::SIMPLE, 
+                    ThumbnailUtil::Avatar::Type::MET, 
+                    "M", 
+                    dp.head_code, dp.head_color_code, 
+                    dp.body_code, dp.body_color_code
+                );
+
+                var condition = dp.growth_parameter.condition;
+
+                var condition_id = 2;
+                if (condition > 8)
+                    condition_id = 1;
+                else if (condition < -8)
+                    condition_id = 3;
+
+                self.Condition.image_path = "piece/driver_condition/%{condition_id}.img";
+            }
+        }
+
+        module ItemEntry
+        {
+            attribute driver;
+
+            method initialize(context, user_id, driver_name, driver_level)
+            {
+                var is_me = user_id == Grim2.getLoginUserId();
+
+                self.OnlineId.active = is_me;
+                self.Driver.active = is_me;
+                self.Class.active = is_me;
+                self.OnlineId::TextFace.text = user_id;
+                self.OnlineId::TextFaceA.text = user_id;
+                self.OnlineId::Button::Me.visible = is_me;
+                self.OnlineId::Button::Add.visible = !is_me && "" == driver_name;
+                self.OnlineId::Button::Delete.visible = !is_me && "" != driver_name;
+
+                var country = "";
+                if (is_me)
+                {
+                    country = NP.getRegionName();
+                }
+                else if (user_id != "")
+                    country = self.driver["country"];
+
+                self.OnlineId::ImageFace.image_path = "piece/flag_ranking/%{country}.img";
+                self.Driver::TextFace.text = driver_name;
+
+                if (driver_level != nil)
+                    self.Class::TextFace.text = driver_level;
+            }
+
+            method getFriendList(context)
+            {
+                var friend_list = [];
+                var order = "A";
+                var request = UserProfile2.requestSimpleFriendList(order, function (args) {});
+
+                if (Grim2Util::__deprecated__join__(context, request))
+                {
+                    var user_profile_list = UserProfile2.decodeUserProfileList(request);
+                    var me = Grim2.getLoginUserId();
+
+                    foreach (var u in user_profile_list)
+                    {
+                        var user_id = u["user_id"];
+                        if (me != user_id)
+                            friend_list.push(user_id);
+                    }
+
+                    friend_list.sort(function (a, b) 
+                    {
+                        return a.upcase() < b.upcase();
+                    })
+                }
+
+                return friend_list;
+            }
+
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+
+                if (self.OnlineId::Button::Me.visible)
+                {
+                    var user_id = Grim2.getLoginUserId();
+                    var driver_list = [];
+                    var request = OnlineBSpec.requestDriverList(user_id, function (args) {});
+
+                    if (Grim2Util::__deprecated__join__(context, request))
+                        driver_list = OnlineBSpec.decodeDriverList(request);
+
+                    if (driver_list.size == 0)
+                        ERROR(context, ROOT, "ERROR_DRIVER_NOT_FOUND");
+
+                    else
+                    {
+                        var x = self.OnlineId::TextFace.sx;
+                        var y = self.OnlineId::TextFace.sy;
+                        var select_driver_list = DriverSelectPopup.open(context, user_id, x, y, driver_list, DriverSelectPopup::Mode::SINGLE);
+                        if (select_driver_list != nil)
+                        {
+                            if (self.driver != nil)
+                                endEntry(context, self.driver);
+                        
+                            var driver0 = select_driver_list[0];
+                            var res = beginEntry(context, driver0);
+
+                            if (res)
+                            {
+                                self.driver = driver0;
+                                self.driver["user_number"] = Grim2.getLoginUserNumber();
+                                self.Driver::TextFaceA.text = self.driver["name"];
+                                self.Class::TextFaceA.text = self.driver["level"];
+                            }
+                            else
+                                ERROR1(context, ROOT, "ERROR_ENTRY_FAILED", driver0["name"]);
+
+                            RaceEntry.updateStatus(context);
+                        }
+                    }
+                }
+                else if (self.OnlineId::Button::Add.visible)
+                {
+                    var entry_max = RaceEntry.gp.event.race_parameter.entry_max;
+                    var friend_entry_count = (self.parent.countChild() - 1) - 1;
+
+                    if (friend_entry_count >= entry_max - 1)
+                    {
+                        ERROR(context, ROOT, "ERROR_ENTRY_MAX_OVER");
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    var friend_list = getFriendList(context);
+                    if (friend_list.size == 0)
+                    {
+                        ERROR(context, ROOT, "ERROR_FRIEND_NOT_FOUND");
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    var x = self.OnlineId::TextFace.sx;
+                    var y = self.OnlineId::TextFace.sy;
+                    var select_max = (entry_max - 1) - friend_entry_count;
+
+                    var driver_list = FriendSelectPopup.open(context, x, y, select_max, friend_list);
+                    if (driver_list != nil)
+                    {
+                        var failed_list = [];
+
+                        foreach (var driver in driver_list)
+                        {
+                            var res = beginEntry(context, driver);
+                            if (res)
+                            {
+                                var item = hidden::ItemEntry.doCopy();
+                                item.driver = driver;
+                                item.initialize(context, driver["user_id"], driver["name"], driver["level"]);
+                                self.parent.appendChild(context, item);
+                            }
+                            else
+                                failed_list.push(driver["name"]);
+                        }
+
+                        self.parent.movetoLast(self);
+                        RaceEntry.updateStatus(context);
+
+                        if (failed_list.size)
+                            ERROR1(context, ROOT, "ERROR_ENTRY_FAILED", failed_list.join("\n"));
+                    }
+                }
+                else if (self.OnlineId::Button::Delete.visible)
+                {
+                    if (QUERY(context, ROOT, "QUERY_DELETE_DRIVER"))
+                    {
+                        var res = endEntry(context, self.driver);
+                        if (res)
+                        {
+                            var next_widget = self.next_widget;
+                            self.parent.removeChild(self);
+                            RaceEntry.updateStatus(context);
+                            ROOT.setFocus(next_widget);
+                        }
+                    }
+                }
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+}

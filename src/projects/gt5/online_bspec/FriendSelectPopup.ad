@@ -1,0 +1,316 @@
+module ROOT
+{
+    hidden.visible = false;
+
+    attribute popup;
+    attribute closed = false;
+    attribute result;
+    attribute position_x;
+    attribute position_y;
+    attribute select_max;
+    attribute friend_list;
+    attribute user_profile_map;
+
+    static selected_user_id = "";
+
+    function setPhotoImage(context, photo_id, image_face)
+    {
+        if (photo_id == "")
+        {
+            image_face.image_path = "";
+            return;
+        }
+
+        var image_path = Photo.getImagePath(photo_id);
+        if (pdistd::Exist(image_path))
+        {
+            image_face.image_path = image_path;
+        }
+        else
+        {
+            Photo.requestImage(photo_id, function (args) 
+            {
+                |var context, var request| = args;
+                if (request.isDone())
+                    image_face.image_path = image_path;
+            });
+        }
+    }
+
+    method open(context, x, y, select_max, friend_list)
+    {
+        x = 348; // ?
+
+        self.position_x = x;
+        self.position_y = y;
+        self.select_max = select_max;
+        self.friend_list = friend_list;
+        self.result = nil;
+        self.closed = false;
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        var res = self.result;
+        self.result = nil;
+        return res;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+
+        FadeActor.on_effect_end = function (context) 
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+        };
+
+        FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        self.user_profile_map = Map();
+        Popup.sx = self.position_x;
+        Popup.sy = self.position_y;
+        Popup::Body::ListBox.initialize(context);
+        ROOT.setFocus(Popup::Body::ListBox);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        Photo.clearCallback();
+        UserProfile2.clearCallback();
+        OnlineBSpec.clearCallback();
+        Popup::Body::ListBox.finalize(context);
+        self.user_profile_map = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        close(context);
+        return EVENTRESULT_FILTER;
+    }
+
+    module Popup::Body
+    {
+        module ListBox
+        {
+            attribute friend_list;
+
+            method initialize(context)
+            {
+                self.friend_list = [];
+                self.setItemCount(0);
+                self.setItemTemplate(context, hidden::Item);
+
+                var list = ROOT.friend_list;
+                list.sort(function (a, b) 
+                {
+                    return a.upcase() < b.upcase();
+                });
+                self.setItemCount(list.size);
+
+                var focus_index = 0;
+                foreach (var user_id in list)
+                {
+                    if (ROOT::selected_user_id == user_id)
+                    {
+                        self.focus_index = focus_index;
+                        break;
+                    }
+
+                    ++focus_index;
+                }
+                self.friend_list = list;
+
+                var size = self.friend_list.size;
+                if (size >= 9)
+                {
+                    Popup::Body::Space1.visible = true;
+                    Popup::Body::Space2.visible = true;
+                    ListBox.h = 1040;
+                    Popup.sy = -20;
+                }
+                else
+                {
+                    Popup::Body::Space1.visible = false;
+                    Popup::Body::Space2.visible = false;
+
+                    var height = hidden::Item.h * size;
+                    ListBox.h = height;
+                    if (height + ListBox.sy > 1040)
+                        Popup.sy = 1040 - height;
+                }
+            }
+
+            method finalize(context)
+            {
+                self.setItemCount(0);
+            }
+
+            method onVisibleNotify(context, indices)
+            {
+                foreach (var i in indices)
+                {
+                    if (self.getItemVisible(i))
+                    {
+                        var item = self.getItemWidget(i);
+                        if (item == nil)
+                        {
+                            item = self.getItemWidget(i, context);
+                            item.initialize(context, self.friend_list[i], i == self.focus_index, i == self.getItemCount() - 1);
+                        }
+                    }
+                    else
+                        self.setItemWidget(i, context, nil);
+                }
+            }
+
+            method onFocusNotify(context, new_index, old_index)
+            {
+                var old_item = self.getItemWidget(old_index);
+                if (old_item != nil)
+                {
+                    old_item.Body::Icon::Image::ColorFaceF::ScalarInterpolator.reverse = true;
+                    old_item.Body::Icon::Image::ColorFaceF::ScalarInterpolator.restart();
+                }
+
+                var new_item = self.getItemWidget(new_index);
+                if (new_item != nil)
+                {
+                    new_item.Body::Icon::Image::ColorFaceF::ScalarInterpolator.reverse = false;
+                    new_item.Body::Icon::Image::ColorFaceF::ScalarInterpolator.restart();
+                }
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                if (ROOT.closed)
+                    return EVENTRESULT_FILTER;
+
+                var item = self.getItemWidget(self.focus_index);
+                if (item == nil || item.user_profile == nil)
+                    return EVENTRESULT_FILTER;
+
+                var user_id = item.user_id;
+                var driver_list = [];
+                var request = OnlineBSpec.requestDriverList(user_id, function (args) {});
+
+                if (Grim2Util::__deprecated__join__(context, request))
+                    driver_list = OnlineBSpec.decodeDriverList(request);
+
+                if (driver_list.size == 0)
+                {
+                    ERROR(context, ROOT, "ERROR_DRIVER_NOT_FOUND");
+                }
+                else
+                {
+                    var x = item.sx + self.w;
+                    var y = item.sy - 56;
+                    if (y < 0)
+                        y = 0;
+
+                    var select_driver_list = DriverSelectPopup.open(context, item.user_id, x, y, driver_list, DriverSelectPopup::Mode::MULTI, ROOT.select_max);
+                    if (select_driver_list != nil)
+                    {
+                        foreach (var driver in select_driver_list)
+                        {
+                            driver["user_number"] = item.user_profile["user_number"];
+                            driver["country"] = item.user_profile["country"];
+                        }
+
+                        ROOT::selected_user_id = user_id;
+                        ROOT.result = select_driver_list;
+                        ROOT.close(context);
+                    }
+                }
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module hidden
+    {
+        module Item
+        {
+            attribute user_id;
+            attribute user_profile;
+
+            method updateUserProfile(context, u)
+            {
+                self.user_profile = u;
+
+                |var r, var g, var b| = GAME_STATUS.user_profile.context.getMenuColor(u["menu_color"]);
+                var color = menu::MColorObject(r / 255.0, g / 255.0, b / 255.0, 1.0);
+                self.Body::Icon::Image.bg.setColor(color)
+
+                setPhotoImage(context, u["photo_id_avatar"], self.Body::Icon::Image.ImageFace);
+                self.Body::Info::Level::Aspec::TextFace.text = u["aspec_level"];
+                self.Body::Info::Level::Bspec::TextFace.text = u["bspec_level"];
+            }
+
+            method initialize(context, user_id, is_focus, is_last)
+            {
+                self.user_id = user_id;
+                self.Body::Info::OnlineId.active = true;
+                self.Body::Info::OnlineId::TextFace.text = user_id;
+                self.Body::Info::OnlineId::TextFaceA.text = user_id;
+                self.Body::Info::Level::Aspec::TextFace.text = "";
+                self.Body::Info::Level::Bspec::TextFace.text = "";
+
+                self.breakline.visible = !is_last;
+
+                var me = self;
+                OnlineBSpec.requestDriverList(user_id, function (args) 
+                {
+                    |var context, var request| = args;
+                    var driver_list = [];
+                    if (request.isDone())
+                        driver_list = OnlineBSpec.decodeDriverList(request);
+
+                    me.Body::Info::OnlineId.active = driver_list.size > 0;
+                });
+
+                var u = ROOT.user_profile_map[user_id];
+                if (u == nil)
+                {
+                    UserProfile2.requestUserProfile(user_id, function (args) 
+                    {
+                        |var context, var request| = args;
+                        if (request.isDone())
+                        {
+                            if (ROOT.user_profile_map != nil)
+                            {
+                                var u = UserProfile2.decodeUserProfile(request);
+                                ROOT.user_profile_map[user_id] = u;
+                                me.updateUserProfile(context, u);
+                            }
+                        }
+                    })
+                }
+                else
+                    updateUserProfile(context, u);
+
+                if (is_focus)
+                {
+                    self.Body::Icon::Image::ColorFaceF::ScalarInterpolator.reverse = false;
+                    self.Body::Icon::Image::ColorFaceF::ScalarInterpolator.restart();
+                }
+            }
+        }
+    }
+}
