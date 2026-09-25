@@ -1,0 +1,596 @@
+module ROOT
+{
+    module Mode
+    {
+        static FINDER = 1;
+        static ENTRY = 2;
+        static QUICK = 3;
+        static RESULT = 4;
+    }
+
+    attribute closed;
+    attribute popup;
+    attribute result;
+    attribute mode;
+    attribute mode_params;
+    attribute strategy;
+    attribute exp;
+
+    hidden.visible = false;
+    hidden::BspecDriverL::Empty.visible = false;
+    hidden::BspecDriverL::Body.visible = false;
+
+    static sSoundEffectHolder = nil;
+
+    class Strategy
+    {
+        method getFocusIndex()
+        {
+            return EVENTRESULT_CONTINUE;
+        }
+    }
+
+    class FinderStrategy : Strategy
+    {
+        method getList()
+        {
+            return GAME_STATUS.user_profile.residence.getDriverList();
+        }
+    }
+
+    class EntryStrategy : Strategy
+    {
+        method getList()
+        {
+            return GAME_STATUS.user_profile.residence.getContractDriverList();
+        }
+    }
+
+    class QuickStrategy : Strategy
+    {
+        method getList()
+        {
+            return GAME_STATUS.user_profile.residence.getEntryDriverList();
+        }
+
+        method getFocusIndex()
+        {
+            var player_slot = RaceOperator.getPlayerSlot(0);
+            return ORG.getRidingDriverIndex(player_slot);
+        }
+    }
+
+    class ResultStrategy : Strategy
+    {
+        method getList()
+        {
+            return GAME_STATUS.user_profile.residence.getEntryDriverList();
+        }
+    }
+
+    function synchronizeServerDriver(context, online_driver_list)
+    {
+        var residence = GAME_STATUS.user_profile.residence;
+        var local_driver_list = GAME_STATUS.user_profile.residence.getOnlineDriverList();
+
+        foreach (var local_driver in local_driver_list)
+        {
+            var find = false;
+            foreach (var online_driver in online_driver_list)
+            {
+                var grim_driver_id = local_driver[4];
+                if (grim_driver_id == online_driver["driver_id"])
+                {
+                    find = true;
+                    break;
+                }
+            }
+
+            if (!find)
+            {
+                var residence_id = local_driver[0];
+                residence.setOnline(residence_id, 0, 0);
+            }
+        }
+
+        foreach (var online_driver in online_driver_list)
+        {
+            var find = false;
+            foreach (var local_driver in local_driver_list)
+            {
+                var grim_driver_id = local_driver[4];
+                if (grim_driver_id == online_driver["driver_id"])
+                {
+                    find = true;
+                    break;
+                }
+            }
+
+            if (!find)
+                OnlineBSpec.requestPopDriver(online_driver["driver_id"], function (args) {});
+        }
+    }
+
+    module __BalloonTarget__
+    {
+        method onFocusEnter(context, event)
+        {
+            var w = event.widget;
+            var key = w.name.upcase();
+            if (key == "EXIT")
+                key = "CLOSE";
+
+            var localized_text = context.translate(ROOT, "MyHome", key);
+            BalloonTip.set_value(context, w, localized_text, 0);
+
+            return EVENTRESULT_FILTER;
+        }
+
+        method onFocusLeave(context)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    method open(context, mode, mode_params)
+    {
+        self.exp = 0;
+        self.mode = mode;
+        self.mode_params = mode_params;
+        self.result = nil;
+        self.closed = false;
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return self.result;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        ContextMain.event_mask = 5;
+        ContextMain.disableInput();
+
+        FadeActor.on_effect_end = function (context) 
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            ContextMain.enableInput();
+        };
+
+        FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        updateBSpecLevel(context);
+        List.insensitive = false;
+
+        switch (self.mode)
+        {
+            case Mode::FINDER:
+                initializeAsFinder(context);
+                break;
+            case Mode::ENTRY:
+                initializeAsEntry(context);
+                break;
+            case Mode::QUICK:
+                initializeAsQuick(context);
+                break;
+            case Mode::RESULT:
+                initializeAsResult(context);
+                break;
+        }
+
+        context.pushEvent(main::menu::MFunctionEvent(initialize, context));
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onFinalize(context)
+    {
+        List.finalizeFinder(context);
+        self.strategy = nil;
+        SoundUtil::StopStream(context);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        if (self.mode == Mode::FINDER)
+            ROOT.setFocus(Title::Exit);
+        else
+            ROOT.setFocus(Footer::HBox::Exit);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method updateBSpecLevel(context)
+    {
+        var level = GAME_STATUS.user_profile.getBspecLevel();
+        Info::BSpec::HBox::TextFace.text = level;
+
+        var current_point = GAME_STATUS.user_profile.getBspecCurrentPoint();
+        var need_point = GAME_STATUS.user_profile.getBspecPointForNextLevel();
+        var bar_ratio = current_point.toFloat() / need_point;
+        var width = Info::BSpec::Bar::Progress::bar::ColorFace.w;
+
+        Info::BSpec::Bar::Progress::bar.ScalarInterpolator.setEndValue(0, current_point > 0 ? width * bar_ratio : 0);
+        Info::BSpec::Bar::Progress::bar.ScalarInterpolator.restart();
+    }
+
+    method initializeAsFinder(context)
+    {
+        self.strategy = FinderStrategy();
+
+        ButtonHelpGT5.set(context, [[ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_SHOW")]]);
+        ButtonHelpGT5.hide();
+
+        Info::Entry.visible = false;
+        Title::Exit.visible = true;
+        Footer.visible = false;
+
+        ROOT.setFocus(Title::Exit);
+
+        if (LoginUtil::isOnline())
+        {
+            var user_id = Grim2.getLoginUserId();
+            var request = OnlineBSpec.requestDriverList(user_id, function (args) {});
+            if (Grim2Util::__deprecated__join__(context, request))
+            {
+                var online_driver_list = OnlineBSpec.decodeDriverList(request);
+                synchronizeServerDriver(context, online_driver_list);
+            }
+        }
+    }
+
+    method initializeAsEntry(context)
+    {
+        self.strategy = EntryStrategy();
+        ButtonHelpGT5.hide();
+        Info::Entry.visible = true;
+        Title::Exit.visible = false;
+        Footer.visible = true;
+
+        foreach (var name in ["Ride", "Count", "Entry"])
+            Footer::HBox[name].visible = true;
+
+        var max_count = self.mode_params["max_count"];
+        var color_shift = "%{max_count}";
+        Info::Entry::TextFace2.text = context.translate(ROOT, "MESSAGE_YOU_CAN_SELECT_DRIVERS").build(color_shift);
+        Footer::HBox::Count::TextFace.text = "0 / %d".format(max_count);
+
+        ROOT.setFocus(Footer::HBox::Exit);
+    }
+
+    method initializeAsQuick(context)
+    {
+        self.strategy = QuickStrategy();
+        ButtonHelpGT5.hide();
+        Info::Entry.visible = false;
+        Title::Exit.visible = false;
+        Footer.visible = true;
+
+        foreach (var name in ["Ride", "Count", "Entry"])
+            Footer::HBox[name].visible = false;
+
+        ROOT.setFocus(Footer::HBox::Exit);
+    }
+
+    method initializeAsResult(context)
+    {
+        self.strategy = ResultStrategy();
+        self.exp = self.mode_params["exp"];
+        GAME_STATUS.user_profile.residence.incBSpecDay();
+
+        ButtonHelpGT5.hide();
+        Info::Entry.visible = false;
+        Title::Exit.visible = false;
+        List.insensitive = true;
+        Footer.visible = true;
+
+        foreach (var name in ["Ride", "Count", "Entry"])
+            Footer::HBox[name].visible = false;
+
+        ROOT.setFocus(Footer::HBox::Exit);
+    }
+
+    method initialize(context)
+    {
+        List.finalizeFinder(context);
+        List.initializeFinder(context);
+    }
+
+    module List
+    {
+        attribute finder;
+
+        method getActiveCount(context)
+        {
+            var count = 0;
+            var size = List.finder.getItemCount(context);
+
+            for (var i = 0; i < size; ++i)
+            {
+                var item_w = List.finder.getItemWidget(i);
+                if (item_w != nil && item_w.Body::Check.visible)
+                    ++count;
+            }
+
+            return count;
+        }
+
+        function onInitItem(context, candidate_data, item_w, arg)
+        {
+            var driver = candidate_data.value_;
+            |var residence_id, var dp, var entried, var online, var grim_driver_id, var before_total_km| = driver;
+
+            var result = ROOT.mode_params["result"];
+            var trips = ROOT.mode_params["trips"];
+            var rate = 1.0;
+            var idx = candidate_data.item_index_;
+
+            if (trips != nil)
+            {
+                var total_trip = 0.0;
+                for (var i = 0; i < trips.size; i++)
+                    total_trip+= trips[i];
+
+                rate = trips[idx] / total_trip;
+            }
+
+            item_w.setInfo(context, residence_id, dp, online, ROOT.exp * rate, entried, result);
+            item_w.Body.Slash.visible = ROOT.mode == Mode::ENTRY ? online : false;
+
+            if (ROOT.mode == Mode::FINDER)
+                item_w.setCredit(context, grim_driver_id);
+        }
+
+        function onActivateItem(context, folder_data, func_close, arg)
+        {
+            if (ROOT.closed)
+                return;
+
+            var candidate_data = folder_data.getItemData();
+            var driver = candidate_data.value_;
+            |var residence_id, var dp, var used, var online, var grim_driver_id| = driver;
+
+            if (ROOT.mode == Mode::FINDER)
+            {
+                var popup_result = DriverDetailPopup.open(context, driver);
+
+                if (popup_result)
+                {
+                    var item_w = List.finder.getItemWidget(candidate_data.item_index_);
+                    var driver_list = GAME_STATUS.user_profile.residence.getDriverList();
+                    var new_driver = driver_list[residence_id];
+                    candidate_data.value_ = new_driver;
+                    var new_online = new_driver[3];
+                    item_w.setInfo(context, residence_id, dp, new_online, ROOT.exp);
+                    item_w.setCredit(context, new_driver[4]);
+
+                    ROOT.updateBSpecLevel(context);
+                    saveNow(context);
+                }
+            }
+            else if (ROOT.mode == Mode::ENTRY)
+            {
+                if (online == true)
+                {
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MESSAGE_CAN_NOT_SELECT_ONLINE_DRIVER"));
+                    return;
+                }
+
+                var count = List.getActiveCount(count);
+                var max_count = ROOT.mode_params["max_count"];
+                var need_count = ROOT.mode_params["need_count"];
+                
+                {
+                    var item_w = List.finder.getItemWidget(candidate_data.item_index_);
+                    var if_max_to_entry_focus = true;
+
+                    if (item_w != nil)
+                    {
+                        if (item_w.Body::Check.visible)
+                        {
+                            item_w.Body::Check.visible = false;
+                            item_w.bg.active = false;
+                            --count;
+                        }
+                        else
+                        {
+                            if (count == max_count)
+                            {
+                                DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MESSAGE_TOO_MUCH_BSPEC_DRIVER"));
+
+                                if_max_to_entry_focus = false;
+                            }
+                            else
+                            {
+                                item_w.Body::Check.visible = true;
+                                item_w.bg.active = true;
+                                ++count;
+                            }
+                        }
+                    }
+
+                    if (count >= need_count)
+                        Footer::HBox::Entry.active = true;
+                    else
+                        Footer::HBox::Entry.active = false;
+
+                    Footer::HBox::Count::TextFace.text = "%d / %d".format(count, max_count);
+
+                    if (count == max_count && if_max_to_entry_focus)
+                        ROOT.setFocus(Footer::HBox::Entry);
+                }
+            }
+            else if (ROOT.mode == Mode::QUICK)
+            {
+                var player_slot = RaceOperator.getPlayerSlot(0);
+                var pilot_id = candidate_data.item_index_;
+                ORG.setRidingDriverIndex(player_slot, pilot_id);
+                ROOT.result = pilot_id;
+                ROOT.close(context);
+            }
+            else if (ROOT.mode == Mode::RESULT)
+            {
+
+            }
+        }
+
+        function onFocusEnter(context, candidate_data, item_w, arg)
+        {
+            if (ROOT.mode == Mode::FINDER)
+                ButtonHelpGT5.appearIf();
+
+            item_w.bg::FrameImageFaceF.visible = true;
+        }
+
+        function onFocusLeave(context, candidate_data, item_w, arg)
+        {
+            if (ROOT.mode == Mode::FINDER)
+                ButtonHelpGT5.hideIf();
+
+            item_w.bg::FrameImageFaceF.visible = false;
+        }
+
+        method initializeFinder(context)
+        {
+            var initial_data = makeInitialData(context);
+            self.finder = UIKitProject::FinderRoot.setCopy(context, self, initial_data, false);
+            var driver_list = ROOT.strategy.getList();
+            var candidates = UIKitProject::FinderRoot.makeCandidates(driver_list);
+            var focus_index = ROOT.strategy.getFocusIndex();
+
+            self.finder.replaceCurrentFolderCandidates(context, candidates, focus_index);
+            self.finder.onFocus(context);
+        }
+
+        method makeInitialData(context)
+        {
+            var Finder = UIKitProject::FinderRoot;
+            var candidates = Finder.makeCandidates(Array(0));
+            var initial_data = Finder.InitialData(candidates);
+
+            initial_data.view_type_ = Finder.ViewType::SCROLL_H;
+            initial_data.cb_init_item_ = onInitItem;
+            initial_data.cb_on_activate_ = onActivateItem;
+            initial_data.item_cache_ = false;
+            initial_data.extended_item_ = hidden::BspecDriverL;
+            initial_data.v_item_count_ = 1;
+            initial_data.cb_focus_enter_ = onFocusEnter;
+            initial_data.cb_focus_leave_ = onFocusLeave;
+            initial_data.import_iconbox_parameter_ = hidden::IconBox;
+
+            return initial_data;
+        }
+
+        method finalizeFinder(context)
+        {
+            if (self.finder != nil)
+            {
+                self.removeChild(context, self.finder);
+                self.finder = nil;
+            }
+        }
+    }
+
+    module Title::Exit
+    {
+        import __BalloonTarget__::*;
+
+        method onActivate(context)
+        {
+            main::sound.play("ok");
+            self.result = true;
+            ROOT.close(context);
+
+            return EVENTRESULT_FILTER;
+        }
+    }
+
+    module Footer::HBox
+    {
+        module Entry
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                var residence_id_list = [];
+                var size = List.finder.getItemCount(context);
+
+                for (var i = 0; i < size; ++i)
+                {
+                    var item_w = List.finder.getItemWidget(i);
+                    if (item_w != nil && item_w.Body::Check.visible)
+                    {
+                        var candidate_data = List.finder.getItemData(context, i);
+                        var driver = candidate_data.value_;
+                        |var residence_id, var dp, var used, var online, var grim_driver_id| = driver;
+                        residence_id_list.push(residence_id);
+                    }
+                }
+
+                if (residence_id_list.size >= ROOT.mode_params["need_count"])
+                {
+                    ROOT.result = residence_id_list;
+                    ROOT.close(context);
+                }
+                else
+                    DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, context.translate(ROOT, "MESSAGE_NO_ENOUGH_BSPEC_DRIVER"));
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+
+        module Exit
+        {
+            import __BalloonTarget__::*;
+
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                ROOT.close(context);
+
+                return EVENTRESULT_FILTER;
+            }
+        }
+    }
+
+    module hidden::BspecDriverL
+    {
+        method setCredit(context, grim_driver_id)
+        {
+            if (!LoginUtil::isOnline() || grim_driver_id == 0)
+            {
+                self.Body::Credit::TextFace.text = OnlineEventUtil::getCreditText(false, 0);
+                self.Body::Credit::Credit.visible = false;
+            }
+            else
+            {
+                self.Body::Credit::Credit.visible = true;
+
+                var me = self;
+                OnlineBSpec.requestDriver(grim_driver_id, function (args) 
+                {
+                    |var context, var request| = args;
+                    if (request.isDone())
+                    {
+                        var bspec_driver = OnlineBSpec.decodeDriver(request);
+                        me.Body::Credit::TextFace.text = OnlineEventUtil::getCreditText(true, bspec_driver["online_credit"]);
+                        me.Body::Credit::Credit.setCredit(context, bspec_driver["online_credit"]);
+                    }
+                });
+            }
+        }
+    }
+}
