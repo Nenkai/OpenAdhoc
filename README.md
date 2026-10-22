@@ -810,7 +810,7 @@ Adhoc Version: 7<br>
 </details>
 
 <details>
-  <summary>[🚧] GT5 (2.11) (>=40%)</summary>
+  <summary>[🚧] GT5 (2.11) (>=65%)</summary>
   
 ### GT5
 Adhoc Version: 12<br>
@@ -824,11 +824,11 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 | boot                   |    ✔️    | Boot Project (logic is in bootstrap scripts)                                     |
 | concept                |    ❌    | N/A                                                                              |
 | config                 |    ❌    | N/A                                                                              |
-| cursor                 |    ❌    | N/A                                                                              |
+| cursor                 |    ✔️    | N/A                                                                              |
 | demo_movie             |    ❌    | N/A                                                                              |
 | dialog                 |    ✔️    | Dialog/prompt handlers                                                           |
 | gps_replay             |    ❌    | N/A                                                                              |
-| gtauto                 |    ❌    | N/A                                                                              |
+| gtauto                 |    ✔️    | GT Auto                                                                          |
 | gtmode                 |    ✔️    | GT Mode. Includes main screen, garage, a/bspec, & every single submenu starting from there. |
 | gttop                  |    ✔️    | Main Menu                                                                        |
 | gttv                   |    ❌    | N/A                                                                              |
@@ -840,7 +840,7 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 | museum                 |    ✔️    | Museum (Online) Menu                                                             |
 | news                   |    ✔️    | News (Online) Menu                                                               |
 | online                 |    ❌    | N/A                                                                              |
-| online_bspec           |    ❌    | N/A                                                                              |
+| online_bspec           |    ✔️    | N/A                                                                              |
 | option                 |    ❌    | N/A                                                                              |
 | photo                  |    ❌    | N/A                                                                              |
 | play_movie             |    ❌    | N/A                                                                              |
@@ -851,7 +851,7 @@ GT5 2.11 is prefered over 2.17 due to 2.12<->2.17 having no extra content, and m
 | setting                |    ✔️    | Car Settings/Tuning                                                              |
 | ui_kit                 |    ❌    | N/A                                                                              |
 | user_profile           |    ❌    | N/A                                                                              |
-| user_profile_driver    |    ❌    | N/A                                                                              |
+| user_profile_driver    |    ✔️    | N/A                                                                              |
 
 ---
 
