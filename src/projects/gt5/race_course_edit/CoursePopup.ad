@@ -1,0 +1,1001 @@
+module ROOT
+{
+    attribute open_on_init = true;
+    attribute popup;
+    attribute closed = false;
+    attribute strategy;
+    attribute genre;
+    attribute order;
+    attribute by;
+    attribute button_help;
+    attribute button_help_l1;
+    attribute selected_course;
+    hidden.visible = false;
+
+    class Strategy
+    {
+        method canDelete()
+        {
+            return true;
+        }
+
+        method getHeaderText(context, count)
+        {
+            return ["", "", false];
+        }
+
+        method setupFinder(context, finder, course_list)
+        {
+            Popup::Pane::Header.setText(context, getHeaderText(context, course_list.size));  
+
+            Popup::Pane::Body::List::ImageFaceD.visible = course_list.size == 0;
+            Popup::Pane::Body::List::TextFaceD.visible = course_list.size == 0; 
+
+            var candidates = UIKitProject::FinderRoot.makeCandidates(course_list);
+            finder.replaceCurrentFolderCandidates(context, candidates, 0);
+        }
+    }
+
+    class CustomStrategy : Strategy
+    {
+        method initializeFinder(context, finder, genre, order, by)
+        {
+            var course_list = CourseFileUtil::getList(genre, order, by);
+            __super__::setupFinder(context, finder, course_list);
+        }   
+
+        method getLocalizeKey(name)
+        {
+            switch (name)
+            {
+                case "SearchSort":
+                    return "SEARCH_SORT";
+            }   
+
+            return name.upcase();
+        }   
+
+        method getHeaderText(context, count)
+        {
+            var text = (ROOT.genre != nil) ? context.translate(ROOT, "CourseName", ROOT.genre) : context.translate(ROOT, "MyHome", "ALL");  
+            return [text, count.toString(), false];
+        }
+    }
+    
+    class FavoriteStrategy : Strategy
+    {
+        method initializeFinder(context, finder, genre, order, by)
+        {
+            var course_list = CourseFileUtil::getFavoriteList(nil, nil, order, by);
+            __super__::setupFinder(context, finder, course_list);
+        }   
+
+        method getLocalizeKey(name)
+        {
+            switch (name)
+            {
+                case "SearchSort":
+                    return "SORT";
+            }   
+
+            return name.upcase();
+        }   
+
+        method getHeaderText(context, count)
+        {
+            return [context.translate(ROOT, "MyHome", "FAVORITE"), "%d / %d".format(count, CourseFileUtil::getFavoriteMax()), false];
+        }
+    }
+
+    method open(context)
+    {
+        self.selected_course = nil;
+        self.closed = false;
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return self.selected_course;
+    }
+
+    method close(context)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        PROJECT::disable_input(context);
+
+        Popup::FadeActor.on_effect_end = function (context) 
+        {
+            if (ROOT.popup != nil)
+            {
+                ROOT.popup.close();
+                ROOT.popup = nil;
+            }
+
+            PROJECT::enable_input(context);
+        };
+
+        Popup::FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        PROJECT::ignorePadEvent(context, true);
+        initializeCommon(context);
+
+        self.genre = nil;
+        self.order = "datetime";
+        self.by = "ASC";
+        self.strategy = CustomStrategy();
+        Popup::Pane::Tab::HBox::Online.insensitive = true;
+        Popup::Pane::Tab.setActive(true, false, false);
+
+        var genre_list = [context.translate(ROOT, "MyHome", "ALL")];
+        var list = CourseFileUtil::getGenreList();
+        genre_list += list;
+        self.genre = context.translate(ROOT, "MyHome", "ALL");
+
+        OptionMenuUtil::initialize(context, ROOT, Popup::Pane::Body::Filter::VBox::Search::OptionMenu, 
+            hidden::OptionMenuItem, genre_list, "CourseName");
+
+        Popup::Pane::Body::Filter::VBox::Search::OptionMenu.setIndex(context, 0);
+        Popup::Pane::Body::List::ImageFaceD.visible = false;
+        Popup::Pane::Body::List::TextFaceD.visible = false;
+        warpActors(Popup::Pane::Body::bg, self.open_on_init);
+        self.genre = nil;
+        context.pushEvent(main::menu::MFunctionEvent(initialize, context));
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method initializeCommon(context)
+    {
+        self.button_help = 
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_EDIT")],
+            ["Triangle", context.translate(ROOT, "MyHome", "BUTTON_HELP_MENU")],
+            ["L1", context.translate(ROOT, "MyHome", "BUTTON_HELP_MULTI_SELECT")]
+        ];  
+
+        self.button_help_l1 = 
+        [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "MyHome", "BUTTON_HELP_SELECT")],
+            ["Triangle", context.translate(ROOT, "MyHome", "BUTTON_HELP_MENU")],
+            ["Square", context.translate(ROOT, "MyHome", "BUTTON_HELP_SELECT_UNSELECT_ALL")]
+        ];
+
+        ButtonHelpGT5.set(context, self.button_help);
+        ButtonHelpGT5.hide();   
+
+        var radiobox_list = [
+            Popup::Pane::Body::Filter::VBox::Order::RadioBox,
+            Popup::Pane::Body::Filter::VBox::By::RadioBox
+        ];  
+
+        foreach (var radiobox in radiobox_list)
+        {
+            var radiobutton_list = [];  
+
+            for (var it = radiobox.VBox.first; it != nil; it = it.next)
+                radiobutton_list.push([it.RadioButton, 0]);
+
+            radiobox.setup(radiobutton_list, 0);
+        }   
+
+        Popup::Pane::Title::HBox::SearchSort.active = self.open_on_init;
+        warpActors(Popup::Pane::Body::Filter, self.open_on_init);   
+
+        Popup::Pane::Body::Filter.insensitive = !self.open_on_init;
+        ROOT.setFocus(Popup::Pane::Title::HBox::Close);
+    }
+
+    method initialize(context)
+    {
+        Popup::Pane::Body::List.finalizeFinder(context);
+        Popup::Pane::Body::List.initializeFinder(context);
+        PROJECT::ignorePadEvent(context, false);
+    }
+
+    method onFinalize(context)
+    {
+        self.button_help = nil;
+        self.button_help_l1 = nil;
+        Popup::Pane::Body::List.finalizeFinder(context);
+        OptionMenuUtil::finalize(context, Popup::Pane::Body::Filter::VBox::Search::OptionMenu);
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        var result = ButtonHelpGT5.hideIf();
+
+        if (result)
+        {
+            Popup::Pane::Body::List.multi_select = false;
+            Popup::Pane::Body::List::updateStatusAll(context);
+        }
+
+        ROOT.setFocus(Popup::Pane::Title::HBox::Close);
+        return EVENTRESULT_FILTER;
+    }
+
+    module Popup::Pane
+    {
+        module Tab
+        {
+            method setActive(offline, favorite, online)
+            {
+                var list = 
+                [
+                    ["Custom", offline],
+                    ["Favorite", favorite],
+                    ["Online", online]
+                ];  
+            
+                foreach (|var name, var flag| in list)
+                {
+                    HBox[name].active = flag;
+                    HBox[name].bg.visible = !flag;
+                    HBox[name].bgA.visible = flag;
+                }   
+            
+                var search_sort = ROOT.strategy.getLocalizeKey("SearchSort");
+                if (search_sort != nil)
+                {
+                    Popup::Pane::Title::HBox::SearchSort.visible = true;    
+                
+                    var mode_search_sort = search_sort == "SEARCH_SORT";  
+                    startActors(Popup::Pane::Body::Filter::VBox::Search, mode_search_sort); 
+                
+                    Popup::Pane::Body::Filter::VBox::Search.insensitive = !mode_search_sort;
+                }   
+                else
+                {
+                    Popup::Pane::Title::HBox::SearchSort.visible = false;   
+                
+                    startActors(Popup::Pane::Body::Filter, true);   
+                    startActors(Popup::Pane::Body::bg, true);
+                    Popup::Pane::Body::Filter.insensitive = true;   
+                
+                    Popup::Pane::Title::HBox::SearchSort.flag = false;
+                    Popup::Pane::Title::HBox::SearchSort.active = false;
+                }   
+            }
+
+            module HBox
+            {
+                module Custom
+                {   
+                
+                    method onActivate(context)
+                    {
+                        if (!self.active)
+                        {
+                            main::sound.play("tab_switch");
+                            ROOT.strategy = CustomStrategy();   
+                        
+                            setActive(true, false, false);
+                            ROOT.initialize(context);
+                        }   
+                    
+                        return EVENTRESULT_FILTER;
+                    }
+                }   
+
+                module Favorite
+                {  
+
+                    method onActivate(context)
+                    {
+                        if (!self.active)
+                        {
+                            main::sound.play("tab_switch");
+                            ROOT.strategy = FavoriteStrategy(); 
+
+                            setActive(false, true, false);
+                            ROOT.initialize(context);
+                        }   
+
+                        return EVENTRESULT_FILTER;
+                    }    
+                }
+            }
+        }
+
+        module Title::HBox
+        {   
+            method onFocusEnter(context, event)
+            {
+                var w = event.widget;   
+
+                var localized_text = context.translate(ROOT, "MyHome", ROOT.strategy.getLocalizeKey(w.name));
+                BalloonTip.set_value(context, w, localized_text, 0);    
+
+                return EVENTRESULT_FILTER;
+            }   
+
+            method onFocusLeave(context)
+            {
+                BalloonTip.reset_value();   
+
+                return EVENTRESULT_FILTER;
+            }   
+
+            module Close
+            {
+                method onActivate(context)
+                {
+                    main::sound.play("ok");
+                    ROOT.close(context);    
+
+                    return EVENTRESULT_FILTER;
+                }   
+
+                method onCancel(context)
+                {
+                    main::sound.play("cancel");
+                    ROOT.close(context);    
+
+                    return EVENTRESULT_FILTER;
+                }    
+            }   
+
+            module SearchSort
+            {
+                attribute flag = true;  
+
+                method onActivate(context)
+                {
+                    main::sound.play("ok"); 
+
+                    startActors(Popup::Pane::Body::Filter, self.flag);
+                    startActors(Popup::Pane::Body::bg, self.flag);  
+
+                    Popup::Pane::Body::Filter.insensitive = self.flag;
+                    self.flag = !self.flag; 
+
+                    self.active = self.flag;    
+
+                    return EVENTRESULT_FILTER;
+                }
+            }
+        }
+
+        module Body
+        {
+            module Filter::VBox
+            {
+                module Search::OptionMenu
+                {   
+                    method onValueChanged(context)
+                    {
+                        self.pulldownValueChanged(context);
+                        var selected_item = self.getItem(); 
+
+                        if (ROOT.genre != selected_item.name)
+                        {
+                            ROOT.genre = (self.index == 0) ? nil : selected_item.name;
+                            ROOT.initialize(context);
+                        }
+
+                        return EVENTRESULT_FILTER;
+                    }
+                }   
+
+                module Order::RadioBox
+                {   
+                    method onActivate(context, event)
+                    {
+                        var order = event.widget.parent.name.downcase();
+                        if (order != ROOT.order)
+                        {
+                            ROOT.order = order;
+                            ROOT.initialize(context);
+                        }   
+
+                        return EVENTRESULT_FILTER;
+                    }    
+                }   
+
+                module By::RadioBox
+                {   
+                    method onActivate(context, event)
+                    {
+                        var by = event.widget.parent.name.upcase();
+
+                        if (ROOT.by != by)
+                        {
+                            ROOT.by = by;
+                            ROOT.initialize(context);
+                        }   
+
+                        return EVENTRESULT_FILTER
+                    }    
+                }
+            }
+
+            module List
+            {
+                attribute finder;
+                attribute view_mode = 1;
+                attribute multi_select = false;
+                attribute select_map;
+                attribute select_all;
+
+                function updateStatus(context, course, item_w)
+                {
+                    var exist = CourseFileUtil::isExist(course.id); 
+
+                    if (!exist)
+                    {
+                        item_w.invalid = true;
+                        item_w.ImageFaceD.visible = true;   
+
+                        foreach (var label in ["header", "body", "keyword1", "datetime", "ImageFace", "online", "favorite", "icon", "icon2", "icon3", "check"])
+                        {
+                            if (item_w[label] != nil)
+                                item_w[label].visible = false;
+                        }   
+
+                        if (item_w["title"] != nil)
+                        {
+                            item_w.title.ImageFace.visible = false;
+                            item_w.title.TextFace.text = context.translate(ROOT, "MyHome", "NO_DATA");
+                        }
+                    }
+                    else
+                    {
+                        if (item_w["icon"] != nil)
+                        {
+                            item_w.icon.visible = true;
+                            item_w.icon.image_path = Function::getWeatherIconImagePath(course.genre, course.start_datetime, course.weather_value0, course.weather_accel);
+                        }
+
+                        if (item_w["icon2"] != nil)
+                        {
+                            if (course.genre != "template07")
+                            {
+                                item_w.icon2.visible = true;
+                                item_w.icon2.image_path = "image/common/weather/time.dds";
+                            }
+                        }
+
+                        if (item_w["title"] != nil)
+                        {
+                            item_w.title.ImageFace.visible = course.author != "";
+                            item_w.title.TextFace.text = course.title;
+                        }
+
+                        if (item_w["header"] != nil)
+                            item_w.header.text = context.translate(ROOT, "CourseName", course.genre);
+
+                        if (item_w["body"] != nil)
+                        {
+                            item_w.body.text = "%s : %s%s".format(context.translate(ROOT, "MyHome", "COURSE_LENGTH"),
+                            pdiext::MUnit::GetCourseLengthString(course.length), 
+                            context.translate(ROOT, "Unit", pdiext::MUnit::GetUnitKeywordOfCourseLength()));
+                        }
+
+                        if (item_w["keyword1"] != nil)
+                        {
+                            var start_datetime = pdistd::MTime();
+                            start_datetime.setBySecond(course.start_datetime);
+                            var keyword = "%.02d:%02d".format(start_datetime.hour, start_datetime.minute);
+
+                            if (keyword != "")
+                            {
+                                item_w.keyword1.visible = true;
+                                item_w.keyword1.TextFace.text = keyword;
+                            }
+                        }
+
+                        if (item_w["datetime"] != nil)
+                            item_w.datetime.text = getDateTime(context, ROOT, course.datetime);
+
+                        if (item_w["ImageFace"] != nil)
+                        {
+                            item_w.ImageFace.from_disk = true;
+                            item_w.ImageFace.image_path = course.thumbnail_filename;
+                        }
+
+                        var online = course.online == 1;
+                        var favorite = !online && course.favorite == 1;
+
+                        item_w.online.visible = online;
+                        item_w.favorite.visible = favorite;
+                        item_w.check.visible = List.multi_select && List.select_map[course.id] != nil;
+                    }
+                }
+
+                function onInitItem(context, candidate_data, item_w, arg)
+                {
+                    var course = candidate_data.value_;
+                    item_w.invalid = false; 
+
+                    updateStatus(context, course, item_w);
+                }
+
+                function updateStatusAll2(context)
+                {
+                    if (List.multi_select)
+                    {
+                        List.multi_select = false;
+                        ButtonHelpGT5.set(context, ROOT.button_help);
+                    }   
+
+                    updateStatusAll(context);
+                }
+
+                function updateStatusAll2If(context)
+                {
+                    var state = context.getUpdateContext().getPadButtonState(0);    
+                    if ((state & 0x100) != 0x100)
+                        updateStatusAll2(context);  
+                }
+
+                function updateStatusAll(context)
+                {
+                    var count = List.finder.getItemCount(context);  
+
+                    for (var i = 0; i < count; ++i)
+                    {
+                        var item_w = List.finder.getItemWidget(i);  
+
+                        if (item_w == nil)
+                            continue;
+                        
+                        var candidate_data = List.finder.getItemData(context, i);   
+                        if (candidate_data == nil)
+                            continue;
+
+                        var course = candidate_data.value_;
+                        updateStatus(context, course, item_w);
+                    }   
+                }
+
+                function onActivateItem(context, folder_data, func_close, arg)
+                {
+                    if (ROOT.closed)
+                        return;
+
+                    var candidate_data = folder_data.getItemData();
+                    var course = candidate_data.value_;
+                    var focus_index = List.finder.getFocusIndex(context);
+                    var item_w = List.finder.getItemWidget(focus_index);
+
+                    if (!item_w.invalid)
+                    {
+                        if (List.multi_select)
+                        {
+                            if (List.select_map[course.id] == nil)
+                                List.select_map[course.id] = course;
+                            else
+                                List.select_map[course.id] = nil;
+
+                            List::updateStatus(context, course, item_w);
+                        }   
+                        else
+                        {
+                            selectCourse(context, course);
+                        }
+                    }
+                }
+
+                function updateStatusAllIf(context)
+                {
+                    var state = context.getUpdateContext().getPadButtonState(0); 
+                    if ((state & 0x100) != 0x100)
+                    {
+                        ButtonHelpGT5.set(context, ROOT.button_help);   
+                        return;
+                    }   
+
+                    ButtonHelpGT5.set(context, ROOT.button_help_l1);
+                    List.multi_select = true;
+                    var selected = false;   
+
+                    foreach (|var key, var value| in List.select_map)
+                    {
+                        if (value != nil)
+                        {
+                            selected = true;
+                            break;
+                        }
+                    }   
+
+                    if (!selected)
+                        return;  
+
+                    updateStatusAll(context);
+                }
+
+                function onFocusEnter(context, candidate_data, item_w, arg)
+                {
+                    var result = ButtonHelpGT5.appearIf();  
+                    if (result)
+                        updateStatusAllIf(context);
+                }   
+
+                function onFocusLeave(context, candidate_data, item_w, arg)
+                {   
+
+                }
+
+                method initializeFinder(context)
+                {
+                    self.multi_select = false;
+                    self.select_map = Map();
+                    self.select_all = false;    
+
+                    var initial_data = makeInitialData(context);
+                    self.finder = UIKitProject::FinderRoot.setCopy(context, self, initial_data, false); 
+
+                    ROOT.strategy.initializeFinder(context, self.finder, ROOT.genre, ROOT.order, ROOT.by);   
+                }
+
+                method makeInitialData(context)
+                {
+                    var Finder = UIKitProject::FinderRoot;
+                    var candidates = Finder.makeCandidates(Array(0));   
+
+                    var initial_data = Finder.InitialData(candidates);  
+                    initial_data.view_type_ = Finder.ViewType::SCROLL_V;    
+                    initial_data.cb_init_item_ = onInitItem;   
+                    initial_data.cb_on_activate_ = onActivateItem;
+                    initial_data.v_scrollbar_ = Scrollbar::VScrollbar;
+                    initial_data.extended_item_ = hidden::ItemList; 
+                    initial_data.cb_focus_enter_ = onFocusEnter;
+                    initial_data.cb_focus_leave_ = onFocusLeave;
+                    initial_data.import_iconbox_parameter_ = hidden::IconBox;
+                    initial_data.item_cache_ = false;   
+                    return initial_data;
+                }
+
+                method finalizeFinder(context)
+                {
+                    if (self.finder != nil)
+                    {
+                        self.removeChild(context, self.finder);
+                        self.finder = nil;
+                    }
+                }
+
+                function callbackIf(context, callback, course, item_w)
+                {
+                    if (callback != nil)
+                        callback(context, course, item_w);
+                }
+
+                function setFavoriteImpl(context, course, value, callback, item_w)
+                {
+                    CourseFileUtil::setFavorite(course.id, value);
+                    course.favorite = value;
+                    callbackIf(context, callback, course, item_w);
+                }
+
+                function setFavorite(context, course, args, callback, item_w)
+                {
+                    var result = false;
+                    var flag = args;
+
+                    if (flag)
+                    {
+                        if (CourseFileUtil::getFavoriteCount() < CourseFileUtil::getFavoriteMax())
+                        {
+                            setFavoriteImpl(context, course, true, callback, item_w);
+                            result = true;
+                        }
+                        else
+                        {
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                            context.translate(ROOT, "MyHome", "ERROR_FAVORITE_IS_FULL"));
+                        }
+                    }
+                    else
+                    {
+                        setFavoriteImpl(context, course, false, callback, item_w);
+                        result = true;
+                    }
+
+                    return result;
+                }
+
+                function setFavoriteByList(context, course_list, args, callback, item_w)
+                {
+                    var result = false;
+                    var flag = args;
+                    var course_id_list = Array();
+
+                    foreach (var course in course_list)
+                    {
+                        var is_favorite = course.favorite != 0;
+                        if ((is_favorite && !flag) || (!is_favorite && flag))
+                            course_id_list.push(course.id);
+                    }
+
+                    if (flag)
+                    {
+                        if (course_id_list.size + CourseFileUtil::getFavoriteCount() < CourseFileUtil::getFavoriteMax())
+                        {
+                            CourseFileUtil::setFavoriteByList(course_id_list, true);
+                            result = true;
+                        }
+                        else
+                        {
+                            DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, 
+                            context.translate(ROOT, "MyHome", "ERROR_FAVORITE_IS_FULL"));
+                        }
+                    }
+                    else
+                    {
+                        CourseFileUtil::setFavoriteByList(course_id_list, false);
+                        result = true;
+                    }
+
+                    if (result)
+                    {
+                        foreach (var course in course_list)
+                            course.favorite = flag;
+
+                        callbackIf(context, callback, course_list, item_w);
+                    }
+
+                    return result;
+                }
+
+                function selectCourse(context, course_data)
+                {
+                    var filename = course_data.filename;
+                    var st = pdistd::ReadFile(course_data.filename);
+                    var buf = st["buffer"];
+                    var course_pathway = gtengine::MCoursePathway();
+
+                    course_pathway.deserialize(buf);
+                    var can_open = false;
+                    var error_key = "ERROR_CANNOT_EDIT_COURSE";
+
+                    if (course_pathway != nil)
+                    {
+                        var generate_param = course_pathway.getGenerateParam();
+                        if (generate_param != nil)
+                        {
+                            can_open = generate_param.version == generate_param.currentVersion();
+                            if (!can_open)
+                                error_key = "ERROR_MISMATCH_VERSION";
+                        }
+                    }
+
+                    if (can_open)
+                        can_open = course_data.author == "";
+
+                    if (!can_open)
+                    {
+                        var text = context.translate(ROOT, "MyHome", error_key);
+                        DialogUtil::openConfirmDialog(context, DialogUtil::ERROR, text);
+
+                        return false;
+                    }
+
+                    if (course_data.online_race == 0)
+                    {
+                        var text = context.translate(ROOT, "COURSE_CONVERT_NOTICE");
+                        if (!DialogUtil::openConfirmDialog(context, DialogUtil::YESNO, text))
+                            return false;
+                    }
+
+                    ROOT.selected_course = [course_data, course_pathway];
+                    ROOT.close(context);
+
+                    return true;
+                }
+
+                function edit(context, course, args, callback, item_w)
+                {
+                    selectCourse(context, course);
+                    callbackIf(context, callback, course, item_w);
+                }
+
+                function delete(context, course, args, callback, item_w)
+                {
+                    var text = context.translate(ROOT, "MyHome", "QUERY_DELETE");
+                    if (!DialogUtil::openConfirmDialog(context, DialogUtil::DEFAULT_NO, text))
+                        return;
+
+                    Function::deleteRankings(context, course.genre, course.filename);
+                    CourseFileUtil::remove(course);
+                    callbackIf(context, callback, course, item_w);
+                }
+
+                function onFunctionCallback(context, data)
+                {
+                    |var func_name, var course, var args, var callback, var item_w| = data;
+
+                    switch (func_name)
+                    {
+                        case "setFavorite":
+                            setFavorite(context, course, args, callback, item_w);
+                            break;
+
+                        case "setFavoriteByList":
+                            setFavoriteByList(context, course, args, callback, item_w);
+                            break;
+
+                        case "edit":
+                            selectCourse(context, course, args, callback, item_w);
+                            break;
+
+                        case "delete":
+                        default:
+                            delete(context, course, args, callback, item_w);
+                            break;
+                    }
+                }
+
+                function onNullCallback(context, data)
+                {
+
+                }
+
+                method showContextMenu(context)
+                {
+                    var focus_index = self.finder.getFocusIndex(context);
+                    var item_w = self.finder.getItemWidget(focus_index);    
+
+                    if (item_w == nil || item_w.invalid)
+                        return; 
+
+                    var candidate_data = self.finder.getItemData(context, focus_index);
+                    var course = candidate_data.value_;
+
+                    var delete_mode = ROOT.strategy.canDelete();    
+
+                    var on = context.translate(ROOT, "MyHome", "ON");
+                    var off = context.translate(ROOT, "MyHome", "OFF");
+
+                    var favorite_cascade = [
+                        UIKitProject::ContextMenuPopup::Data(on, true, (course.favorite) ? onNullCallback : onFunctionCallback, ["setFavorite", course, true, List::updateStatus, item_w]), 
+                        UIKitProject::ContextMenuPopup::Data(off, true, (course.favorite) ? onFunctionCallback : onNullCallback, ["setFavorite", course, false, List::updateStatus, item_w])
+                    ];   
+                    favorite_cascade[0].on = course.favorite == 1;
+                    favorite_cascade[1].on = course.favorite == 0;
+
+                    var data_list = 
+                    [
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "EDIT"), true, onFunctionCallback, ["edit", course, nil, nil, item_w]),  
+                        nil, // Separator
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "FAVORITE"), true, nil, nil, favorite_cascade),
+                        nil, // Separator 
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "DELETE"), delete_mode, onFunctionCallback, ["delete", course, nil, List::updateStatus, item_w]),   
+                        nil, // Separator
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "CANCEL"), true, onNullCallback, nil)
+                    ];
+
+                    var title = nil;    
+                    var x = item_w.sx + (item_w.w * item_w.cursor_align_x);
+                    var y = item_w.sy + (item_w.h * item_w.cursor_align_y);
+
+                    UIKitProject::ContextMenuPopup.open(context, x, y, title, data_list);
+                }
+
+                method showContextMenuMultiSelect(context)
+                {
+                    var focus_index = self.finder.getFocusIndex(context);
+                    var item_w = self.finder.getItemWidget(focus_index);    
+
+                    if (item_w == nil || item_w.invalid)
+                        return;
+
+                    if (self.select_map == nil || self.select_map.size == 0)
+                        return;
+
+                    var course_list = Array();  
+                    foreach (|var key, var course| in self.select_map)
+                    {
+                        if (course == nil)
+                            continue;
+
+                        course_list.push(course);
+                    }   
+
+                    var on = context.translate(ROOT, "MyHome", "ON");
+                    var off = context.translate(ROOT, "MyHome", "OFF"); 
+
+                    var favorite_cascade = 
+                    [
+                        UIKitProject::ContextMenuPopup::Data(on, true, onFunctionCallback, ["setFavoriteByList", course_list, true, List::updateStatusAll2]),  
+                        UIKitProject::ContextMenuPopup::Data(off, true, onFunctionCallback, ["setFavoriteByList", course_list, false, List::updateStatusAll2])
+                    ];  
+
+                    var data_list = [
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "FAVORITE_SELECTED"), true, nil, nil, favorite_cascade),
+                        nil, // Separator
+                        UIKitProject::ContextMenuPopup::Data(context.translate(ROOT, "MyHome", "CANCEL"), true, List::updateStatusAll2If, nil)
+                    ];  
+
+                    var title = nil;    
+                    var x = item_w.sx + (item_w.w * item_w.cursor_align_x);
+                    var y = item_w.sy + (item_w.h * item_w.cursor_align_y);
+
+                    var result = UIKitProject::ContextMenuPopup.open(context, x, y, title, data_list);  
+                    if (!result)
+                        List::updateStatusAll2If(context);
+                }
+
+                method toggleSelect(context)
+                {
+                    if (self.select_all)
+                        self.select_map = Map();
+                    else
+                    {
+                        var count = self.finder.getItemCount(context);  
+                        for (var i = 0; i < count; ++i)
+                        {
+                            var candidate_data = self.finder.getItemData(context, i);  
+
+                            if (candidate_data == nil)
+                                continue;   
+
+                            var course = candidate_data.value_; 
+                            self.select_map[course.id] = course;
+                        }
+                    }   
+
+                    self.select_all = !self.select_all;
+                    updateStatusAll(context);
+                }
+
+                method onKeyPress(context, event)
+                {
+                    if (ROOT.closed)
+                        return EVENTRESULT_CONTINUE;
+                    else
+                    {
+                        if (event.keysym == CELL_PAD_CTRL_L1)
+                        {  
+                            self.multi_select = true;
+                            ButtonHelpGT5.set(context, ROOT.button_help_l1); 
+                            updateStatusAll(context);
+                        }   
+                        else if (event.keysym == CELL_PAD_CTRL_L3_LEFT)
+                        {
+                            ButtonHelpGT5.hide();
+                            self.multi_select = false;
+                            updateStatusAll(context);  
+
+                            return EVENTRESULT_CONTINUE;
+                        }   
+                        else if (event.keysym == CELL_PAD_CTRL_TRIANGLE)
+                        {
+                            main::sound.play("context_menu_op");    
+
+                            if (self.multi_select)
+                                showContextMenuMultiSelect(context);
+                            else
+                                showContextMenu(context); 
+
+                            return EVENTRESULT_FILTER;
+                        }   
+                        else if (event.keysym == CELL_PAD_CTRL_SQUARE)
+                        {
+                            if (self.multi_select)
+                                toggleSelect(context);
+
+                            return EVENTRESULT_FILTER;
+                        }
+                    }   
+
+                    return EVENTRESULT_CONTINUE;
+                }
+
+                method onKeyRelease(context, event)
+                {
+                    if (event.keysym == CELL_PAD_CTRL_L1)
+                        updateStatusAll2(context);
+
+                    return EVENTRESULT_CONTINUE;
+                }
+            }
+        }
+    }
+}
