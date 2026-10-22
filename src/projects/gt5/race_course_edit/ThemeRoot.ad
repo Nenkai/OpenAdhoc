@@ -1,0 +1,414 @@
+module ROOT
+{
+    hidden.visible = false;
+
+    attribute closed;
+    attribute params;
+    attribute already_decided;
+
+    method open(context)
+    {
+        self.closed = false;
+        self.params = nil;
+        self.already_decided = false;
+        SequenceUtil::startPage(context, ROOT);
+    }
+
+    method close(context, block)
+    {
+        if (self.closed)
+            return;
+
+        self.closed = true;
+        PROJECT::disable_input(context);
+
+        var effect_end = method (context)
+        {
+            if (block != nil)
+                (self.*block)(context);
+
+            self.FadeActor.on_effect_end = nil;
+            PROJECT::enable_input(context);
+        };
+
+        self.FadeActor.on_effect_end = self.*effect_end;
+        self.FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        SoundUtil::MenuBGMCrossfadeGroup("coursemaker", 0.0, 3.0, true);
+
+        ButtonHelpGT5.set(context, [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")], 
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+        ]);
+
+        ButtonHelpGT5.appear();
+
+        PROJECT.history['CourseMakerRoot::params'] = Map();
+        ROOT.params = PROJECT.history['ThemeRoot::params'];
+        context.cursor_visible = false;
+        ROOT.setFocus(nil);
+
+        PROJECT::disable_input(context);
+        context.pushEvent(main::menu::MScriptEvent(context, self, "initialize"));
+        RaceOperator.destroyRace();
+    }
+
+    method initialize(context)
+    {
+        Body::Pane::VBox::Body::Content::List.finalize_finder(context);
+        Body::Pane::VBox::Body::Content::List.initialize_finder(context);
+        Body::Pane::VBox::Body::Content.List.set_focus(context);
+
+        PROJECT::enable_input(context);
+        context.cursor_visible = true;
+    }
+
+    method onFinalize(context)
+    {
+        Body::Pane::VBox::Body::Content::List.finalize_finder(context);
+        PROJECT.history['ThemeRoot::params'] = ROOT.params;
+
+        ROOT.closed = nil;
+        ROOT.params = nil;
+        ROOT.already_decided = nil;
+    }
+
+    method onCancel(context)
+    {
+        main::sound.play("cancel");
+        ROOT.setFocus(Footer::Exit);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method putlog(params)
+    {
+        var online_id = NP.getOnlineId();
+        if (online_id == nil)
+            return;
+
+        var course_label = params.course_label;
+        var have_loaded_course = params.course_pathway == nil ? 1 : 0;
+        var log = "MA=%s:MB=%s:MC=%d".format(online_id, course_label, have_loaded_course);
+        main::Grim2.requestPutLog(log);
+    }
+
+    module Body::Pane::VBox
+    {
+        module Body
+        {
+            module Content
+            {
+                module List
+                {
+                    attribute finder;
+                    attribute view_mode = SCROLL_MODE_FOLLOW_MODE;
+
+                    method initialize_finder(context)
+                    {
+                        var focus_index = ROOT.params["theme_focus_index"];
+                        if (focus_index == nil)
+                            focus_index = 0;
+
+                        var initial_data = self.make_initial_data(context, focus_index);
+                        self.finder = UIKitProject::FinderRoot.setCopy(context, self, initial_data, false);
+
+                        var list = ThemeData::getCourseLabelList();
+                        var candidates = UIKitProject::FinderRoot.makeCandidates(list);
+                        self.finder.replaceCurrentFolderCandidates(context, candidates, focus_index);
+                    }
+
+                    method make_initial_data(context, focus_index)
+                    {
+                        var Finder = UIKitProject::FinderRoot;
+                        var candidates = Finder.makeCandidates(Array(0));
+                        var initial_data = Finder.InitialData(candidates);
+
+                        initial_data.view_type_ = Finder.ViewType::SCROLL_V;
+                        initial_data.focus_index_ = focus_index;
+                        initial_data.cb_init_item_ = on_init_item;
+                        initial_data.cb_on_activate_ = on_activate_item;
+                        initial_data.v_scrollbar_ = Scrollbar::VScrollbar;
+
+                        if (SCROLL_MODE_FOLLOW_MODE)
+                        {
+                            initial_data.extended_item_ = hidden::ItemThumbLarge;
+                            initial_data.h_item_count_ = 2;
+                        }
+
+                        initial_data.cb_focus_enter_ = on_focus_enter;
+                        initial_data.cb_focus_leave_ = on_focus_leave;
+                        initial_data.import_iconbox_parameter_ = hidden::IconBox;
+                        initial_data.item_cache_ = false;
+
+                        return initial_data;
+                    }
+
+                    function update_status(context, course_label, item_w)
+                    {
+                        if (item_w["ImageFace"] != nil)
+                            item_w.ImageFace.image_path = PROJECT::get_theme_image_path(context, course_label);
+                    }
+
+                    function on_init_item(context, candidate_data, item_w, arg)
+                    {
+                        var course_label = candidate_data.value_;
+                        update_status(context, course_label, item_w);
+                    }
+
+                    function on_activate_item(context, folder_data, func_close, arg)
+                    {
+                        if (ROOT.already_decided)
+                            return EVENTRESULT_FILTER;
+
+                        ROOT.already_decided = true;
+                        var candidate_data = folder_data.getItemData();
+                        var course_label = candidate_data.value_;
+
+                        ROOT.params["theme_focus_index"] = candidate_data.item_index_;
+                        var params = ThemeData::getParams(course_label);
+                        CourseMakerRoot.open(context, params);
+                        ROOT.putlog(params);
+
+                        return EVENTRESULT_FILTER;
+                    }
+
+                    function on_focus_enter(context, candidate_data, item_w, arg)
+                    {
+                        var course_label = candidate_data.value_;
+                        var text = get_theme_name(context, ROOT, course_label);
+                        BalloonTip.set_value(context, item_w, text, 74);
+                    }
+
+                    function on_focus_leave(context, candidate_data, item_w, arg)
+                    {
+                        BalloonTip.reset_value();
+                    }
+
+                    method finalize_finder(context)
+                    {
+                        if (self.finder != nil)
+                        {
+                            var parent = self.finder.parent;
+                            parent.removeChild(context, self.finder);
+                            self.finder = nil;
+                        }
+
+                        BalloonTip.reset_value();
+                    }
+
+                    method set_focus(context)
+                    {
+                        if (self.finder != nil)
+                            context.pushEvent(main::menu::MScriptEvent(context, self.finder, "onFocus"));
+                    }
+
+                    method onKeyPress(context, event)
+                    {
+                        switch (event.keysym)
+                        {
+                            case CELL_PAD_CTRL_L3_LEFT:
+                                main::sound.play("cursor");
+                                ROOT.setFocus(ROOT::Footer::Manual);
+                                return EVENTRESULT_FILTER;
+                                break;
+
+                            case CELL_PAD_CTRL_L3_RIGHT:
+                            case CELL_PAD_CTRL_L3_DOWN:
+                                main::sound.play("cursor");
+                                ROOT.setFocus(ROOT::Footer::Course);
+                                return EVENTRESULT_FILTER;
+                                break;
+
+                            default:
+                                return EVENTRESULT_CONTINUE;
+                                break;
+                        }
+                    }
+                }
+            }
+        }
+
+        SCALE_WIDGET_SDTV(Footer::title, 2.6);
+    }
+
+    module Footer
+    {
+        method onInitialize(context)
+        {
+            foreach (var w in [Course])
+                resetActors(w.focusLight, false, true);
+        }
+
+        method onFocusLeave(context, event)
+        {
+            BalloonTip.reset_value();
+            return EVENTRESULT_FILTER;
+        }
+
+        module Course
+        {
+            method onActivate(context)
+            {
+                if (ROOT.already_decided)
+                    return EVENTRESULT_FILTER;
+
+                main::sound.play("ok");
+                var params = self.open_course_popup(context);
+                if (params == nil)
+                    return EVENTRESULT_FILTER;
+
+                ROOT.already_decided = true;
+                ROOT.params["theme_focus_index"] = nil;
+
+                var block = method (context)
+                {
+                    CourseMakerRoot.open(context, params);
+                    ROOT.putlog(params);
+                };
+
+                ROOT.close(context, block);
+                return EVENTRESULT_FILTER;
+            }
+
+            method open_course_popup(context)
+            {
+                var selected_course = CoursePopup.open(context);
+                if (selected_course == nil)
+                    return nil;
+
+                |var course_data, var course_pathway| = selected_course;
+                var title = course_pathway.title;
+                var course_code = course_pathway.TemplateCourseCode;
+                var course_label = gtengine::MSpecDB::getCourseLabel(course_code);
+
+                var tp = ThemeData::getParams(course_label);
+                tp.course_data = course_data;
+                tp.course_pathway = course_pathway;
+
+                return tp;
+            }
+
+            method onFocusEnter(context, event)
+            {
+                var w = event.widget;
+                resetActors(w.focusLight, false, false);
+                var text = context.translate(ROOT, "COURSE");
+
+                BalloonTip.set_value(context, w, text, 0);
+                return EVENTRESULT_FILTER;
+            }
+
+            method onFocusLeave(context, event)
+            {
+                resetActors(event.widget.focusLight, true, false);
+                BalloonTip.reset_value();
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onKeyPress(context, event)
+            {
+                switch (event.keysym)
+                {
+                    case CELL_PAD_CTRL_L3_UP:
+                    case CELL_PAD_CTRL_L3_LEFT:
+                        main::sound.play("cursor");
+                        ROOT.Body.Pane.VBox.Body.Content.List.set_focus(context);
+                        return EVENTRESULT_FILTER;
+                        break;
+
+                    default:
+                        return EVENTRESULT_CONTINUE;
+                        break;
+                }
+            }
+        }
+
+        module Manual
+        {
+            method onActivate(context)
+            {
+                main::sound.play("ok");
+                PROJECT::open_manual_popup(context);
+                return EVENTRESULT_FILTER;
+            }
+
+            method onFocusEnter(context, event)
+            {
+                var w = event.widget;
+                var text = context.translate(ROOT, "MyHome", "MANUAL");
+
+                BalloonTip.set_value(context, w, text, 0);
+                return EVENTRESULT_FILTER;
+            }
+
+            method onKeyPress(context, event)
+            {
+                switch (event.keysym)
+                {
+                    case CELL_PAD_CTRL_L3_UP:
+                    case CELL_PAD_CTRL_L3_RIGHT:
+                        main::sound.play("cursor");
+                        ROOT.Body.Pane.VBox.Body.Content.List.set_focus(context);
+                        return EVENTRESULT_FILTER;
+                        break;
+
+                    default:
+                        return EVENTRESULT_CONTINUE;
+                        break;
+                }
+            }
+        }
+
+        module Exit
+        {
+            method onActivate(context)
+            {
+                if (ROOT.already_decided)
+                    return EVENTRESULT_FILTER;
+
+                ROOT.already_decided = true;
+                main::sound.play("return");
+
+                var block = method (context)
+                {
+                    SequenceUtil::startSequence(context, main::GameSequence::MENU);
+                };
+
+                SaveDataUtilGT5::saveEveryWhere(context);
+                ROOT.close(context, block);
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method onFocusEnter(context, event)
+            {
+                var w = event.widget;
+                var text = context.translate(ROOT, "MyHome", "EXIT");
+
+                BalloonTip.set_value(context, w, text, 0);
+                return EVENTRESULT_FILTER;
+            }
+
+            method onKeyPress(context, event)
+            {
+                switch (event.keysym)
+                {
+                    case CELL_PAD_CTRL_L3_RIGHT:
+                        main::sound.play("cursor");
+                        ROOT.Body.Pane.VBox.Body.Content.List.set_focus(context);
+                        return EVENTRESULT_FILTER;
+                        break;
+                        
+                    default:
+                        return EVENTRESULT_CONTINUE;
+                        break;
+                }
+            }
+        }
+    }
+}

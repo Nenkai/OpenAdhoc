@@ -1,0 +1,673 @@
+module ROOT
+{
+    hidden.visible = false;
+
+    attribute popup;
+    attribute closed = false;
+    attribute appeared = false;
+    attribute already_decided;
+    attribute result;
+    attribute course_label;
+    attribute course_code;
+    attribute time;
+    attribute weather;
+    attribute weather_value0;
+    attribute weather_accel;
+    attribute test_drive_cars;
+    attribute model;
+
+    static tab_name_test_drive = ROOT::Popup::Pane::CarFinder::Tabs::TestDriveCars.name;
+    static tab_name_favorite = ROOT::Popup::Pane::CarFinder::Tabs::FavoriteCars.name;
+    static tab_name_debug = ROOT::Popup::Pane::CarFinder::Tabs::DebugCars.name;
+
+    class CarPopupModel
+    {
+        attribute stick;
+        attribute time;
+        attribute weather;
+        attribute weather_value0;
+        attribute weather_accel;
+        attribute test_drive_cars;
+        attribute test_drive_candidate_cars;
+        attribute favorite_candidate_cars;
+        attribute debug_candidate_cars;
+
+        method __init__(context, cl, cc, t, wv, wa, tdc)
+        {
+            self.stick = StickParams(context, cl, cc);
+
+            self.time = t;
+            self.weather_value0 = wv;
+            self.weather_accel = wa;
+            self.test_drive_cars = tdc;
+            self.test_drive_candidate_cars = self.get_test_drive_candidate_cars(context);
+            self.favorite_candidate_cars = self.get_favorite_candidate_cars(context);
+            self.debug_candidate_cars = self.get_debug_candidate_cars(context);
+        }
+
+        method restore(context)
+        {
+            var map = PROJECT.history['CarPopup::params'];
+            if (!map.empty())
+            {
+                var s = map["stick"];
+                if (!s.empty())
+                    self.stick.restore(context, s);
+            }
+        }
+
+        method persist(context)
+        {
+            var map = Map();
+            map["stick"] = self.stick.data;
+            PROJECT.history['CarPopup::params'] = map;
+        }
+
+        method get_candidate_cars(context, tab_name)
+        {
+            var candidate;
+            switch (tab_name)
+            {
+                case tab_name_test_drive:
+                    candidate = self.test_drive_candidate_cars;
+                    break;
+
+                case tab_name_favorite:
+                    candidate = self.favorite_candidate_cars;
+                    break;
+
+                case tab_name_debug:
+                default:
+                    candidate = self.debug_candidate_cars;
+                    break;
+            }
+
+            return candidate;
+        }
+
+        method get_test_drive_candidate_cars(context)
+        {
+            var cars = self.test_drive_cars;
+
+            var list = Array(cars.size);
+            for (var i = 0; i < cars.size; i++)
+            {
+                var car = cars[i];
+                car.ownArcadePartsAll();
+                list[i] = [car, true];
+            }
+
+            return self.get_finder_candidates(context, list);
+        }
+
+        method get_favorite_candidate_cars(context)
+        {
+            var cp_proxies = GAME_STATUS.user_profile.garage.getFavoriteCPPList(nil, nil, nil, "power", "DESC");
+            var course_cond = gtengine::MSpecDB::getCourseCondition(self.stick["course_code"]);
+
+            var list = Array(cp_proxies.size);
+            for (var i = 0; i < cp_proxies.size; i++)
+            {
+                var cp_proxy = cp_proxies[i];
+                var cp = cp_proxy.getCP();
+                var tire_list = cp.getHavingTireList(course_cond);
+                var enable = tire_list.size > 0 && cp_proxy.invalid == 0;
+                var is_racing_kart = gtengine::MSpecDB::checkGenericFlag("is_racing_kart", cp.getCarCode());
+
+                if (enable && is_racing_kart)
+                    enable = self.weather_value0 == 1.0 && self.weather_accel == 0;
+
+                list[i] = [cp_proxy, enable];
+            }
+
+            return self.get_finder_candidates(context, list);
+        }
+
+        method get_debug_candidate_cars(context)
+        {
+            var list = [];
+            var riding_car = GAME_STATUS.user_profile.garage.getRidingCar();
+
+            if (riding_car != nil)
+            {
+                var cp = gtengine::MCarParameter();
+                cp.deepCopy(riding_car);
+                list.push([cp, true]);
+            }
+
+            return self.get_finder_candidates(context, list);
+        }
+
+        method get_finder_candidates(context, list)
+        {
+            var Finder = UIKitProject::FinderRoot;
+            var candidates = Array(list.size);
+
+            for (var i = 0; i < list.size; i++)
+            {
+                |var car, var enable| = list[i];
+                var car_code;
+
+                if (car.isInstanceOf(gtengine::MCarParameter) || car.isInstanceOf(gtengine::MCarThin))
+                    car_code = car.getCarCode();
+                else if (car.isInstanceOf(Garage2::CarParameterProxy) || car.isInstanceOf(CarData::CarParameterProxy))
+                    car_code = car.car_code;
+
+                var car_name = gtengine::MSpecDB::getCarShortName(car_code);
+                candidates[i] = Finder.CandidateData([car, car_name, enable]);
+            }
+
+            return candidates;
+        }
+
+        method change_car(context, rp, cp)
+        {
+            cp.target = true;
+            var res = cp.setSuitableTiresWithTrunk(self.stick["course_label"], self.weather_value0 < -0.5);
+            var slot_id = 0;
+
+            if (ORG.getEntryState(slot_id) == gtengine::EntryLevel::RACER)
+            {
+                res = ORG.leaveRace(slot_id);
+
+                while (!ORG.checkLeaveRace(slot_id))
+                {
+                    yield false;
+                }
+            }
+
+            var account_id = 0;
+            RaceOperator.storeAccountDriverParameter(account_id);
+
+            var success = ORG.entryRace(slot_id, cp);
+            ORG.waitEntryRace(slot_id);
+
+            return true;
+        }
+
+        method entry_race(context, cp)
+        {
+            var slot_id = 0;
+
+            if (ORG.getEntryState(slot_id) == gtengine::EntryLevel::RACER)
+            {
+                res = ORG.leaveRace(slot_id);
+
+                while (!ORG.checkLeaveRace(slot_id))
+                {
+                    yield false;
+                }
+            }
+
+            var account_id = 0;
+            RaceOperator.storeAccountDriverParameter(account_id);
+
+            var success = ORG.entryRace(slot_id, cp);
+            ORG.waitEntryRace(slot_id);
+
+            return true;
+        }
+
+        method leave_race(context)
+        {
+            var slot_id = 0;
+            var res = ORG.leaveRace(slot_id);
+
+            while (!ORG.checkLeaveRace(slot_id))
+            {
+                yield false;
+            }
+        }
+
+        method get_active_tab_name(context)
+        {
+            return self.stick["active_tab_name"];
+        }
+
+        method set_active_tab(context, name)
+        {
+            self.stick["active_tab_name"] = name;
+            self.update_views(context);
+        }
+
+        method get_car_focus_index(context)
+        {
+            var cars = self.get_candidate_cars(context, self.get_active_tab_name(context));
+
+            if (self.stick["car_focus_index"] >= cars.size)
+                self.stick["car_focus_index"] = 0;
+
+            return self.stick["car_focus_index"];
+        }
+
+        method set_car_focus_index(context, i)
+        {
+            return self.stick["car_focus_index"] = i;
+        }
+
+        method update_views(context)
+        {
+            self.update_view_car_finder(context);
+        }
+
+        method update_view_car_finder(context)
+        {
+            ROOT::Popup::Pane::CarFinder.update_status(context, self.stick["active_tab_name"]);
+        }
+    }
+
+    class StickParams
+    {
+        attribute data;
+
+        method __init__(context, cl, cc)
+        {
+            self.data = Map();
+
+            self.data["course_label"] = cl;
+            self.data["course_code"] = cc;
+            self.data["active_tab_name"] = tab_name_test_drive;
+            self.data["car_focus_index"] = 0;
+        }
+
+        method restore(context, previous)
+        {
+            if (self.data["course_label"] != previous["course_label"])
+            {
+                self.data["active_tab_name"] = tab_name_test_drive;
+                self.data["car_focus_index"] = 0;
+            }
+            else
+                self.data = previous;
+        }
+
+        method __get_elem__(k)
+        {
+            return self.data[k];
+        }
+
+        method __set_elem__(k, v)
+        {
+            self.data[k] = v;
+        }
+    }
+
+    method open(context, cl, cc, t, wv, wa, tdc)
+    {
+        self.result = nil;
+        self.closed = false;
+        self.appeared = false;
+        self.already_decided = false;
+        self.course_label = cl;
+        self.course_code = cc;
+        self.time = t;
+        self.weather_value0 = wv;
+        self.weather_accel = wa;
+        self.test_drive_cars = tdc;
+
+        self.popup = main::SequenceUtil::ModalPage(context, ROOT);
+        self.popup.open();
+
+        return self.result;
+    }
+
+    method close(context)
+    {
+        var root = self.root_window;
+        if (self.closed)
+            return;
+
+        root.closed = true;
+
+        FadeActor.on_effect_end = function (context)
+        {
+            if (!root.appeared)
+                PROJECT::ignorePadEvent(context, false);
+
+            if (root.popup != nil)
+            {
+                root.popup.close();
+                root.popup = nil;
+            }
+        };
+
+        self.FadeActor.out = true;
+    }
+
+    method onInitialize(context)
+    {
+        var root = self.root_window;
+        root.setFocus(nil);
+
+        self.model = CarPopupModel(context, self.course_label, self.course_code, self.time, 
+        self.weather_value0, self.weather_accel, self.test_drive_cars);
+
+        self.model.restore(context);
+
+        ButtonHelpGT5.set(context, [
+            [ButtonHelpGT5.getEnterButtonName(), context.translate(ROOT, "Component", "Enter")], 
+            [ButtonHelpGT5.getCancelButtonName(), context.translate(ROOT, "Component", "Cancel")]
+        ]);
+
+        Popup::Pane::CarFinder.disappear(context, true);
+        context.pushEvent(main::menu::MScriptEvent(context, self, "onEnter"));
+    }
+
+    method onFinalize(context)
+    {
+        self.model.persist(context);
+
+        self.model = nil;
+        self.popup = nil;
+        self.closed = nil;
+        self.appeared = nil;
+        self.already_decided = nil;
+        self.course_label = nil;
+        self.course_code = nil;
+        self.time = nil;
+        self.weather = nil;
+        self.weather_value0 = nil;
+        self.weather_accel = nil;
+        self.test_drive_cars = nil;
+    }
+
+    method onCancel(context)
+    {
+        if (self.already_decided)
+            return EVENTRESULT_FILTER;
+
+        self.already_decided = true;
+        main::sound.play("cancel");
+        self.close(context);
+
+        return EVENTRESULT_FILTER;
+    }
+
+    method onEnter(context)
+    {
+        ButtonHelpGT5.appear();
+        self.model.update_views(context);
+        Popup::Pane::CarFinder.appear(context);
+
+        if (Popup::Pane::CarFinder::Body::Content.finder.getItemCount() == 0)
+        {
+            var root = self.root_window;
+            var active_tab_name = root.model.get_active_tab_name(context);
+            root.setFocus(Popup::Pane::CarFinder::Tabs[active_tab_name]);
+        }
+
+        return EVENTRESULT_FILTER;
+    }
+
+    module Popup::Pane::CarFinder
+    {
+        method onInitialize(context)
+        {
+
+        }
+
+        method appear(context)
+        {
+            var root = self.root_window;
+            PROJECT::ignorePadEvent(context, true);
+
+            var end_move = method (context)
+            {
+                self.insensitive = false;
+                PROJECT::ignorePadEvent(context, false);
+
+                if (self.Body.Content.finder.getItemCount() != 0)
+                    context.pushEvent(main::menu::MScriptEvent(context, self.Body.Content.finder, "onFocus"));
+
+                root.appeared = true;
+                self.MoveEffect.on_effect_end = nil;
+            };
+
+            self.MoveEffect.reverse = false;
+            self.MoveEffect.on_effect_end = self.*end_move;
+            self.MoveEffect.start();
+        }
+
+        method disappear(context, warp)
+        {
+            var root = self.root_window;
+            self.insensitive = true;
+            root.setFocus(nil);
+            BalloonTip.reset_value();
+
+            self.MoveEffect.reverse = true;
+            self.MoveEffect.start();
+
+            if (warp != nil && warp)
+                self.MoveEffect.warp();
+        }
+
+        method update_status(context, active_tab_name)
+        {
+            self.Tabs.update_status(context, active_tab_name);
+            self.Body.Content.update_status(context, active_tab_name);
+        }
+
+        module Tabs
+        {
+            SCALE_WIDGET_SDTV(TestDriveCars::label, 2.6);
+            SCALE_WIDGET_SDTV(TestDriveCars::labelf, 2.6);
+            SCALE_WIDGET_SDTV(FavoriteCars::label, 2.6);
+            SCALE_WIDGET_SDTV(FavoriteCars::labelf, 2.6);
+
+            method onInitialize(context)
+            {
+                self.DebugCars.visible = GetVersionBranch() == "runviewer";
+            }
+
+            method onActivate(context, event)
+            {
+                var root = self.root_window;
+                var active_tab_name = root.model.get_active_tab_name(context);
+                var name = event.widget.name;
+
+                if (active_tab_name != name)
+                {
+                    main::sound.play("ok");
+                    root.model.set_active_tab(context, name);
+                    context.pushEvent(main::menu::MScriptEvent(context, self.parent.Body.Content.finder, "onFocus"));
+                }
+
+                return EVENTRESULT_FILTER;
+            }
+
+            method update_status(context, active_tab_name)
+            {
+                var items = [:];
+
+                for (var i = 0; i < self.countChild(); i++)
+                {
+                    var item_w = self.getChild(i);
+                    var item_w_name = item_w.name;
+                    var postfix = "Cars";
+                    var item_w_name_postfix = item_w_name.substr(item_w_name.size - postfix.size, postfix.size);
+
+                    if (item_w_name_postfix == postfix)
+                    {
+                        items[item_w_name] = item_w;
+                        item_w.active = false;
+                    }
+                }
+
+                var active_tab = items[active_tab_name];
+                if (active_tab != nil)
+                    active_tab.active = true;
+            }
+        }
+
+        module Body
+        {
+            module Content
+            {
+                SCALE_WIDGET_SDTV(empty_message, 2.6);
+
+                attribute finder;
+                attribute view_mode = SCROLL_MODE_MANUAL;
+                attribute car_category_name;
+
+                method onFinalize(context)
+                {
+                    self.finalize_finder(context);
+                }
+
+                method initialize_finder(context)
+                {
+                    var root = self.root_window;
+                    var focus_index = root.model.get_car_focus_index(context);
+                    var initial_data = self.make_initial_data(context, focus_index);
+                    var active_tab_name = root.model.get_active_tab_name(context);
+                    var candidates = root.model.get_candidate_cars(context, active_tab_name);
+
+                    var Finder = UIKitProject::FinderRoot;
+                    self.finder = Finder.setCopy(context, self, initial_data, false);
+                    self.finder.replaceCurrentFolderCandidates(context, candidates, focus_index);
+                }
+
+                method finalize_finder(context)
+                {
+                    if (self.finder != nil)
+                    {
+                        var parent = self.finder.parent;
+                        parent.removeChild(context, self.finder);
+                        self.finder = nil;
+                    }
+
+                    BalloonTip.reset_value();
+                }
+
+                method update_status(context, active_tab_name)
+                {
+                    if (self.car_category_name != active_tab_name)
+                    {
+                        self.finalize_finder(context);
+                        self.initialize_finder(context);
+                        self.empty_message.FadeEffect.reset();
+                        self.empty_message.visible = false;
+
+                        if (self.finder.getItemCount() == 0)
+                        {
+                            var text = "";
+
+                            switch (active_tab_name)
+                            {
+                                case tab_name_test_drive:
+                                    text = context.translate(ROOT, "ArcadeProject::CarRoot", "MESSAGE_WHEN_CARS_ARE_EMPTY");
+
+                                case tab_name_favorite:
+                                    text = context.translate(ROOT, "MESSAGE_WHEN_FAVORITE_CARS_ARE_EMPTY");
+
+                                default:
+                                    break;
+                            }
+
+                            self.empty_message.FadeEffect.restart();
+                            self.empty_message.text = text;
+                            self.empty_message.visible = true;
+                        }
+                    }
+                }
+
+                method make_initial_data(context, focus_index)
+                {
+                    var Finder = UIKitProject::FinderRoot;
+
+                    var initial_data = Finder.InitialData();
+                    initial_data.view_type_ = Finder.ViewType::SCROLL_H;
+                    initial_data.extended_item_ = hidden::CarThumb;
+                    initial_data.candidates_ = Finder.makeCandidates(Array(0));
+                    initial_data.tint_visible_ = false;
+                    initial_data.cancel_behavior_ = nil;
+                    initial_data.item_cache_ = false;
+                    initial_data.focus_index_ = focus_index;
+                    initial_data.cb_init_item_ = self.on_init_item;
+                    initial_data.cb_on_activate_ = self.on_activate_item;
+                    initial_data.cb_on_activate_arg_ = self.car_category_name;
+                    initial_data.cb_focus_enter_ = self.on_focus_enter;
+                    initial_data.cb_focus_leave_ = self.on_focus_leave;
+                    initial_data.h_scrollbar_ = self.parent.HScrollbar;
+                    initial_data.import_iconbox_parameter_ = self.IconBox;
+
+                    return initial_data;
+                }
+
+                method on_init_item(context, candidate_data, item_w, arg)
+                {
+                    |var car, var car_name, var enable| = candidate_data.value_;
+                    item_w.setInfo(context, car);
+                    item_w.disable.visible = !enable;
+                }
+
+                method on_activate_item(context, folder_data, func_close, arg)
+                {
+                    var root = self.root_window;
+                    if (root.already_decided)
+                        return;
+
+                    var candidate_data = folder_data.getItemData();
+                    |var car, var car_name, var enable| = candidate_data.value_;
+
+                    if (!enable)
+                    {
+                        main::sound.play("disable");
+                        return;
+                    }
+                    
+                    var cp;
+                    if (car.isInstanceOf(gtengine::MCarParameter) || car.isInstanceOf(gtengine::MCarThin))
+                        cp = car;
+                    else if (car.isInstanceOf(Garage2::CarParameterProxy) || car.isInstanceOf(CarData::CarParameterProxy))
+                        cp = car.getCP();
+
+                    var rp = ORG.getBackRaceParameter();
+                    root.model.change_car(context, rp, cp);
+                    var is_racing_kart = gtengine::MSpecDB::checkGenericFlag("is_racing_kart", cp.getCarCode());
+                    var need_open_driving_option = true;
+
+                    if (need_open_driving_option && !self.open_driving_option(context, rp, cp))
+                    {
+                        root.model.leave_race(context);
+                        return;
+                    }
+
+                    root.model.set_car_focus_index(context, candidate_data.item_index_);
+
+                    root.already_decided = true;
+                    context.cursor_visible = false;
+                    root.result = cp;
+                    root.close();
+                }
+
+                method on_focus_enter(context, candidate_data, item_w, arg)
+                {
+                    |var car, var car_name, var enable| = candidate_data.value_;
+                    BalloonTip.set_value(context, item_w.car, car_name, 20);
+                }
+
+                method on_focus_leave(context, candidate_data, item_w, arg)
+                {
+                    BalloonTip.reset_value();
+                }
+
+                method open_driving_option(context, rp, cp)
+                {
+                    var data = SettingProject::DrivingOptionRoot::Data(cp, getPlayerDriver(), rp, gSequenceCondition.gp.event.constraint);
+                    data.activate_sound = "next";
+                    data.visible_low_mu_type = true;
+
+                    if (GAME_STATUS.user_profile.quicktune_available)
+                    {
+                        data.invisible_tcs = true;
+                        data.invisible_tire = true;
+                    }
+
+                    return SettingProject::DrivingOptionRoot.open(context, data);
+                }
+            }
+        }
+    }
+}
