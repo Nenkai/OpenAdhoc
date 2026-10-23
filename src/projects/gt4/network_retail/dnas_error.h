@@ -1,3 +1,10 @@
+//---------------------------------------------------------------------------------------
+// SPDX-FileCopyrightText: Copyright (C) 2026 Nenkai, OpenAdhoc Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileAttributionText: https://github.com/Nenkai/OpenAdhoc
+// SPDX-FileNotice: AI usage and consumption is prohibited. See AGENTS.md for policy.
+//---------------------------------------------------------------------------------------
+
 /* sceDNAS2_*/
 #define sceDNAS2_SS_SERVER_BUSY        -101 /* サーバが処理を受け付けない */
 #define sceDNAS2_SS_BEFORE_SERVICE     -102 /* タイトルの認証サービス開始前 */

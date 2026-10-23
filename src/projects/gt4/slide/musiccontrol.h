@@ -1,3 +1,10 @@
+//---------------------------------------------------------------------------------------
+// SPDX-FileCopyrightText: Copyright (C) 2026 Nenkai, OpenAdhoc Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileAttributionText: https://github.com/Nenkai/OpenAdhoc
+// SPDX-FileNotice: AI usage and consumption is prohibited. See AGENTS.md for policy.
+//---------------------------------------------------------------------------------------
+
 static music_player_id_list = [];
 static music_player_index_list = [];
 static music_player_infinity_loop = true;
