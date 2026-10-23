@@ -1,3 +1,10 @@
+//---------------------------------------------------------------------------------------
+// SPDX-FileCopyrightText: Copyright (C) 2026 Nenkai, OpenAdhoc Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileAttributionText: https://github.com/Nenkai/OpenAdhoc
+// SPDX-FileNotice: AI usage and consumption is prohibited. See AGENTS.md for policy.
+//---------------------------------------------------------------------------------------
+
 /* Define sceNETCNF_* errors (note: netcnf operations handled by PDINETCNF.IRX) */
 #define sceNETCNF_NETCNF_NG                 -1   /* no good */
 #define sceNETCNF_NETCNF_ALLOC_ERROR        -2   /* no space for memory */
